@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from proximalfm.Prior import ProximalPrior
+from proximalfm.Structure import ProximalPriorConfig
 
 
 @pytest.fixture
@@ -44,3 +45,15 @@ def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
     residual = target - features @ solution
     correlations = torch.abs((residual * episode.Z).mean(dim=0))
     assert torch.all(correlations < 0.25)
+
+
+def test_invalid_config_dz_too_small() -> None:
+    config = ProximalPriorConfig(d_u=4, d_z=3, d_w=6)
+    with pytest.raises(ValueError):
+        ProximalPrior(config=config)
+
+
+def test_invalid_config_dw_too_small() -> None:
+    config = ProximalPriorConfig(d_u=4, d_z=6, d_w=3)
+    with pytest.raises(ValueError):
+        ProximalPrior(config=config)
