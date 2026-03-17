@@ -24,8 +24,6 @@ class ProximalDataset(Dataset):
         samples_per_episode: Number of rows (observations) per episode.
         seed_offset: Added to the episode index to form the episode seed,
             allowing non-overlapping train/val splits.
-        normalize_episode: Whether to standardise X, Z, W, and Y within
-            each episode before returning.
     """
 
     def __init__(
@@ -34,7 +32,6 @@ class ProximalDataset(Dataset):
         num_episodes: int,
         samples_per_episode: int,
         seed_offset: int = 0,
-        normalize_episode: bool = True,
     ) -> None:
         # Deep-copy so we never mutate the caller's config object
         self.prior_config = copy.deepcopy(prior_config)
@@ -58,7 +55,6 @@ class ProximalDataset(Dataset):
         self.num_episodes = num_episodes
         self.samples_per_episode = samples_per_episode
         self.seed_offset = seed_offset
-        self.normalize_episode = normalize_episode
 
     def __len__(self) -> int:
         return self.num_episodes
@@ -69,7 +65,6 @@ class ProximalDataset(Dataset):
         episode = self.prior.generate_episode(
             batch_size=self.samples_per_episode,
             episode_seed=episode_seed,
-            normalize_episode=self.normalize_episode,
         )
 
         # Keep X, Z, W as separate tensors — the transformer assigns different
@@ -97,7 +92,6 @@ def create_causal_data_loaders(
     val_episodes: int = 1_000,
     num_workers: int = 4,
     seed: int = 42,
-    normalize_episode: bool = True,
 ) -> dict[str, DataLoader]:
     """Create train and validation DataLoaders for ProximalFM.
 
@@ -113,7 +107,6 @@ def create_causal_data_loaders(
         val_episodes: Episodes for validation.
         num_workers: DataLoader worker processes. Set to 0 for debugging.
         seed: Base seed controlling both episode generation and shuffle order.
-        normalize_episode: Standardise variables within each episode.
 
     Returns:
         Dict with keys "train" and "val", each a DataLoader.
@@ -123,7 +116,6 @@ def create_causal_data_loaders(
         num_episodes=train_episodes,
         samples_per_episode=samples_per_episode,
         seed_offset=seed,
-        normalize_episode=normalize_episode,
     )
 
     # Shift seed offset so validation episodes are entirely disjoint from training
@@ -132,7 +124,6 @@ def create_causal_data_loaders(
         num_episodes=val_episodes,
         samples_per_episode=samples_per_episode,
         seed_offset=seed + train_episodes,
-        normalize_episode=normalize_episode,
     )
 
     # Reproducible shuffle: pin the DataLoader's internal RNG to `seed`

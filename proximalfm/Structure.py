@@ -8,6 +8,7 @@ from torch import Tensor
 
 Activation = Callable[[Tensor], Tensor]
 
+
 @dataclass
 class NetworkSpec:
     num_layers: int = 3
@@ -15,6 +16,7 @@ class NetworkSpec:
     activation: Activation = torch.tanh
     weight_scale: float = 0.75
     bias_scale: float = 0.1
+
 
 @dataclass
 class ProximalPriorConfig:
@@ -26,8 +28,13 @@ class ProximalPriorConfig:
     x_spec: NetworkSpec = field(default_factory=NetworkSpec)
     z_spec: NetworkSpec = field(default_factory=NetworkSpec)
     w_spec: NetworkSpec = field(default_factory=NetworkSpec)
-    treatment_spec: NetworkSpec = field(default_factory=lambda: NetworkSpec(hidden_size=24))
-    outcome_spec: NetworkSpec = field(default_factory=lambda: NetworkSpec(hidden_size=24))
+    u_spec: NetworkSpec = field(default_factory=NetworkSpec)
+    treatment_spec: NetworkSpec = field(
+        default_factory=lambda: NetworkSpec(hidden_size=24)
+    )
+    outcome_spec: NetworkSpec = field(
+        default_factory=lambda: NetworkSpec(hidden_size=24)
+    )
 
     noise_scale_x: float = 0.05
     noise_scale_z: float = 0.05
@@ -40,6 +47,8 @@ class ProximalPriorConfig:
 
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
+    normalize_episode: bool = True
+
 
 @dataclass
 class ProximalEpisode:
