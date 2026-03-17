@@ -236,23 +236,6 @@ class PerFeatureTransformerCATE(nn.Module):
                 num_layers=2,
             )
 
-        initialized_decoder_dict = {}
-        for decoder_key in decoder_dict:
-            decoder_model, decoder_n_out = decoder_dict[decoder_key]
-            if decoder_model is None:
-                initialized_decoder_dict[decoder_key] = nn.Sequential(
-                    nn.Linear(ninp, nhid),
-                    nn.GELU(),
-                    nn.Linear(nhid, decoder_n_out),
-                )
-            else:
-                initialized_decoder_dict[decoder_key] = decoder_model(
-                    ninp,
-                    nhid,
-                    decoder_n_out,
-                )
-        self.decoder_dict = nn.ModuleDict(initialized_decoder_dict)
-
         self.feature_positional_embedding = feature_positional_embedding
         if feature_positional_embedding == "learned":
             self.feature_positional_embedding_embeddings = nn.Embedding(1_000, ninp)
