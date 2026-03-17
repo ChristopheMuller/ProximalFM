@@ -17,14 +17,12 @@
 
 from __future__ import annotations
 
-import logging
 import typing
-import warnings
 from collections.abc import Sequence
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
-from typing_extensions import Self, TypedDict, deprecated, overload
+from typing import TYPE_CHECKING, Any, Literal
+from typing_extensions import Self, TypedDict, overload
 
 import numpy as np
 import torch
@@ -35,51 +33,37 @@ from sklearn.base import (
     TransformerMixin,
     check_is_fitted,
 )
-from tabpfn_common_utils.telemetry import track_model_call
 
-from tabpfn.architectures.base.bar_distribution import FullSupportBarDistribution
 from tabpfn.base import (
-    RegressorModelSpecs,
+    check_cpu_warning,
     create_inference_engine,
     determine_precision,
-    estimator_to_device,
-    get_embeddings,
-    initialize_model_variables_helper,
-    initialize_telemetry,
+    initialize_tabpfn_model,
 )
-from tabpfn.constants import REGRESSION_CONSTANT_TARGET_BORDER_EPSILON, ModelVersion
-from tabpfn.errors import TabPFNValidationError, handle_oom_errors
-from tabpfn.inference import InferenceEngine, InferenceEngineBatchedNoPreprocessing
-from tabpfn.model_loading import (
-    ModelSource,
-    load_fitted_tabpfn_model,
-    log_model_init_params,
-    prepend_cache_path,
-    save_fitted_tabpfn_model,
+from tabpfn.config import ModelInterfaceConfig
+from tabpfn.model.bar_distribution import FullSupportBarDistribution
+from tabpfn.model.preprocessing import (
+    ReshapeFeatureDistributionsStep,
 )
 from tabpfn.preprocessing import (
     EnsembleConfig,
+    PreprocessorConfig,
     RegressorEnsembleConfig,
-    clean_data,
-    generate_regression_ensemble_configs,
-)
-from tabpfn.preprocessing.clean import fix_dtypes, process_text_na_dataframe
-from tabpfn.preprocessing.datamodel import FeatureModality, FeatureSchema
-from tabpfn.preprocessing.ensemble import TabPFNEnsemblePreprocessor
-from tabpfn.preprocessing.modality_detection import detect_feature_modalities
-from tabpfn.preprocessing.steps import (
-    get_all_reshape_feature_distribution_preprocessors,
+    default_regressor_preprocessor_configs,
 )
 from tabpfn.utils import (
-    DevicesSpecification,
-    convert_batch_of_cat_ix_to_schema,
+    _fix_dtypes,
+    _get_embeddings,
+    _get_ordinal_encoder,
+    _process_text_na_dataframe,
+    _transform_borders_one,
+    infer_categorical_features,
+    infer_device_and_type,
     infer_random_state,
-    transform_borders_one,
     translate_probs_across_borders,
-)
-from tabpfn.validation import (
-    ensure_compatible_fit_inputs,
-    ensure_compatible_predict_input_sklearn,
+    update_encoder_outlier_params,
+    validate_X_predict,
+    validate_Xy_fit,
 )
 
 if TYPE_CHECKING:
@@ -88,11 +72,14 @@ if TYPE_CHECKING:
     from sklearn.pipeline import Pipeline
     from torch.types import _dtype
 
-    from tabpfn.architectures.base.memory import MemorySavingMode
-    from tabpfn.architectures.interface import Architecture, ArchitectureConfig
-    from tabpfn.constants import XType, YType
-    from tabpfn.inference import InferenceEngine
-    from tabpfn.inference_config import InferenceConfig
+    from tabpfn.constants import (
+        XType,
+        YType,
+    )
+    from tabpfn.inference import (
+        InferenceEngine,
+    )
+    from tabpfn.model.config import InferenceConfig
 
     try:
         from sklearn.base import Tags
@@ -100,24 +87,9 @@ if TYPE_CHECKING:
         Tags = Any
 
 
-# --- Prediction Output Types and Constants ---
-
-# 1. Tuples for runtime validation and internal logic.
-# These are defined directly as tuples of strings for immediate clarity.
-_OUTPUT_TYPES_BASIC = ("mean", "median", "mode")
-_OUTPUT_TYPES_QUANTILES = ("quantiles",)
-_OUTPUT_TYPES = _OUTPUT_TYPES_BASIC + _OUTPUT_TYPES_QUANTILES
-_OUTPUT_TYPES_COMPOSITE = ("full", "main")
-_USABLE_OUTPUT_TYPES = _OUTPUT_TYPES + _OUTPUT_TYPES_COMPOSITE
-
-
-# 2. Type aliases for static type checking and IDE support.
-OutputType = Literal["mean", "median", "mode", "quantiles", "full", "main"]
-"""The type hint for the `output_type` parameter in `predict`."""
-
-
+# TypedDict definitions for prediction outputs
 class MainOutputDict(TypedDict):
-    """Specifies the return structure for `output_type="main"`."""
+    """Dictionary containing the main output types from the TabPFN regressor."""
 
     mean: np.ndarray
     median: np.ndarray
@@ -126,43 +98,23 @@ class MainOutputDict(TypedDict):
 
 
 class FullOutputDict(MainOutputDict):
-    """Specifies the return structure for `output_type="full"`."""
+    """Dictionary containing all outputs from the TabPFN regressor."""
 
     criterion: FullSupportBarDistribution
     logits: torch.Tensor
 
 
-RegressionResultType = Union[
-    np.ndarray, list[np.ndarray], MainOutputDict, FullOutputDict
-]
-"""The type hint for the return value of the `predict` method."""
-
-
 class TabPFNRegressor(RegressorMixin, BaseEstimator):
     """TabPFNRegressor class."""
 
-    configs_: list[ArchitectureConfig]
-    """The configurations of the loaded models to be used for inference.
+    config_: InferenceConfig
+    """The configuration of the loaded model to be used for inference."""
 
-    The concrete type of these configs is defined by the architectures in use and should
-    be inspected at runtime, but they will be subclasses of ArchitectureConfig.
-    """
+    interface_config_: ModelInterfaceConfig
+    """Additional configuration of the interface for expert users."""
 
-    models_: list[Architecture]
-    """The loaded models to be used for inference.
-
-    The models can be different PyTorch modules, but will be subclasses of Architecture.
-    """
-
-    inference_config_: InferenceConfig
-    """Additional configuration of inference for expert users."""
-
-    devices_: tuple[torch.device, ...]
-    """The devices determined to be used.
-
-    The devices are determined based on the `device` argument to the constructor, and
-    the devices available on the system. See the constructor documentation for details.
-    """
+    device_: torch.device
+    """The device determined to be used."""
 
     feature_names_in_: npt.NDArray[Any]
     """The feature names of the input data.
@@ -174,24 +126,20 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
     n_features_in_: int
     """The number of features in the input data used during `fit()`."""
 
-    n_train_samples_: int
-    """The number of training samples used during `fit()`."""
-
-    inferred_feature_schema_: FeatureSchema
-    """The inferred feature schema. This contains the feature modalities per column,
-    using heuristics and user-provided indices for categorical features."""
+    inferred_categorical_indices_: list[int]
+    """The indices of the columns that were inferred to be categorical,
+    as a product of any features deemed categorical by the user and what would
+    work best for the model.
+    """
 
     n_outputs_: Literal[1]  # We only support single output
     """The number of outputs the model supports. Only 1 for now"""
 
-    znorm_space_bardist_: FullSupportBarDistribution
-    """The bar distribution of the target variable, used by the model.
-    This is the bar distribution in the normalized target space.
-    """
+    bardist_: FullSupportBarDistribution
+    """The bar distribution of the target variable, used by the model."""
 
-    raw_space_bardist_: FullSupportBarDistribution
-    """The bar distribution in the raw target space, used for computing the
-    predictions."""
+    renormalized_criterion_: FullSupportBarDistribution
+    """The normalized bar distribution used for computing the predictions."""
 
     use_autocast_: bool
     """Whether torch's autocast should be used."""
@@ -202,8 +150,26 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
     executor_: InferenceEngine
     """The inference engine used to make predictions."""
 
-    ordinal_encoder_: ColumnTransformer
-    """The column transformer used to preprocess categorical data to be numeric."""
+    y_train_mean_: float
+    """The mean of the target variable during training."""
+
+    y_train_std: float
+    """The standard deviation of the target variable during training."""
+
+    preprocessor_: ColumnTransformer
+    """The column transformer used to preprocess the input data to be numeric."""
+
+    # TODO: consider moving the following to constants.py
+    _OUTPUT_TYPES_BASIC = ("mean", "median", "mode")
+    """The basic output types supported by the model."""
+    _OUTPUT_TYPES_QUANTILES = ("quantiles",)
+    """The quantiles output type supported by the model."""
+    _OUTPUT_TYPES = _OUTPUT_TYPES_BASIC + _OUTPUT_TYPES_QUANTILES
+    """The output types supported by the model for the "main" output type."""
+    _OUTPUT_TYPES_COMPOSITE = ("full", "main")
+    """The composite output types supported by the model."""
+    _USABLE_OUTPUT_TYPES = _OUTPUT_TYPES + _OUTPUT_TYPES_COMPOSITE
+    """The output types supported by the model."""
 
     def __init__(  # noqa: PLR0913
         self,
@@ -212,34 +178,21 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         categorical_features_indices: Sequence[int] | None = None,
         softmax_temperature: float = 0.9,
         average_before_softmax: bool = False,
-        model_path: str
-        | Path
-        | list[str]
-        | list[Path]
-        | Literal["auto"]
-        | RegressorModelSpecs
-        | list[RegressorModelSpecs] = "auto",
-        device: DevicesSpecification = "auto",
+        model_path: str | Path | Literal["auto"] = "auto",
+        device: str | torch.device | Literal["auto"] = "auto",
         ignore_pretraining_limits: bool = False,
         inference_precision: _dtype | Literal["autocast", "auto"] = "auto",
         fit_mode: Literal[
             "low_memory",
             "fit_preprocessors",
             "fit_with_cache",
-            "batched",
         ] = "fit_preprocessors",
-        memory_saving_mode: MemorySavingMode = "auto",
+        memory_saving_mode: bool | Literal["auto"] | float | int = "auto",
         random_state: int | np.random.RandomState | np.random.Generator | None = 0,
-        n_jobs: Annotated[int | None, deprecated("Use n_preprocessing_jobs")] = None,
-        n_preprocessing_jobs: int = 1,
-        inference_config: dict | InferenceConfig | None = None,
-        differentiable_input: bool = False,
+        n_jobs: int = -1,
+        inference_config: dict | ModelInterfaceConfig | None = None,
     ) -> None:
-        """Construct a TabPFN regressor.
-
-        This constructs a regressor using the latest model and settings. If you would
-        like to use a previous model version, use `create_default_for_version()`
-        instead. You can also use `model_path` to specify a particular model.
+        """A TabPFN interface for regression.
 
         Args:
             n_estimators:
@@ -288,12 +241,7 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                   with the use of an environment variable `TABPFN_MODEL_CACHE_DIR`.
                 - If a path or a string of a path, the model will be loaded from
                   the user-specified location if available, otherwise it will be
-                  downloaded to this location. Details on available checkpoints are
-                  available in the repository README.
-
-            device:
-                The device(s) to use for inference.
-                See the documentation of `.to()`.
+                  downloaded to this location.
 
             ignore_pretraining_limits:
                 Whether to ignore the pre-training limits of the model. The TabPFN
@@ -310,12 +258,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
 
                 !!! note
 
-                    For version 2.5, the pre-training limits are:
+                    The current pre-training limits are:
 
-                    - 50_000 samples/rows
-                    - 2_000 features/columns (Note that for more than 500 features we
-                        subsample 500 features per estimator. It is therefore important
-                        to use a sufficiently large number of `n_estimators`.)
+                    - 10_000 samples/rows
+                    - 500 features/columns
 
             device:
                 The device to use for inference with TabPFN. If `"auto"`, the device is
@@ -361,31 +307,32 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                   faster inference on the same data at a large cost of memory.
                   Ideal with very high GPU memory and multiple calls to `.predict()`
                   with the same training data.
-                - If `"batched"`, the already pre-processed data is iterated over in
-                  batches. This can only be done after the data has been preprocessed
-                  with the get_preprocessed_datasets function. This is primarily used
-                  only for inference with the InferenceEngineBatchedNoPreprocessing
-                  class in Fine-Tuning. The fit_from_preprocessed() function sets this
-                  attribute internally.
 
             memory_saving_mode:
-                Enable GPU/CPU memory saving mode. This can both avoid out-of-memory
-                errors and improve fit+predict speed by reducing memory pressure.
+                Enable GPU/CPU memory saving mode. This can help to prevent
+                out-of-memory errors that result from computations that would consume
+                more memory than available on the current device. We save memory by
+                automatically batching certain model computations within TabPFN to
+                reduce the total required memory. The options are:
 
-                It saves memory by automatically batching certain model computations
-                within TabPFN.
-
-                - If "auto": memory saving mode is enabled/disabled automatically based
-                    on a heuristic
-                - If True/False: memory saving mode is forced enabled/disabled.
-
-                If speed is important to your application, you may wish to manually tune
-                this option by comparing the time taken for fit+predict with it set to
-                False and True.
+                - If `bool`, enable/disable memory saving mode.
+                - If `"auto"`, we will estimate the amount of memory required for the
+                  forward pass and apply memory saving if it is more than the
+                  available GPU/CPU memory. This is the recommended setting as it
+                  allows for speed-ups and prevents memory errors depending on
+                  the input data.
+                - If `float` or `int`, we treat this value as the maximum amount of
+                  available GPU/CPU memory (in GB). We will estimate the amount
+                  of memory required for the forward pass and apply memory saving
+                  if it is more than this value. Passing a float or int value for
+                  this parameter is the same as setting it to True and explicitly
+                  specifying the maximum free available memory
 
                 !!! warning
                     This does not batch the original input data. We still recommend to
-                    batch the test set as necessary if you run out of memory.
+                    batch this as necessary if you run into memory errors! For example,
+                    if the entire input data does not fit into memory, even the memory
+                    save mode will not prevent memory errors.
 
             random_state:
                 Controls the randomness of the model. Pass an int for reproducible
@@ -406,34 +353,22 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                     passing `USE_SKLEARN_16_DECIMAL_PRECISION=True` as kwarg.
 
             n_jobs:
-                Deprecated, use `n_preprocessing_jobs` instead.
-                This parameter never had any effect.
+                The number of workers for tasks that can be parallelized across CPU
+                cores. Currently, this is used for preprocessing the data in parallel
+                (if `n_estimators > 1`).
 
-            n_preprocessing_jobs:
-                The number of worker processes to use for the preprocessing.
-
-                If `1`, the preprocessing will be performed in the current process,
-                parallelised across multiple CPU cores. If `>1` and `n_estimators > 1`,
-                then different estimators will be dispatched to different processes.
-
-                We strongly recommend setting this to 1, which has the lowest overhead
-                and can often fully utilise the CPU. Values >1 can help if you have lots
-                of CPU cores available, but can also be slower.
+                - If `-1`, all available CPU cores are used.
+                - If `int`, the number of CPU cores to use is determined by `n_jobs`.
 
             inference_config:
                 For advanced users, additional advanced arguments that adjust the
                 behavior of the model interface.
-                See [tabpfn.inference_config.InferenceConfig][] for details and options.
+                See [tabpfn.constants.ModelInterfaceConfig][] for details and options.
 
-                - If `None`, the default InferenceConfig is used.
+                - If `None`, the default ModelInterfaceConfig is used.
                 - If `dict`, the key-value pairs are used to update the default
-                  `InferenceConfig`. Raises an error if an unknown key is passed.
-                - If `InferenceConfig`, the object is used as the configuration.
-
-            differentiable_input:
-                If true, preprocessing attempts to be end-to-end differentiable.
-                Less relevant for standard regression fine-tuning compared to
-                prompt-tuning.
+                  `ModelInterfaceConfig`. Raises an error if an unknown key is passed.
+                - If `ModelInterfaceConfig`, the object is used as the configuration.
         """
         super().__init__()
         self.n_estimators = n_estimators
@@ -446,131 +381,15 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         self.inference_precision: torch.dtype | Literal["autocast", "auto"] = (
             inference_precision
         )
-        self.fit_mode: Literal[
-            "low_memory",
-            "fit_preprocessors",
-            "fit_with_cache",
-            "batched",
-        ] = fit_mode
-        self.memory_saving_mode: MemorySavingMode = memory_saving_mode
+        self.fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"] = (
+            fit_mode
+        )
+        self.memory_saving_mode: bool | Literal["auto"] | float | int = (
+            memory_saving_mode
+        )
         self.random_state = random_state
-        self.inference_config = inference_config
-        self.differentiable_input = differentiable_input
-
-        if n_jobs is not None:
-            warnings.warn(
-                "TabPFNRegressor(n_jobs=...) is deprecated and has no effect. "
-                "Use `n_preprocessing_jobs` instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         self.n_jobs = n_jobs
-        self.n_preprocessing_jobs = n_preprocessing_jobs
-        initialize_telemetry()
-
-        # Only anonymously record `fit_mode` usage
-        log_model_init_params(self, {"fit_mode": self.fit_mode})
-
-    @classmethod
-    def create_default_for_version(cls, version: ModelVersion, **overrides) -> Self:
-        """Construct a regressor that uses the given version of the model.
-
-        In addition to selecting the model, this also configures certain settings to the
-        default values associated with this model version.
-
-        Any kwargs will override the default settings.
-        """
-        if version == ModelVersion.V2:
-            options = {
-                "model_path": prepend_cache_path(
-                    ModelSource.get_regressor_v2().default_filename
-                ),
-                "n_estimators": 8,
-                "softmax_temperature": 0.9,
-            }
-        elif version == ModelVersion.V2_5:
-            options = {
-                "model_path": prepend_cache_path(
-                    ModelSource.get_regressor_v2_5().default_filename
-                ),
-                "n_estimators": 8,
-                "softmax_temperature": 0.9,
-            }
-        else:
-            raise ValueError(f"Unknown version: {version}")
-
-        options.update(overrides)
-
-        return cls(**options)
-
-    @property
-    def estimator_type(self) -> Literal["regressor"]:
-        """The type of the model."""
-        return "regressor"
-
-    @property
-    def model_(self) -> Architecture:
-        """The model used for inference.
-
-        This is set after the model is loaded and initialized.
-        """
-        if not hasattr(self, "models_"):
-            raise ValueError(
-                "The model has not been initialized yet. Please initialize the model "
-                "before using the `model_` property."
-            )
-        if len(self.models_) > 1:
-            raise ValueError(
-                "The `model_` property is not supported when multiple models are used. "
-                "Use `models_` instead."
-            )
-        return self.models_[0]
-
-    @property
-    def norm_bardist_(self) -> FullSupportBarDistribution:
-        """WARNING: DEPRECATED. Please use `raw_space_bardist_` instead.
-        This attribute will be removed in a future version.
-        """
-        warnings.warn(
-            "`norm_bardist_` is deprecated and will be removed in a future version. "
-            "Please use `raw_space_bardist_` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.raw_space_bardist_
-
-    @norm_bardist_.setter
-    def norm_bardist_(self, value: FullSupportBarDistribution) -> None:
-        warnings.warn(
-            "`norm_bardist_` is deprecated and will be removed in a future version. "
-            "Please use `raw_space_bardist_` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.raw_space_bardist_ = value
-
-    @property
-    def bardist_(self) -> FullSupportBarDistribution:
-        """WARNING: DEPRECATED. Please use `znorm_space_bardist_` instead.
-        This attribute will be removed in a future version.
-        """
-        warnings.warn(
-            "`bardist_` is deprecated and will be removed in a future version. "
-            "Please use `znorm_space_bardist_` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.znorm_space_bardist_
-
-    @bardist_.setter
-    def bardist_(self, value: FullSupportBarDistribution) -> None:
-        warnings.warn(
-            "`bardist_` is deprecated and will be removed in a future version. "
-            "Please use `znorm_space_bardist_` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.znorm_space_bardist_ = value
+        self.inference_config = inference_config
 
     # TODO: We can remove this from scikit-learn lower bound of 1.6
     def _more_tags(self) -> dict[str, Any]:
@@ -581,163 +400,10 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
     def __sklearn_tags__(self) -> Tags:
         tags = super().__sklearn_tags__()
         tags.input_tags.allow_nan = True
-        tags.estimator_type = self.estimator_type
+        tags.estimator_type = "regressor"
         return tags
 
-    def _initialize_model_variables(self) -> int:
-        """Initializes the model and configurations.
-
-        Returns:
-            The determined byte_size.
-        """
-        return initialize_model_variables_helper(self, self.estimator_type)
-
-    def _initialize_dataset_preprocessing(
-        self,
-        X: XType,
-        y: YType,
-        random_state: int | np.random.Generator,
-    ) -> tuple[
-        list[RegressorEnsembleConfig],
-        np.ndarray,
-        np.ndarray,
-        FullSupportBarDistribution,
-    ]:
-        """Prepare ensemble configs and validate X, y for one dataset/chunk.
-
-        Handle the preprocessing of the input (X and y). We also return the
-        BarDistribution here, since it is vital for computing the standardized
-        target variable in the DatasetCollectionWithPreprocessing class.
-        """
-        X, y, feature_names, n_features, _ = ensure_compatible_fit_inputs(
-            X,
-            y,
-            estimator=self,
-            max_num_samples=self.inference_config_.MAX_NUMBER_OF_SAMPLES,
-            max_num_features=self.inference_config_.MAX_NUMBER_OF_FEATURES,
-            ignore_pretraining_limits=self.ignore_pretraining_limits,
-            ensure_y_numeric=True,
-            devices=self.devices_,
-        )
-        # Set class variables for sklearn compatibility
-        self.feature_names_in_ = feature_names
-        self.n_features_in_ = n_features
-        self.n_train_samples_ = len(X)
-
-        feature_schema = detect_feature_modalities(
-            X=X,
-            feature_names=feature_names,
-            provided_categorical_indices=self.categorical_features_indices,
-            min_samples_for_inference=self.inference_config_.MIN_NUMBER_SAMPLES_FOR_CATEGORICAL_INFERENCE,
-            max_unique_for_category=self.inference_config_.MAX_UNIQUE_FOR_CATEGORICAL_FEATURES,
-            min_unique_for_numerical=self.inference_config_.MIN_UNIQUE_FOR_NUMERICAL_FEATURES,
-        )
-        X, ordinal_encoder, feature_schema = clean_data(
-            X=X, feature_schema=feature_schema
-        )
-        self.inferred_feature_schema_ = feature_schema
-        self.ordinal_encoder_ = ordinal_encoder
-
-        # TODO: Introduce regressor target transformer that also keeps track of
-        # target name
-        possible_target_transforms = get_all_reshape_feature_distribution_preprocessors(
-            num_examples=y.shape[0],  # Use length of validated y
-            random_state=random_state,  # Use the provided rng
-        )
-        target_preprocessors: list[TransformerMixin | Pipeline | None] = []
-        for (
-            y_target_preprocessor
-        ) in self.inference_config_.REGRESSION_Y_PREPROCESS_TRANSFORMS:
-            if y_target_preprocessor is not None:
-                preprocessor = possible_target_transforms[y_target_preprocessor]
-            else:
-                preprocessor = None
-            target_preprocessors.append(preprocessor)
-
-        ensemble_configs = generate_regression_ensemble_configs(
-            num_estimators=self.n_estimators,
-            subsample_samples=self.inference_config_.SUBSAMPLE_SAMPLES,
-            add_fingerprint_feature=self.inference_config_.FINGERPRINT_FEATURE,
-            feature_shift_decoder=self.inference_config_.FEATURE_SHIFT_METHOD,
-            polynomial_features=self.inference_config_.POLYNOMIAL_FEATURES,
-            max_index=len(X),
-            preprocessor_configs=self.inference_config_.PREPROCESS_TRANSFORMS,
-            target_transforms=target_preprocessors,
-            random_state=random_state,
-            num_models=len(self.models_),
-            outlier_removal_std=self.inference_config_.get_resolved_outlier_removal_std(
-                estimator_type=self.estimator_type
-            ),
-        )
-
-        self.znorm_space_bardist_ = self.znorm_space_bardist_.to(self.devices_[0])
-
-        assert len(ensemble_configs) == self.n_estimators
-
-        return ensemble_configs, X, y, self.znorm_space_bardist_
-
-    @track_model_call("fit", param_names=["X_preprocessed", "y_preprocessed"])
-    def fit_from_preprocessed(
-        self,
-        X_preprocessed: list[torch.Tensor],
-        y_preprocessed: list[torch.Tensor],  # These y are standardized
-        cat_ix: list[list[list[int]]],
-        configs: list[list[EnsembleConfig]],  # Should be RegressorEnsembleConfig
-        *,
-        no_refit: bool = True,
-    ) -> TabPFNRegressor:
-        """Used in Fine-Tuning. Fit the model to preprocessed inputs from torch
-        dataloader inside a training loop a Dataset provided by
-        get_preprocessed_datasets. This function always uses the "batched" fit_mode.
-
-        Args:
-            X_preprocessed: The input features obtained from the preprocessed Dataset
-                The list contains one item for each ensemble predictor.
-                use tabpfn.utils.collate_for_tabpfn_dataset to use this function with
-                batch sizes of more than one dataset (see examples/tabpfn_finetune.py)
-            y_preprocessed: The target variable obtained from the preprocessed Dataset
-            cat_ix: categorical indices obtained from the preprocessed Dataset
-            configs: Ensemble configurations obtained from the preprocessed Dataset
-            no_refit: if True, the classifier will not be reinitialized when calling
-                fit multiple times.
-        """
-        if self.fit_mode != "batched":
-            logging.warning(
-                "The model was not in 'batched' mode. "
-                "Automatically switching to 'batched' mode for finetuning."
-            )
-            self.fit_mode = "batched"
-
-        # If there is a model, and we are lazy, we skip reinitialization
-        if not hasattr(self, "models_") or not no_refit:
-            byte_size = self._initialize_model_variables()
-        else:
-            _, _, byte_size = determine_precision(
-                self.inference_precision, self.devices_
-            )
-
-        feature_schema = convert_batch_of_cat_ix_to_schema(
-            batch_of_cat_indices=cat_ix,
-            num_features=X_preprocessed[0].shape[1],
-        )
-
-        self.executor_ = InferenceEngineBatchedNoPreprocessing(
-            X_trains=X_preprocessed,
-            y_trains=y_preprocessed,
-            feature_schema=feature_schema,
-            ensemble_configs=configs,
-            models=self.models_,
-            devices=self.devices_,
-            dtype_byte_size=byte_size,
-            force_inference_dtype=self.forced_inference_dtype_,
-            save_peak_mem=self.memory_saving_mode,
-            inference_mode=True,
-        )
-
-        return self
-
     @config_context(transform_output="default")  # type: ignore
-    @track_model_call(model_method="fit", param_names=["X", "y"])
     def fit(self, X: XType, y: YType) -> Self:
         """Fit the model.
 
@@ -748,81 +414,135 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         Returns:
             self
         """
-        if self.differentiable_input:
-            raise ValueError(
-                "Differentiable input is not supported for regressors yet."
-            )
+        static_seed, rng = infer_random_state(self.random_state)
 
-        if self.fit_mode == "batched":
-            logging.warning(
-                "The model was in 'batched' mode, likely after finetuning. "
-                "Automatically switching to 'fit_preprocessors' mode for standard "
-                "prediction. The model will be re-initialized."
-            )
-            self.fit_mode = "fit_preprocessors"
-
-        static_seed, _ = infer_random_state(self.random_state)
-        byte_size = self._initialize_model_variables()
-        ensemble_configs, X, y, znorm_space_bardist = (
-            self._initialize_dataset_preprocessing(X=X, y=y, random_state=static_seed)
+        # Load the model and config
+        self.model_, self.config_, self.bardist_ = initialize_tabpfn_model(
+            model_path=self.model_path,
+            which="regressor",
+            fit_mode=self.fit_mode,
+            static_seed=static_seed,
         )
-        self.znorm_space_bardist_ = znorm_space_bardist
-        self.ensemble_configs_ = ensemble_configs
 
+        # Determine device and precision
+        self.device_ = infer_device_and_type(self.device)
+        (self.use_autocast_, self.forced_inference_dtype_, byte_size) = (
+            determine_precision(self.inference_precision, self.device_)
+        )
+
+        # Build the interface_config
+        self.interface_config_ = ModelInterfaceConfig.from_user_input(
+            inference_config=self.inference_config,
+        )
+
+        outlier_removal_std = self.interface_config_.OUTLIER_REMOVAL_STD
+        if outlier_removal_std == "auto":
+            outlier_removal_std = (
+                self.interface_config_._REGRESSION_DEFAULT_OUTLIER_REMOVAL_STD
+            )
+        update_encoder_outlier_params(
+            model=self.model_,
+            remove_outliers_std=outlier_removal_std,
+            seed=static_seed,
+            inplace=True,
+        )
+
+        X, y, feature_names_in, n_features_in = validate_Xy_fit(
+            X,
+            y,
+            estimator=self,
+            ensure_y_numeric=False,
+            max_num_samples=self.interface_config_.MAX_NUMBER_OF_SAMPLES,
+            max_num_features=self.interface_config_.MAX_NUMBER_OF_FEATURES,
+            ignore_pretraining_limits=self.ignore_pretraining_limits,
+        )
+        assert isinstance(X, np.ndarray)
+        check_cpu_warning(
+            self.device, X, allow_cpu_override=self.ignore_pretraining_limits
+        )
+
+        if feature_names_in is not None:
+            self.feature_names_in_ = feature_names_in
+        self.n_features_in_ = n_features_in
+
+        # Will convert specified categorical indices to category dtype, as well
+        # as handle `np.object` arrays or otherwise `object` dtype pandas columns.
+        X = _fix_dtypes(X, cat_indices=self.categorical_features_indices)
+
+        # Ensure categories are ordinally encoded
+        ord_encoder = _get_ordinal_encoder()
+        X = _process_text_na_dataframe(X, ord_encoder=ord_encoder, fit_encoder=True)  # type: ignore
+        self.preprocessor_ = ord_encoder
+
+        self.inferred_categorical_indices_ = infer_categorical_features(
+            X=X,
+            provided=self.categorical_features_indices,
+            min_samples_for_inference=self.interface_config_.MIN_NUMBER_SAMPLES_FOR_CATEGORICAL_INFERENCE,
+            max_unique_for_category=self.interface_config_.MAX_UNIQUE_FOR_CATEGORICAL_FEATURES,
+            min_unique_for_numerical=self.interface_config_.MIN_UNIQUE_FOR_NUMERICAL_FEATURES,
+        )
+
+        possible_target_transforms = (
+            ReshapeFeatureDistributionsStep.get_all_preprocessors(
+                num_examples=y.shape[0],
+                random_state=static_seed,
+            )
+        )
+        target_preprocessors: list[TransformerMixin | Pipeline | None] = []
+        for (
+            y_target_preprocessor
+        ) in self.interface_config_.REGRESSION_Y_PREPROCESS_TRANSFORMS:
+            if y_target_preprocessor is not None:
+                preprocessor = possible_target_transforms[y_target_preprocessor]
+            else:
+                preprocessor = None
+
+            target_preprocessors.append(preprocessor)
+        preprocess_transforms = self.interface_config_.PREPROCESS_TRANSFORMS
+
+        ensemble_configs = EnsembleConfig.generate_for_regression(
+            n=self.n_estimators,
+            subsample_size=self.interface_config_.SUBSAMPLE_SAMPLES,
+            add_fingerprint_feature=self.interface_config_.FINGERPRINT_FEATURE,
+            feature_shift_decoder=self.interface_config_.FEATURE_SHIFT_METHOD,
+            polynomial_features=self.interface_config_.POLYNOMIAL_FEATURES,
+            max_index=len(X),
+            preprocessor_configs=typing.cast(
+                Sequence[PreprocessorConfig],
+                preprocess_transforms
+                if preprocess_transforms is not None
+                else default_regressor_preprocessor_configs(),
+            ),
+            target_transforms=target_preprocessors,
+            random_state=rng,
+        )
         assert len(ensemble_configs) == self.n_estimators
 
-        self.is_constant_target_ = np.unique(y).size == 1
-        self.constant_value_ = y[0] if self.is_constant_target_ else None
-
-        if self.is_constant_target_:
-            # Use relative epsilon, s.t. it works for small and large constant values
-            border_adjustment = max(
-                abs(self.constant_value_ * REGRESSION_CONSTANT_TARGET_BORDER_EPSILON),
-                REGRESSION_CONSTANT_TARGET_BORDER_EPSILON,
-            )
-
-            self.znorm_space_bardist_ = FullSupportBarDistribution(
-                borders=torch.tensor(
-                    [
-                        self.constant_value_ - border_adjustment,
-                        self.constant_value_ + border_adjustment,
-                    ]
-                )
-            )
-            # No need to create an inference engine for a constant prediction
-            return self
-
-        mean, std = np.mean(y), np.std(y)
-        # TODO: y_train_std_ and y_train_mean_ don't seem to be used anywhere else.
+        # Standardize y
+        mean = np.mean(y)
+        std = np.std(y)
         self.y_train_std_ = std.item() + 1e-20
         self.y_train_mean_ = mean.item()
         y = (y - self.y_train_mean_) / self.y_train_std_
-        self.raw_space_bardist_ = FullSupportBarDistribution(
-            self.znorm_space_bardist_.borders * self.y_train_std_ + self.y_train_mean_,
+        self.renormalized_criterion_ = FullSupportBarDistribution(
+            self.bardist_.borders * self.y_train_std_ + self.y_train_mean_,
         ).float()
 
-        ensemble_preprocessor = TabPFNEnsemblePreprocessor(
-            configs=ensemble_configs,
-            # Note: we use the static_seed so we're independent of the random generation
-            # inside the initialize function above
-            random_state=static_seed,
-            n_preprocessing_jobs=self.n_preprocessing_jobs,
-            keep_fitted_cache=(self.fit_mode == "fit_with_cache"),
-        )
-
+        # Create the inference engine
         self.executor_ = create_inference_engine(
-            fit_mode=self.fit_mode,
             X_train=X,
             y_train=y,
-            feature_schema=self.inferred_feature_schema_,
-            ensemble_preprocessor=ensemble_preprocessor,
-            models=self.models_,
-            devices_=self.devices_,
+            model=self.model_,
+            ensemble_configs=ensemble_configs,
+            cat_ix=self.inferred_categorical_indices_,
+            fit_mode=self.fit_mode,
+            device_=self.device_,
+            rng=rng,
+            n_jobs=self.n_jobs,
             byte_size=byte_size,
             forced_inference_dtype_=self.forced_inference_dtype_,
             memory_saving_mode=self.memory_saving_mode,
             use_autocast_=self.use_autocast_,
-            # TODO: Standard fit usually uses inference_mode=True, before it was enabled
         )
 
         return self
@@ -863,18 +583,24 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         quantiles: list[float] | None = None,
     ) -> FullOutputDict: ...
 
+    # FIXME: improve to not have noqa C901, PLR0912
     @config_context(transform_output="default")  # type: ignore
-    @track_model_call(model_method="predict", param_names=["X"])
-    def predict(
+    def predict(  # noqa: C901, PLR0912
         self,
         X: XType,
         *,
         # TODO: support "ei", "pi"
-        output_type: OutputType = "mean",
+        output_type: Literal[
+            "mean",
+            "median",
+            "mode",
+            "quantiles",
+            "full",
+            "main",
+        ] = "mean",
         quantiles: list[float] | None = None,
-    ) -> RegressionResultType:
-        """Runs the forward() method and then transform the logits
-        from the binning space in order to predict target variable.
+    ) -> np.ndarray | list[np.ndarray] | MainOutputDict | FullOutputDict:
+        """Predict the target variable.
 
         Args:
             X: The input data.
@@ -885,7 +611,7 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                 - If `"median"`, we return the median over the predicted distribution.
                 - If `"mode"`, we return the mode over the predicted distribution.
                 - If `"quantiles"`, we return the quantiles of the predicted
-                    distribution. The parameter `quantiles` determines which
+                    distribution. The parameter `output_quantiles` determines which
                     quantiles are returned.
                 - If `"main"`, we return the all output types above in a dict.
                 - If `"full"`, we return the full output of the model, including the
@@ -899,58 +625,78 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                 the input order.
 
         Returns:
-            The prediction, which can be a numpy array, a list of arrays (for
-            quantiles), or a dictionary with detailed outputs.
+            The predicted target variable or a list of predictions per quantile.
         """
         check_is_fitted(self)
 
-        # TODO: Move these at some point to InferenceEngine
-        X = ensure_compatible_predict_input_sklearn(X, self)
-
-        check_is_fitted(self)
+        X = validate_X_predict(X, self)
+        X = _fix_dtypes(X, cat_indices=self.categorical_features_indices)
+        X = _process_text_na_dataframe(X, ord_encoder=self.preprocessor_)  # type: ignore
 
         if quantiles is None:
             quantiles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-        elif not all((0 <= q <= 1) and isinstance(q, float) for q in quantiles):
-            raise TabPFNValidationError(
-                "All quantiles must be between 0 and 1 and floats."
-            )
-        if output_type not in _USABLE_OUTPUT_TYPES:
-            raise TabPFNValidationError(f"Invalid output type: {output_type}")
+        else:
+            assert all(
+                (0 <= q <= 1) and (isinstance(q, float)) for q in quantiles
+            ), "All quantiles must be between 0 and 1 and floats."
+        if output_type not in self._USABLE_OUTPUT_TYPES:
+            raise ValueError(f"Invalid output type: {output_type}")
 
-        if hasattr(self, "is_constant_target_") and self.is_constant_target_:
-            return self._handle_constant_target(X.shape[0], output_type, quantiles)
+        std_borders = self.bardist_.borders.cpu().numpy()
+        outputs: list[torch.Tensor] = []
+        borders: list[np.ndarray] = []
 
-        cat_indices = self.inferred_feature_schema_.indices_for(
-            FeatureModality.CATEGORICAL
-        )
-        X = fix_dtypes(X, cat_indices=cat_indices)
-        X = process_text_na_dataframe(
-            X, ord_encoder=getattr(self, "ordinal_encoder_", None)
-        )
-
-        # Runs over iteration engine
-        with handle_oom_errors(
-            self.devices_,
+        for output, config in self.executor_.iter_outputs(
             X,
-            model_type="regressor",
-            n_train_samples=getattr(self, "n_train_samples_", None),
-            n_features=getattr(self, "n_features_in_", None),
+            device=self.device_,
+            autocast=self.use_autocast_,
         ):
-            (
-                _,
-                # list of tensors [N_est, N_samples, N_borders] (after forward)
-                outputs,
-                # list of numpy arrays containing borders for each estimator
-                borders,
-            ) = self.forward(X, use_inference_mode=True)
+            assert isinstance(config, RegressorEnsembleConfig)
 
-        # --- Translate probs, average, get final logits ---
+            if self.softmax_temperature != 1:
+                output = output.float() / self.softmax_temperature  # noqa: PLW2901
+
+            borders_t: np.ndarray
+            logit_cancel_mask: np.ndarray | None
+            descending_borders: bool
+
+            # TODO(eddiebergman): Maybe this could be parallelized or done in fit
+            # but I somehow doubt it takes much time to be worth it.
+            # One reason to make it worth it is if you want fast predictions, i.e.
+            # don't re-do this each time.
+            # However it gets a bit more difficult as you need to line up the
+            # outputs from `iter_outputs` above (which may be in arbitrary order),
+            # along with the specific config the output belongs to. This is because
+            # the transformation done to the borders for a given output is dependant
+            # upon the target_transform of the config.
+            if config.target_transform is None:
+                borders_t = std_borders.copy()
+                logit_cancel_mask = None
+                descending_borders = False
+            else:
+                logit_cancel_mask, descending_borders, borders_t = (
+                    _transform_borders_one(
+                        std_borders,
+                        target_transform=config.target_transform,
+                        repair_nan_borders_after_transform=self.interface_config_.FIX_NAN_BORDERS_AFTER_TARGET_TRANSFORM,
+                    )
+                )
+                if descending_borders:
+                    borders_t = borders_t.flip(-1)  # type: ignore
+
+            borders.append(borders_t)
+
+            if logit_cancel_mask is not None:
+                output = output.clone()  # noqa: PLW2901
+                output[..., logit_cancel_mask] = float("-inf")
+
+            outputs.append(output)  # type: ignore
+
         transformed_logits = [
             translate_probs_across_borders(
                 logits,
-                frm=torch.as_tensor(borders_t, device=logits.device),
-                to=self.znorm_space_bardist_.borders.to(logits.device),
+                frm=torch.as_tensor(borders_t, device=self.device_),
+                to=self.bardist_.borders.to(self.device_),
             )
             for logits, borders_t in zip(outputs, borders)
         ]
@@ -964,24 +710,23 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
         logits = logits.log()
         if logits.dtype == torch.float16:
             logits = logits.float()
+        logits = logits.cpu()
 
         # Determine and return intended output type
         logit_to_output = partial(
             _logits_to_output,
             logits=logits,
-            criterion=self.raw_space_bardist_,
+            criterion=self.renormalized_criterion_,
             quantiles=quantiles,
         )
         if output_type in ["full", "main"]:
             # Create a dictionary of outputs with proper typing via TypedDict
             # Get individual outputs with proper typing
-            mean_out = typing.cast("np.ndarray", logit_to_output(output_type="mean"))
-            median_out = typing.cast(
-                "np.ndarray", logit_to_output(output_type="median")
-            )
-            mode_out = typing.cast("np.ndarray", logit_to_output(output_type="mode"))
+            mean_out = typing.cast(np.ndarray, logit_to_output(output_type="mean"))
+            median_out = typing.cast(np.ndarray, logit_to_output(output_type="median"))
+            mode_out = typing.cast(np.ndarray, logit_to_output(output_type="mode"))
             quantiles_out = typing.cast(
-                "list[np.ndarray]",
+                list[np.ndarray],
                 logit_to_output(output_type="quantiles"),
             )
 
@@ -997,7 +742,7 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
                 # Return full output with criterion and logits
                 return FullOutputDict(
                     **main_outputs,
-                    criterion=self.raw_space_bardist_,
+                    criterion=self.renormalized_criterion_,
                     logits=logits,
                 )
 
@@ -1005,226 +750,20 @@ class TabPFNRegressor(RegressorMixin, BaseEstimator):
 
         return logit_to_output(output_type=output_type)
 
-    def forward(
-        self,
-        X: list[torch.Tensor] | XType,
-        *,
-        use_inference_mode: bool = False,
-    ) -> tuple[torch.Tensor | None, list[torch.Tensor], list[np.ndarray]]:
-        """Forward pass for TabPFNRegressor Inference Engine.
-        Used in fine-tuning and prediction. Called directly
-        in FineTuning training loop or by predict() function
-        with the use_inference_mode flag explicitly set to True.
-
-        Iterates over outputs of InferenceEngine.
-
-        Args:
-            X: list[torch.Tensor] in fine-tuning, XType in normal predictions.
-            use_inference_mode: Flag for inference mode., default at False since
-            it is called within predict. During FineTuning forward() is called
-            directly by user, so default should be False here.
-
-        Returns:
-            A tuple containing:
-                - Averaged logits over the ensemble (for fine-tuning).
-                - Raw outputs from each estimator in the ensemble.
-                - Borders used for each estimator.
-        """
-        # Scenario 1: Standard inference path
-        is_standard_inference = use_inference_mode and not isinstance(
-            self.executor_, InferenceEngineBatchedNoPreprocessing
-        )
-
-        # Scenario 2: Batched path, typically for fine-tuning with gradients
-        is_batched_for_grads = (
-            not use_inference_mode
-            and isinstance(self.executor_, InferenceEngineBatchedNoPreprocessing)
-            and isinstance(X, list)
-            and (not X or isinstance(X[0], torch.Tensor))
-        )
-
-        assert is_standard_inference or is_batched_for_grads, (
-            "Invalid forward pass: Bad combination of inference mode, input X, "
-            "or executor type. Ensure call is from standard predict or a "
-            "batched fine-tuning context."
-        )
-
-        # Specific check for float64 incompatibility if the batched engine is being
-        # used, now framed as an assertion that the problematic condition is NOT met.
-        assert not (
-            isinstance(self.executor_, InferenceEngineBatchedNoPreprocessing)
-            and self.forced_inference_dtype_ == torch.float64
-        ), (
-            "Batched engine error: float64 precision is not supported for the "
-            "fine-tuning workflow (requires float32 for backpropagation)."
-        )
-
-        # Ensure torch.inference_mode is OFF to allow gradients
-        if self.fit_mode in ["fit_preprocessors", "batched"]:
-            # only these two modes support this option
-            self.executor_.use_torch_inference_mode(use_inference=use_inference_mode)
-
-        check_is_fitted(self)
-
-        std_borders = self.znorm_space_bardist_.borders.cpu().numpy()
-        outputs: list[torch.Tensor] = []
-        borders: list[np.ndarray] = []
-
-        # Iterate over estimators
-        for output, config in self.executor_.iter_outputs(
-            X, autocast=self.use_autocast_
-        ):
-            output = output.float()  # noqa: PLW2901
-            if self.softmax_temperature != 1:
-                output = output / self.softmax_temperature  # noqa: PLW2901
-
-            # BSz.= 1 Scenario, the same as normal predict() function
-            # Handled by first if-statement
-            config_for_ensemble = config
-            if isinstance(config, list) and len(config) == 1:
-                single_config = config[0]
-                config_for_ensemble = single_config
-
-            if isinstance(config_for_ensemble, RegressorEnsembleConfig):
-                borders_t: np.ndarray
-                logit_cancel_mask: np.ndarray | None
-                descending_borders: bool
-
-                # TODO(eddiebergman): Maybe this could be parallelized or done in fit
-                # but I somehow doubt it takes much time to be worth it.
-                # One reason to make it worth it is if you want fast predictions, i.e.
-                # don't re-do this each time.
-                # However it gets a bit more difficult as you need to line up the
-                # outputs from `iter_outputs` above (which may be in arbitrary order),
-                # along with the specific config the output belongs to. This is because
-                # the transformation done to the borders for a given output is dependant
-                # upon the target_transform of the config.
-                if config_for_ensemble.target_transform is None:
-                    borders_t = std_borders.copy()
-                    logit_cancel_mask = None
-                    descending_borders = False
-                else:
-                    logit_cancel_mask, descending_borders, borders_t = (
-                        transform_borders_one(
-                            std_borders,
-                            target_transform=config_for_ensemble.target_transform,
-                            repair_nan_borders_after_transform=self.inference_config_.FIX_NAN_BORDERS_AFTER_TARGET_TRANSFORM,
-                        )
-                    )
-                    if descending_borders:
-                        borders_t = borders_t.flip(-1)  # type: ignore
-
-                borders.append(borders_t)
-
-                if logit_cancel_mask is not None:
-                    output = output.clone()  # noqa: PLW2901
-                    output[..., logit_cancel_mask] = float("-inf")
-
-            else:
-                raise ValueError(
-                    "Unexpected config format "
-                    "and Batch prediction is not supported yet!"
-                )
-
-            outputs.append(output)  # type: ignore
-
-        averaged_logits = None
-        all_logits = None
-        if outputs:
-            all_logits = torch.stack(outputs, dim=0)  # [N_est, N_sampls, N_bord]
-            averaged_logits_over_ensemble = torch.mean(all_logits, dim=0)
-            averaged_logits = averaged_logits_over_ensemble.transpose(0, 1)
-
-        return averaged_logits, outputs, borders
-
-    def _handle_constant_target(
-        self, n_samples: int, output_type: OutputType, quantiles: list[float]
-    ) -> RegressionResultType:
-        """Handles prediction when the training target `y` was a constant value."""
-        constant_prediction = np.full(n_samples, self.constant_value_)
-        if output_type in _OUTPUT_TYPES_BASIC:
-            return constant_prediction
-        if output_type == "quantiles":
-            return [np.copy(constant_prediction) for _ in quantiles]
-
-        # Handle "main" and "full"
-        main_outputs = MainOutputDict(
-            mean=constant_prediction,
-            median=np.copy(constant_prediction),
-            mode=np.copy(constant_prediction),
-            quantiles=[np.copy(constant_prediction) for _ in quantiles],
-        )
-        if output_type == "full":
-            return FullOutputDict(
-                **main_outputs,
-                criterion=self.znorm_space_bardist_,
-                logits=torch.zeros((n_samples, 1)),
-            )
-        return main_outputs
-
     def get_embeddings(
         self,
         X: XType,
         data_source: Literal["train", "test"] = "test",
     ) -> np.ndarray:
-        """Gets the embeddings for the input data `X`.
+        """Get the embeddings for the input data `X`.
 
-        Args:
-            X : XType
-                The input data.
-            data_source : {"train", "test"}, default="test"
-                Select the transformer output to return. Use ``"train"`` to obtain
-                embeddings from the training tokens and ``"test"`` for the test
-                tokens. When ``n_estimators > 1`` the returned array has shape
-                ``(n_estimators, n_samples, embedding_dim)``.
-
+        Parameters:
+            X (XType): The input data.
+            data_source str: Extract either the train or test embeddings
         Returns:
-            np.ndarray
-                The computed embeddings for each fitted estimator.
+            np.ndarray: The computed embeddings for each fitted estimator.
         """
-        return get_embeddings(self, X, data_source)
-
-    def save_fit_state(self, path: Path | str) -> None:
-        """Save a fitted regressor, light wrapper around save_fitted_tabpfn_model."""
-        save_fitted_tabpfn_model(self, path)
-
-    @classmethod
-    def load_from_fit_state(
-        cls, path: Path | str, *, device: str | torch.device = "cpu"
-    ) -> TabPFNRegressor:
-        """Restore a fitted regressor, light wrapper around load_fitted_tabpfn_model."""
-        est = load_fitted_tabpfn_model(path, device=device)
-        if not isinstance(est, cls):
-            raise TypeError(
-                f"Attempting to load a '{est.__class__.__name__}' as '{cls.__name__}'"
-            )
-        return est
-
-    def to(self, device: DevicesSpecification) -> None:
-        """Move the estimator to the given device(s).
-
-        If "auto": devices are selected based on availability in the
-        following order of priority: all available CUDA GPUs, "mps", "cpu".
-
-        To manually select a single device: specify a PyTorch device string e.g.
-        "cuda:1". See PyTorch's documentation for information about supported
-        devices.
-
-        To use several GPUs: specify a list of PyTorch GPU device strings, e.g.
-        ["cuda:0", "cuda:1"]. This can dramatically speed up inference for
-        larger datasets, by executing the estimators in parallel on the GPUs.
-        Multiple GPUs are only used when `fit_mode="fit_preprocessors"` or
-        `fit_mode="low_memory"`. In other cases, only the first GPU is used.
-
-        Note:
-            The specified device is only used once the model is initialized. This occurs
-            during the first .fit() call.
-        """
-        estimator_to_device(self, device)
-        if hasattr(self, "znorm_space_bardist_"):
-            self.znorm_space_bardist_.to(self.devices_[0])
-        if hasattr(self, "raw_space_bardist_"):
-            self.raw_space_bardist_.to(self.devices_[0])
+        return _get_embeddings(self, X, data_source)
 
 
 def _logits_to_output(
@@ -1234,13 +773,23 @@ def _logits_to_output(
     criterion: FullSupportBarDistribution,
     quantiles: list[float],
 ) -> np.ndarray | list[np.ndarray]:
-    """Converts raw model logits to the desired prediction format."""
+    """Convert the logits to the specified output type.
+
+    Args:
+        output_type: The output type to convert the logits to.
+        logits: The logits to convert.
+        criterion: The criterion to use for the conversion.
+        quantiles: The quantiles to use for the conversion.
+
+    Returns:
+        The converted logits or list of converted logits.
+    """
     if output_type == "quantiles":
         return [criterion.icdf(logits, q).cpu().detach().numpy() for q in quantiles]
 
     # TODO: support
-    #   "pi": criterion.pi(logits, np.max(self.y)),
-    #   "ei": criterion.ei(logits),
+    #   "pi": criterion.pi(logits, np.max(self.y)), # noqa: ERA001
+    #   "ei": criterion.ei(logits), # noqa: ERA001
     if output_type == "mean":
         output = criterion.mean(logits)
     elif output_type == "median":
@@ -1250,4 +799,4 @@ def _logits_to_output(
     else:
         raise ValueError(f"Invalid output type: {output_type}")
 
-    return output.cpu().detach().numpy()
+    return output.cpu().detach().numpy()  # type: ignore

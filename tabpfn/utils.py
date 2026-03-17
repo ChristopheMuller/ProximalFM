@@ -4,52 +4,85 @@
 
 from __future__ import annotations
 
-import contextlib
-import os
+import ctypes
+import typing
+import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, Union
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
+import pandas as pd
 import torch
-from sklearn.base import (
-    TransformerMixin,
-)
+from sklearn.base import check_is_fitted, is_classifier
+from sklearn.compose import ColumnTransformer, make_column_selector
+from sklearn.preprocessing import FunctionTransformer, OrdinalEncoder
+from sklearn.utils.multiclass import check_classification_targets
+from torch import nn
 
-from tabpfn.architectures.encoders import (
-    MulticlassClassificationTargetEncoderStep,
-    TorchPreprocessingPipeline,
-)
 from tabpfn.constants import (
+    DEFAULT_NUMPY_PREPROCESSING_DTYPE,
+    NA_PLACEHOLDER,
     REGRESSION_NAN_BORDER_LIMIT_LOWER,
     REGRESSION_NAN_BORDER_LIMIT_UPPER,
 )
-from tabpfn.preprocessing.datamodel import Feature, FeatureModality, FeatureSchema
+from tabpfn.misc._sklearn_compat import check_array, validate_data
 
 if TYPE_CHECKING:
     from sklearn.base import TransformerMixin
     from sklearn.pipeline import Pipeline
 
-    from tabpfn.architectures.interface import Architecture
+    from tabpfn.classifier import TabPFNClassifier, XType, YType
+    from tabpfn.regressor import TabPFNRegressor
 
 MAXINT_RANDOM_SEED = int(np.iinfo(np.int32).max)
 
 
-def get_autocast_context(
-    device: torch.device, *, enabled: bool
-) -> contextlib.AbstractContextManager:
-    """Returns a torch.autocast context manager, disabling it for MPS devices.
+def _get_embeddings(
+    model: TabPFNClassifier | TabPFNRegressor,
+    X: XType,
+    data_source: Literal["train", "test"] = "test",
+) -> np.ndarray:
+    """Get the embeddings for the input data `X`.
 
-    Args:
-        device: The torch device being used.
-        enabled: Whether to enable autocast.
-
+    Parameters:
+        model TabPFNClassifier | TabPFNRegressor: The fitted classifier or regressor.
+        X (XType): The input data.
+        data_source str: Extract either the train or test embeddings
     Returns:
-        A context manager for autocasting.
+        np.ndarray: The computed embeddings for each fitted estimator.
     """
-    if device.type == "mps":
-        return contextlib.nullcontext()
-    return torch.autocast(device.type, enabled=enabled)
+    check_is_fitted(model)
+
+    data_map = {"train": "train_embeddings", "test": "test_embeddings"}
+
+    selected_data = data_map[data_source]
+
+    # Avoid circular imports
+    from tabpfn.preprocessing import ClassifierEnsembleConfig, RegressorEnsembleConfig
+
+    X = validate_X_predict(X, model)
+    X = _fix_dtypes(X, cat_indices=model.categorical_features_indices)
+    X = model.preprocessor_.transform(X)
+
+    embeddings: list[np.ndarray] = []
+
+    # Cast executor to Any to bypass the iter_outputs signature check
+    executor = typing.cast(typing.Any, model.executor_)
+    for output, config in executor.iter_outputs(
+        X,
+        device=model.device_,
+        autocast=model.use_autocast_,
+        only_return_standard_out=False,
+    ):
+        # Cast output to Any to allow dict-like access
+        output_dict = typing.cast(dict[str, torch.Tensor], output)
+        embed = output_dict[selected_data].squeeze(1)
+        assert isinstance(config, (ClassifierEnsembleConfig, RegressorEnsembleConfig))
+        assert embed.ndim == 2
+        embeddings.append(embed.squeeze().cpu().numpy())
+
+    return np.array(embeddings)
 
 
 def _repair_borders(borders: np.ndarray, *, inplace: Literal[True]) -> None:
@@ -59,7 +92,7 @@ def _repair_borders(borders: np.ndarray, *, inplace: Literal[True]) -> None:
     #   the original space.
     #   Borders that were transformed to extreme values are all set to the same
     #   value, the maximum of the transformed borders. Thus probabilities predicted
-    #   in these buckets have no effects. The outermost border is set to the
+    #   in these buckets have no effects. The outhermost border is set to the
     #   maximum of the transformed borders times 2, so still allow for some weight
     #   in the long tailed distribution and avoid infinite loss.
     if inplace is not True:
@@ -108,94 +141,25 @@ def _cancel_nan_borders(
     return borders, logit_cancel_mask
 
 
-DevicesSpecification = Union[
-    torch.device, str, Sequence[Union[torch.device, str]], Literal["auto"]
-]
-
-
-def infer_devices(devices: DevicesSpecification) -> tuple[torch.device, ...]:
-    """Selects the appropriate PyTorch devices for inference.
-
-    If `device` is "auto" then the devices are selected as follows:
-    1. If CUDA is available and not excluded, returns all available "cuda" devices
-    2. Otherwise, if MPS is available and not excluded, returns the "mps" device
-    3. Otherwise, returns the "cpu" device
-
-    CUDA and MPS can be excluded from the "auto" selection by specifying the
-    TABPFN_EXCLUDE_DEVICES environment variable. This can be either "cuda", "mps", or
-    "cuda,mps". This is useful for excluding device classes in CI.
+def infer_device_and_type(device: str | torch.device | None) -> torch.device:
+    """Infer the device and data type from the given device string.
 
     Args:
-        devices: The device specification. One of:
-            - "auto": the device will be selected as described above
-            - a PyTorch device string like "cuda", "mps", or "cpu": this single device
-                will be selected by parsing the string to a torch.device
-            - a torch.device: this single device will be selected
-            - a list of PyTorch device strings or torch.device: each item will be
-                converted to a torch.device, and all of the devices selected
+        device: The device to infer the type from.
 
     Returns:
-        A tuple of at least one device.
+        The inferred device
     """
-    exclude_devices = {
-        d.strip()
-        for d in os.getenv("TABPFN_EXCLUDE_DEVICES", "").split(",")
-        if d.strip()
-    }
+    if (device is None) or (isinstance(device, str) and device == "auto"):
+        device_type_ = "cuda" if torch.cuda.is_available() else "cpu"
+        return torch.device(device_type_)
+    if isinstance(device, str):
+        return torch.device(device)
 
-    if devices == "auto":
-        if "cuda" not in exclude_devices and torch.cuda.is_available():
-            return tuple(
-                torch.device(f"cuda:{i}") for i in range(torch.cuda.device_count())
-            )
+    if isinstance(device, torch.device):
+        return device
 
-        if _is_mps_supported() and "mps" not in exclude_devices:
-            return (torch.device("mps"),)
-
-        return (torch.device("cpu"),)
-
-    if isinstance(devices, (str, torch.device)):
-        devices = (devices,)
-
-    devices = tuple(_parse_device(device) for device in devices)
-
-    if len(set(devices)) != len(devices):
-        raise ValueError(
-            "The list of devices for inference cannot contain the same device more "
-            f"than once. It contained: {devices}"
-        )
-
-    if not _is_mps_supported() and any(d.type == "mps" for d in devices):
-        raise ValueError(
-            "The MPS device was selected, "
-            "but this is not supported by TabPFN before PyTorch 2.5. "
-            'Set `device="cpu"` instead.'
-        )
-
-    return devices
-
-
-def _parse_device(device: str | torch.device) -> torch.device:
-    # This is safe because torch.device(torch.device(...)) is a noop.
-    # torch.device(device) returns a fairly informative error message if `device` is not
-    # a valid device, thus do no extra error reporting.
-    device = torch.device(device)
-
-    # In older versions of PyTorch, some torch.cuda functions fail if the device has no
-    # index. 0 is implicit if no index is specified, so add it.
-    if device == torch.device("cuda"):
-        device = torch.device("cuda:0")
-
-    return device
-
-
-def _is_mps_supported() -> bool:
-    """Return True if the MPS device is supported, otherwise False.
-
-    We have found that using MPS can lead to poor accuracy on PyTorch <2.5. See
-    https://github.com/PriorLabs/TabPFN/pull/619
-    """
-    return torch.__version__ >= "2.5" and torch.backends.mps.is_available()
+    raise ValueError(f"Invalid device: {device}")
 
 
 def is_autocast_available(device_type: str) -> bool:
@@ -231,13 +195,11 @@ def is_autocast_available(device_type: str) -> bool:
         )
 
 
-def infer_fp16_inference_mode(
-    devices: Sequence[torch.device], *, enable: bool | None
-) -> bool:
+def infer_fp16_inference_mode(device: torch.device, *, enable: bool | None) -> bool:
     """Infer whether fp16 inference should be enabled.
 
     Args:
-        devices: The devices to validate against.
+        device: The device to validate against.
         enable:
             Whether it should be enabled, `True` or `False`, otherwise if `None`,
             detect if it's possible and use it if so.
@@ -246,13 +208,12 @@ def infer_fp16_inference_mode(
         Whether to use fp16 inference or not.
 
     Raises:
-        ValueError: If fp16 inference was enabled and any of the selected devices do
-            not support it.
+        ValueError: If fp16 inference was enabled and device type does not support it.
     """
-    is_cpu = any(device.type.lower() == "cpu" for device in devices)
+    is_cpu = device.type.lower() == "cpu"
     fp16_available = (
         not is_cpu  # CPU can show enabled, yet it kills inference speed
-        and any(is_autocast_available(device.type) for device in devices)
+        and is_autocast_available(device.type)
     )
 
     if enable is None:
@@ -263,7 +224,7 @@ def infer_fp16_inference_mode(
             raise ValueError(
                 "You specified `fp16_inference=True`, however"
                 "`torch.amp.autocast_mode.is_autocast_available()`"
-                f" reported that one or more of the selected devices ({devices=})"
+                f" reported that your used device ({device=})"
                 " does not support it."
                 "\nPlease ensure your version of torch and device type"
                 " are compatible with torch.autocast()`"
@@ -275,6 +236,256 @@ def infer_fp16_inference_mode(
         return False
 
     raise ValueError(f"Unrecognized argument '{enable}'")
+
+
+# https://numpy.org/doc/2.1/reference/arrays.dtypes.html#checking-the-data-type
+NUMERIC_DTYPE_KINDS = "?bBiufm"
+OBJECT_DTYPE_KINDS = "OV"
+STRING_DTYPE_KINDS = "SaU"
+UNSUPPORTED_DTYPE_KINDS = "cM"  # Not needed, just for completeness
+
+
+def _fix_dtypes(
+    X: pd.DataFrame | np.ndarray,
+    cat_indices: Sequence[int | str] | None,
+    numeric_dtype: Literal["float32", "float64"] = "float64",
+) -> pd.DataFrame:
+    if isinstance(X, pd.DataFrame):
+        # This will help us get better dtype inference later
+        convert_dtype = True
+    elif isinstance(X, np.ndarray):
+        if X.dtype.kind in NUMERIC_DTYPE_KINDS:
+            # It's a numeric type, just wrap the array in pandas with the correct dtype
+            X = pd.DataFrame(X, copy=False, dtype=numeric_dtype)
+            convert_dtype = False
+        elif X.dtype.kind in OBJECT_DTYPE_KINDS:
+            # If numpy and object dype, we rely on pandas to handle introspection
+            # of columns and rows to determine the dtypes.
+            X = pd.DataFrame(X, copy=True)
+            convert_dtype = True
+        elif X.dtype.kind in STRING_DTYPE_KINDS:
+            raise ValueError(
+                f"String dtypes are not supported. Got dtype: {X.dtype}",
+            )
+        else:
+            raise ValueError(f"Invalid dtype for X: {X.dtype}")
+    else:
+        raise ValueError(f"Invalid type for X: {type(X)}")
+
+    if cat_indices is not None:
+        # So annoyingly, things like AutoML Benchmark may sometimes provide
+        # numeric indices for categoricals, while providing named columns in the
+        # dataframe. Equally, dataframes loaded from something like a csv may just have
+        # integer column names, and so it makes sense to access them just like you would
+        # string columns.
+        # Hence, we check if the types match and decide whether to use `iloc` to select
+        # columns, or use the indices as column names...
+        is_numeric_indices = all(isinstance(i, (int, np.integer)) for i in cat_indices)
+        columns_are_numeric = all(
+            isinstance(col, (int, np.integer)) for col in X.columns.tolist()
+        )
+        use_iloc = is_numeric_indices and not columns_are_numeric
+        if use_iloc:
+            X.iloc[:, cat_indices] = X.iloc[:, cat_indices].astype("category")
+        else:
+            X[cat_indices] = X[cat_indices].astype("category")
+
+    # Alright, pandas can have a few things go wrong.
+    #
+    # 1. Of course, object dtypes, `convert_dtypes()` will handle this for us if
+    #   possible. This will raise later if can't convert.
+    # 2. String dtypes can still exist, OrdinalEncoder will do something but
+    #   it's not ideal. We should probably check unique counts at the expense of doing
+    #   so.
+    # 3. For all dtypes relating to timeseries and other _exotic_ types not supported by
+    #   numpy, we leave them be and let the pipeline error out where it will.
+    # 4. Pandas will convert dtypes to Int64Dtype/Float64Dtype, which include
+    #   `pd.NA`. Sklearn's Ordinal encoder treats this differently than `np.nan`.
+    #   We can fix this one by converting all numeric columns to float64, which uses
+    #   `np.nan` instead of `pd.NA`.
+    #
+    if convert_dtype:
+        X = X.convert_dtypes()
+
+    integer_columns = X.select_dtypes(include=["number"]).columns
+    if len(integer_columns) > 0:
+        X[integer_columns] = X[integer_columns].astype(numeric_dtype)
+    return X
+
+
+def _get_ordinal_encoder(
+    *,
+    numpy_dtype: np.floating = DEFAULT_NUMPY_PREPROCESSING_DTYPE,  # type: ignore
+) -> ColumnTransformer:
+    oe = OrdinalEncoder(
+        # TODO: Could utilize the categorical dtype values directly instead of "auto"
+        categories="auto",
+        dtype=numpy_dtype,  # type: ignore
+        handle_unknown="use_encoded_value",
+        unknown_value=-1,
+        encoded_missing_value=np.nan,  # Missing stays missing
+    )
+
+    # Documentation of sklearn, deferring to pandas is misleading here. It's done
+    # using a regex on the type of the column, and using `object`, `"object"` and
+    # `np.object` will not pick up strings.
+    to_convert = ["category", "string"]
+    return ColumnTransformer(
+        transformers=[("encoder", oe, make_column_selector(dtype_include=to_convert))],
+        remainder=FunctionTransformer(),
+        sparse_threshold=0.0,
+        verbose_feature_names_out=False,
+    )
+
+
+def validate_Xy_fit(
+    X: XType,
+    y: YType,
+    estimator: TabPFNRegressor | TabPFNClassifier,
+    *,
+    max_num_features: int,
+    max_num_samples: int,
+    ensure_y_numeric: bool = False,
+    ignore_pretraining_limits: bool = False,
+) -> tuple[np.ndarray, np.ndarray, npt.NDArray[Any] | None, int]:
+    """Validate the input data for fitting."""
+    # Calls `validate_data()` with specification
+    X, y = validate_data(
+        estimator,
+        X=X,
+        y=y,
+        # Parameters to `check_X_y()`
+        accept_sparse=False,
+        dtype=None,  # This is handled later in `fit()`
+        ensure_all_finite="allow-nan",
+        ensure_min_samples=2,
+        ensure_min_features=1,
+        y_numeric=ensure_y_numeric,
+        estimator=estimator,
+    )
+
+    if X.shape[1] > max_num_features:
+        if not ignore_pretraining_limits:
+            raise ValueError(
+                f"Number of features {X.shape[1]} in the input data is greater than "
+                f"the maximum number of features {max_num_features} officially "
+                "supported by the TabPFN model. Set `ignore_pretraining_limits=True` "
+                "to override this error!",
+            )
+
+        warnings.warn(
+            f"Number of features {X.shape[1]} is greater than the maximum "
+            f"Number of features {max_num_features} supported by the model."
+            " You may see degraded performance.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if X.shape[0] > max_num_samples:
+        if not ignore_pretraining_limits:
+            raise ValueError(
+                f"Number of samples {X.shape[0]} in the input data is greater than "
+                f"the maximum number of samples {max_num_samples} officially supported"
+                f" by TabPFN. Set `ignore_pretraining_limits=True` to override this "
+                f"error!",
+            )
+        warnings.warn(
+            f"Number of samples {X.shape[0]} is greater than the maximum "
+            f"Number of samples {max_num_samples} supported by the model."
+            " You may see degraded performance.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if is_classifier(estimator):
+        check_classification_targets(y)
+    # Annoyingly, the `ensure_all_finite` above only applies to `X` and
+    # there is no way to specify this for `y`. The validation check above
+    # will also only check for NaNs in `y` if `multi_output=True` which is
+    # something we don't want. Hence, we run another check on `y` here.
+    # However we also have to consider if ther dtype is a string type,
+    # then
+
+    y = check_array(
+        y,
+        accept_sparse=False,
+        ensure_all_finite=True,
+        dtype=None,  # type: ignore
+        ensure_2d=False,
+    )
+
+    # NOTE: Theoretically we don't need to return the feature names and number,
+    # but it makes it clearer in the calling code that these variables now exist
+    # and can be set on the estimator.
+    return X, y, getattr(estimator, "feature_names_in_", None), estimator.n_features_in_
+
+
+def validate_X_predict(
+    X: XType,
+    estimator: TabPFNRegressor | TabPFNClassifier,
+) -> np.ndarray:
+    """Validate the input data for prediction."""
+    result = validate_data(
+        estimator,
+        X=X,
+        # NOTE: Important that reset is False, i.e. doesn't reset estimator
+        reset=False,
+        # Parameters to `check_X_y()`
+        accept_sparse=False,
+        dtype=None,
+        ensure_all_finite="allow-nan",
+        estimator=estimator,
+    )
+    return typing.cast(np.ndarray, result)
+
+
+def infer_categorical_features(
+    X: np.ndarray,
+    *,
+    provided: Sequence[int] | None,
+    min_samples_for_inference: int,
+    max_unique_for_category: int,
+    min_unique_for_numerical: int,
+) -> list[int]:
+    """Infer the categorical features from the given data.
+
+    !!! note
+
+        This function may infer particular columns to not be categorical
+        as defined by what suits the model predictions and it's pre-training.
+
+    Args:
+        X: The data to infer the categorical features from.
+        provided: Any user provided indices of what is considered categorical.
+        min_samples_for_inference:
+            The minimum number of samples required
+            for automatic inference of features which were not provided
+            as categorical.
+        max_unique_for_category:
+            The maximum number of unique values for a
+            feature to be considered categorical.
+        min_unique_for_numerical:
+            The minimum number of unique values for a
+            feature to be considered numerical.
+
+    Returns:
+        The indices of inferred categorical features.
+    """
+    # We presume everything is numerical and go from there
+    maybe_categoricals = () if provided is None else provided
+    large_enough_x_to_infer_categorical = X.shape[0] > min_samples_for_inference
+    indices = []
+
+    for ix, col in enumerate(X.T):
+        if ix in maybe_categoricals:
+            if len(np.unique(col)) <= max_unique_for_category:
+                indices.append(ix)
+        elif (
+            large_enough_x_to_infer_categorical
+            and len(np.unique(col)) < min_unique_for_numerical
+        ):
+            indices.append(ix)
+
+    return indices
 
 
 def infer_random_state(
@@ -306,6 +517,34 @@ def infer_random_state(
     return static_seed, np_rng
 
 
+def _process_text_na_dataframe(  # type: ignore
+    X: pd.DataFrame,
+    placeholder: str = NA_PLACEHOLDER,
+    ord_encoder=None,
+    *,
+    fit_encoder: bool = False,
+) -> np.ndarray:
+    string_cols = X.select_dtypes(include=["string", "object"]).columns
+    if len(string_cols) > 0:
+        X[string_cols] = X[string_cols].fillna(placeholder)
+
+    if fit_encoder and ord_encoder is not None:
+        X_encoded = ord_encoder.fit_transform(X)
+    elif ord_encoder is not None:
+        X_encoded = ord_encoder.transform(X)
+    else:
+        X_encoded = X
+
+    string_cols_ix = [X.columns.get_loc(col) for col in string_cols]
+    placeholder_mask = X[string_cols] == placeholder
+    X_encoded[:, string_cols_ix] = np.where(
+        placeholder_mask,
+        np.nan,
+        X_encoded[:, string_cols_ix],
+    )
+    return X_encoded.astype(np.float64)
+
+
 def _map_to_bucket_ix(y: torch.Tensor, borders: torch.Tensor) -> torch.Tensor:
     ix = torch.searchsorted(sorted_sequence=borders, input=y) - 1
     ix[y == borders[0]] = 0
@@ -317,7 +556,7 @@ def _map_to_bucket_ix(y: torch.Tensor, borders: torch.Tensor) -> torch.Tensor:
 # However we don't really need the full BarDistribution class and this was
 # put here to make that a bit more obvious in terms of what was going on.
 def _cdf(logits: torch.Tensor, borders: torch.Tensor, ys: torch.Tensor) -> torch.Tensor:
-    ys = ys.repeat((*logits.shape[:-1], 1))
+    ys = ys.repeat(logits.shape[:-1] + (1,))
     n_bars = len(borders) - 1
     y_buckets = _map_to_bucket_ix(ys, borders).clamp(0, n_bars - 1).to(logits.device)
 
@@ -360,28 +599,52 @@ def translate_probs_across_borders(
     return (prob_left[..., 1:] - prob_left[..., :-1]).clamp_min(0.0)
 
 
-def remove_non_differentiable_preprocessing_from_models(
-    models: list[Architecture],
+def update_encoder_outlier_params(
+    model: nn.Module,
+    remove_outliers_std: float | None,
+    seed: int | None,
+    *,
+    inplace: Literal[True],
 ) -> None:
-    """Remove non-differentiable encoder steps from the model.
+    """Update the encoder to handle outliers in the model.
+
+    !!! warning
+
+        This only happens inplace.
 
     Args:
-        models: The models to update.
+        model: The model to update.
+        remove_outliers_std: The standard deviation to remove outliers.
+        seed: The seed to use, if any.
+        inplace: Whether to do the operation inplace.
+
+    Raises:
+        ValueError: If `inplace` is not `True`.
     """
-    for model in models:
-        diffable_steps = []  # only differentiable encoder steps.
-        for module in model.y_encoder:
-            if isinstance(module, MulticlassClassificationTargetEncoderStep):
-                pass
-            else:
-                diffable_steps.append(module)
+    if not inplace:
+        raise ValueError("Only inplace is supported")
 
-        model.y_encoder = TorchPreprocessingPipeline(
-            steps=diffable_steps, output_key="output"
-        )
+    if remove_outliers_std is not None and remove_outliers_std <= 0:
+        raise ValueError("remove_outliers_std must be greater than 0")
+
+    if not hasattr(model, "encoder"):
+        return
+
+    encoder = model.encoder
+    norm_layer = next(
+        e for e in encoder if "InputNormalizationEncoderStep" in str(e.__class__)
+    )
+    norm_layer.remove_outliers = (remove_outliers_std is not None) and (
+        remove_outliers_std > 0
+    )
+    if norm_layer.remove_outliers:
+        norm_layer.remove_outliers_sigma = remove_outliers_std
+
+    norm_layer.seed = seed
+    norm_layer.reset_seed()
 
 
-def transform_borders_one(
+def _transform_borders_one(
     borders: np.ndarray,
     target_transform: TransformerMixin | Pipeline,
     *,
@@ -430,76 +693,46 @@ def transform_borders_one(
     return logit_cancel_mask, descending_borders, borders_t
 
 
-def pad_tensors(
-    tensor_list: list[torch.Tensor],
-    padding_val: float | None = 0,
-    *,
-    labels: bool = False,
-) -> list[torch.Tensor]:
-    """Pad tensors to maximum dims at the last dimensions.
-    if labels=False, 2d tensors are expected, if labels=True, one 1d
-    vectors are expected as inputs.
-
-    Args:
-        tensor_list: List of tensors to be padded.
-        padding_val: what value to use for padding.
-        labels: If true, the tensor list should contain 1D
-            tensors that are padded only along this dimension.
-            If false, rows and feature dimensions are padded.
-    """
-    max_size_clms = max([item.size(-1) for item in tensor_list])
-    if not labels:
-        max_size_rows = max([item.size(-2) for item in tensor_list])
-    ret_list = []
-    for item in tensor_list:
-        pad_seqence = [0, max_size_clms - item.size(-1)]
-        if not labels:
-            pad_seqence.extend([0, max_size_rows - item.size(-2)])
-        padded_item = torch.nn.functional.pad(
-            item, pad_seqence, mode="constant", value=padding_val
-        )
-        ret_list.append(padded_item)
-    return ret_list
-
-
-def balance_probas_by_class_counts(
-    probas: torch.Tensor,
-    class_counts: np.ndarray,
-) -> torch.Tensor:
-    """Balance probabilities by class counts.
-
-    Args:
-        probas: The probabilities to balance.
-        class_counts: The class counts to use for balancing.
+# Terminology: Use memory to referent physical memory, swap for swap memory
+def get_total_memory_windows() -> float:
+    """Get the total memory of the system for windows OS, using windows API.
 
     Returns:
-        The balanced probabilities.
+        The total memory of the system in GB.
     """
-    class_prob_in_train = class_counts / class_counts.sum()
-    balanced_probas = probas / torch.from_numpy(class_prob_in_train).float().to(
-        probas.device
-    )
-    return balanced_probas / balanced_probas.sum(dim=-1, keepdim=True)
+    import platform
 
+    if platform.system() != "Windows":
+        return 0.0  # Function should not be called on non-Windows platforms
 
-def convert_batch_of_cat_ix_to_schema(
-    batch_of_cat_indices: list[list[list[int]]],
-    num_features: int,
-) -> list[list[FeatureSchema]]:
-    """Convert a batch of categorical indices to a schema."""
-    feature_schema = []
-    for ibatch in batch_of_cat_indices:
-        feature_schema.append([])
-        for cat_indices in ibatch:
-            features = [
-                Feature(
-                    name=f"c{i}",
-                    modality=FeatureModality.CATEGORICAL
-                    if i in cat_indices
-                    else FeatureModality.NUMERICAL,
-                )
-                for i in range(num_features)
-            ]
-            feature_schema[-1].append(FeatureSchema(features=features))
+    # ref: https://github.com/microsoft/windows-rs/blob/c9177f7a65c764c237a9aebbd3803de683bedaab/crates/tests/bindgen/src/fn_return_void_sys.rs#L12
+    # ref: https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex
+    # this class is needed to load the memory status with GlobalMemoryStatusEx function
+    # using win32 API, for more details see microsoft docs link above
+    class _MEMORYSTATUSEX(ctypes.Structure):
+        _fields_: typing.ClassVar = [
+            ("dwLength", ctypes.c_ulong),
+            ("dwMemoryLoad", ctypes.c_ulong),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
 
-    return feature_schema
+    # Initialize the structure
+    mem_status = _MEMORYSTATUSEX()
+    # need to initialize lenght of structure, see microsft docs above
+    mem_status.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+
+    try:
+        # Use typing.cast to help mypy understand this Windows-only code
+        windll = typing.cast(typing.Any, ctypes).windll
+        k32_lib = windll.LoadLibrary("kernel32.dll")
+        k32_lib.GlobalMemoryStatusEx(ctypes.byref(mem_status))
+        return float(mem_status.ullTotalPhys) / 1e9  # Convert bytes to GB
+    except (AttributeError, OSError):
+        # Fall back if not on Windows or if the function fails
+        return 0.0

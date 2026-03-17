@@ -1,3 +1,4 @@
+# ruff: noqa
 """This file is taken from PyTorch and modified to work with TabPFN, also
 inspired from sklearn's show_versions function. This collects useful debug
 information that can be used to report issues.
@@ -18,7 +19,6 @@ import subprocess
 import sys
 from collections import namedtuple
 from pathlib import Path
-from tabpfn.settings import settings
 
 try:
     import torch
@@ -322,7 +322,7 @@ def _get_windows_version(run_lambda):
     ret = _run_and_read_all(run_lambda, powershell_cmd)
     try:
         obj = json.loads(ret)
-        ret = f"{obj['Caption']} ({obj['Version']} {obj['OSArchitecture']})"
+        ret = f'{obj["Caption"]} ({obj["Version"]} {obj["OSArchitecture"]})'
     except ValueError as e:
         ret += f"\n{e}"
     return ret
@@ -391,9 +391,6 @@ def _get_pip_packages(run_lambda, patterns=None):
         run_lambda,
         [sys.executable, "-mpip", "list", "--format=freeze"],
     )
-    if out is None:
-        # Happens when pip is not available or when the command fails
-        return pip_version, ""
     filtered_out = "\n".join(
         line for line in out.splitlines() if any(name in line for name in patterns)
     )
@@ -402,7 +399,7 @@ def _get_pip_packages(run_lambda, patterns=None):
 
 
 def _get_cachingallocator_config():
-    return settings.pytorch.pytorch_cuda_alloc_conf
+    return os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
 
 
 def _get_cuda_module_loading_config():
@@ -607,6 +604,21 @@ def _pretty_str(envinfo):
         )
     mutable_dict["cpu_info"] = envinfo.cpu_info
     return env_info_fmt.format(**mutable_dict)
+
+
+def _get_pretty_env_info():
+    """Return a pretty string of environment information.
+
+    This function retrieves environment information by calling the `_get_env_info`
+    function and then formats the information into a human-readable string.
+    The retrieved environment information is listed in the documentation of
+    `_get_env_info`. This function is used in `python collect_env.py` when reporting
+    a bug.
+
+    Returns:
+        str: A pretty string of the environment information.
+    """
+    return _pretty_str(_get_env_info())
 
 
 def _get_deps_info():

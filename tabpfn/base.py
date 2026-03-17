@@ -4,232 +4,117 @@
 
 from __future__ import annotations
 
-import pathlib
-import typing
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, Union
-
-import numpy as np
-import torch
-from sklearn.base import (
-    check_is_fitted,
+import os
+import warnings
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Literal,
+    overload,
 )
-from tabpfn_common_utils.telemetry.interactive import capture_session, ping
+
+import torch
 
 # --- TabPFN imports ---
 from tabpfn.constants import (
     AUTOCAST_DTYPE_BYTE_SIZE,
     DEFAULT_DTYPE_BYTE_SIZE,
-    ModelPath,
-    XType,
 )
-from tabpfn.errors import TabPFNValidationError
 from tabpfn.inference import (
     InferenceEngine,
-    InferenceEngineBatchedNoPreprocessing,
     InferenceEngineCacheKV,
     InferenceEngineCachePreprocessing,
     InferenceEngineOnDemand,
 )
-from tabpfn.model_loading import load_model_criterion_config, resolve_model_version
-from tabpfn.preprocessing.clean import fix_dtypes
-from tabpfn.utils import (
-    DevicesSpecification,
-    infer_devices,
-    infer_fp16_inference_mode,
-)
-from tabpfn.validation import ensure_compatible_predict_input_sklearn
+from tabpfn.model.loading import load_model_criterion_config
+from tabpfn.utils import infer_device_and_type, infer_fp16_inference_mode
 
 if TYPE_CHECKING:
-    from tabpfn.architectures.base.bar_distribution import FullSupportBarDistribution
-    from tabpfn.architectures.base.memory import MemorySavingMode
-    from tabpfn.architectures.interface import Architecture, ArchitectureConfig
-    from tabpfn.classifier import TabPFNClassifier
-    from tabpfn.inference_config import InferenceConfig
-    from tabpfn.preprocessing.datamodel import FeatureSchema
-    from tabpfn.preprocessing.ensemble import TabPFNEnsemblePreprocessor
-    from tabpfn.regressor import TabPFNRegressor
+    import numpy as np
+    import pandas as pd
+
+    from tabpfn.model.bar_distribution import FullSupportBarDistribution
+    from tabpfn.model.config import InferenceConfig
+    from tabpfn.model.transformer import PerFeatureTransformer
 
 
-class BaseModelSpecs:
-    """Base class for model specifications."""
-
-    def __init__(
-        self,
-        model: Architecture,
-        architecture_config: ArchitectureConfig,
-        inference_config: InferenceConfig,
-    ):
-        self.model = model
-        self.architecture_config = architecture_config
-        self.inference_config = inference_config
+@overload
+def initialize_tabpfn_model(
+    model_path: str | Path | Literal["auto"],
+    which: Literal["regressor"],
+    fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"],
+    static_seed: int,
+) -> tuple[PerFeatureTransformer, InferenceConfig, FullSupportBarDistribution]: ...
 
 
-class ClassifierModelSpecs(BaseModelSpecs):
-    """Model specs for classifiers."""
-
-    norm_criterion = None
-
-
-class RegressorModelSpecs(BaseModelSpecs):
-    """Model specs for regressors."""
-
-    def __init__(
-        self,
-        model: Architecture,
-        architecture_config: ArchitectureConfig,
-        inference_config: InferenceConfig,
-        norm_criterion: FullSupportBarDistribution,
-    ):
-        super().__init__(model, architecture_config, inference_config)
-        self.norm_criterion = norm_criterion
-
-
-ModelSpecs = Union[RegressorModelSpecs, ClassifierModelSpecs]
+@overload
+def initialize_tabpfn_model(
+    model_path: str | Path | Literal["auto"],
+    which: Literal["classifier"],
+    fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"],
+    static_seed: int,
+) -> tuple[PerFeatureTransformer, InferenceConfig, None]: ...
 
 
 def initialize_tabpfn_model(
-    model_path: ModelPath
-    | list[ModelPath]
-    | RegressorModelSpecs
-    | ClassifierModelSpecs
-    | list[RegressorModelSpecs]
-    | list[ClassifierModelSpecs],
+    model_path: str | Path | Literal["auto"],
     which: Literal["classifier", "regressor"],
     fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"],
-) -> tuple[
-    list[Architecture],
-    list[ArchitectureConfig],
-    FullSupportBarDistribution | None,
-    InferenceConfig,
-]:
-    """Initializes a TabPFN model based on the provided configuration.
+    static_seed: int,
+) -> tuple[PerFeatureTransformer, InferenceConfig, FullSupportBarDistribution | None]:
+    """Common logic to load the TabPFN model, set up the random state,
+    and optionally download the model.
 
     Args:
         model_path: Path or directive ("auto") to load the pre-trained model from.
-            If a list of paths is provided, the models are applied across different
-            estimators. If a RegressorModelSpecs or ClassifierModelSpecs object is
-            provided, the model is loaded from the object.
-
         which: Which TabPFN model to load.
         fit_mode: Determines caching behavior.
+        static_seed: Random seed for reproducibility logic.
 
     Returns:
-        a list of models,
-        a list of architecture configs (associated with each model),
-        if regression, the bar distribution, otherwise None,
-        the inference config
+        model: The loaded TabPFN model.
+        config: The configuration object associated with the loaded model.
+        bar_distribution: The BarDistribution for regression (`None` if classifier).
     """
-    if isinstance(model_path, RegressorModelSpecs) and which == "regressor":
-        return (
-            [model_path.model],
-            [model_path.architecture_config],
-            model_path.norm_criterion,
-            model_path.inference_config,
+    # Handle auto model_path
+    download = True
+    if isinstance(model_path, str) and model_path == "auto":
+        model_path = None  # type: ignore
+
+    # Load model with potential caching
+    if which == "classifier":
+        # The classifier's bar distribution is not used;
+        # pass check_bar_distribution_criterion=False
+        model, _, config_ = load_model_criterion_config(
+            model_path=model_path,
+            check_bar_distribution_criterion=False,
+            cache_trainset_representation=(fit_mode == "fit_with_cache"),
+            which="classifier",
+            version="v2",
+            download=download,
+            model_seed=static_seed,
         )
-
-    if isinstance(model_path, ClassifierModelSpecs) and which == "classifier":
-        return (
-            [model_path.model],
-            [model_path.architecture_config],
-            None,
-            model_path.inference_config,
+        bar_distribution = None
+    else:
+        # The regressor's bar distribution is required
+        model, bardist, config_ = load_model_criterion_config(
+            model_path=model_path,
+            check_bar_distribution_criterion=True,
+            cache_trainset_representation=(fit_mode == "fit_with_cache"),
+            which="regressor",
+            version="v2",
+            download=download,
+            model_seed=static_seed,
         )
+        bar_distribution = bardist
 
-    if (
-        isinstance(model_path, list)
-        and len(model_path) > 0
-        and all(isinstance(spec, RegressorModelSpecs) for spec in model_path)
-    ):
-        _assert_inference_configs_equal(model_path)
-        return (  # pyright: ignore[reportReturnType]
-            [spec.model for spec in model_path],  # pyright: ignore[reportAttributeAccessIssue]
-            [spec.architecture_config for spec in model_path],  # pyright: ignore[reportAttributeAccessIssue]
-            model_path[0].norm_criterion,  # pyright: ignore[reportAttributeAccessIssue]
-            model_path[0].inference_config,
-        )
-
-    if (
-        isinstance(model_path, list)
-        and len(model_path) > 0
-        and all(isinstance(spec, ClassifierModelSpecs) for spec in model_path)
-    ):
-        _assert_inference_configs_equal(model_path)
-        return (
-            [spec.model for spec in model_path],  # pyright: ignore[reportAttributeAccessIssue]
-            [spec.architecture_config for spec in model_path],  # pyright: ignore[reportAttributeAccessIssue]
-            None,
-            model_path[0].inference_config,
-        )
-
-    if (
-        model_path is None
-        or model_path == "auto"
-        or isinstance(model_path, (str, pathlib.Path, list))  # pyright: ignore[reportArgumentType]
-    ):
-        if isinstance(model_path, list) and len(model_path) == 0:
-            raise ValueError(
-                "You provided a list of model paths with no entries. "
-                "Please provide a valid `model_path` argument, or use 'auto' to use "
-                "the default model."
-            )
-
-        if isinstance(model_path, str) and model_path == "auto":
-            model_path = None  # type: ignore
-
-        version = resolve_model_version(model_path)  # type: ignore
-        download_if_not_exists = True
-
-        if which == "classifier":
-            models, _, architecture_configs, inference_config = (
-                load_model_criterion_config(
-                    model_path=model_path,  # pyright: ignore[reportArgumentType]
-                    # The classifier's bar distribution is not used
-                    check_bar_distribution_criterion=False,
-                    cache_trainset_representation=(fit_mode == "fit_with_cache"),
-                    which="classifier",
-                    version=version.value,
-                    download_if_not_exists=download_if_not_exists,
-                )
-            )
-            norm_criterion = None
-        else:
-            models, bardist, architecture_configs, inference_config = (
-                load_model_criterion_config(
-                    model_path=model_path,  # pyright: ignore[reportArgumentType]
-                    # The regressor's bar distribution is required
-                    check_bar_distribution_criterion=True,
-                    cache_trainset_representation=(fit_mode == "fit_with_cache"),
-                    which="regressor",
-                    version=version.value,
-                    download_if_not_exists=download_if_not_exists,
-                )
-            )
-            norm_criterion = bardist
-
-        return models, architecture_configs, norm_criterion, inference_config
-
-    raise TypeError(
-        "Received ModelSpecs via 'model_path', but 'which' parameter is set to '"
-        + which
-        + "'. Expected 'classifier' or 'regressor'. and model_path"
-        + "is of of type"
-        + str(type(model_path))
-    )
-
-
-def _assert_inference_configs_equal(
-    model_specs: list[ClassifierModelSpecs] | list[RegressorModelSpecs],
-) -> None:
-    if not all(
-        spec.inference_config == model_specs[0].inference_config for spec in model_specs
-    ):
-        raise ValueError("All models must have the same inference config")
+    return model, config_, bar_distribution
 
 
 def determine_precision(
     inference_precision: torch.dtype | Literal["autocast", "auto"],
-    devices_: Sequence[torch.device],
+    device_: torch.device,
 ) -> tuple[bool, torch.dtype | None, int]:
     """Decide whether to use autocast or a forced precision dtype.
 
@@ -240,7 +125,7 @@ def determine_precision(
             - If `"autocast"`, explicitly use PyTorch autocast (mixed precision).
             - If a `torch.dtype`, force that precision.
 
-        devices_: The devices which will be used for inference.
+        device_: The device on which inference is run.
 
     Returns:
         use_autocast_:
@@ -252,7 +137,7 @@ def determine_precision(
     """
     if inference_precision in ["autocast", "auto"]:
         use_autocast_ = infer_fp16_inference_mode(
-            devices=devices_,
+            device=device_,
             enable=True if (inference_precision == "autocast") else None,
         )
         forced_inference_dtype_ = None
@@ -264,226 +149,144 @@ def determine_precision(
         forced_inference_dtype_ = inference_precision
         byte_size = inference_precision.itemsize
     else:
-        raise TabPFNValidationError(
-            f"Unknown inference_precision={inference_precision}"
-        )
+        raise ValueError(f"Unknown inference_precision={inference_precision}")
 
     return use_autocast_, forced_inference_dtype_, byte_size
 
 
 def create_inference_engine(  # noqa: PLR0913
     *,
-    fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache", "batched"],
     X_train: np.ndarray,
     y_train: np.ndarray,
-    feature_schema: FeatureSchema,
-    ensemble_preprocessor: TabPFNEnsemblePreprocessor,
-    models: list[Architecture],
-    devices_: Sequence[torch.device],
+    model: PerFeatureTransformer,
+    ensemble_configs: Any,
+    cat_ix: list[int],
+    fit_mode: Literal["low_memory", "fit_preprocessors", "fit_with_cache"],
+    device_: torch.device,
+    rng: np.random.Generator,
+    n_jobs: int,
     byte_size: int,
     forced_inference_dtype_: torch.dtype | None,
-    memory_saving_mode: MemorySavingMode,
+    memory_saving_mode: bool | Literal["auto"] | float | int,
     use_autocast_: bool,
-    inference_mode: bool = True,
 ) -> InferenceEngine:
-    """Create the appropriate TabPFN inference engine based on `fit_mode`.
+    """Creates the appropriate TabPFN inference engine based on `fit_mode`.
 
     Each execution mode will perform slightly different operations based on the mode
-    specified by the user. In the case where preprocessors will be fit during
-    initialization, we will use them to further transform the associated borders with
-    each ensemble config member.
+    specified by the user. In the case where preprocessors will be fit after `prepare`,
+    we will use them to further transform the associated borders with each ensemble
+    config member.
 
     Args:
-        fit_mode: Determines how we prepare inference (pre-cache or not).
         X_train: Training features
         y_train: Training target
-        feature_schema: The feature schema.
-        ensemble_preprocessor: The ensemble preprocessor to use.
-        models: The loaded TabPFN models.
-        devices_: The devices for inference.
+        model: The loaded TabPFN model.
+        ensemble_configs: The ensemble configurations to create multiple "prompts".
+        cat_ix: Indices of inferred categorical features.
+        fit_mode: Determines how we prepare inference (pre-cache or not).
+        device_: The device for inference.
+        rng: Numpy random generator.
+        n_jobs: Number of parallel CPU workers.
         byte_size: Byte size for the chosen inference precision.
         forced_inference_dtype_: If not None, the forced dtype for inference.
         memory_saving_mode: GPU/CPU memory saving settings.
         use_autocast_: Whether we use torch.autocast for inference.
-        inference_mode: Whether to use torch.inference_mode (set False if
-            backprop is needed)
     """
+    engine: (
+        InferenceEngineOnDemand
+        | InferenceEngineCachePreprocessing
+        | InferenceEngineCacheKV
+    )
     if fit_mode == "low_memory":
-        return InferenceEngineOnDemand(
+        engine = InferenceEngineOnDemand.prepare(
             X_train=X_train,
             y_train=y_train,
-            feature_schema=feature_schema,
-            ensemble_preprocessor=ensemble_preprocessor,
-            models=models,
-            devices=devices_,
+            cat_ix=cat_ix,
+            ensemble_configs=ensemble_configs,
+            rng=rng,
+            model=model,
+            n_workers=n_jobs,
             dtype_byte_size=byte_size,
             force_inference_dtype=forced_inference_dtype_,
             save_peak_mem=memory_saving_mode,
         )
-    if fit_mode == "fit_preprocessors":
-        return InferenceEngineCachePreprocessing(
+    elif fit_mode == "fit_preprocessors":
+        engine = InferenceEngineCachePreprocessing.prepare(
             X_train=X_train,
             y_train=y_train,
-            feature_schema=feature_schema,
-            ensemble_preprocessor=ensemble_preprocessor,
-            models=models,
-            devices=devices_,
+            cat_ix=cat_ix,
+            ensemble_configs=ensemble_configs,
+            n_workers=n_jobs,
+            model=model,
+            rng=rng,
             dtype_byte_size=byte_size,
             force_inference_dtype=forced_inference_dtype_,
             save_peak_mem=memory_saving_mode,
-            inference_mode=inference_mode,
         )
-    if fit_mode == "fit_with_cache":
-        return InferenceEngineCacheKV(
+    elif fit_mode == "fit_with_cache":
+        engine = InferenceEngineCacheKV.prepare(
             X_train=X_train,
             y_train=y_train,
-            feature_schema=feature_schema,
-            ensemble_preprocessor=ensemble_preprocessor,
-            models=models,
-            devices=devices_,
+            cat_ix=cat_ix,
+            model=model,
+            ensemble_configs=ensemble_configs,
+            n_workers=n_jobs,
+            device=device_,
             dtype_byte_size=byte_size,
+            rng=rng,
             force_inference_dtype=forced_inference_dtype_,
             save_peak_mem=memory_saving_mode,
             autocast=use_autocast_,
         )
-    if fit_mode == "batched":
-        return InferenceEngineBatchedNoPreprocessing(
-            X_trains=X_train,  # pyright: ignore[reportArgumentType]
-            y_trains=y_train,  # pyright: ignore[reportArgumentType]
-            feature_schema=feature_schema,  # pyright: ignore[reportArgumentType]
-            ensemble_configs=ensemble_preprocessor.configs,  # pyright: ignore[reportArgumentType]
-            models=models,
-            devices=devices_,
-            dtype_byte_size=byte_size,
-            force_inference_dtype=forced_inference_dtype_,
-            save_peak_mem=memory_saving_mode,
-            inference_mode=inference_mode,
-        )
+    else:
+        raise ValueError(f"Invalid fit_mode: {fit_mode}")
 
-    raise ValueError(f"Invalid fit_mode: {fit_mode}")
+    return engine
 
 
-def initialize_model_variables_helper(
-    calling_instance: TabPFNRegressor | TabPFNClassifier,
-    model_type: Literal["regressor", "classifier"],
-) -> int:
-    """Set attributes on the given model to prepare it for inference.
-
-    This includes selecting the device and the inference precision.
-
-    Returns:
-        a tuple (byte_size, rng), where byte_size is the number of bytes in the selected
-        dtype, and rng is a NumPy random Generator for use during inference.
-    """
-    models, architecture_configs, maybe_bardist, inference_config = (
-        initialize_tabpfn_model(
-            model_path=calling_instance.model_path,  # pyright: ignore[reportArgumentType]
-            which=model_type,
-            fit_mode=calling_instance.fit_mode,  # pyright: ignore[reportArgumentType]
-        )
-    )
-    calling_instance.models_ = models
-    calling_instance.configs_ = architecture_configs
-    if model_type == "regressor" and maybe_bardist is not None:
-        calling_instance.znorm_space_bardist_ = maybe_bardist
-
-    byte_size = estimator_to_device(calling_instance, calling_instance.device)
-
-    inference_config = inference_config.override_with_user_input_and_resolve_auto(
-        user_config=calling_instance.inference_config,
-    )
-
-    calling_instance.inference_config_ = inference_config
-
-    return byte_size
-
-
-def estimator_to_device(
-    estimator: TabPFNClassifier | TabPFNRegressor, device: DevicesSpecification
-) -> int:
-    """Move the given estimator to the given device(s)."""
-    parsed_devices = infer_devices(device)
-
-    estimator.device = device
-    estimator.devices_ = parsed_devices
-    estimator.use_autocast_, estimator.forced_inference_dtype_, byte_size = (
-        determine_precision(estimator.inference_precision, estimator.devices_)
-    )
-
-    if hasattr(estimator, "executor_"):
-        estimator.executor_.to(
-            parsed_devices, estimator.forced_inference_dtype_, byte_size
-        )
-
-    return byte_size
-
-
-def initialize_telemetry() -> None:
-    """Initialize telemetry and acknowledge anonymous session.
-
-    If user opted out of telemetry using `TABPFN_DISABLE_TELEMETRY`,
-    no action is taken.
-    """
-    ping()
-    capture_session()
-
-
-def get_embeddings(
-    model: TabPFNClassifier | TabPFNRegressor,
-    X: XType,
-    data_source: Literal["train", "test"] = "test",
-) -> np.ndarray:
-    """Extract embeddings from a fitted TabPFN model.
+def check_cpu_warning(
+    device: str | torch.device,
+    X: np.ndarray | torch.Tensor | pd.DataFrame,
+    *,
+    allow_cpu_override: bool = False,
+) -> None:
+    """Check if using CPU with large datasets and warn or error appropriately.
 
     Args:
-        model : TabPFNClassifier | TabPFNRegressor
-            The fitted classifier or regressor.
-        X : XType
-            The input data.
-        data_source : {"train", "test"}, default="test"
-            Select the transformer output to return. Use ``"train"`` to obtain
-            embeddings from the training tokens and ``"test"`` for the test tokens.
-
-    Returns:
-        np.ndarray
-            The computed embeddings for each fitted estimator.
-            When ``n_estimators > 1`` the returned array has shape
-            ``(n_estimators, n_samples, embedding_dim)``. You can average over the
-            first axis or reshape to concatenate the estimators, e.g.:
-
-                emb = get_embeddings(model, X)
-                emb_avg = emb.mean(axis=0)
-                emb_concat = emb.reshape(emb.shape[1], -1)
+        device: The torch device being used
+        X: The input data (NumPy array, Pandas DataFrame, or Torch Tensor)
+        allow_cpu_override: If True, allow CPU usage with large datasets.
     """
-    check_is_fitted(model)
-
-    data_map = {"train": "train_embeddings", "test": "test_embeddings"}
-
-    selected_data = data_map[data_source]
-
-    # Avoid circular imports
-    from tabpfn.preprocessing import (  # noqa: PLC0415
-        ClassifierEnsembleConfig,
-        RegressorEnsembleConfig,
+    allow_cpu_override = allow_cpu_override or (
+        os.getenv("TABPFN_ALLOW_CPU_LARGE_DATASET", "0") == "1"
     )
 
-    X = ensure_compatible_predict_input_sklearn(X, model)
-    X = fix_dtypes(X, cat_indices=model.categorical_features_indices)
-    X = model.ordinal_encoder_.transform(X)
+    if allow_cpu_override:
+        return
 
-    embeddings: list[np.ndarray] = []
+    device_mapped = infer_device_and_type(device)
 
-    # Cast executor to Any to bypass the iter_outputs signature check
-    for output, config in model.executor_.iter_outputs(
-        X,
-        autocast=model.use_autocast_,
-        only_return_standard_out=False,
-    ):
-        # Cast output to Any to allow dict-like access
-        output_dict = typing.cast("dict[str, torch.Tensor]", output)
-        embed = output_dict[selected_data].squeeze(1)
-        assert isinstance(config, (ClassifierEnsembleConfig, RegressorEnsembleConfig))
-        assert embed.ndim == 2
-        embeddings.append(embed.squeeze().cpu().numpy())
+    # Determine number of samples
+    try:
+        num_samples = X.shape[0]
+    except AttributeError:
+        return
 
-    return np.array(embeddings)
+    if torch.device(device_mapped).type == "cpu":
+        if num_samples > 1000:
+            raise RuntimeError(
+                "Running on CPU with more than 1000 samples is not allowed "
+                "by default due to slow performance.\n"
+                "To override this behavior, set the environment variable "
+                "TABPFN_ALLOW_CPU_LARGE_DATASET=1 or "
+                "set ignore_pretraining_limits=True.\n"
+                "Alternatively, consider using a GPU or the tabpfn-client API: "
+                "https://github.com/PriorLabs/tabpfn-client"
+            )
+        if num_samples > 200:
+            warnings.warn(
+                "Running on CPU with more than 200 samples may be slow.\n"
+                "Consider using a GPU or the tabpfn-client API: "
+                "https://github.com/PriorLabs/tabpfn-client",
+                stacklevel=2,
+            )
