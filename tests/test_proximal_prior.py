@@ -44,3 +44,33 @@ def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
     residual = target - features @ solution
     correlations = torch.abs((residual * episode.Z).mean(dim=0))
     assert torch.all(correlations < 0.25)
+
+def test_episode_to_dataframe(prior: ProximalPrior) -> None:
+    batch_size = 16
+    episode = prior.generate_episode(batch_size=batch_size, episode_seed=4)
+
+    # Test without latents
+    df = prior.episode_to_dataframe(episode, include_latents=False)
+
+    import pandas as pd
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == batch_size
+
+    # Check expected columns
+    expected_cols = (
+        [f"x_{i}" for i in range(prior.config.d_x)] +
+        [f"z_{i}" for i in range(prior.config.d_z)] +
+        [f"w_{i}" for i in range(prior.config.d_w)] +
+        ["treatment", "outcome", "y0", "y1", "propensity"]
+    )
+    for col in expected_cols:
+        assert col in df.columns
+
+    # Check that latents are NOT included
+    for i in range(prior.config.d_u):
+        assert f"u_{i}" not in df.columns
+
+    # Test with latents
+    df_with_latents = prior.episode_to_dataframe(episode, include_latents=True)
+    for i in range(prior.config.d_u):
+        assert f"u_{i}" in df_with_latents.columns
