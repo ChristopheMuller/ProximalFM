@@ -7,6 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import networkx as nx
 from proximalfm.Structure import ProximalPriorConfig
 
 #%%
@@ -102,3 +103,40 @@ plt.xlabel('Propensity Score')
 plt.ylabel('Density')
 plt.grid()
 plt.show()
+
+#%%
+
+# DAG Visualization
+G = nx.DiGraph()
+
+# Add nodes
+nodes = ['U', 'X', 'Z', 'W', 'A', 'Y']
+G.add_nodes_from(nodes)
+
+# Add edges based on causal structure
+edges = [
+    ('U', 'X'),
+    ('U', 'Z'), ('X', 'Z'),
+    ('U', 'W'), ('X', 'W'),
+    ('U', 'A'), ('X', 'A'), ('Z', 'A'),
+    ('A', 'Y'), ('W', 'Y'), ('U', 'Y'), ('X', 'Y')
+]
+G.add_edges_from(edges)
+
+# Define manual layout for clearer visualization
+pos = {
+    'U': (0, 1),
+    'X': (0, -1),
+    'Z': (1, 0.5),
+    'W': (1, -0.5),
+    'A': (2, 0.5),
+    'Y': (2, -0.5)
+}
+
+plt.figure(figsize=(8, 6))
+nx.draw(G, pos, with_labels=True, node_size=2000, node_color='lightblue',
+        font_size=16, font_weight='bold', arrows=True, arrowsize=20)
+plt.title('Directed Acyclic Graph (DAG) of the Proximal Prior')
+plt.show()
+
+#%%
