@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from torch import Generator, Tensor
 
-from .Structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
+from .structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
 
 
 class ProximalPrior:
@@ -170,11 +170,15 @@ class ProximalPrior:
         """Convert an episode to a pandas DataFrame for logging or inspection."""
 
         columns = {}
-        columns.update({f"x_{i}": episode.X[:, i].cpu().numpy() for i in range(episode.X.shape[-1])})
-        columns.update({f"z_{i}": episode.Z[:, i].cpu().numpy() for i in range(episode.Z.shape[-1])})
-        columns.update({f"w_{i}": episode.W[:, i].cpu().numpy() for i in range(episode.W.shape[-1])})
+        X_np = episode.X.cpu().numpy()
+        columns.update({f"x_{i}": X_np[:, i] for i in range(X_np.shape[-1])})
+        Z_np = episode.Z.cpu().numpy()
+        columns.update({f"z_{i}": Z_np[:, i] for i in range(Z_np.shape[-1])})
+        W_np = episode.W.cpu().numpy()
+        columns.update({f"w_{i}": W_np[:, i] for i in range(W_np.shape[-1])})
         if include_latents:
-            columns.update({f"u_{i}": episode.U[:, i].cpu().numpy() for i in range(episode.U.shape[-1])})
+            U_np = episode.U.cpu().numpy()
+            columns.update({f"u_{i}": U_np[:, i] for i in range(U_np.shape[-1])})
         columns["treatment"] = episode.A.cpu().numpy()
         columns["outcome"] = episode.Y.cpu().numpy()
         columns["y0"] = episode.Y0.cpu().numpy()
