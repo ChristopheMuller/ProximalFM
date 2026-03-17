@@ -45,8 +45,7 @@ def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
     residual = target - features @ solution
     correlations = torch.abs((residual * episode.Z).mean(dim=0))
     assert torch.all(correlations < 0.25)
-
-
+    
 def test_invalid_config_dz_too_small() -> None:
     config = ProximalPriorConfig(d_u=4, d_z=3, d_w=6)
     with pytest.raises(ValueError):
@@ -57,3 +56,43 @@ def test_invalid_config_dw_too_small() -> None:
     config = ProximalPriorConfig(d_u=4, d_z=6, d_w=3)
     with pytest.raises(ValueError):
         ProximalPrior(config=config)
+
+def test_generate_dataset_num_workers(prior: ProximalPrior) -> None:
+    num_episodes = 4
+    batch_size = 16
+
+    # Generate dataset with num_workers=1
+    episodes_1_worker = prior.generate_dataset(
+        num_episodes=num_episodes,
+        batch_size=batch_size,
+        num_workers=1,
+        base_seed=123
+    )
+
+    # Generate dataset with num_workers=2
+    episodes_2_workers = prior.generate_dataset(
+        num_episodes=num_episodes,
+        batch_size=batch_size,
+        num_workers=2,
+        base_seed=123
+    )
+
+    # Verify lengths
+    assert len(episodes_1_worker) == num_episodes
+    assert len(episodes_2_workers) == num_episodes
+
+    # Verify properties and determinism
+    for ep1, ep2 in zip(episodes_1_worker, episodes_2_workers):
+        # Verify batch size
+        assert ep1.X.shape[0] == batch_size
+
+        # Verify determinism across workers
+        assert torch.allclose(ep1.X, ep2.X)
+        assert torch.allclose(ep1.Z, ep2.Z)
+        assert torch.allclose(ep1.W, ep2.W)
+        assert torch.allclose(ep1.U, ep2.U)
+        assert torch.allclose(ep1.Y, ep2.Y)
+        assert torch.allclose(ep1.Y0, ep2.Y0)
+        assert torch.allclose(ep1.Y1, ep2.Y1)
+        assert torch.allclose(ep1.A, ep2.A)
+        assert torch.allclose(ep1.propensity, ep2.propensity)
