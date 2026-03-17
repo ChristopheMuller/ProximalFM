@@ -6,11 +6,16 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "einops>=0.8.2",
+    "ipykernel>=7.2.0",
     "matplotlib>=3.10.8",
     "networkx>=3.6.1",
     "numpy>=2.4.3",
     "pandas>=3.0.1",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
     "pytest>=9.0.2",
+    "scikit-learn>=1.8.0",
+    "tabpfn-common-utils>=0.2.18",
     "torch>=2.10.0",
     "tqdm>=4.67.3",
 ]
