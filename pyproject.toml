@@ -14,8 +14,10 @@ dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "pytest>=9.0.2",
+    "pyyaml>=6.0.3",
     "scikit-learn>=1.8.0",
     "tabpfn-common-utils>=0.2.18",
+    "tensorboard>=2.20.0",
     "torch>=2.10.0",
     "tqdm>=4.67.3",
 ]
