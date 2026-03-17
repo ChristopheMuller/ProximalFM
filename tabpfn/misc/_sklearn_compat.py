@@ -254,15 +254,15 @@ if sklearn_version < parse_version("1.4"):
             return False
         return isinstance(X, pd.DataFrame)
 
-else:
-    from sklearn.utils.metadata_routing import (
-        _raise_for_params,  # noqa: F401
-        process_routing,  # noqa: F401
-    )
-    from sklearn.utils.validation import (
-        _is_fitted,  # noqa: F401
-        _is_pandas_df,  # noqa: F401
-    )
+# else:
+#     from sklearn.utils.metadata_routing import (
+#         _raise_for_params,  # noqa: F401
+#         process_routing,  # noqa: F401
+#     )
+#     from sklearn.utils.validation import (
+#         _is_fitted,  # noqa: F401
+#         _is_pandas_df,  # noqa: F401
+#     )
 
 
 ########################################################################################
