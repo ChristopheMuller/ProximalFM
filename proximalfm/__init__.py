@@ -1,6 +1,6 @@
 """Top-level API for the proximalfm package."""
 
-from .prior import ProximalPrior
-from .structure import ProximalEpisode
+from .Prior import ProximalPrior
+from .Structure import ProximalEpisode
 
 __all__ = ["ProximalEpisode", "ProximalPrior"]

@@ -16,7 +16,7 @@ sys.modules["pandas"] = mock_pandas
 mock_numpy = MagicMock()
 sys.modules["numpy"] = mock_numpy
 
-from proximalfm.prior import ProximalPrior
+from proximalfm.Prior import ProximalPrior
 
 class TestOptimization(unittest.TestCase):
     def test_episode_to_dataframe_calls(self):

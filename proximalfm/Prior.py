@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 from torch import Generator, Tensor
 
-from .structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
+from .Structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
 
 
 class ProximalPrior:

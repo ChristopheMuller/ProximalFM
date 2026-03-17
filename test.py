@@ -2,12 +2,12 @@
 
 #%%
 
-from proximalfm.prior import ProximalPrior
+from proximalfm.Prior import ProximalPrior
 import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from proximalfm.structure import ProximalPriorConfig
+from proximalfm.Structure import ProximalPriorConfig
 
 #%%
 
