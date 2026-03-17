@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 import pandas as pd
 import torch
@@ -98,11 +98,8 @@ class ProximalPrior:
         generator = self._make_generator(episode_seed)
         c = self.config
 
-        U = torch.randn(batch_size, c.d_u, device=self._device, generator=generator, dtype=self._dtype)
-
-        X = self._random_bnn(U, c.d_x, c.x_spec, generator)
-        X = X + self._noise([batch_size, c.d_x], c.noise_scale_x, generator)
-
+        X, U = self._generate_x_u(batch_size, generator)
+        
         shared_context = torch.cat([U, X], dim=-1)
         Z = self._random_bnn(shared_context, c.d_z, c.z_spec, generator)
         Z = Z + self._noise([batch_size, c.d_z], c.noise_scale_z, generator)
@@ -189,6 +186,41 @@ class ProximalPrior:
         columns["y1"] = episode.Y1.cpu().numpy()
         columns["propensity"] = episode.propensity.cpu().numpy()
         return pd.DataFrame(columns)
+    
+    def _sample_regime(self, generator: Generator) -> str:
+        regimes = ["u_to_x", "x_to_u", "shared"]
+        idx = torch.randint(0, len(regimes), (1,), generator=generator, device=self._device).item()
+        return regimes[idx]
+
+    def _generate_x_u(self, batch_size: int, generator: Generator) -> tuple[Tensor, Tensor]:
+        c = self.config
+        regime = self._sample_regime(generator)
+
+        if regime == "u_to_x":
+            U = torch.randn(batch_size, c.d_u, device=self._device, generator=generator, dtype=self._dtype)
+            X = self._random_bnn(U, c.d_x, c.x_spec, generator)
+            X = X + self._noise([batch_size, c.d_x], c.noise_scale_x, generator)
+            return X, U
+
+        if regime == "x_to_u":
+            X_base = torch.randn(batch_size, c.d_x, device=self._device, generator=generator, dtype=self._dtype)
+            X = self._random_bnn(X_base, c.d_x, c.x_spec, generator)
+            X = X + self._noise([batch_size, c.d_x], c.noise_scale_x, generator)
+
+            U = self._random_bnn(X, c.d_u, c.x_spec, generator)
+            U = U + self._noise([batch_size, c.d_u], c.noise_scale_x, generator)
+            return X, U
+
+        # shared exogenous source
+        d_shared = max(c.d_x, c.d_u)
+        S = torch.randn(batch_size, d_shared, device=self._device, generator=generator, dtype=self._dtype)
+
+        X = self._random_bnn(S, c.d_x, c.x_spec, generator)
+        X = X + self._noise([batch_size, c.d_x], c.noise_scale_x, generator)
+
+        U = self._random_bnn(S, c.d_u, c.x_spec, generator)
+        U = U + self._noise([batch_size, c.d_u], c.noise_scale_x, generator)
+        return X, U
 
 
 __all__ = ["ProximalPrior", "ProximalEpisode", "ProximalPriorConfig", "NetworkSpec"]
