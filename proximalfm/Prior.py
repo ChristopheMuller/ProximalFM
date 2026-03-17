@@ -1,6 +1,7 @@
 """Implementation of the proximal prior described in the spec."""
 from __future__ import annotations
 
+import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import List, Optional
@@ -30,7 +31,10 @@ class ProximalPrior:
     def _make_generator(self, episode_seed: Optional[int]) -> Generator:
         gen = torch.Generator(device=self._device)
         if self.seed is not None or episode_seed is not None:
-            combined = hash((self.seed, episode_seed)) % (2**32)
+            # use a deterministic hash for cross-process reproducibility
+            seed_data = f"{self.seed}-{episode_seed}".encode("utf-8")
+            combined_hash = hashlib.sha256(seed_data).hexdigest()
+            combined = int(combined_hash, 16) % (2**32)
             gen.manual_seed(combined)
         else:
             gen.seed()
