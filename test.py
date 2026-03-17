@@ -2,7 +2,7 @@
 
 #%%
 
-from proximalfm.prior import ProximalPrior
+from proximalfm.Prior import ProximalPrior
 import torch
 import numpy as np
 import pandas as pd

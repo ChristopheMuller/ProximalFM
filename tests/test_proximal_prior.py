@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from proximalfm.prior import ProximalPrior
+from proximalfm.Prior import ProximalPrior
 
 
 @pytest.fixture
