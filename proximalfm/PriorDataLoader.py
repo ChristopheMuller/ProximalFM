@@ -1,103 +1,178 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
+from __future__ import annotations
+
+import copy
 from typing import Optional
+
+import torch
+from torch.utils.data import DataLoader, Dataset
 
 from .Prior import ProximalPrior, ProximalPriorConfig
 
+
 class ProximalDataset(Dataset):
+    """A PyTorch Dataset that generates proximal causal episodes on-the-fly.
+
+    Each item is one full episode (a synthetic observational dataset) with
+    N = samples_per_episode rows. The variable groups X, Z, W are returned
+    as separate tensors so that the transformer can apply distinct type
+    embeddings to each.
+
+    Args:
+        prior_config: Configuration for the ProximalPrior. A deep copy is
+            made internally so the caller's config is never mutated.
+        num_episodes: Number of episodes that constitute one epoch.
+        samples_per_episode: Number of rows (observations) per episode.
+        seed_offset: Added to the episode index to form the episode seed,
+            allowing non-overlapping train/val splits.
+        normalize_episode: Whether to standardise X, Z, W, and Y within
+            each episode before returning.
     """
-    A PyTorch Dataset that generates Proximal Causal datasets on-the-fly.
-    """
+
     def __init__(
-        self, 
-        prior_config: ProximalPriorConfig, 
-        num_episodes: int, 
-        samples_per_episode: int, 
-        seed_offset: int = 0
-    ):
-        self.prior_config = prior_config
-        self.prior_config.device = 'cpu' 
+        self,
+        prior_config: ProximalPriorConfig,
+        num_episodes: int,
+        samples_per_episode: int,
+        seed_offset: int = 0,
+        normalize_episode: bool = True,
+    ) -> None:
+        # Deep-copy so we never mutate the caller's config object
+        self.prior_config = copy.deepcopy(prior_config)
+        # Data generation always happens on CPU; the training loop moves
+        # batches to the target device via pin_memory + non_blocking transfer
+        self.prior_config.device = "cpu"
+
+        # Validate dimensional completeness requirement up front
+        if self.prior_config.d_z < self.prior_config.d_u:
+            raise ValueError(
+                f"d_z={self.prior_config.d_z} must be >= d_u={self.prior_config.d_u} "
+                "for the completeness condition (Assumption 4) to hold."
+            )
+        if self.prior_config.d_w < self.prior_config.d_u:
+            raise ValueError(
+                f"d_w={self.prior_config.d_w} must be >= d_u={self.prior_config.d_u} "
+                "for the completeness condition (Assumption 4) to hold."
+            )
+
         self.prior = ProximalPrior(config=self.prior_config)
-        
         self.num_episodes = num_episodes
         self.samples_per_episode = samples_per_episode
         self.seed_offset = seed_offset
+        self.normalize_episode = normalize_episode
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.num_episodes
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         episode_seed = self.seed_offset + idx
-        
+
         episode = self.prior.generate_episode(
-            batch_size=self.samples_per_episode, 
-            episode_seed=episode_seed
+            batch_size=self.samples_per_episode,
+            episode_seed=episode_seed,
+            normalize_episode=self.normalize_episode,
         )
-        
-        O = torch.cat([episode.X, episode.Z, episode.W], dim=-1)
-        
-        A = episode.A.unsqueeze(-1)
-        Y = episode.Y.unsqueeze(-1)
-        Y0 = episode.Y0.unsqueeze(-1)
-        Y1 = episode.Y1.unsqueeze(-1)
-        
-        ITE = Y1 - Y0
-        
+
+        # Keep X, Z, W as separate tensors — the transformer assigns different
+        # type embeddings to each group, so merging them here would destroy
+        # the structural information that proximal identification relies on.
+        ITE = episode.Y1 - episode.Y0   # (N,)
+
         return {
-            'X': O,
-            'a': A,
-            'y': Y,
-            'y0': Y0,
-            'y1': Y1,
-            'ite': ITE
+            "X":   episode.X,                   # (N, d_x)
+            "Z":   episode.Z,                   # (N, d_z)
+            "W":   episode.W,                   # (N, d_w)
+            "A":   episode.A.unsqueeze(-1),     # (N, 1)
+            "Y":   episode.Y.unsqueeze(-1),     # (N, 1)
+            "Y0":  episode.Y0.unsqueeze(-1),    # (N, 1)
+            "Y1":  episode.Y1.unsqueeze(-1),    # (N, 1)
+            "ITE": ITE.unsqueeze(-1),           # (N, 1)  — training target
         }
 
 
 def create_causal_data_loaders(
     prior_config: ProximalPriorConfig,
-    batch_size: int = 16,            # Number of datasets to feed the transformer at once
-    samples_per_episode: int = 1000, # Number of rows (patients) per dataset
-    train_episodes: int = 10000,     # How many datasets constitute one training epoch
-    val_episodes: int = 1000,        # How many datasets to evaluate during validation
+    batch_size: int = 16,
+    samples_per_episode: int = 1000,
+    train_episodes: int = 10_000,
+    val_episodes: int = 1_000,
     num_workers: int = 4,
-    seed: int = 42
-):
+    seed: int = 42,
+    normalize_episode: bool = True,
+) -> dict[str, DataLoader]:
+    """Create train and validation DataLoaders for ProximalFM.
+
+    Train and validation seeds are non-overlapping by construction:
+        train episodes use seeds  [seed,              seed + train_episodes)
+        val   episodes use seeds  [seed + train_episodes, seed + train_episodes + val_episodes)
+
+    Args:
+        prior_config: Config forwarded to ProximalDataset (deep-copied internally).
+        batch_size: Number of episodes per batch fed to the transformer.
+        samples_per_episode: Rows per episode (N in the paper).
+        train_episodes: Episodes per training epoch.
+        val_episodes: Episodes for validation.
+        num_workers: DataLoader worker processes. Set to 0 for debugging.
+        seed: Base seed controlling both episode generation and shuffle order.
+        normalize_episode: Standardise variables within each episode.
+
+    Returns:
+        Dict with keys "train" and "val", each a DataLoader.
     """
-    Creates DataLoaders for on-the-fly Proximal Causal Learning.
-    """
-    
-    # Train Dataset
     train_dataset = ProximalDataset(
         prior_config=prior_config,
         num_episodes=train_episodes,
         samples_per_episode=samples_per_episode,
-        seed_offset=seed
+        seed_offset=seed,
+        normalize_episode=normalize_episode,
     )
-    
-    # Validation Dataset
-    # Shift the seed offset to guarantee the validation datasets are entirely unseen
+
+    # Shift seed offset so validation episodes are entirely disjoint from training
     val_dataset = ProximalDataset(
         prior_config=prior_config,
         num_episodes=val_episodes,
         samples_per_episode=samples_per_episode,
-        seed_offset=seed + train_episodes 
+        seed_offset=seed + train_episodes,
+        normalize_episode=normalize_episode,
     )
-    
-    # We use pin_memory=True to speed up the CPU -> GPU transfer in the trainer loop
+
+    # Reproducible shuffle: pin the DataLoader's internal RNG to `seed`
+    train_generator = torch.Generator()
+    train_generator.manual_seed(seed)
+
+    # pin_memory accelerates CPU→GPU transfer via page-locked memory;
+    # only beneficial when a CUDA device is actually available
+    use_pin_memory = torch.cuda.is_available()
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
-        shuffle=True, 
+        shuffle=True,
         num_workers=num_workers,
-        pin_memory=False
+        pin_memory=use_pin_memory,
+        generator=train_generator,
+        # Each worker needs a unique seed to avoid generating identical episodes
+        worker_init_fn=_worker_init_fn,
+        persistent_workers=num_workers > 0,
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=False
+        pin_memory=use_pin_memory,
+        worker_init_fn=_worker_init_fn,
+        persistent_workers=num_workers > 0,
     )
-    
-    return train_loader, val_loader, None
+
+    return {"train": train_loader, "val": val_loader}
+
+
+def _worker_init_fn(worker_id: int) -> None:
+    """Give each DataLoader worker a distinct random seed.
+
+    Without this, all workers share the same RNG state at fork time and
+    would generate identical episodes when num_workers > 1.
+    """
+    worker_seed = torch.initial_seed() % (2**32)
+    torch.manual_seed(worker_seed + worker_id)

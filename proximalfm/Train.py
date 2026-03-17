@@ -1,0 +1,419 @@
+from __future__ import annotations
+
+import logging
+import os
+import random
+import time
+from datetime import datetime
+from typing import Tuple
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import yaml
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+
+from proximalfm.Model import PerFeatureTransformerCATE
+from proximalfm.Structure import ProximalPriorConfig
+from proximalfm.PriorDataLoader import create_causal_data_loaders
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def set_seed(seed: int) -> None:
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def format_time(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    elif seconds < 3600:
+        return f"{int(seconds // 60)}m {seconds % 60:.2f}s"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f"{hours}h {minutes}m {seconds % 60:.2f}s"
+
+
+def load_config(config_path: str = "config.yaml") -> dict:
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
+def gaussian_nll_loss(
+    pred_mean: torch.Tensor,
+    pred_log_var: torch.Tensor,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    """Gaussian negative log-likelihood loss.
+
+    Uses the model's predicted heteroscedastic variance so training is a
+    proper scoring rule rather than plain MSE.
+
+    L = 0.5 * (log_var + (target - mean)^2 / var)
+    """
+    return 0.5 * (pred_log_var + (target - pred_mean).pow(2) / pred_log_var.exp()).mean()
+
+
+# ---------------------------------------------------------------------------
+# Trainer
+# ---------------------------------------------------------------------------
+
+class CATETrainer:
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self.train_cfg = config["training"]
+        self.data_cfg  = config["data"]
+        self.prior_cfg = config["prior"]
+        self.model_cfg = config["model"]
+
+        # ------------------------------------------------------------------
+        # Device
+        # ------------------------------------------------------------------
+        requested = self.train_cfg.get("device", "cpu")
+        if requested == "cuda" and torch.cuda.is_available():
+            self.device = torch.device(f"cuda:{self.train_cfg.get('gpu', 0)}")
+        elif requested == "mps" and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+        logger.info(f"Using device: {self.device}")
+
+        # ------------------------------------------------------------------
+        # Model
+        # ------------------------------------------------------------------
+        self.model = PerFeatureTransformerCATE(
+            ninp=self.model_cfg["ninp"],
+            nhead=self.model_cfg["nhead"],
+            nhid=self.model_cfg["nhid"],
+            nlayers=self.model_cfg["nlayers"],
+            layer_norm_with_elementwise_affine=self.model_cfg.get(
+                "layer_norm_with_elementwise_affine", True
+            ),
+        )
+        self.model.to(self.device)
+        n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        logger.info(f"Model parameters: {n_params:,}")
+
+        # ------------------------------------------------------------------
+        # Optimiser + scheduler
+        # ------------------------------------------------------------------
+        self.optimizer = optim.Adam(
+            self.model.parameters(),
+            lr=self.train_cfg["lr"],
+            weight_decay=self.train_cfg["weight_decay"],
+        )
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, mode="min", factor=0.5, patience=5
+        )
+
+        # ------------------------------------------------------------------
+        # Data
+        # ------------------------------------------------------------------
+        prior_config = ProximalPriorConfig(
+            d_x=self.prior_cfg["d_x"],
+            d_z=self.prior_cfg["d_z"],
+            d_w=self.prior_cfg["d_w"],
+            d_u=self.prior_cfg["d_u"],
+            dtype=torch.float32,
+        )
+
+        # create_causal_data_loaders returns {"train": ..., "val": ...}
+        loaders = create_causal_data_loaders(
+            prior_config=prior_config,
+            batch_size=self.data_cfg["batch_size"],
+            samples_per_episode=self.data_cfg["samples_per_episode"],
+            train_episodes=self.data_cfg["train_episodes"],
+            val_episodes=self.data_cfg["val_episodes"],
+            num_workers=self.data_cfg["num_workers"],
+            seed=self.train_cfg["seed"],
+        )
+        self.train_loader = loaders["train"]
+        self.val_loader   = loaders["val"]
+
+        # single_eval_pos: number of rows used as context (train rows).
+        # The remaining rows are the query positions whose ITE is predicted.
+        n = self.data_cfg["samples_per_episode"]
+        self.single_eval_pos = int(n * self.data_cfg.get("context_fraction", 0.8))
+
+        # ------------------------------------------------------------------
+        # Logging + bookkeeping
+        # ------------------------------------------------------------------
+        # Create one SummaryWriter for the entire run (not one per epoch)
+        os.makedirs(self.train_cfg["log_dir"], exist_ok=True)
+        self.writer = SummaryWriter(log_dir=self.train_cfg["log_dir"])
+
+        self.train_losses:  list[float] = []
+        self.val_losses:    list[float] = []
+        self.val_rmses:     list[float] = []
+        self.best_val_loss  = float("inf")
+        self.epoch_times:   list[float] = []
+        self.validation_times: list[float] = []
+        self.total_training_time = 0.0
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _move_batch(self, batch: dict) -> dict:
+        """Move all tensors in a batch dict to self.device (non-blocking)."""
+        return {
+            k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
+
+    def _prepare_inputs(self, batch: dict) -> Tuple[dict, dict, dict, dict, dict, torch.Tensor]:
+        """Reformat a DataLoader batch for the model's forward signature.
+
+        DataLoader returns tensors shaped (B, N, D) where B = batch_size
+        and N = samples_per_episode.  The model expects (N, B, D) — i.e.
+        sequence-first — so we transpose here.
+
+        Returns:
+            x, z, w, a, y  — each dict{"main": Tensor[N, B, D]}
+            ite_query       — Tensor[N_query, B, 1], ground-truth ITE at
+                              query positions only (used for loss computation)
+        """
+        def _to_seq_first(t: torch.Tensor) -> torch.Tensor:
+            # (B, N, D) -> (N, B, D)
+            return t.permute(1, 0, 2).contiguous()
+
+        x = {"main": _to_seq_first(batch["X"])}   # (N, B, d_x)
+        z = {"main": _to_seq_first(batch["Z"])}   # (N, B, d_z)
+        w = {"main": _to_seq_first(batch["W"])}   # (N, B, d_w)
+        a = {"main": _to_seq_first(batch["A"])}   # (N, B, 1)
+        y = {"main": _to_seq_first(batch["Y"])}   # (N, B, 1)
+
+        # Ground-truth ITE at query positions only
+        ite_full = _to_seq_first(batch["ITE"])    # (N, B, 1)
+        ite_query = ite_full[self.single_eval_pos:]  # (N_query, B, 1)
+
+        return x, z, w, a, y, ite_query
+
+    # ------------------------------------------------------------------
+    # Train epoch
+    # ------------------------------------------------------------------
+
+    def train_epoch(self, epoch: int) -> float:
+        self.model.train()
+        total_loss = 0.0
+        epoch_start = time.time()
+
+        with tqdm(
+            self.train_loader,
+            desc=f"Epoch {epoch+1}/{self.train_cfg['epochs']} [Train]",
+        ) as pbar:
+            for batch in pbar:
+                batch = self._move_batch(batch)
+                x, z, w, a, y, ite_query = self._prepare_inputs(batch)
+
+                out = self.model(
+                    x, z, w, a, y,
+                    single_eval_pos=self.single_eval_pos,
+                    zw_mask_prob=self.train_cfg.get("zw_mask_prob", 0.0),
+                    x_mask_prob=self.train_cfg.get("x_mask_prob", 0.0),
+                )
+
+                # Predictions at query positions only: (B, N_query, 1)
+                # Model output is (B, S, 1); slice off the query part
+                pred_mean    = out["cate_mean"][:, self.single_eval_pos:, :]
+                pred_log_var = out["cate_log_var"][:, self.single_eval_pos:, :]
+
+                # ite_query is (N_query, B, 1) — transpose to (B, N_query, 1)
+                target = ite_query.permute(1, 0, 2)
+
+                loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                if self.train_cfg.get("clip_grad", 0.0) > 0:
+                    nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.train_cfg["clip_grad"]
+                    )
+                self.optimizer.step()
+
+                total_loss += loss.item()
+                pbar.set_postfix({"nll_loss": f"{loss.item():.4f}"})
+
+        epoch_time = time.time() - epoch_start
+        self.epoch_times.append(epoch_time)
+        avg_loss = total_loss / len(self.train_loader)
+        self.train_losses.append(avg_loss)
+        logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
+        return avg_loss
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
+    def validate(self, epoch: int) -> Tuple[float, float]:
+        self.model.eval()
+        total_loss   = 0.0
+        sum_sq_err   = 0.0
+        total_samples = 0
+        val_start = time.time()
+
+        with torch.no_grad():
+            with tqdm(
+                self.val_loader,
+                desc=f"Epoch {epoch+1}/{self.train_cfg['epochs']} [Val]",
+            ) as pbar:
+                for batch in pbar:
+                    batch = self._move_batch(batch)
+                    x, z, w, a, y, ite_query = self._prepare_inputs(batch)
+
+                    out = self.model(
+                        x, z, w, a, y,
+                        single_eval_pos=self.single_eval_pos,
+                    )
+
+                    pred_mean    = out["cate_mean"][:, self.single_eval_pos:, :]
+                    pred_log_var = out["cate_log_var"][:, self.single_eval_pos:, :]
+                    target = ite_query.permute(1, 0, 2)
+
+                    loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
+                    total_loss   += loss.item()
+                    sum_sq_err   += (pred_mean - target).pow(2).sum().item()
+                    total_samples += target.numel()
+
+                    pbar.set_postfix({"nll_loss": f"{loss.item():.4f}"})
+
+        val_time = time.time() - val_start
+        self.validation_times.append(val_time)
+
+        avg_loss = total_loss / len(self.val_loader)
+        rmse     = np.sqrt(sum_sq_err / max(total_samples, 1))
+        self.val_losses.append(avg_loss)
+        self.val_rmses.append(rmse)
+        self.scheduler.step(avg_loss)
+        logger.info(f"Epoch {epoch+1} val done in {format_time(val_time)}")
+        return avg_loss, rmse
+
+    # ------------------------------------------------------------------
+    # Checkpointing
+    # ------------------------------------------------------------------
+
+    def save_checkpoint(self, epoch: int, val_loss: float, tag: str = "") -> None:
+        os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "val_loss": val_loss,
+            "epoch_times": self.epoch_times,
+        }
+        name = f"model_epoch_{epoch}{('_' + tag) if tag else ''}.pth"
+        path = os.path.join(self.train_cfg["save_dir"], name)
+        torch.save(checkpoint, path)
+
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            best_path = os.path.join(self.train_cfg["save_dir"], "best_model.pth")
+            torch.save(checkpoint, best_path)
+            logger.info(f"  → New best model (val NLL: {val_loss:.4f})")
+
+    # ------------------------------------------------------------------
+    # TensorBoard logging
+    # ------------------------------------------------------------------
+
+    def log_metrics(
+        self, epoch: int, train_loss: float, val_loss: float, rmse: float
+    ) -> None:
+        self.writer.add_scalar("Loss/train_nll",      train_loss, epoch)
+        self.writer.add_scalar("Loss/val_nll",        val_loss,   epoch)
+        self.writer.add_scalar("Metrics/val_rmse",    rmse,       epoch)
+        self.writer.add_scalar(
+            "Learning_rate",
+            self.optimizer.param_groups[0]["lr"],
+            epoch,
+        )
+        if self.epoch_times:
+            self.writer.add_scalar("Time/epoch_s", self.epoch_times[-1], epoch)
+
+    # ------------------------------------------------------------------
+    # Main training loop
+    # ------------------------------------------------------------------
+
+    def train(self) -> None:
+        training_start = time.time()
+        os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
+
+        early_stop_count = 0
+        best_val_loss    = float("inf")
+
+        for epoch in range(self.train_cfg["epochs"]):
+            train_loss       = self.train_epoch(epoch)
+            val_loss, rmse   = self.validate(epoch)
+
+            logger.info(
+                f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
+                f"train_nll={train_loss:.4f}  val_nll={val_loss:.4f}  "
+                f"val_rmse={rmse:.4f}"
+            )
+            self.log_metrics(epoch, train_loss, val_loss, rmse)
+
+            if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0:
+                self.save_checkpoint(epoch + 1, val_loss)
+
+            if val_loss < best_val_loss:
+                best_val_loss    = val_loss
+                early_stop_count = 0
+            else:
+                early_stop_count += 1
+                if early_stop_count >= self.train_cfg["early_stop"]:
+                    logger.info(f"Early stopping after {epoch+1} epochs.")
+                    break
+
+        self.total_training_time = time.time() - training_start
+        self.save_checkpoint(self.train_cfg["epochs"], val_loss, tag="final")
+        self.writer.close()
+        logger.info("Training complete!")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    config = load_config()
+    set_seed(config["training"]["seed"])
+
+    logger.info(f"Training config: {config['training']}")
+    trainer = CATETrainer(config)
+
+    try:
+        trainer.train()
+    except KeyboardInterrupt:
+        logger.info("Training interrupted by user.")
+    except Exception as e:
+        logger.error(f"Error during training: {e}")
+        raise
+    finally:
+        t = trainer.total_training_time
+        logger.info(f"Total training time:        {format_time(t)}")
+        if trainer.epoch_times:
+            logger.info(f"Mean epoch time:            {format_time(np.mean(trainer.epoch_times))}")
+        if trainer.validation_times:
+            logger.info(f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}")
+
+
+if __name__ == "__main__":
+    main()
