@@ -10,7 +10,8 @@ from .Prior import ProximalPrior, ProximalPriorConfig
 
 
 class ProximalDataset(Dataset):
-    """A PyTorch Dataset that generates proximal causal episodes on-the-fly.
+    """
+    A PyTorch Dataset that generates proximal causal episodes on-the-fly.
 
     Each item is one full episode (a synthetic observational dataset) with
     N = samples_per_episode rows. The variable groups X, Z, W are returned
@@ -33,10 +34,7 @@ class ProximalDataset(Dataset):
         samples_per_episode: int,
         seed_offset: int = 0,
     ) -> None:
-        # Deep-copy so we never mutate the caller's config object
         self.prior_config = copy.deepcopy(prior_config)
-        # Data generation always happens on CPU; the training loop moves
-        # batches to the target device via pin_memory + non_blocking transfer
         self.prior_config.device = "cpu"
 
         # Validate dimensional completeness requirement up front
@@ -67,20 +65,17 @@ class ProximalDataset(Dataset):
             episode_seed=episode_seed,
         )
 
-        # Keep X, Z, W as separate tensors — the transformer assigns different
-        # type embeddings to each group, so merging them here would destroy
-        # the structural information that proximal identification relies on.
-        ITE = episode.Y1 - episode.Y0   # (N,)
+        ITE = episode.Y1 - episode.Y0  # (N,)
 
         return {
-            "X":   episode.X,                   # (N, d_x)
-            "Z":   episode.Z,                   # (N, d_z)
-            "W":   episode.W,                   # (N, d_w)
-            "A":   episode.A.unsqueeze(-1),     # (N, 1)
-            "Y":   episode.Y.unsqueeze(-1),     # (N, 1)
-            "Y0":  episode.Y0.unsqueeze(-1),    # (N, 1)
-            "Y1":  episode.Y1.unsqueeze(-1),    # (N, 1)
-            "ITE": ITE.unsqueeze(-1),           # (N, 1)  — training target
+            "X": episode.X,  # (N, d_x)
+            "Z": episode.Z,  # (N, d_z)
+            "W": episode.W,  # (N, d_w)
+            "A": episode.A.unsqueeze(-1),  # (N, 1)
+            "Y": episode.Y.unsqueeze(-1),  # (N, 1)
+            "Y0": episode.Y0.unsqueeze(-1),  # (N, 1)
+            "Y1": episode.Y1.unsqueeze(-1),  # (N, 1)
+            "ITE": ITE.unsqueeze(-1),  # (N, 1)  — training target
         }
 
 
@@ -93,7 +88,8 @@ def create_causal_data_loaders(
     num_workers: int = 4,
     seed: int = 42,
 ) -> dict[str, DataLoader]:
-    """Create train and validation DataLoaders for ProximalFM.
+    """
+    Create train and validation DataLoaders for ProximalFM.
 
     Train and validation seeds are non-overlapping by construction:
         train episodes use seeds  [seed,              seed + train_episodes)
@@ -160,7 +156,8 @@ def create_causal_data_loaders(
 
 
 def _worker_init_fn(worker_id: int) -> None:
-    """Give each DataLoader worker a distinct random seed.
+    """
+    Give each DataLoader worker a distinct random seed.
 
     Without this, all workers share the same RNG state at fork time and
     would generate identical episodes when num_workers > 1.
