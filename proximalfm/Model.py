@@ -28,12 +28,12 @@ DEFAULT_EMSIZE = 32
 # Variable-type token indices, used by the learnable type embedding.
 # Order must be consistent with TYPE_NAMES below.
 # ---------------------------------------------------------------------------
-TYPE_X    = 0  # baseline covariate
-TYPE_Z    = 1  # treatment-inducing proxy
-TYPE_W    = 2  # outcome-inducing proxy
-TYPE_A    = 3  # treatment
-TYPE_Y    = 4  # outcome
-TYPE_MASK = 5  # unknown / masked type (CFG-style)
+TYPE_X = 0  # baseline covariate
+TYPE_Z = 1  # treatment-inducing proxy
+TYPE_W = 2  # outcome-inducing proxy
+TYPE_A = 3  # treatment
+TYPE_Y = 4  # outcome
+TYPE_MASK = 5  # unknown / masked type
 NUM_TYPES = 6
 
 TYPE_NAMES = ["X", "Z", "W", "A", "Y", "MASK"]
@@ -54,8 +54,22 @@ def isolate_torch_rng(seed: int, device: torch.device) -> Generator[None, None, 
 
 
 class LayerStack(nn.Module):
-    """Similar to nn.Sequential, but with support for passing keyword arguments
-    to layers and stacks the same layer multiple times.
+    """
+    A dynamic container for stacking transformer layers with support for stochastic
+    depth and memory-efficient training.
+
+    Unlike nn.Sequential, this stack handles keyword arguments across all layers
+    and can dynamically adjust its depth during training to improve regularization
+    and inference speed.
+
+    Attributes:
+        layers (nn.ModuleList): The collection of independently initialized layers
+            produced by the layer_creator.
+        num_layers (int): The maximum depth of the stack.
+        min_num_layers_layer_dropout (int): The minimum number of layers to execute
+            during a stochastic forward pass.
+        recompute_each_layer (bool): If True, enables gradient checkpointing to
+            save GPU memory at the cost of compute time.
     """
 
     def __init__(
@@ -105,22 +119,6 @@ class LayerStack(nn.Module):
 
 
 class PerFeatureTransformerCATE(nn.Module):
-    """Proximal causal transformer for ITE estimation.
-
-    The model takes five distinct variable groups as input:
-        X  - baseline covariates
-        Z  - treatment-inducing confounding proxies
-        W  - outcome-inducing confounding proxies
-        A  - binary treatment indicator
-        Y  - factual outcome (NaN at test positions)
-
-    Each group has a dedicated encoder and receives a learnable type embedding
-    so the transformer can distinguish their causal roles.  This implements the
-    variable-type masking scheme: during training the type tokens for Z and W
-    (and optionally X) can be replaced by TYPE_MASK to train the model to infer
-    proxy roles from statistical patterns, analogously to classifier-free
-    guidance.
-    """
 
     def __init__(
         self,
@@ -147,7 +145,6 @@ class PerFeatureTransformerCATE(nn.Module):
         zero_init: bool = True,
         use_separate_decoder: bool = False,
         nlayers_decoder: int | None = None,
-        use_encoder_compression_layer: bool = False,
         precomputed_kv: (
             list[torch.Tensor | tuple[torch.Tensor, torch.Tensor]] | None
         ) = None,
@@ -157,14 +154,24 @@ class PerFeatureTransformerCATE(nn.Module):
     ):
         super().__init__()
 
-        # ------------------------------------------------------------------
-        # Build default encoders for each variable group.
-        # X, Z, W share the same architecture (per-feature linear) but are
-        # separate modules so they can specialise during training.
-        # A and Y use NaN-handling encoders because they are masked at test
-        # positions.
-        # ------------------------------------------------------------------
         def _make_feature_encoder() -> SequentialEncoder:
+            """
+            Creates a per-feature linear encoder for continuous causal variables (X, Z, W).
+
+            This factory method constructs a processing pipeline that projects a single
+            input feature into the transformer's latent embedding space. It follows the
+            Per-Feature-Net (PFN) paradigm where each covariate is treated as an
+            independent token to allow for variable-length input sequences.
+
+            Returns:
+                SequentialEncoder: A pipeline containing a linear layer that maps
+                    an input of dimension 1 to an output of dimension `ninp`.
+
+            Note:
+                num_features is set to 1 because the model rearranges the input
+                tensor to process each column independently before passing it to
+                the transformer's attention mechanism.
+            """
             return SequentialEncoder(
                 LinearInputEncoderStep(
                     num_features=1,
@@ -177,6 +184,23 @@ class PerFeatureTransformerCATE(nn.Module):
             )
 
         def _make_nan_encoder() -> SequentialEncoder:
+            """
+            Creates a specialized encoding pipeline for variables with intentional
+            missingness (Treatment A and Outcome Y).
+
+            This encoder uses a two-step process to handle the 'causal masking'
+            required for in-context learning:
+            1. It imputes NaNs (test positions) with the mean of the observed training
+               data to maintain numerical stability.
+            2. It generates a secondary 'indicator' feature that flags which values
+               were originally NaNs, allowing the transformer to distinguish between
+               real data and query positions.
+
+            Returns:
+                SequentialEncoder: A pipeline that maps a single scalar input
+                    to a dual-feature representation (value + indicator),
+                    projected into the embedding dimension `ninp`.
+            """
             return SequentialEncoder(
                 NanHandlingEncoderStep(),
                 LinearInputEncoderStep(
@@ -222,11 +246,13 @@ class PerFeatureTransformerCATE(nn.Module):
             **layer_kwargs,
         )
         if repeat_same_layer:
+            # weight sharing
             layer = layer_creator()
             layer_creator = lambda: layer
 
         nlayers_encoder = nlayers
         if use_separate_decoder and nlayers_decoder is None:
+            # default to 1/3 of layers in decoder, 2/3 in encoder
             nlayers_decoder = max((nlayers // 3) * 1, 1)
             nlayers_encoder = max((nlayers // 3) * 2, 1)
 
@@ -243,18 +269,6 @@ class PerFeatureTransformerCATE(nn.Module):
             self.transformer_decoder = LayerStack(
                 layer_creator=layer_creator,
                 num_layers=nlayers_decoder,
-            )
-
-        self.global_att_embeddings_for_compression = None
-        if use_encoder_compression_layer:
-            assert use_separate_decoder
-            num_global_att_tokens_for_compression = 512
-            self.global_att_embeddings_for_compression = nn.Embedding(
-                num_global_att_tokens_for_compression, ninp
-            )
-            self.encoder_compression_layer = LayerStack(
-                layer_creator=layer_creator,
-                num_layers=2,
             )
 
         self.feature_positional_embedding = feature_positional_embedding
@@ -275,7 +289,9 @@ class PerFeatureTransformerCATE(nn.Module):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _wrap_dict(self, t: torch.Tensor | dict | None, key: str = "main") -> dict | None:
+    def _wrap_dict(
+        self, t: torch.Tensor | dict | None, key: str = "main"
+    ) -> dict | None:
         """Wrap a raw tensor in a dict if necessary; leave None as None."""
         if t is None:
             return None
@@ -292,20 +308,52 @@ class PerFeatureTransformerCATE(nn.Module):
         batch_size: int,
         single_eval_pos: int,
     ) -> torch.Tensor:
-        """Encode a (seq, batch, features) group through a per-feature encoder.
+        """
+        Transforms a group of tabular features into a sequence of high-dimensional
+        latent tokens for the Transformer.
 
-        Returns shape: (batch, seq, num_features, ninp)
+        This method implements the 'per-feature' encoding strategy. It
+        rearranges the input tensors so that each individual column is processed
+        by the encoder independently, effectively treating each feature-subject
+        pair as a unique token in the Transformer's context window.
+
+        Args:
+            tensor_dict (dict): A dictionary containing the raw feature tensors
+                under the 'main' key, with shape (seq_len, batch_size, num_features).
+            encoder (nn.Module): The encoding pipeline (e.g., LinearInputEncoder)
+                used to project scalar features into the embedding space.
+            seq_len (int): The number of subjects (rows) in the dataset.
+            batch_size (int): The number of independent datasets in the batch.
+            single_eval_pos (int): The index marking the boundary between
+                observational training data and interventional test queries.
+
+        Returns:
+            torch.Tensor: An encoded tensor of shape (batch, seq, num_features, ninp),
+                where 'ninp' is the model's internal embedding dimension.
+
+        Note:
+            The function uses einops to temporarily merge the batch and feature
+            dimensions during encoding to leverage vectorized operations across
+            all variables simultaneously.
         """
         # Pad to multiple of features_per_group
         for k in tensor_dict:
             nf = tensor_dict[k].shape[2]
-            pad = (self.features_per_group - nf % self.features_per_group) % self.features_per_group
+            pad = (
+                self.features_per_group - nf % self.features_per_group
+            ) % self.features_per_group
             if pad > 0:
                 tensor_dict[k] = torch.cat(
-                    [tensor_dict[k],
-                     torch.zeros(seq_len, batch_size, pad,
-                                 device=tensor_dict[k].device,
-                                 dtype=tensor_dict[k].dtype)],
+                    [
+                        tensor_dict[k],
+                        torch.zeros(
+                            seq_len,
+                            batch_size,
+                            pad,
+                            device=tensor_dict[k].device,
+                            dtype=tensor_dict[k].dtype,
+                        ),
+                    ],
                     dim=-1,
                 )
 
@@ -333,7 +381,8 @@ class PerFeatureTransformerCATE(nn.Module):
         encoder: nn.Module,
         single_eval_pos: int,
     ) -> torch.Tensor:
-        """Encode a scalar group (A or Y) that may contain NaNs.
+        """
+        Encode a scalar group (A or Y) that may contain NaNs.
 
         Returns shape: (batch, seq, ninp)
         """
@@ -350,7 +399,8 @@ class PerFeatureTransformerCATE(nn.Module):
         type_id: int,
         mask_prob: float = 0.0,
     ) -> torch.Tensor:
-        """Add the learnable type embedding to a (batch, seq, features, ninp) tensor.
+        """
+        Add the learnable type embedding to a (batch, seq, features, ninp) tensor.
 
         If mask_prob > 0 (training with CFG-style masking), each feature token
         is independently replaced by TYPE_MASK with probability mask_prob.
@@ -410,24 +460,31 @@ class PerFeatureTransformerCATE(nn.Module):
             return t.to(device=device, dtype=dtype)
 
         X_train, Z_train, W_train = _to(X_train), _to(Z_train), _to(W_train)
-        A_train, Y_train          = _to(A_train), _to(Y_train)
-        X_test,  Z_test,  W_test  = _to(X_test),  _to(Z_test),  _to(W_test)
+        A_train, Y_train = _to(A_train), _to(Y_train)
+        X_test, Z_test, W_test = _to(X_test), _to(Z_test), _to(W_test)
 
         n_tr, n_te = X_train.shape[0], X_test.shape[0]
         single_eval_pos = n_tr
 
-        nan_a = torch.full((n_te, A_train.shape[1]), torch.nan, device=device, dtype=dtype)
-        nan_y = torch.full((n_te, Y_train.shape[1]), torch.nan, device=device, dtype=dtype)
+        nan_a = torch.full(
+            (n_te, A_train.shape[1]), torch.nan, device=device, dtype=dtype
+        )
+        nan_y = torch.full(
+            (n_te, Y_train.shape[1]), torch.nan, device=device, dtype=dtype
+        )
 
-        X_all = torch.cat([X_train, X_test], dim=0).unsqueeze(1)   # (S, 1, Dx)
-        Z_all = torch.cat([Z_train, Z_test],  dim=0).unsqueeze(1)   # (S, 1, Dz)
-        W_all = torch.cat([W_train, W_test],  dim=0).unsqueeze(1)   # (S, 1, Dw)
-        A_all = torch.cat([A_train, nan_a],   dim=0).unsqueeze(1)   # (S, 1, 1)
-        Y_all = torch.cat([Y_train, nan_y],   dim=0).unsqueeze(1)   # (S, 1, 1)
+        X_all = torch.cat([X_train, X_test], dim=0).unsqueeze(1)  # (S, 1, Dx)
+        Z_all = torch.cat([Z_train, Z_test], dim=0).unsqueeze(1)  # (S, 1, Dz)
+        W_all = torch.cat([W_train, W_test], dim=0).unsqueeze(1)  # (S, 1, Dw)
+        A_all = torch.cat([A_train, nan_a], dim=0).unsqueeze(1)  # (S, 1, 1)
+        Y_all = torch.cat([Y_train, nan_y], dim=0).unsqueeze(1)  # (S, 1, 1)
 
         return (
-            {"main": X_all}, {"main": Z_all}, {"main": W_all},
-            {"main": A_all}, {"main": Y_all},
+            {"main": X_all},
+            {"main": Z_all},
+            {"main": W_all},
+            {"main": A_all},
+            {"main": Y_all},
             single_eval_pos,
         )
 
@@ -442,6 +499,9 @@ class PerFeatureTransformerCATE(nn.Module):
         X_test: torch.Tensor,
         Z_test: torch.Tensor,
         W_test: torch.Tensor,
+        *,
+        device: torch.device | None = None,
+        dtype: torch.dtype | None = None,
         **forward_kwargs,
     ) -> dict[str, torch.Tensor]:
         """Zero-shot proximal ITE estimation.
@@ -459,14 +519,23 @@ class PerFeatureTransformerCATE(nn.Module):
                 "cate_std"   — predicted ITE std-dev,  shape [N_te]
         """
         x, z, w, a, y, single_eval_pos = self._pack_eval_io(
-            X_train, Z_train, W_train, A_train, Y_train,
-            X_test,  Z_test,  W_test,
+            X_train,
+            Z_train,
+            W_train,
+            A_train,
+            Y_train,
+            X_test,
+            Z_test,
+            W_test,
+            device=device,
+            dtype=dtype,
         )
-        out = self.forward(x, z, w, a, y,
-                           single_eval_pos=single_eval_pos, **forward_kwargs)
+        out = self.forward(
+            x, z, w, a, y, single_eval_pos=single_eval_pos, **forward_kwargs
+        )
 
         cate_mean = out["cate_mean"][:, single_eval_pos:, :].squeeze()
-        cate_std  = out["cate_std"][:, single_eval_pos:, :].squeeze()
+        cate_std = out["cate_std"][:, single_eval_pos:, :].squeeze()
         return {"cate_mean": cate_mean, "cate_std": cate_std}
 
     def forward(
@@ -478,11 +547,8 @@ class PerFeatureTransformerCATE(nn.Module):
         y: torch.Tensor | dict | None = None,
         single_eval_pos: int | None = None,
         *,
-        # CFG-style type masking probabilities (active only during training).
-        # Z and W are masked jointly: a single Bernoulli draw applies to both,
-        # preventing the degenerate case where only one proxy role is unknown.
         zw_mask_prob: float = 0.0,
-        x_mask_prob:  float = 0.0,
+        x_mask_prob: float = 0.0,
         style: torch.Tensor | None = None,
         data_dags: list[Any] | None = None,
         categorical_inds: list[int] | None = None,
@@ -517,14 +583,20 @@ class PerFeatureTransformerCATE(nn.Module):
         device, dtype = x["main"].device, x["main"].dtype
 
         if a is None:
-            a = {"main": torch.full((seq_len, batch_size, 1), torch.nan,
-                                    device=device, dtype=dtype)}
+            a = {
+                "main": torch.full(
+                    (seq_len, batch_size, 1), torch.nan, device=device, dtype=dtype
+                )
+            }
         else:
             a = self._wrap_dict(a)
 
         if y is None:
-            y = {"main": torch.full((seq_len, batch_size, 1), torch.nan,
-                                    device=device, dtype=dtype)}
+            y = {
+                "main": torch.full(
+                    (seq_len, batch_size, 1), torch.nan, device=device, dtype=dtype
+                )
+            }
         else:
             y = self._wrap_dict(y)
 
@@ -568,12 +640,16 @@ class PerFeatureTransformerCATE(nn.Module):
         # --- A ---
         embedded_a = self._encode_scalar_group(
             dict(a), self.a_encoder, single_eval_pos_
-        ).unsqueeze(2)  # (b, s, 1, e)
+        ).unsqueeze(
+            2
+        )  # (b, s, 1, e)
 
         # --- Y ---
         embedded_y = self._encode_scalar_group(
             dict(y), self.y_encoder, single_eval_pos_
-        ).unsqueeze(2)  # (b, s, 1, e)
+        ).unsqueeze(
+            2
+        )  # (b, s, 1, e)
 
         del x, z, w, a, y
 
@@ -595,13 +671,13 @@ class PerFeatureTransformerCATE(nn.Module):
             z_type_ids = torch.where(
                 z_mask,
                 torch.full_like(z_mask, TYPE_MASK, dtype=torch.long),
-                torch.full_like(z_mask, TYPE_Z,    dtype=torch.long),
+                torch.full_like(z_mask, TYPE_Z, dtype=torch.long),
             ).expand(batch_size, seq_len, num_z_features)
 
             w_type_ids = torch.where(
                 w_mask,
                 torch.full_like(w_mask, TYPE_MASK, dtype=torch.long),
-                torch.full_like(w_mask, TYPE_W,    dtype=torch.long),
+                torch.full_like(w_mask, TYPE_W, dtype=torch.long),
             ).expand(batch_size, seq_len, num_w_features)
 
             embedded_z = embedded_z + self.type_embedding(z_type_ids)
@@ -614,10 +690,14 @@ class PerFeatureTransformerCATE(nn.Module):
 
         # A and Y have fixed, never-masked type embeddings
         a_type = self.type_embedding(
-            torch.full((batch_size, seq_len, 1), TYPE_A, device=device, dtype=torch.long)
+            torch.full(
+                (batch_size, seq_len, 1), TYPE_A, device=device, dtype=torch.long
+            )
         )
         y_type = self.type_embedding(
-            torch.full((batch_size, seq_len, 1), TYPE_Y, device=device, dtype=torch.long)
+            torch.full(
+                (batch_size, seq_len, 1), TYPE_Y, device=device, dtype=torch.long
+            )
         )
         embedded_a = embedded_a + a_type
         embedded_y = embedded_y + y_type
@@ -676,27 +756,37 @@ class PerFeatureTransformerCATE(nn.Module):
         # weighted sum: the A-token representation is upweighted relative to
         # the mean of all other tokens.
         # ------------------------------------------------------------------
-        n_feature_tokens = encoder_out.shape[2]
-        a_token_idx = num_x_features + num_z_features + num_w_features  # first of the two scalar tokens
+        a_token_idx = (
+            num_x_features + num_z_features + num_w_features
+        )  # first of the two scalar tokens
 
-        a_repr    = encoder_out[:, :, a_token_idx, :]            # (b, s, e)
+        a_repr = encoder_out[:, :, a_token_idx, :]  # (b, s, e)
         other_repr = torch.cat(
-            [encoder_out[:, :, :a_token_idx, :],
-             encoder_out[:, :, a_token_idx + 1:, :]], dim=2
-        ).mean(dim=2)                                            # (b, s, e)
+            [
+                encoder_out[:, :, :a_token_idx, :],
+                encoder_out[:, :, a_token_idx + 1 :, :],
+            ],
+            dim=2,
+        ).mean(
+            dim=2
+        )  # (b, s, e)
 
-        cate_representation = a_repr + other_repr                # (b, s, e)
+        cate_representation = a_repr + other_repr  # (b, s, e)
 
         # Predict mean and log-variance for a Gaussian NLL training loss
-        ite_params = self.ite_head(cate_representation)          # (b, s, 2)
-        cate_mean  = ite_params[..., 0:1]                        # (b, s, 1)
-        cate_log_var = ite_params[..., 1:2]                      # (b, s, 1)
-        cate_std   = torch.exp(0.5 * cate_log_var)               # (b, s, 1)
+        ite_params = self.ite_head(cate_representation)  # (b, s, 2)
+        cate_mean = ite_params[..., 0:1]  # (b, s, 1)
+        cate_log_var = ite_params[..., 1:2]  # (b, s, 1)
+        cate_std = torch.exp(0.5 * cate_log_var)  # (b, s, 1)
 
-        return {"cate_mean": cate_mean, "cate_std": cate_std, "cate_log_var": cate_log_var}
+        return {
+            "cate_mean": cate_mean,
+            "cate_std": cate_std,
+            "cate_log_var": cate_log_var,
+        }
 
     # ------------------------------------------------------------------
-    # Positional embedding (unchanged logic, renamed for clarity)
+    # Positional embedding
     # ------------------------------------------------------------------
 
     def _add_feature_positional_embeddings(
@@ -707,19 +797,53 @@ class PerFeatureTransformerCATE(nn.Module):
         num_features: int,
         seq_len: int,
     ) -> torch.Tensor:
+        """
+        Injects feature-specific identifiers into the latent embeddings to
+        preserve column identity across subjects.
+
+        Because Transformers are naturally permutation-invariant, they cannot
+        distinguish between different covariates of the same type (e.g., two
+        different 'X' variables) without these embeddings[cite: 154]. This method
+        breaks that symmetry, allowing the model to track the specific influence
+        of individual proxies consistently throughout the context window[cite: 115, 154].
+
+        Args:
+            embedded_input (torch.Tensor): The latent representation of the dataset
+                with shape (batch, seq, num_features, ninp)[cite: 115].
+            data_dags (Iterable[nx.DiGraph] | None): Optional structural causal graphs
+                associated with each batch (reserved for future DAG-aware encoding)[cite: 90].
+            num_features (int): The total number of feature tokens per subject.
+            seq_len (int): The total number of subjects in the in-context sequence.
+
+        Returns:
+            torch.Tensor: The input tensor with additive positional noise or
+                learned vectors, maintaining the original shape[cite: 154].
+
+        Supported Modes:
+            - 'normal_rand_vec' / 'uni_rand_vec': Adds fixed random noise to
+              uniquely identify each feature slot via random projections[cite: 154].
+            - 'learned': Uses a learnable embedding table to assign a
+              distinct vector to each feature index[cite: 154].
+            - 'subspace': Projects random noise through a linear layer to
+              constrain feature identities to a specific latent subspace.
+        """
         with isolate_torch_rng(self.seed, device=embedded_input.device):
             if self.feature_positional_embedding == "normal_rand_vec":
                 embs = torch.randn(
                     (embedded_input.shape[2], embedded_input.shape[3]),
-                    device=embedded_input.device, dtype=embedded_input.dtype,
+                    device=embedded_input.device,
+                    dtype=embedded_input.dtype,
                 )
                 embedded_input = embedded_input + embs[None, None]
             elif self.feature_positional_embedding == "uni_rand_vec":
                 embs = (
                     torch.rand(
                         (embedded_input.shape[2], embedded_input.shape[3]),
-                        device=embedded_input.device, dtype=embedded_input.dtype,
-                    ) * 2 - 1
+                        device=embedded_input.device,
+                        dtype=embedded_input.dtype,
+                    )
+                    * 2
+                    - 1
                 )
                 embedded_input = embedded_input + embs[None, None]
             elif self.feature_positional_embedding == "learned":
@@ -729,21 +853,9 @@ class PerFeatureTransformerCATE(nn.Module):
             elif self.feature_positional_embedding == "subspace":
                 embs = torch.randn(
                     (embedded_input.shape[2], embedded_input.shape[3] // 4),
-                    device=embedded_input.device, dtype=embedded_input.dtype,
+                    device=embedded_input.device,
+                    dtype=embedded_input.dtype,
                 )
                 embs = self.feature_positional_embedding_embeddings(embs)
                 embedded_input = embedded_input + embs[None, None]
         return embedded_input
-
-    # ------------------------------------------------------------------
-    # Utility
-    # ------------------------------------------------------------------
-
-    def reset_save_peak_mem_factor(self, factor: int | None = None) -> None:
-        for layer in self.transformer_encoder.layers:
-            assert hasattr(layer, "save_peak_mem_factor")
-            layer.save_peak_mem_factor = factor
-
-    def empty_trainset_representation_cache(self) -> None:
-        for layer in (self.transformer_decoder or self.transformer_encoder).layers:
-            layer.empty_trainset_representation_cache()
