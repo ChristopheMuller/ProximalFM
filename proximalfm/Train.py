@@ -4,7 +4,6 @@ import logging
 import os
 import random
 import time
-from datetime import datetime
 from typing import Tuple
 
 import numpy as np
@@ -30,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
+
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -63,25 +63,29 @@ def gaussian_nll_loss(
     pred_log_var: torch.Tensor,
     target: torch.Tensor,
 ) -> torch.Tensor:
-    """Gaussian negative log-likelihood loss.
+    """
+    Gaussian negative log-likelihood loss.
 
     Uses the model's predicted heteroscedastic variance so training is a
     proper scoring rule rather than plain MSE.
 
     L = 0.5 * (log_var + (target - mean)^2 / var)
     """
-    return 0.5 * (pred_log_var + (target - pred_mean).pow(2) / pred_log_var.exp()).mean()
+    return (
+        0.5 * (pred_log_var + (target - pred_mean).pow(2) / pred_log_var.exp()).mean()
+    )
 
 
 # ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
 
+
 class CATETrainer:
     def __init__(self, config: dict) -> None:
         self.config = config
         self.train_cfg = config["training"]
-        self.data_cfg  = config["data"]
+        self.data_cfg = config["data"]
         self.prior_cfg = config["prior"]
         self.model_cfg = config["model"]
 
@@ -100,6 +104,9 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Model
         # ------------------------------------------------------------------
+        dtype_str = self.model_cfg.get("dtype", "float32")
+        self.dtype = getattr(torch, dtype_str)
+
         self.model = PerFeatureTransformerCATE(
             ninp=self.model_cfg["ninp"],
             nhead=self.model_cfg["nhead"],
@@ -109,7 +116,7 @@ class CATETrainer:
                 "layer_norm_with_elementwise_affine", True
             ),
         )
-        self.model.to(self.device)
+        self.model.to(self.device, dtype=self.dtype)
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         logger.info(f"Model parameters: {n_params:,}")
 
@@ -133,7 +140,7 @@ class CATETrainer:
             d_z=self.prior_cfg["d_z"],
             d_w=self.prior_cfg["d_w"],
             d_u=self.prior_cfg["d_u"],
-            dtype=torch.float32,
+            dtype=self.dtype,
         )
 
         # create_causal_data_loaders returns {"train": ..., "val": ...}
@@ -147,7 +154,7 @@ class CATETrainer:
             seed=self.train_cfg["seed"],
         )
         self.train_loader = loaders["train"]
-        self.val_loader   = loaders["val"]
+        self.val_loader = loaders["val"]
 
         # single_eval_pos: number of rows used as context (train rows).
         # The remaining rows are the query positions whose ITE is predicted.
@@ -161,11 +168,11 @@ class CATETrainer:
         os.makedirs(self.train_cfg["log_dir"], exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.train_cfg["log_dir"])
 
-        self.train_losses:  list[float] = []
-        self.val_losses:    list[float] = []
-        self.val_rmses:     list[float] = []
-        self.best_val_loss  = float("inf")
-        self.epoch_times:   list[float] = []
+        self.train_losses: list[float] = []
+        self.val_losses: list[float] = []
+        self.val_rmses: list[float] = []
+        self.best_val_loss = float("inf")
+        self.epoch_times: list[float] = []
         self.validation_times: list[float] = []
         self.total_training_time = 0.0
 
@@ -176,12 +183,19 @@ class CATETrainer:
     def _move_batch(self, batch: dict) -> dict:
         """Move all tensors in a batch dict to self.device (non-blocking)."""
         return {
-            k: v.to(self.device, non_blocking=True) if isinstance(v, torch.Tensor) else v
+            k: (
+                v.to(self.device, non_blocking=True)
+                if isinstance(v, torch.Tensor)
+                else v
+            )
             for k, v in batch.items()
         }
 
-    def _prepare_inputs(self, batch: dict) -> Tuple[dict, dict, dict, dict, dict, torch.Tensor]:
-        """Reformat a DataLoader batch for the model's forward signature.
+    def _prepare_inputs(
+        self, batch: dict
+    ) -> Tuple[dict, dict, dict, dict, dict, torch.Tensor]:
+        """
+        Reformat a DataLoader batch for the model's forward signature.
 
         DataLoader returns tensors shaped (B, N, D) where B = batch_size
         and N = samples_per_episode.  The model expects (N, B, D) — i.e.
@@ -192,19 +206,20 @@ class CATETrainer:
             ite_query       — Tensor[N_query, B, 1], ground-truth ITE at
                               query positions only (used for loss computation)
         """
+
         def _to_seq_first(t: torch.Tensor) -> torch.Tensor:
             # (B, N, D) -> (N, B, D)
             return t.permute(1, 0, 2).contiguous()
 
-        x = {"main": _to_seq_first(batch["X"])}   # (N, B, d_x)
-        z = {"main": _to_seq_first(batch["Z"])}   # (N, B, d_z)
-        w = {"main": _to_seq_first(batch["W"])}   # (N, B, d_w)
-        a = {"main": _to_seq_first(batch["A"])}   # (N, B, 1)
-        y = {"main": _to_seq_first(batch["Y"])}   # (N, B, 1)
+        x = {"main": _to_seq_first(batch["X"])}  # (N, B, d_x)
+        z = {"main": _to_seq_first(batch["Z"])}  # (N, B, d_z)
+        w = {"main": _to_seq_first(batch["W"])}  # (N, B, d_w)
+        a = {"main": _to_seq_first(batch["A"])}  # (N, B, 1)
+        y = {"main": _to_seq_first(batch["Y"])}  # (N, B, 1)
 
         # Ground-truth ITE at query positions only
-        ite_full = _to_seq_first(batch["ITE"])    # (N, B, 1)
-        ite_query = ite_full[self.single_eval_pos:]  # (N_query, B, 1)
+        ite_full = _to_seq_first(batch["ITE"])  # (N, B, 1)
+        ite_query = ite_full[self.single_eval_pos :]  # (N_query, B, 1)
 
         return x, z, w, a, y, ite_query
 
@@ -226,7 +241,11 @@ class CATETrainer:
                 x, z, w, a, y, ite_query = self._prepare_inputs(batch)
 
                 out = self.model(
-                    x, z, w, a, y,
+                    x,
+                    z,
+                    w,
+                    a,
+                    y,
                     single_eval_pos=self.single_eval_pos,
                     zw_mask_prob=self.train_cfg.get("zw_mask_prob", 0.0),
                     x_mask_prob=self.train_cfg.get("x_mask_prob", 0.0),
@@ -234,8 +253,8 @@ class CATETrainer:
 
                 # Predictions at query positions only: (B, N_query, 1)
                 # Model output is (B, S, 1); slice off the query part
-                pred_mean    = out["cate_mean"][:, self.single_eval_pos:, :]
-                pred_log_var = out["cate_log_var"][:, self.single_eval_pos:, :]
+                pred_mean = out["cate_mean"][:, self.single_eval_pos :, :]
+                pred_log_var = out["cate_log_var"][:, self.single_eval_pos :, :]
 
                 # ite_query is (N_query, B, 1) — transpose to (B, N_query, 1)
                 target = ite_query.permute(1, 0, 2)
@@ -266,8 +285,8 @@ class CATETrainer:
 
     def validate(self, epoch: int) -> Tuple[float, float]:
         self.model.eval()
-        total_loss   = 0.0
-        sum_sq_err   = 0.0
+        total_loss = 0.0
+        sum_sq_err = 0.0
         total_samples = 0
         val_start = time.time()
 
@@ -281,17 +300,21 @@ class CATETrainer:
                     x, z, w, a, y, ite_query = self._prepare_inputs(batch)
 
                     out = self.model(
-                        x, z, w, a, y,
+                        x,
+                        z,
+                        w,
+                        a,
+                        y,
                         single_eval_pos=self.single_eval_pos,
                     )
 
-                    pred_mean    = out["cate_mean"][:, self.single_eval_pos:, :]
-                    pred_log_var = out["cate_log_var"][:, self.single_eval_pos:, :]
+                    pred_mean = out["cate_mean"][:, self.single_eval_pos :, :]
+                    pred_log_var = out["cate_log_var"][:, self.single_eval_pos :, :]
                     target = ite_query.permute(1, 0, 2)
 
                     loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
-                    total_loss   += loss.item()
-                    sum_sq_err   += (pred_mean - target).pow(2).sum().item()
+                    total_loss += loss.item()
+                    sum_sq_err += (pred_mean - target).pow(2).sum().item()
                     total_samples += target.numel()
 
                     pbar.set_postfix({"nll_loss": f"{loss.item():.4f}"})
@@ -300,7 +323,7 @@ class CATETrainer:
         self.validation_times.append(val_time)
 
         avg_loss = total_loss / len(self.val_loader)
-        rmse     = np.sqrt(sum_sq_err / max(total_samples, 1))
+        rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
         self.val_losses.append(avg_loss)
         self.val_rmses.append(rmse)
         self.scheduler.step(avg_loss)
@@ -337,9 +360,9 @@ class CATETrainer:
     def log_metrics(
         self, epoch: int, train_loss: float, val_loss: float, rmse: float
     ) -> None:
-        self.writer.add_scalar("Loss/train_nll",      train_loss, epoch)
-        self.writer.add_scalar("Loss/val_nll",        val_loss,   epoch)
-        self.writer.add_scalar("Metrics/val_rmse",    rmse,       epoch)
+        self.writer.add_scalar("Loss/train_nll", train_loss, epoch)
+        self.writer.add_scalar("Loss/val_nll", val_loss, epoch)
+        self.writer.add_scalar("Metrics/val_rmse", rmse, epoch)
         self.writer.add_scalar(
             "Learning_rate",
             self.optimizer.param_groups[0]["lr"],
@@ -357,11 +380,11 @@ class CATETrainer:
         os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
 
         early_stop_count = 0
-        best_val_loss    = float("inf")
+        best_val_loss = float("inf")
 
         for epoch in range(self.train_cfg["epochs"]):
-            train_loss       = self.train_epoch(epoch)
-            val_loss, rmse   = self.validate(epoch)
+            train_loss = self.train_epoch(epoch)
+            val_loss, rmse = self.validate(epoch)
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
@@ -374,7 +397,7 @@ class CATETrainer:
                 self.save_checkpoint(epoch + 1, val_loss)
 
             if val_loss < best_val_loss:
-                best_val_loss    = val_loss
+                best_val_loss = val_loss
                 early_stop_count = 0
             else:
                 early_stop_count += 1
@@ -391,6 +414,7 @@ class CATETrainer:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     config = load_config()
@@ -410,9 +434,13 @@ def main() -> None:
         t = trainer.total_training_time
         logger.info(f"Total training time:        {format_time(t)}")
         if trainer.epoch_times:
-            logger.info(f"Mean epoch time:            {format_time(np.mean(trainer.epoch_times))}")
+            logger.info(
+                f"Mean epoch time:            {format_time(np.mean(trainer.epoch_times))}"
+            )
         if trainer.validation_times:
-            logger.info(f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}")
+            logger.info(
+                f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}"
+            )
 
 
 if __name__ == "__main__":
