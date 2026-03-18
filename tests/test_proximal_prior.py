@@ -1,14 +1,78 @@
+import unittest.mock
 import pytest
 import torch
 
 from proximalfm.Prior import ProximalPrior
-from proximalfm.Structure import ProximalPriorConfig
+from proximalfm.Structure import ProximalPriorConfig, NetworkSpec
 
 
 @pytest.fixture
 def prior() -> ProximalPrior:
     return ProximalPrior(seed=42)
 
+
+def test_episode_normalization(prior: ProximalPrior) -> None:
+    # Test with normalization (default)
+    prior.config.normalize_episode = True
+    ep_norm = prior.generate_episode(batch_size=1000, episode_seed=6)
+
+    # Check that variables have roughly zero mean and unit variance
+    assert torch.allclose(ep_norm.X.mean(dim=0), torch.zeros_like(ep_norm.X.mean(dim=0)), atol=0.1)
+    assert torch.allclose(ep_norm.X.std(dim=0), torch.ones_like(ep_norm.X.std(dim=0)), atol=0.1)
+
+    assert torch.isclose(ep_norm.Y.mean(), torch.tensor(0.0), atol=0.1)
+    # The std is based on [Y0, Y1], so Y's std will be roughly 1
+    assert torch.isclose(ep_norm.Y.std(), torch.tensor(1.0), atol=0.2)
+
+    # Test without normalization
+    prior.config.normalize_episode = False
+    ep_unnorm = prior.generate_episode(batch_size=1000, episode_seed=6)
+
+    # Check that they differ, proving normalization was skipped
+    assert not torch.allclose(ep_unnorm.X.mean(dim=0), torch.zeros_like(ep_unnorm.X.mean(dim=0)), atol=0.1)
+
+def test_episode_extreme_temperature() -> None:
+    # High temperature -> propensities close to 0.5
+    config_high = ProximalPriorConfig(temperature=100.0, min_propensity=0.0, max_propensity=1.0)
+    prior_high = ProximalPrior(config=config_high, seed=7)
+    ep_high = prior_high.generate_episode(batch_size=1000, episode_seed=7)
+
+    # Sigmoid of near 0 is 0.5
+    assert torch.allclose(ep_high.propensity.mean(), torch.tensor(0.5), atol=0.05)
+
+    # Low temperature -> extreme propensities (close to min/max bounds)
+    config_low = ProximalPriorConfig(temperature=0.001, min_propensity=0.1, max_propensity=0.9)
+    prior_low = ProximalPrior(config=config_low, seed=8)
+    ep_low = prior_low.generate_episode(batch_size=1000, episode_seed=8)
+
+    # We should see many clamped values at the bounds
+    prop = ep_low.propensity
+    num_clamped = ((torch.isclose(prop, torch.tensor(0.1))) | (torch.isclose(prop, torch.tensor(0.9)))).sum().item()
+    assert num_clamped > 500  # More than half should be clamped at extremes
+
+def test_init_defaults() -> None:
+    # Ensure it can be initialized without arguments
+    default_prior = ProximalPrior()
+    assert isinstance(default_prior.config, ProximalPriorConfig)
+    assert default_prior.seed is None
+
+def test_episode_batch_size_one(prior: ProximalPrior) -> None:
+    # A batch size of 1 is tricky for standardization, but check it doesn't crash
+    # and gives NaNs gracefully due to pytorch's std() behavior on single elements
+    # Since std over 1 element returns nan, and nan + 1e-8 is nan, (val - mean) / nan -> nan
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ep = prior.generate_episode(batch_size=1, episode_seed=9)
+
+    assert ep.X.shape[0] == 1
+    assert ep.Y.shape[0] == 1
+    # Normalization with PyTorch defaults causes NaNs on single batches for X, Z, W
+    assert torch.isnan(ep.X).all()
+    assert torch.isnan(ep.Z).all()
+    assert torch.isnan(ep.W).all()
+    # Y on the other hand stacks Y0 and Y1, so its std uses 2 elements and does not return nan
+    assert not torch.isnan(ep.Y).any()
 
 def test_episode_shapes_and_sizes(prior: ProximalPrior) -> None:
     episode = prior.generate_episode(batch_size=16, episode_seed=0)
@@ -86,6 +150,80 @@ def test_invalid_config_dw_too_small() -> None:
     config = ProximalPriorConfig(d_u=4, d_z=6, d_w=3)
     with pytest.raises(ValueError):
         ProximalPrior(config=config)
+
+def test_make_generator_deterministic(prior: ProximalPrior) -> None:
+    # Same episode seed -> same sequence of numbers
+    gen1 = prior._make_generator(episode_seed=123)
+    gen2 = prior._make_generator(episode_seed=123)
+    val1 = torch.rand(10, generator=gen1)
+    val2 = torch.rand(10, generator=gen2)
+    assert torch.allclose(val1, val2)
+
+    # Different episode seed -> different sequence of numbers
+    gen3 = prior._make_generator(episode_seed=124)
+    val3 = torch.rand(10, generator=gen3)
+    assert not torch.allclose(val1, val3)
+
+def test_random_bnn_shape(prior: ProximalPrior) -> None:
+    gen = prior._make_generator(episode_seed=2)
+    inputs = torch.randn(10, 5, generator=gen)
+    spec = NetworkSpec(num_layers=3, hidden_size=8, weight_scale=1.0, bias_scale=0.1)
+
+    output_dim = 4
+    output = prior._random_bnn(inputs=inputs, output_dim=output_dim, spec=spec, generator=gen)
+
+    assert list(output.shape) == [10, output_dim]
+
+def test_random_bnn_single_layer(prior: ProximalPrior) -> None:
+    gen = prior._make_generator(episode_seed=3)
+    inputs = torch.randn(10, 5, generator=gen)
+    spec = NetworkSpec(num_layers=1, hidden_size=8, weight_scale=1.0, bias_scale=0.1)
+
+    output_dim = 4
+    output = prior._random_bnn(inputs=inputs, output_dim=output_dim, spec=spec, generator=gen)
+
+    assert list(output.shape) == [10, output_dim]
+
+@pytest.mark.parametrize("regime", ["u_to_x", "x_to_u", "shared"])
+def test_generate_x_u_regimes(prior: ProximalPrior, regime: str) -> None:
+    gen = prior._make_generator(episode_seed=5)
+    batch_size = 12
+    with unittest.mock.patch.object(prior, "_sample_regime", return_value=regime):
+        X, U = prior._generate_x_u(batch_size=batch_size, generator=gen)
+
+        assert list(X.shape) == [batch_size, prior.config.d_x]
+        assert list(U.shape) == [batch_size, prior.config.d_u]
+
+def test_sample_regime(prior: ProximalPrior) -> None:
+    gen = prior._make_generator(episode_seed=4)
+    regimes_sampled = set()
+    expected_regimes = {"u_to_x", "x_to_u", "shared"}
+
+    # Run enough times to with high probability see all three
+    for _ in range(100):
+        regimes_sampled.add(prior._sample_regime(gen))
+
+    assert regimes_sampled.issubset(expected_regimes)
+    assert regimes_sampled == expected_regimes
+
+def test_noise_shape_and_scale(prior: ProximalPrior) -> None:
+    gen = prior._make_generator(episode_seed=1)
+    shape = [1000, 5]
+    scale = 0.5
+    noise = prior._noise(shape=shape, scale=scale, generator=gen)
+
+    assert list(noise.shape) == shape
+    assert torch.isclose(noise.mean(), torch.tensor(0.0), atol=0.05)
+    assert torch.isclose(noise.std(), torch.tensor(scale), atol=0.05)
+
+def test_make_generator_non_deterministic() -> None:
+    # If prior has no seed and episode_seed is None, it should use completely random seed
+    prior_no_seed = ProximalPrior(seed=None)
+    gen1 = prior_no_seed._make_generator(episode_seed=None)
+    gen2 = prior_no_seed._make_generator(episode_seed=None)
+    val1 = torch.rand(10, generator=gen1)
+    val2 = torch.rand(10, generator=gen2)
+    assert not torch.allclose(val1, val2)
 
 def test_generate_dataset_num_workers(prior: ProximalPrior) -> None:
     num_episodes = 4
