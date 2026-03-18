@@ -2,3 +2,4 @@
 logs/*
 checkpoints/*
 runs/*
+.DS_Store
