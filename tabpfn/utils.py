@@ -65,7 +65,7 @@ def _get_embeddings(
     X = _fix_dtypes(X, cat_indices=model.categorical_features_indices)
     X = model.preprocessor_.transform(X)
 
-    embeddings: list[np.ndarray] = []
+    embeddings: list[torch.Tensor] = []
 
     # Cast executor to Any to bypass the iter_outputs signature check
     executor = typing.cast(typing.Any, model.executor_)
@@ -80,9 +80,11 @@ def _get_embeddings(
         embed = output_dict[selected_data].squeeze(1)
         assert isinstance(config, (ClassifierEnsembleConfig, RegressorEnsembleConfig))
         assert embed.ndim == 2
-        embeddings.append(embed.squeeze().cpu().numpy())
+        embeddings.append(embed.squeeze())
 
-    return np.array(embeddings)
+    if not embeddings:
+        return np.array([])
+    return torch.stack(embeddings).cpu().numpy()
 
 
 def _repair_borders(borders: np.ndarray, *, inplace: Literal[True]) -> None:
