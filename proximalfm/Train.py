@@ -71,9 +71,8 @@ def gaussian_nll_loss(
 
     L = 0.5 * (log_var + (target - mean)^2 / var)
     """
-    return (
-        0.5 * (pred_log_var + (target - pred_mean).pow(2) / pred_log_var.exp()).mean()
-    )
+    log_var = pred_log_var.clamp(-10.0, 4.0)  # prevent variance collapse
+    return 0.5 * (log_var + (target - pred_mean).pow(2) / log_var.exp()).mean()
 
 
 # ---------------------------------------------------------------------------
