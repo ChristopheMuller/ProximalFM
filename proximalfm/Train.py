@@ -130,6 +130,9 @@ class CATETrainer:
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.5, patience=5
         )
+        self.warmup_steps = self.train_cfg.get("warmup_steps", 1000)
+        self.global_step = 0
+        self.base_lr = self.train_cfg["lr"]
 
         # ------------------------------------------------------------------
         # Data
@@ -258,7 +261,12 @@ class CATETrainer:
                 # ite_query is (N_query, B, 1) — transpose to (B, N_query, 1)
                 target = ite_query.permute(1, 0, 2)
 
-                loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
+                if epoch < 10:
+                    mse_loss = F.mse_loss(pred_mean, target)
+                    loss = mse_loss
+
+                else:
+                    loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -266,6 +274,13 @@ class CATETrainer:
                     nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.train_cfg["clip_grad"]
                     )
+
+                if self.global_step < self.warmup_steps:
+                    lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = lr_scale * self.base_lr
+                
+                self.global_step += 1
                 self.optimizer.step()
 
                 total_loss += loss.item()

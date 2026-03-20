@@ -1,7 +1,8 @@
 training:
   seed: 1234
   epochs: 100
-  lr: 0.003
+  lr: 0.0003
+  warmup_steps: 1000
   weight_decay: 0.0001
   clip_grad: 1.5
   early_stop: 15          # patience in epochs before early stopping
@@ -14,12 +15,12 @@ training:
   x_mask_prob: 0.0        # probability of masking X type tokens
 
 model:
-  ninp: 32               # embedding dimension (d_model)
-  nhead: 1                # number of attention heads
-  nhid: 64               # feedforward hidden dimension (4 * ninp)
-  nlayers: 6             # number of transformer layers
+  ninp: 96               # embedding dimension (d_model)
+  nhead: 4                # number of attention heads
+  nhid: 192               # feedforward hidden dimension (4 * ninp)
+  nlayers: 3             # number of transformer layers
   layer_norm_with_elementwise_affine: true
-  dtype: "bfloat16"  # "float32" | "bfloat16"
+  dtype: "float32"  # "float32" | "bfloat16"
 
 data:
   batch_size: 8          # number of episodes per batch
