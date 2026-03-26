@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-import warnings
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from functools import partial
@@ -9,9 +8,7 @@ from typing import Any, Literal
 
 import einops
 import networkx as nx
-import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
