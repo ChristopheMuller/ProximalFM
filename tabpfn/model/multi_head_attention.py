@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from functools import partial
 from typing_extensions import override
@@ -21,6 +22,9 @@ try:
     HAVE_FLASH_ATTN = True
 except (ModuleNotFoundError, ImportError):
     HAVE_FLASH_ATTN = False
+
+logger = logging.getLogger(__name__)
+_LOGGED_FLASH_ATTN_WARNING = False
 
 
 class MultiHeadAttention(torch.nn.Module):
@@ -608,13 +612,21 @@ class MultiHeadAttention(torch.nn.Module):
                 nvidia_compute_capability = None
             USE_TORCH_2_GQA = nvidia_compute_capability >= "8" and TORCH_2_SUPPORTS_GQ
 
-            # TODO: add logging for something like this
-            # if use_flash_attention and USE_TORCH_2_GQA:
-            # print("Using FlashAttention might be slower than torch's implementation,
-            # try setting `tabpfn.model.multi_head_attention.HAVE_FLASH_ATTN=False`.")
+            if use_flash_attention and USE_TORCH_2_GQA:
+                global _LOGGED_FLASH_ATTN_WARNING
+                if not _LOGGED_FLASH_ATTN_WARNING:
+                    logger.warning(
+                        "Using FlashAttention might be slower than torch's "
+                        "implementation, try setting "
+                        "`tabpfn.model.multi_head_attention.HAVE_FLASH_ATTN=False`.",
+                    )
+                    _LOGGED_FLASH_ATTN_WARNING = True
 
-            # print(f"USE_TORCH_2_GQA: {USE_TORCH_2_GQA}, nvidia_compute_capability:
-            # {nvidia_compute_capability}, TORCH_2_SUPPORTS_GQ: {TORCH_2_SUPPORTS_GQ}")
+            logger.debug(
+                f"USE_TORCH_2_GQA: {USE_TORCH_2_GQA}, "
+                f"nvidia_compute_capability: {nvidia_compute_capability}, "
+                f"TORCH_2_SUPPORTS_GQ: {TORCH_2_SUPPORTS_GQ}",
+            )
 
         if use_flash_attention:
 
