@@ -389,18 +389,25 @@ class PerFeatureEncoderLayer(nn.Module):
             dim_feedforward = 4 * d_model
 
         self.attention_between_features = attention_between_features
+        
+        # --- Save head parameters for reshaping ---
+        self.nhead = nhead
+        self.head_dim = d_model // nhead
+        assert self.head_dim * nhead == d_model, "d_model must be divisible by nhead"
 
         # ---- feature attention ----
         if attention_between_features:
-            self.feat_attn = nn.MultiheadAttention(
-                d_model, nhead, batch_first=True, bias=True
-            )
+            self.feat_q = nn.Linear(d_model, d_model, bias=True)
+            self.feat_k = nn.Linear(d_model, d_model, bias=True)
+            self.feat_v = nn.Linear(d_model, d_model, bias=True)
+            self.feat_out = nn.Linear(d_model, d_model, bias=True)
             self.norm1 = nn.LayerNorm(d_model)
 
         # ---- item (sequence) attention ----
-        self.item_attn = nn.MultiheadAttention(
-            d_model, nhead, batch_first=True, bias=True
-        )
+        self.item_q = nn.Linear(d_model, d_model, bias=True)
+        self.item_k = nn.Linear(d_model, d_model, bias=True)
+        self.item_v = nn.Linear(d_model, d_model, bias=True)
+        self.item_out = nn.Linear(d_model, d_model, bias=True)
         self.norm2 = nn.LayerNorm(d_model)
 
         # ---- MLP ----
@@ -414,106 +421,116 @@ class PerFeatureEncoderLayer(nn.Module):
 
         # ---- optional zero-init of all output projections ----
         if zero_init:
-            for module in [self.item_attn, self.mlp]:
-                # MHA: out_proj; MLP: last Linear
-                out_proj = (
-                    module.out_proj if hasattr(module, "out_proj")
-                    else module[-1]         # last layer of nn.Sequential
-                )
-                nn.init.zeros_(out_proj.weight)
-                if out_proj.bias is not None:
-                    nn.init.zeros_(out_proj.bias)
+            nn.init.zeros_(self.mlp[-1].weight)
+            if self.mlp[-1].bias is not None:
+                nn.init.zeros_(self.mlp[-1].bias)
+
+            nn.init.zeros_(self.item_out.weight)
+            if self.item_out.bias is not None:
+                nn.init.zeros_(self.item_out.bias)
 
             if attention_between_features:
-                nn.init.zeros_(self.feat_attn.out_proj.weight)
-                if self.feat_attn.out_proj.bias is not None:
-                    nn.init.zeros_(self.feat_attn.out_proj.bias)
+                nn.init.zeros_(self.feat_out.weight)
+                if self.feat_out.bias is not None:
+                    nn.init.zeros_(self.feat_out.bias)
 
-    # ------------------------------------------------------------------
+    def _run_sdpa(
+        self, q_x: torch.Tensor, k_x: torch.Tensor, v_x: torch.Tensor, 
+        q_proj: nn.Linear, k_proj: nn.Linear, v_proj: nn.Linear, out_proj: nn.Linear
+    ) -> torch.Tensor:
+        """Projects inputs, reshapes for multi-head attention, runs SDPA, and projects out."""
+        # 1. Linear projections
+        q, k, v = q_proj(q_x), k_proj(k_x), v_proj(v_x)
+
+        # 2. Reshape to (Batch, Heads, SeqLen, HeadDim)
+        B, S_q, _ = q.shape
+        _, S_k, _ = k.shape
+        
+        q = q.view(B, S_q, self.nhead, self.head_dim).transpose(1, 2)
+        k = k.view(B, S_k, self.nhead, self.head_dim).transpose(1, 2)
+        v = v.view(B, S_k, self.nhead, self.head_dim).transpose(1, 2)
+
+        # 3. Apply Apple-Silicon optimized SDPA kernel
+        attn_out = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v, attn_mask=None, dropout_p=0.0
+        )
+
+        # 4. Reshape back to (Batch, SeqLen, d_model) and apply final projection
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, S_q, -1)
+        return out_proj(attn_out)
 
     def forward(
         self,
         state: torch.Tensor,
         single_eval_pos: int | None = None,
         *,
-        cache_trainset_representation: bool = False,  # API compat, unused
-        att_src: torch.Tensor | None = None,          # cross-attn source
+        cache_trainset_representation: bool = False,
+        att_src: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """
-        Args:
-            state:            ``(batch, seq, features, d_model)``
-            single_eval_pos:  First test-row index.  Test rows attend only to
-                              train rows during item-attention.
-            att_src:          If provided (decoder mode), item-attention uses
-                              this as keys/values instead of the train portion.
-                              Shape: ``(batch, train_seq, features, d_model)``.
-        Returns:
-            ``(batch, seq, features, d_model)`` — same shape as input.
-        """
-        assert state.ndim == 4, (
-            f"Expected shape (batch, seq, features, d_model), got {tuple(state.shape)}"
-        )
+        
         if single_eval_pos is None:
             single_eval_pos = 0
 
         B, S, F, E = state.shape
 
         # ----------------------------------------------------------------
-        # 1. Feature attention  — operates on the F dimension
-        #    Reshape: (B, S, F, E)  →  (B*S, F, E)
+        # 1. Feature attention
         # ----------------------------------------------------------------
         if self.attention_between_features and F > 1:
             x_feat = state.reshape(B * S, F, E)
-            attn_out, _ = self.feat_attn(x_feat, x_feat, x_feat, need_weights=False)
-            x_feat = x_feat + attn_out          # residual
+            attn_out = self._run_sdpa(
+                x_feat, x_feat, x_feat, 
+                self.feat_q, self.feat_k, self.feat_v, self.feat_out
+            )
+            x_feat = x_feat + attn_out
             x_feat = self.norm1(x_feat)
             state  = x_feat.reshape(B, S, F, E)
 
         # ----------------------------------------------------------------
-        # 2. Item attention  — operates on the S dimension
-        #    Reshape: (B, S, F, E)  →  (B*F, S, E)
+        # 2. Item attention
         # ----------------------------------------------------------------
         x_item = state.permute(0, 2, 1, 3).contiguous().reshape(B * F, S, E)
 
         if att_src is not None:
-            # Decoder mode: attend to a separate key/value source.
-            kv_src = att_src.permute(0, 2, 1, 3).reshape(
-                B * F, att_src.shape[1], E
+            kv_src = att_src.permute(0, 2, 1, 3).contiguous().reshape(B * F, att_src.shape[1], E)
+            attn_out = self._run_sdpa(
+                x_item, kv_src, kv_src,
+                self.item_q, self.item_k, self.item_v, self.item_out
             )
-            attn_out, _ = self.item_attn(x_item, kv_src, kv_src, need_weights=False)
             x_item = x_item + attn_out
+            
         elif single_eval_pos > 0:
-            # Split into train block and test block; handle separately so
-            # test rows cannot attend to each other (no label leakage).
-            x_train = x_item[:, :single_eval_pos, :]   # (B*F, n_tr, E)
-            x_test  = x_item[:, single_eval_pos:, :]   # (B*F, n_te, E)
+            x_train = x_item[:, :single_eval_pos, :]
+            x_test  = x_item[:, single_eval_pos:, :]
 
-            # Train rows: full self-attention among training items.
-            tr_out, _ = self.item_attn(
-                x_train, x_train, x_train, need_weights=False
+            tr_out = self._run_sdpa(
+                x_train, x_train, x_train,
+                self.item_q, self.item_k, self.item_v, self.item_out
             )
             x_train = x_train + tr_out
 
-            # Test rows: cross-attend to training keys/values only.
             if x_test.shape[1] > 0:
-                te_out, _ = self.item_attn(
-                    x_test, x_train, x_train, need_weights=False
+                te_out = self._run_sdpa(
+                    x_test, x_train, x_train,
+                    self.item_q, self.item_k, self.item_v, self.item_out
                 )
                 x_test = x_test + te_out
                 x_item = torch.cat([x_train, x_test], dim=1)
             else:
                 x_item = x_train
         else:
-            # No split needed (single_eval_pos == 0): full self-attention.
-            attn_out, _ = self.item_attn(x_item, x_item, x_item, need_weights=False)
+            attn_out = self._run_sdpa(
+                x_item, x_item, x_item,
+                self.item_q, self.item_k, self.item_v, self.item_out
+            )
             x_item = x_item + attn_out
 
         x_item = self.norm2(x_item)
-        state  = x_item.reshape(B, F, S, E).permute(0, 2, 1, 3)   # back to (B, S, F, E)
+        state  = x_item.reshape(B, F, S, E).permute(0, 2, 1, 3)
 
         # ----------------------------------------------------------------
-        # 3. MLP  — applied identically to every (subject, feature) token
+        # 3. MLP
         # ----------------------------------------------------------------
         state = self.norm3(state + self.mlp(state))
 
