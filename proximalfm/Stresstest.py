@@ -28,7 +28,7 @@ import argparse
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
