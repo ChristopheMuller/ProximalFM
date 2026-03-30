@@ -75,6 +75,28 @@ def test_dataset_validation_dw(base_config: ProximalPriorConfig) -> None:
     assert "Assumption 4" in str(excinfo.value)
 
 
+def test_dataset_validation_dz_equal_du(base_config: ProximalPriorConfig) -> None:
+    # Modify config to test edge case Assumption 4 for Z where d_z == d_u
+    base_config.d_u = 3
+    base_config.d_z = 3
+    base_config.d_w = 4
+
+    # This should not raise an error
+    dataset = ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
+    assert dataset is not None
+
+
+def test_dataset_validation_dw_equal_du(base_config: ProximalPriorConfig) -> None:
+    # Modify config to test edge case Assumption 4 for W where d_w == d_u
+    base_config.d_u = 3
+    base_config.d_z = 4
+    base_config.d_w = 3
+
+    # This should not raise an error
+    dataset = ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
+    assert dataset is not None
+
+
 def test_dataset_len(base_config: ProximalPriorConfig) -> None:
     dataset = ProximalDataset(base_config, num_episodes=42, samples_per_episode=10)
     assert len(dataset) == 42
