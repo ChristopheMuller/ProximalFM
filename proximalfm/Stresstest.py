@@ -36,7 +36,7 @@ import yaml
 
 from proximalfm.Model import PerFeatureTransformerCATE
 from proximalfm.Prior import ProximalPrior
-from proximalfm.Structure import ProximalPriorConfig, ProximalPriorConfig
+from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.Train import gaussian_nll_loss, set_seed
 
 logging.basicConfig(
