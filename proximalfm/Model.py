@@ -12,7 +12,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from .utils import LinearInputEncoderStep, NanHandlingEncoderStep, SequentialEncoder, PerFeatureEncoderLayer
+from .utils import LinearInputEncoderStep, NanHandlingEncoderStep, SequentialEncoder, PerFeatureEncoderLayer, NormaliseAndClipEncoderStep
 
 DEFAULT_EMSIZE = 32
 
@@ -114,14 +114,14 @@ def make_feature_encoder(ninp: int) -> SequentialEncoder:
     """
     Creates a per-feature linear encoder for continuous causal variables (X, Z, W).
 
-    This factory method constructs a processing pipeline that projects a single
-    input feature into the transformer's latent embedding space. It follows the
-    Per-Feature-Net (PFN) paradigm where each covariate is treated as an
+    This factory method constructs a processing pipeline that normalises each
+    input feature and then projects it into the transformer's latent embedding space.
+    It follows the Per-Feature-Net (PFN) paradigm where each covariate is treated as an
     independent token to allow for variable-length input sequences.
 
     Returns:
-        SequentialEncoder: A pipeline containing a linear layer that maps
-            an input of dimension 1 to an output of dimension `ninp`.
+        SequentialEncoder: A pipeline containing a normalisation step and a linear
+            layer that maps an input of dimension 1 to an output of dimension `ninp`.
 
     Note:
         num_features is set to 1 because the model rearranges the input
@@ -129,6 +129,7 @@ def make_feature_encoder(ninp: int) -> SequentialEncoder:
         the transformer's attention mechanism.
     """
     return SequentialEncoder(
+        NormaliseAndClipEncoderStep(),
         LinearInputEncoderStep(
             num_features=1,
             emsize=ninp,

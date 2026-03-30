@@ -10,11 +10,9 @@ Only standard PyTorch is required (+ einops, which the main model already uses).
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 
@@ -29,6 +27,29 @@ def _nanmean(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
     val  = torch.where(mask, x, torch.zeros_like(x)).sum(dim=dim)
     return val / num
 
+def _nanstd(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
+    """Standard deviation ignoring NaNs along *dim*."""
+    mask = ~torch.isnan(x)
+    num = mask.sum(dim=dim)
+
+    # Need at least 2 non-NaN elements to compute sample std
+    if num.max() < 2:
+        return torch.zeros(x.shape[1:], device=x.device, dtype=x.dtype) if dim == 0 else torch.zeros_like(x).sum(dim=dim)
+
+    num_clamp = num.clamp(min=2)
+    mean = _nanmean(x, dim=dim)
+
+    # Ensure mean broadcasts correctly for computing variance
+    if dim == 0:
+        mean_expanded = mean.unsqueeze(0).expand_as(x)
+    else:
+        # Assuming other dims if needed, though dim=0 is primary use-case
+        mean_expanded = mean.unsqueeze(dim).expand_as(x)
+
+    var = torch.where(mask, (x - mean_expanded)**2, torch.zeros_like(x)).sum(dim=dim) / (num_clamp - 1)
+
+    # Return 0 std if there's less than 2 elements
+    return torch.where(num < 2, torch.zeros_like(var), torch.sqrt(var))
 
 # ===========================================================================
 #  SeqEncStep — abstract base for all encoder steps
@@ -185,6 +206,51 @@ class LinearInputEncoderStep(SeqEncStep):
             x = torch.nan_to_num(x, nan=0.0)
         return (self.layer(x),)
 
+
+# ===========================================================================
+#  NormaliseAndClipEncoderStep
+# ===========================================================================
+
+class NormaliseAndClipEncoderStep(SeqEncStep):
+    """
+    Normalises each feature using mean/std computed over the training rows only,
+    then clips to [-100, 100].
+    """
+
+    def __init__(
+        self,
+        in_keys:  tuple[str, ...] = ("main",),
+        out_keys: tuple[str, ...] = ("main",),
+    ):
+        super().__init__(in_keys, out_keys)
+        self.register_buffer("feature_means_", torch.tensor([]), persistent=False)
+        self.register_buffer("feature_stds_", torch.tensor([]), persistent=False)
+
+    def _fit(
+        self,
+        x: torch.Tensor,
+        single_eval_pos: int,
+        **kwargs: Any,
+    ) -> None:
+        """Compute mean and std over the training portion [0 : single_eval_pos]."""
+        x_train = x[:single_eval_pos]
+        self.feature_means_ = _nanmean(x_train, dim=0)
+        stds = _nanstd(x_train, dim=0)
+        # Handle zero standard deviation
+        stds[stds == 0] = 1.0
+        # Handle NaN standard deviation (e.g., when n < 2)
+        stds[torch.isnan(stds)] = 1.0
+        self.feature_stds_ = stds
+
+    def _transform(
+        self,
+        x: torch.Tensor,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor]:
+        means = self.feature_means_.unsqueeze(0).expand_as(x)
+        stds = self.feature_stds_.unsqueeze(0).expand_as(x)
+        x = (x - means) / stds
+        return (torch.clamp(x, min=-100.0, max=100.0),)
 
 # ===========================================================================
 #  NanHandlingEncoderStep
