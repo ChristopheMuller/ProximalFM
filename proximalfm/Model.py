@@ -12,12 +12,7 @@ import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint
 
-from tabpfn.model.encoders import (
-    LinearInputEncoderStep,
-    NanHandlingEncoderStep,
-    SequentialEncoder,
-)
-from tabpfn.model.layer import PerFeatureEncoderLayer
+from .utils import LinearInputEncoderStep, NanHandlingEncoderStep, SequentialEncoder, PerFeatureEncoderLayer
 
 DEFAULT_EMSIZE = 32
 
