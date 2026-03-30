@@ -110,6 +110,67 @@ class LayerStack(nn.Module):
         return x
 
 
+def make_feature_encoder(ninp: int) -> SequentialEncoder:
+    """
+    Creates a per-feature linear encoder for continuous causal variables (X, Z, W).
+
+    This factory method constructs a processing pipeline that projects a single
+    input feature into the transformer's latent embedding space. It follows the
+    Per-Feature-Net (PFN) paradigm where each covariate is treated as an
+    independent token to allow for variable-length input sequences.
+
+    Returns:
+        SequentialEncoder: A pipeline containing a linear layer that maps
+            an input of dimension 1 to an output of dimension `ninp`.
+
+    Note:
+        num_features is set to 1 because the model rearranges the input
+        tensor to process each column independently before passing it to
+        the transformer's attention mechanism.
+    """
+    return SequentialEncoder(
+        LinearInputEncoderStep(
+            num_features=1,
+            emsize=ninp,
+            replace_nan_by_zero=False,
+            bias=True,
+            in_keys=("main",),
+            out_keys=("output",),
+        ),
+    )
+
+
+def make_nan_encoder(ninp: int) -> SequentialEncoder:
+    """
+    Creates a specialized encoding pipeline for variables with intentional
+    missingness (Treatment A and Outcome Y).
+
+    This encoder uses a two-step process to handle the 'causal masking'
+    required for in-context learning:
+    1. It imputes NaNs (test positions) with the mean of the observed training
+       data to maintain numerical stability.
+    2. It generates a secondary 'indicator' feature that flags which values
+       were originally NaNs, allowing the transformer to distinguish between
+       real data and query positions.
+
+    Returns:
+        SequentialEncoder: A pipeline that maps a single scalar input
+            to a dual-feature representation (value + indicator),
+            projected into the embedding dimension `ninp`.
+    """
+    return SequentialEncoder(
+        NanHandlingEncoderStep(),
+        LinearInputEncoderStep(
+            num_features=2,  # value + nan indicator
+            emsize=ninp,
+            replace_nan_by_zero=False,
+            bias=True,
+            in_keys=("main", "nan_indicators"),
+            out_keys=("output",),
+        ),
+    )
+
+
 class PerFeatureTransformerCATE(nn.Module):
 
     def __init__(
@@ -146,70 +207,11 @@ class PerFeatureTransformerCATE(nn.Module):
     ):
         super().__init__()
 
-        def _make_feature_encoder() -> SequentialEncoder:
-            """
-            Creates a per-feature linear encoder for continuous causal variables (X, Z, W).
-
-            This factory method constructs a processing pipeline that projects a single
-            input feature into the transformer's latent embedding space. It follows the
-            Per-Feature-Net (PFN) paradigm where each covariate is treated as an
-            independent token to allow for variable-length input sequences.
-
-            Returns:
-                SequentialEncoder: A pipeline containing a linear layer that maps
-                    an input of dimension 1 to an output of dimension `ninp`.
-
-            Note:
-                num_features is set to 1 because the model rearranges the input
-                tensor to process each column independently before passing it to
-                the transformer's attention mechanism.
-            """
-            return SequentialEncoder(
-                LinearInputEncoderStep(
-                    num_features=1,
-                    emsize=ninp,
-                    replace_nan_by_zero=False,
-                    bias=True,
-                    in_keys=("main",),
-                    out_keys=("output",),
-                ),
-            )
-
-        def _make_nan_encoder() -> SequentialEncoder:
-            """
-            Creates a specialized encoding pipeline for variables with intentional
-            missingness (Treatment A and Outcome Y).
-
-            This encoder uses a two-step process to handle the 'causal masking'
-            required for in-context learning:
-            1. It imputes NaNs (test positions) with the mean of the observed training
-               data to maintain numerical stability.
-            2. It generates a secondary 'indicator' feature that flags which values
-               were originally NaNs, allowing the transformer to distinguish between
-               real data and query positions.
-
-            Returns:
-                SequentialEncoder: A pipeline that maps a single scalar input
-                    to a dual-feature representation (value + indicator),
-                    projected into the embedding dimension `ninp`.
-            """
-            return SequentialEncoder(
-                NanHandlingEncoderStep(),
-                LinearInputEncoderStep(
-                    num_features=2,  # value + nan indicator
-                    emsize=ninp,
-                    replace_nan_by_zero=False,
-                    bias=True,
-                    in_keys=("main", "nan_indicators"),
-                    out_keys=("output",),
-                ),
-            )
-
-        self.x_encoder = x_encoder if x_encoder is not None else _make_feature_encoder()
-        self.z_encoder = z_encoder if z_encoder is not None else _make_feature_encoder()
-        self.w_encoder = w_encoder if w_encoder is not None else _make_feature_encoder()
-        self.a_encoder = a_encoder if a_encoder is not None else _make_nan_encoder()
-        self.y_encoder = y_encoder if y_encoder is not None else _make_nan_encoder()
+        self.x_encoder = x_encoder if x_encoder is not None else make_feature_encoder(ninp)
+        self.z_encoder = z_encoder if z_encoder is not None else make_feature_encoder(ninp)
+        self.w_encoder = w_encoder if w_encoder is not None else make_feature_encoder(ninp)
+        self.a_encoder = a_encoder if a_encoder is not None else make_nan_encoder(ninp)
+        self.y_encoder = y_encoder if y_encoder is not None else make_nan_encoder(ninp)
 
         # ------------------------------------------------------------------
         # Learnable type embedding: one vector per variable type in TYPE_NAMES.
@@ -226,21 +228,25 @@ class PerFeatureTransformerCATE(nn.Module):
         self.cache_trainset_representation = cache_trainset_representation
         self.cached_embeddings: torch.Tensor | None = None
 
-        layer_creator = lambda: PerFeatureEncoderLayer(
-            d_model=ninp,
-            nhead=nhead,
-            dim_feedforward=nhid,
-            activation=activation,
-            zero_init=zero_init,
-            precomputed_kv=(
-                precomputed_kv.pop(0) if precomputed_kv is not None else None
-            ),
-            **layer_kwargs,
-        )
+        def layer_creator() -> PerFeatureEncoderLayer:
+            return PerFeatureEncoderLayer(
+                d_model=ninp,
+                nhead=nhead,
+                dim_feedforward=nhid,
+                activation=activation,
+                zero_init=zero_init,
+                precomputed_kv=(
+                    precomputed_kv.pop(0) if precomputed_kv is not None else None
+                ),
+                **layer_kwargs,
+            )
+
         if repeat_same_layer:
             # weight sharing
             layer = layer_creator()
-            layer_creator = lambda: layer
+
+            def layer_creator() -> PerFeatureEncoderLayer:  # noqa: F811
+                return layer
 
         nlayers_encoder = nlayers
         if use_separate_decoder and nlayers_decoder is None:
