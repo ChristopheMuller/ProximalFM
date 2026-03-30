@@ -1,7 +1,6 @@
 #%%
 
 import glob
-import logging
 import os
 import re
 
@@ -14,9 +13,6 @@ from tqdm import tqdm
 from proximalfm.Model import PerFeatureTransformerCATE
 from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
 
 def load_config(config_path: str = "config.yaml") -> dict:
     with open(config_path, "r") as f:
@@ -76,7 +72,6 @@ def main():
         dtype=dtype,
     )
 
-    logger.info(f"Generating {k_datasets} test datasets from prior...")
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
         batch_size=k_datasets,
@@ -84,7 +79,7 @@ def main():
         train_episodes=1,            # Don't need train
         val_episodes=k_datasets,     # Exactly one batch
         num_workers=1,
-        seed=42, # Fixed seed for reproducible evaluation 
+        seed=1234, # Fixed seed for reproducible evaluation 
     )
     
     # Grab the single batch
@@ -111,8 +106,7 @@ def main():
     checkpoints.sort(key=extract_epoch)
 
     if not checkpoints:
-        logger.error(f"No checkpoints found in {save_dir}/")
-        return
+        raise FileNotFoundError(f"No checkpoints found in {save_dir} matching pattern 'model_epoch_*.pth'")
 
     # Select up to 6 checkpoints evenly spaced to plot
     num_plots = min(6, len(checkpoints))
@@ -177,9 +171,6 @@ def main():
         fig.delaxes(axes[j])
 
     plt.tight_layout()
-    plot_path = "cate_evolution_plot.png"
-    plt.savefig(plot_path, dpi=300)
-    logger.info(f"Evaluation complete. Plot saved to {plot_path}")
     plt.show()
 
 if __name__ == "__main__":
