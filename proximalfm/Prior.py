@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import List, Optional, Literal
+from typing import List, Optional
 
 import pandas as pd
 import torch
