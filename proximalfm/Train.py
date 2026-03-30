@@ -392,7 +392,8 @@ class CATETrainer:
 
         for epoch in range(self.train_cfg["epochs"]):
             train_loss = self.train_epoch(epoch)
-            val_loss, rmse = self.validate(epoch)
+            if epoch % self.train_cfg.get("val_freq", 1) == 0:
+                val_loss, rmse = self.validate(epoch)
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
