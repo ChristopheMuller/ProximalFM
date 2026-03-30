@@ -74,9 +74,9 @@ def test_layer_stack_forward_half_layers_asserts():
     with pytest.raises(AssertionError, match="half_layers only works without layer dropout"):
         stack(x, half_layers=True)
 
-@patch("proximalfm.Model.torch.randint")
+@patch("proximalfm.Model.random.randint")
 def test_layer_stack_layer_dropout(mock_randint):
-    mock_randint.return_value = torch.tensor([2]) # Execute 2 layers
+    mock_randint.return_value = 2
 
     layer_creator = lambda: DummyLayer()
     stack = LayerStack(
@@ -93,7 +93,7 @@ def test_layer_stack_layer_dropout(mock_randint):
     out = stack(x)
 
     assert torch.allclose(out, torch.full_like(out, 2))
-    mock_randint.assert_called_once_with(low=1, high=5, size=(1,))
+    mock_randint.assert_called_once_with(1, 4)
     stack.layers[0].forward.assert_called_once()
     stack.layers[1].forward.assert_called_once()
     stack.layers[2].forward.assert_not_called()
