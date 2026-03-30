@@ -199,28 +199,22 @@ class CATETrainer:
         """
         Reformat a DataLoader batch for the model's forward signature.
 
-        DataLoader returns tensors shaped (B, N, D) where B = batch_size
-        and N = samples_per_episode.  The model expects (N, B, D) — i.e.
-        sequence-first — so we transpose here.
+        DataLoader returns tensors shaped (N, B, D) directly via the custom
+        collate function, so no transposing is needed here.
 
         Returns:
             x, z, w, a, y  — each dict{"main": Tensor[N, B, D]}
             ite_query       — Tensor[N_query, B, 1], ground-truth ITE at
                               query positions only (used for loss computation)
         """
-
-        def _to_seq_first(t: torch.Tensor) -> torch.Tensor:
-            # (B, N, D) -> (N, B, D)
-            return t.permute(1, 0, 2).contiguous()
-
-        x = {"main": _to_seq_first(batch["X"])}  # (N, B, d_x)
-        z = {"main": _to_seq_first(batch["Z"])}  # (N, B, d_z)
-        w = {"main": _to_seq_first(batch["W"])}  # (N, B, d_w)
-        a = {"main": _to_seq_first(batch["A"])}  # (N, B, 1)
-        y = {"main": _to_seq_first(batch["Y"])}  # (N, B, 1)
+        x = {"main": batch["X"]}  # (N, B, d_x)
+        z = {"main": batch["Z"]}  # (N, B, d_z)
+        w = {"main": batch["W"]}  # (N, B, d_w)
+        a = {"main": batch["A"]}  # (N, B, 1)
+        y = {"main": batch["Y"]}  # (N, B, 1)
 
         # Ground-truth ITE at query positions only
-        ite_full = _to_seq_first(batch["ITE"])  # (N, B, 1)
+        ite_full = batch["ITE"]  # (N, B, 1)
         ite_query = ite_full[self.single_eval_pos :]  # (N_query, B, 1)
 
         return x, z, w, a, y, ite_query

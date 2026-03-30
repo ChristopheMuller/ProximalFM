@@ -288,10 +288,10 @@ def test_multiprocessing_different_data(base_config: ProximalPriorConfig) -> Non
 
     all_x = []
     for batch in train_loader:
-        # batch["X"] is (batch_size, samples, d_x)
-        assert batch["X"].shape == (batch_size, 10, base_config.d_x)
+        # batch["X"] is (samples, batch_size, d_x) due to custom_collate
+        assert batch["X"].shape == (10, batch_size, base_config.d_x)
         all_x.append(batch["X"])
 
     # Total episodes processed
-    total_episodes = sum(x.shape[0] for x in all_x)
+    total_episodes = sum(x.shape[1] for x in all_x)
     assert total_episodes == train_eps

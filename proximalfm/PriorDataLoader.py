@@ -78,6 +78,18 @@ class ProximalDataset(Dataset):
         }
 
 
+def custom_collate(batch):
+    """
+    Custom collate function that stacks episodes along dimension 1 instead of 0.
+    Returns tensors of shape (N, B, D) where N is samples_per_episode and B is batch_size.
+    """
+    elem = batch[0]
+    return {
+        key: torch.stack([d[key] for d in batch], dim=1)
+        for key in elem.keys()
+    }
+
+
 def create_causal_data_loaders(
     prior_config: ProximalPriorConfig,
     batch_size: int = 16,
@@ -139,6 +151,7 @@ def create_causal_data_loaders(
         # Each worker needs a unique seed to avoid generating identical episodes
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
+        collate_fn=custom_collate,
     )
 
     val_loader = DataLoader(
@@ -149,6 +162,7 @@ def create_causal_data_loaders(
         pin_memory=use_pin_memory,
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
+        collate_fn=custom_collate,
     )
 
     return {"train": train_loader, "val": val_loader}

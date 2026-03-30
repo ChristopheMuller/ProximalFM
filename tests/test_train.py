@@ -213,12 +213,12 @@ def test_trainer_prepare_inputs(mock_model, mock_loaders, mock_writer, mock_adam
     B, N = 4, 10
     dx, dz, dw = 3, 2, 2
     batch = {
-        "X": torch.randn(B, N, dx),
-        "Z": torch.randn(B, N, dz),
-        "W": torch.randn(B, N, dw),
-        "A": torch.randn(B, N, 1),
-        "Y": torch.randn(B, N, 1),
-        "ITE": torch.randn(B, N, 1)
+            "X": torch.randn(N, B, dx),
+            "Z": torch.randn(N, B, dz),
+            "W": torch.randn(N, B, dw),
+            "A": torch.randn(N, B, 1),
+            "Y": torch.randn(N, B, 1),
+            "ITE": torch.randn(N, B, 1)
     }
 
     x, z, w, a, y, ite_query = trainer._prepare_inputs(batch)
@@ -248,12 +248,12 @@ def test_trainer_train_epoch(mock_model, mock_loaders, mock_writer, mock_adam, m
     B, N = 2, 10
     dx, dz, dw = 3, 2, 2
     mock_batch = {
-        "X": torch.randn(B, N, dx),
-        "Z": torch.randn(B, N, dz),
-        "W": torch.randn(B, N, dw),
-        "A": torch.randn(B, N, 1),
-        "Y": torch.randn(B, N, 1),
-        "ITE": torch.randn(B, N, 1)
+            "X": torch.randn(N, B, dx),
+            "Z": torch.randn(N, B, dz),
+            "W": torch.randn(N, B, dw),
+            "A": torch.randn(N, B, 1),
+            "Y": torch.randn(N, B, 1),
+            "ITE": torch.randn(N, B, 1)
     }
 
     # Mock data loader to return 1 batch
@@ -300,12 +300,12 @@ def test_trainer_validate(mock_model, mock_loaders, mock_writer, mock_adam, mock
     B, N = 2, 10
     dx, dz, dw = 3, 2, 2
     mock_batch = {
-        "X": torch.randn(B, N, dx),
-        "Z": torch.randn(B, N, dz),
-        "W": torch.randn(B, N, dw),
-        "A": torch.randn(B, N, 1),
-        "Y": torch.randn(B, N, 1),
-        "ITE": torch.randn(B, N, 1)
+            "X": torch.randn(N, B, dx),
+            "Z": torch.randn(N, B, dz),
+            "W": torch.randn(N, B, dw),
+            "A": torch.randn(N, B, 1),
+            "Y": torch.randn(N, B, 1),
+            "ITE": torch.randn(N, B, 1)
     }
 
     mock_loaders.return_value = {"train": [], "val": [mock_batch]}
