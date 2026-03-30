@@ -21,11 +21,7 @@ from torch import nn
 # ---------------------------------------------------------------------------
 
 def _nanmean(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
-    """Mean ignoring NaNs along *dim*."""
-    mask = ~torch.isnan(x)
-    num  = mask.sum(dim=dim).clamp(min=1)
-    val  = torch.where(mask, x, torch.zeros_like(x)).sum(dim=dim)
-    return val / num
+    return torch.nanmean(x, dim=dim).nan_to_num(nan=0.0)
 
 def _nanstd(x: torch.Tensor, dim: int = 0) -> torch.Tensor:
     """Standard deviation ignoring NaNs along *dim*."""
@@ -478,7 +474,7 @@ class PerFeatureEncoderLayer(nn.Module):
         # 2. Item attention  — operates on the S dimension
         #    Reshape: (B, S, F, E)  →  (B*F, S, E)
         # ----------------------------------------------------------------
-        x_item = state.permute(0, 2, 1, 3).reshape(B * F, S, E)  # (B*F, S, E)
+        x_item = state.permute(0, 2, 1, 3).contiguous().reshape(B * F, S, E)
 
         if att_src is not None:
             # Decoder mode: attend to a separate key/value source.
