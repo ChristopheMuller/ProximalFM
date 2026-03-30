@@ -23,10 +23,6 @@ def extract_epoch(filepath: str) -> int:
     match = re.search(r"model_epoch_(\d+)", os.path.basename(filepath))
     return int(match.group(1)) if match else -1
 
-def _to_seq_first(t: torch.Tensor) -> torch.Tensor:
-    """Convert DataLoader output (B, N, D) to Model input (N, B, D)."""
-    return t.permute(1, 0, 2).contiguous()
-
 def main():
     config = load_config()
     train_cfg = config["training"]
@@ -86,14 +82,14 @@ def main():
     batch = next(iter(loaders["val"]))
     batch = {k: v.to(device) for k, v in batch.items()}
 
-    x = {"main": _to_seq_first(batch["X"])}
-    z = {"main": _to_seq_first(batch["Z"])}
-    w = {"main": _to_seq_first(batch["W"])}
-    a = {"main": _to_seq_first(batch["A"])}
-    y = {"main": _to_seq_first(batch["Y"])}
+    x = {"main": (batch["X"])}
+    z = {"main": (batch["Z"])}
+    w = {"main": (batch["W"])}
+    a = {"main": (batch["A"])}
+    y = {"main": (batch["Y"])}
     
     # True ITE at the query position: shape (B,)
-    true_ite = batch["ITE"][:, single_eval_pos, 0].cpu().numpy()
+    true_ite = batch["ITE"][single_eval_pos, :, 0].cpu().numpy()
 
     # ---------------------------------------------------------
     # 3. Find and sort checkpoints
