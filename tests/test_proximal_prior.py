@@ -57,21 +57,18 @@ def test_init_defaults() -> None:
     assert default_prior.seed is None
 
 def test_episode_batch_size_one(prior: ProximalPrior) -> None:
-    # A batch size of 1 is tricky for standardization, but check it doesn't crash
-    # and gives NaNs gracefully due to pytorch's std() behavior on single elements
-    # Since std over 1 element returns nan, and nan + 1e-8 is nan, (val - mean) / nan -> nan
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        ep = prior.generate_episode(batch_size=1, episode_seed=9)
+    # A batch size of 1 shouldn't crash.
+    # With normalize_episode=False as default, no standardization occurs, 
+    # so we expect valid numbers instead of NaNs.
+    ep = prior.generate_episode(batch_size=1, episode_seed=9)
 
     assert ep.X.shape[0] == 1
     assert ep.Y.shape[0] == 1
-    # Normalization with PyTorch defaults causes NaNs on single batches for X, Z, W
-    assert torch.isnan(ep.X).all()
-    assert torch.isnan(ep.Z).all()
-    assert torch.isnan(ep.W).all()
-    # Y on the other hand stacks Y0 and Y1, so its std uses 2 elements and does not return nan
+    
+    # Ensure no NaNs are generated
+    assert not torch.isnan(ep.X).any()
+    assert not torch.isnan(ep.Z).any()
+    assert not torch.isnan(ep.W).any()
     assert not torch.isnan(ep.Y).any()
 
 def test_episode_shapes_and_sizes(prior: ProximalPrior) -> None:
@@ -107,7 +104,16 @@ def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
     target = episode.Y.unsqueeze(-1)
     solution = torch.linalg.lstsq(features, target).solution
     residual = target - features @ solution
-    correlations = torch.abs((residual * episode.Z).mean(dim=0))
+    
+    # Calculate true Pearson correlation (scale-invariant) instead of covariance
+    z_centered = episode.Z - episode.Z.mean(dim=0)
+    res_centered = residual - residual.mean(dim=0)
+    
+    covariance = (res_centered * z_centered).mean(dim=0)
+    std_product = res_centered.std(dim=0) * z_centered.std(dim=0)
+    
+    correlations = torch.abs(covariance / (std_product + 1e-8))
+    
     assert torch.all(correlations < 0.25)
 
 def test_episode_to_dataframe(prior: ProximalPrior) -> None:
