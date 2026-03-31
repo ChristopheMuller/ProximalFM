@@ -10,7 +10,7 @@ import torch
 import yaml
 from tqdm import tqdm
 
-from proximalfm.Model import PerFeatureTransformerCATE
+from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
@@ -42,19 +42,25 @@ def main():
         
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
-    model = PerFeatureTransformerCATE(
-        ninp=model_cfg["ninp"],
-        nhead=model_cfg["nhead"],
-        nhid=model_cfg["nhid"],
-        nlayers=model_cfg["nlayers"],
-        layer_norm_with_elementwise_affine=model_cfg.get("layer_norm_with_elementwise_affine", True),
+    model = ProximalNanoTabICLv2(
+        out_dim=2, # 2 dimensions: 1 for CATE mean, 1 for log_var
+        embed_dim=model_cfg.get("embed_dim", 64),
+        col_num_blocks=model_cfg.get("col_num_blocks", 3), 
+        row_num_blocks=model_cfg.get("row_num_blocks", 3),
+        icl_num_blocks=model_cfg.get("icl_num_blocks", 12),
+        col_nhead=model_cfg.get("col_nhead", 8),
+        row_nhead=model_cfg.get("row_nhead", 8),
+        icl_nhead=model_cfg.get("icl_nhead", 8),
+        feature_group_size_x=prior_cfg["d_x"],
+        feature_group_size_w=prior_cfg["d_w"],
+        feature_group_size_z=prior_cfg["d_z"],
     ).to(device, dtype=dtype)
     model.eval()
 
     # ---------------------------------------------------------
     # 2. Generate exactly K test datasets (1 Batch)
     # ---------------------------------------------------------
-    k_datasets = 50 # Number of test datasets (batch size)
+    k_datasets = 50 # Number of test datasets
     samples_per_episode = config["data"]["samples_per_episode"]
     
     # We want 1 query point per episode, the rest is context
@@ -70,10 +76,10 @@ def main():
 
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
-        batch_size=k_datasets,
+        batch_size=k_datasets,       # Set to k_datasets to get them all in one batch
         samples_per_episode=samples_per_episode,
         train_episodes=1,            # Don't need train
-        val_episodes=k_datasets,     # Exactly one batch
+        val_episodes=k_datasets,     # Exactly one batch worth of episodes
         num_workers=1,
         seed=1234, # Fixed seed for reproducible evaluation 
     )
@@ -82,12 +88,14 @@ def main():
     batch = next(iter(loaders["val"]))
     batch = {k: v.to(device) for k, v in batch.items()}
 
-    x = {"main": (batch["X"])}
-    z = {"main": (batch["Z"])}
-    w = {"main": (batch["W"])}
-    a = {"main": (batch["A"])}
-    y = {"main": (batch["Y"])}
+    x = batch["X"].transpose(0, 1)  # (B, N_total, d_x)
+    z = batch["Z"].transpose(0, 1)  # (B, N_total, d_z)
+    w = batch["W"].transpose(0, 1)  # (B, N_total, d_w)
     
+    # A and Y transposed to (B, N_total, 1)
+    a_full = batch["A"].transpose(0, 1)  
+    y_full = batch["Y"].transpose(0, 1)  
+
     # True ITE at the query position: shape (B,)
     true_ite = batch["ITE"][single_eval_pos, :, 0].cpu().numpy()
 
@@ -121,12 +129,17 @@ def main():
         model.load_state_dict(checkpoint["model_state_dict"])
         
         with torch.no_grad():
-            out = model(x, z, w, a, y, single_eval_pos=single_eval_pos)
+            # Slice A and Y to only include the context rows (n_train), and drop the last dim
+            a_train = a_full[:, :single_eval_pos, 0] # (B, n_train)
+            y_train = y_full[:, :single_eval_pos, 0] # (B, n_train)
             
-            # Extract query predictions: shape (B, N_query, 1) -> (B,)
-            # Our query is at index single_eval_pos: inside the sequence
-            pred_mean = out["cate_mean"][:, single_eval_pos:, :].squeeze().cpu().numpy()
-            pred_log_var = out["cate_log_var"][:, single_eval_pos:, :].squeeze().cpu().numpy()
+            # Forward pass
+            out = model(x=x, a=a_train, w=w, z=z, y=y_train)
+            
+            # Extract query predictions. `out` has shape (B, N_query, 2)
+            # Since N_query is 1, shape is (B, 1, 2)
+            pred_mean = out[:, 0, 0].cpu().numpy()      # Mean is the 0th index
+            pred_log_var = out[:, 0, 1].cpu().numpy()   # Log Var is the 1st index
             
             # Standard deviation for error bars
             pred_std = np.exp(0.5 * pred_log_var)

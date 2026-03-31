@@ -5,7 +5,8 @@ import copy
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from .Prior import ProximalPrior, ProximalPriorConfig
+# from .Prior import ProximalPrior, ProximalPriorConfig
+from .PriorLinear import ProximalPrior, ProximalPriorConfig
 
 
 class ProximalDataset(Dataset):

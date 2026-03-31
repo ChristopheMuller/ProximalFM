@@ -47,7 +47,7 @@ class ProximalPriorConfig:
 
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
-    normalize_episode: bool = True
+    normalize_episode: bool = False ## Important to be False: information leakage otherwise!
 
 
 @dataclass

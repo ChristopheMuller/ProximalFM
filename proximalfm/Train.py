@@ -15,7 +15,8 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from proximalfm.Model import PerFeatureTransformerCATE
+# Import your new model instead of PerFeatureTransformerCATE
+from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
@@ -29,7 +30,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
-
 
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
@@ -65,20 +65,15 @@ def gaussian_nll_loss(
 ) -> torch.Tensor:
     """
     Gaussian negative log-likelihood loss.
-
-    Uses the model's predicted heteroscedastic variance so training is a
-    proper scoring rule rather than plain MSE.
-
     L = 0.5 * (log_var + (target - mean)^2 / var)
     """
-    log_var = pred_log_var.clamp(-10.0, 4.0)  # prevent variance collapse
+    log_var = pred_log_var.clamp(-10.0, 4.0)
     return 0.5 * (log_var + (target - pred_mean).pow(2) / log_var.exp()).mean()
 
 
 # ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
-
 
 class CATETrainer:
     def __init__(self, config: dict) -> None:
@@ -106,14 +101,19 @@ class CATETrainer:
         dtype_str = self.model_cfg.get("dtype", "float32")
         self.dtype = getattr(torch, dtype_str)
 
-        self.model = PerFeatureTransformerCATE(
-            ninp=self.model_cfg["ninp"],
-            nhead=self.model_cfg["nhead"],
-            nhid=self.model_cfg["nhid"],
-            nlayers=self.model_cfg["nlayers"],
-            layer_norm_with_elementwise_affine=self.model_cfg.get(
-                "layer_norm_with_elementwise_affine", True
-            ),
+        # Instantiate the new Proximal NanoTabICL model
+        self.model = ProximalNanoTabICLv2(
+            out_dim=2, # 2 dimensions: 1 for CATE mean, 1 for log_var
+            embed_dim=self.model_cfg.get("embed_dim", 64),
+            col_num_blocks=self.model_cfg.get("col_num_blocks", 3), # mapping old config to new
+            row_num_blocks=self.model_cfg.get("row_num_blocks", 3),
+            icl_num_blocks=self.model_cfg.get("icl_num_blocks", 12),
+            col_nhead=self.model_cfg.get("col_nhead", 8),
+            row_nhead=self.model_cfg.get("row_nhead", 8),
+            icl_nhead=self.model_cfg.get("icl_nhead", 8),
+            feature_group_size_x=self.prior_cfg["d_x"],
+            feature_group_size_w=self.prior_cfg["d_w"],
+            feature_group_size_z=self.prior_cfg["d_z"],
         )
         self.model.to(self.device, dtype=self.dtype)
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -145,7 +145,6 @@ class CATETrainer:
             dtype=self.dtype,
         )
 
-        # create_causal_data_loaders returns {"train": ..., "val": ...}
         loaders = create_causal_data_loaders(
             prior_config=prior_config,
             batch_size=self.data_cfg["batch_size"],
@@ -158,15 +157,12 @@ class CATETrainer:
         self.train_loader = loaders["train"]
         self.val_loader = loaders["val"]
 
-        # single_eval_pos: number of rows used as context (train rows).
-        # The remaining rows are the query positions whose ITE is predicted.
         n = self.data_cfg["samples_per_episode"]
         self.single_eval_pos = int(n * self.data_cfg.get("context_fraction", 0.8))
 
         # ------------------------------------------------------------------
         # Logging + bookkeeping
         # ------------------------------------------------------------------
-        # Create one SummaryWriter for the entire run (not one per epoch)
         os.makedirs(self.train_cfg["log_dir"], exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.train_cfg["log_dir"])
 
@@ -183,7 +179,6 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def _move_batch(self, batch: dict) -> dict:
-        """Move all tensors in a batch dict to self.device (non-blocking)."""
         return {
             k: (
                 v.to(self.device, non_blocking=True)
@@ -194,30 +189,24 @@ class CATETrainer:
         }
 
     def _prepare_inputs(
-        self, batch: dict
-    ) -> Tuple[dict, dict, dict, dict, dict, torch.Tensor]:
-        """
-        Reformat a DataLoader batch for the model's forward signature.
+            self, batch: dict
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            """
+            Reformat a DataLoader batch for the model's forward signature.
+            DataLoader returns (N, B, D). NanoTab expects (B, N, D).
+            A and Y must be strictly sliced to n_train (single_eval_pos) rows and squeezed to (B, N).
+            """
 
-        DataLoader returns tensors shaped (N, B, D) directly via the custom
-        collate function, so no transposing is needed here.
+            x = batch["X"].transpose(0, 1)  
+            z = batch["Z"].transpose(0, 1)  
+            w = batch["W"].transpose(0, 1)  
 
-        Returns:
-            x, z, w, a, y  — each dict{"main": Tensor[N, B, D]}
-            ite_query       — Tensor[N_query, B, 1], ground-truth ITE at
-                              query positions only (used for loss computation)
-        """
-        x = {"main": batch["X"]}  # (N, B, d_x)
-        z = {"main": batch["Z"]}  # (N, B, d_z)
-        w = {"main": batch["W"]}  # (N, B, d_w)
-        a = {"main": batch["A"]}  # (N, B, 1)
-        y = {"main": batch["Y"]}  # (N, B, 1)
+            a = batch["A"][:self.single_eval_pos].transpose(0, 1).squeeze(-1)
+            y = batch["Y"][:self.single_eval_pos].transpose(0, 1).squeeze(-1)
 
-        # Ground-truth ITE at query positions only
-        ite_full = batch["ITE"]  # (N, B, 1)
-        ite_query = ite_full[self.single_eval_pos :]  # (N_query, B, 1)
+            ite_query = batch["ITE"][self.single_eval_pos:].transpose(0, 1)
 
-        return x, z, w, a, y, ite_query
+            return x, a, w, z, y, ite_query
 
     # ------------------------------------------------------------------
     # Train epoch
@@ -234,33 +223,22 @@ class CATETrainer:
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
-                x, z, w, a, y, ite_query = self._prepare_inputs(batch)
+                x, a, w, z, y, target = self._prepare_inputs(batch)
 
-                out = self.model(
-                    x,
-                    z,
-                    w,
-                    a,
-                    y,
-                    single_eval_pos=self.single_eval_pos,
-                    zw_mask_prob=self.train_cfg.get("zw_mask_prob", 0.0),
-                    x_mask_prob=self.train_cfg.get("x_mask_prob", 0.0),
-                )
+                # NanoTabICLv2 forward pass
+                out = self.model(x=x, a=a, w=w, z=z, y=y)
+                
+                # out shape is (B, N_query, 2). Split into mean and log_var
+                pred_mean = out[..., 0:1]
+                pred_log_var = out[..., 1:2]
 
-                # Predictions at query positions only: (B, N_query, 1)
-                # Model output is (B, S, 1); slice off the query part
-                pred_mean = out["cate_mean"][:, self.single_eval_pos :, :]
-                pred_log_var = out["cate_log_var"][:, self.single_eval_pos :, :]
+                # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
+                alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
 
-                # ite_query is (N_query, B, 1) — transpose to (B, N_query, 1)
-                target = ite_query.permute(1, 0, 2)
+                loss_mse = F.mse_loss(pred_mean, target)
+                loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
 
-                if epoch < 10:
-                    mse_loss = F.mse_loss(pred_mean, target)
-                    loss = mse_loss
-
-                else:
-                    loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
+                loss = alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -305,20 +283,12 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, z, w, a, y, ite_query = self._prepare_inputs(batch)
+                    x, a, w, z, y, target = self._prepare_inputs(batch)
 
-                    out = self.model(
-                        x,
-                        z,
-                        w,
-                        a,
-                        y,
-                        single_eval_pos=self.single_eval_pos,
-                    )
+                    out = self.model(x=x, a=a, w=w, z=z, y=y)
 
-                    pred_mean = out["cate_mean"][:, self.single_eval_pos :, :]
-                    pred_log_var = out["cate_log_var"][:, self.single_eval_pos :, :]
-                    target = ite_query.permute(1, 0, 2)
+                    pred_mean = out[..., 0:1]
+                    pred_log_var = out[..., 1:2]
 
                     loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
                     total_loss += loss.item()
@@ -423,7 +393,6 @@ class CATETrainer:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
-
 
 def main() -> None:
     config = load_config()
