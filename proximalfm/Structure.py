@@ -20,6 +20,9 @@ class NetworkSpec:
 
 @dataclass
 class ProximalPriorConfig:
+
+    type: str = "nonlinear"
+
     d_u: int = 4
     d_x: int = 8
     d_z: int = 6

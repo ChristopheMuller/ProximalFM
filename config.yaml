@@ -36,6 +36,7 @@ data:
   num_workers: 4           # DataLoader worker processes (0 = main process only)
 
 prior:
+  type : "nonlinear"
   d_x: 5    # baseline covariates X
   d_z: 2    # treatment-inducing proxy Z
   d_w: 2    # outcome-inducing proxy W

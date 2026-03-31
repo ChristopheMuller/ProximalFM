@@ -5,8 +5,9 @@ import copy
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-# from .Prior import ProximalPrior, ProximalPriorConfig
-from .PriorLinear import ProximalPrior, ProximalPriorConfig
+from .Structure import ProximalPriorConfig
+from .Prior import ProximalPrior
+from .PriorLinear import ProximalPrior as ProximalPriorLinear
 
 
 class ProximalDataset(Dataset):
@@ -49,7 +50,10 @@ class ProximalDataset(Dataset):
                 "for the completeness condition (Assumption 4) to hold."
             )
 
-        self.prior = ProximalPrior(config=self.prior_config)
+        if self.prior_config.type == "linear":
+            self.prior = ProximalPriorLinear(config=self.prior_config)
+        else:
+            self.prior = ProximalPrior(config=self.prior_config)
         self.num_episodes = num_episodes
         self.samples_per_episode = samples_per_episode
         self.seed_offset = seed_offset
