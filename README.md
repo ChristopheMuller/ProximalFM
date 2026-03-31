@@ -17,7 +17,7 @@ ProximalFM trains a **Per-Feature Transformer** on synthetic episodes generated 
 
 ## Architecture
 
-The model is built on top of the **CausalFM** architecture (Ma et al., 2026), using:
+The model is built on top of the **[NanoTabICLv2](https://github.com/soda-inria/nanotabicl)** architecture (Qu, Jingang, et al. "TabICLv2: A better, faster, scalable, and open tabular foundation model." arXiv preprint arXiv:2602.11139 (2026).), using:
 - **Per-Feature Encoding:** Each feature (X, Z, W, A, Y) is encoded with its own type-aware embedding.
 - **Heteroscedastic Variance:** The model outputs both a mean and a log-variance for its predictions, allowing for uncertainty estimation and training via Gaussian NLL.
 - **In-Context Learning:** During inference, the model takes a set of context observations and provides estimates for new query points.
@@ -47,8 +47,10 @@ All training and model parameters are defined in `config.yaml`.
 | **training** | `device` | Compute device (`cuda`, `mps`, or `cpu`). |
 | | `epochs` | Number of training iterations over the prior. |
 | | `save_dir` | Directory to save model checkpoints. |
-| **model** | `ninp` | Embedding dimension (d_model). |
-| | `nlayers` | Number of transformer layers. |
+| **model** | `embed_dim` | Embedding dimension for the model. |
+| | `out_dim` | Output dimension for the model predictions. |
+| | `*_num_blocks` | Number of blocks for col, row, and icl components (e.g. `col_num_blocks`). |
+| | `*_nhead` | Number of attention heads for col, row, and icl components (e.g. `col_nhead`). |
 | **data** | `batch_size` | Number of episodes per batch. |
 | | `samples_per_episode` | Observations per context window. |
 | **prior** | `d_x`, `d_z`, `d_w` | Dimensionality of covariates and proxies. |
@@ -83,6 +85,5 @@ uv run python -m pytest tests/
   - `Prior.py`: Synthetic data generator for proximal causal structures.
   - `PriorDataLoader.py`: PyTorch DataLoader for on-the-fly episode generation.
   - `Train.py`: Main entry point for training.
-- `tabpfn/` & `tabicl/`: Specialized transformer components and utilities.
 - `tests/`: Unit and integration tests.
 - `config.yaml`: Centralized configuration.
