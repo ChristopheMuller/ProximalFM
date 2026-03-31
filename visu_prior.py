@@ -44,26 +44,10 @@ print("✓ Imports OK")
 # ─────────────────────────────────────────────────────────────────────────────
 
 from proximalfm.Structure   import ProximalPriorConfig   # ← adjust to your package path
-# from proximalfm.PriorLinear import ProximalPrior
-from proximalfm.Prior import ProximalPrior
+from proximalfm.PriorLinear import ProximalPrior
+# from proximalfm.Prior import ProximalPrior
 
 from proximalfm.Structure import NetworkSpec
-
-specs = NetworkSpec(
-    num_layers = 10,
-    hidden_size = 16,
-    activation = torch.tanh,
-    weight_scale = 0.75,
-    bias_scale = 0.3
-)
-
-specs_y = NetworkSpec(
-    num_layers = 8,
-    hidden_size = 12,
-    activation = torch.tanh,
-    weight_scale = 0.5,
-    bias_scale = 0.2
-)
 
 cfg = ProximalPriorConfig(
     d_x            = 5,
@@ -76,10 +60,6 @@ cfg = ProximalPriorConfig(
     noise_scale_y  = 0.10,
     normalize_episode = False,
     temperature=3,
-    x_spec = specs,
-    u_spec = specs,
-    z_spec = specs,
-    outcome_spec = specs_y
 )
 
 prior = ProximalPrior(config=cfg, seed=0)
@@ -119,6 +99,7 @@ tensors = {
     "U" : episode.U,  "A" : episode.A,
     "Y" : episode.Y,  "Y0": episode.Y0, "Y1": episode.Y1,
     "propensity": episode.propensity,
+    "ITE": episode.Y1 - episode.Y0,
 }
 
 summary = pd.DataFrame([describe_tensor(k, v) for k, v in tensors.items()])
@@ -223,7 +204,12 @@ axes[1].set_xlabel("value")
 axes[1].legend(frameon=False)
 
 # 5c. ITE distribution
-axes[2].hist(ITE_np, bins=50, color=C_ITE, edgecolor="white", alpha=0.85)
+try:
+    axes[2].hist(ITE_np, bins=50, color=C_ITE, edgecolor="white", alpha=0.85)
+except ValueError:
+    print("Warning: histogram failed (possibly due to NaNs or Infs in ITE). "
+          "Falling back to KDE plot.")
+    sns.kdeplot(ITE_np, ax=axes[2], color=C_ITE, fill=True, alpha=0.3)
 axes[2].axvline(ITE_np.mean(), color="black", linestyle="--",
                 label=f"ATE={ITE_np.mean():.3f}")
 axes[2].axvline(0, color="red", linestyle=":", alpha=0.5, label="zero")
