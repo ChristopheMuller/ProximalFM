@@ -60,7 +60,7 @@ def main():
     # ---------------------------------------------------------
     # 2. Generate exactly K test datasets (1 Batch)
     # ---------------------------------------------------------
-    k_datasets = 50 # Number of test datasets
+    k_datasets = 150 # Number of test datasets
     samples_per_episode = config["data"]["samples_per_episode"]
     
     # We want 1 query point per episode, the rest is context
@@ -167,7 +167,7 @@ def main():
         )
 
         ax.set_title(f"Epoch {epoch}", fontsize=14)
-        ax.set_xlabel("True CATE")
+        ax.set_xlabel("True ITE")
         ax.set_ylabel("Predicted CATE")
         ax.set_xlim([min_val, max_val])
         ax.set_ylim([min_val, max_val])
