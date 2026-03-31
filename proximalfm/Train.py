@@ -78,10 +78,10 @@ def gaussian_nll_loss(
 class CATETrainer:
     def __init__(self, config: dict) -> None:
         self.config = config
-        self.train_cfg = config["training"]
-        self.data_cfg = config["data"]
-        self.prior_cfg = config["prior"]
-        self.model_cfg = config["model"]
+        self.train_cfg = config.get("training", {})
+        self.data_cfg = config.get("data", {})
+        self.prior_cfg = config.get("prior", {})
+        self.model_cfg = config.get("model", {})
 
         # ------------------------------------------------------------------
         # Device
@@ -95,25 +95,32 @@ class CATETrainer:
             self.device = torch.device("cpu")
         logger.info(f"Using device: {self.device}")
 
-        # ------------------------------------------------------------------
-        # Model
-        # ------------------------------------------------------------------
+        # Determine dtype
         dtype_str = self.model_cfg.get("dtype", "float32")
         self.dtype = getattr(torch, dtype_str)
 
-        # Instantiate the new Proximal NanoTabICL model
+        # ------------------------------------------------------------------
+        # Prior Config
+        # ------------------------------------------------------------------
+        prior_kwargs = self.prior_cfg.copy()
+        prior_kwargs["dtype"] = self.dtype
+        self.prior_config = ProximalPriorConfig(**prior_kwargs)
+
+        # ------------------------------------------------------------------
+        # Model
+        # ------------------------------------------------------------------
         self.model = ProximalNanoTabICLv2(
             out_dim=2, # 2 dimensions: 1 for CATE mean, 1 for log_var
             embed_dim=self.model_cfg.get("embed_dim", 64),
-            col_num_blocks=self.model_cfg.get("col_num_blocks", 3), # mapping old config to new
+            col_num_blocks=self.model_cfg.get("col_num_blocks", 3),
             row_num_blocks=self.model_cfg.get("row_num_blocks", 3),
             icl_num_blocks=self.model_cfg.get("icl_num_blocks", 12),
             col_nhead=self.model_cfg.get("col_nhead", 8),
             row_nhead=self.model_cfg.get("row_nhead", 8),
             icl_nhead=self.model_cfg.get("icl_nhead", 8),
-            feature_group_size_x=self.prior_cfg["d_x"],
-            feature_group_size_w=self.prior_cfg["d_w"],
-            feature_group_size_z=self.prior_cfg["d_z"],
+            feature_group_size_x=self.prior_config.d_x,
+            feature_group_size_w=self.prior_config.d_w,
+            feature_group_size_z=self.prior_config.d_z,
         )
         self.model.to(self.device, dtype=self.dtype)
         n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -124,47 +131,40 @@ class CATETrainer:
         # ------------------------------------------------------------------
         self.optimizer = optim.Adam(
             self.model.parameters(),
-            lr=self.train_cfg["lr"],
-            weight_decay=self.train_cfg["weight_decay"],
+            lr=self.train_cfg.get("lr", 0.001),
+            weight_decay=self.train_cfg.get("weight_decay", 1e-4),
         )
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode="min", factor=0.5, patience=5
         )
         self.warmup_steps = self.train_cfg.get("warmup_steps", 1000)
         self.global_step = 0
-        self.base_lr = self.train_cfg["lr"]
+        self.base_lr = self.train_cfg.get("lr", 0.001)
 
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
-        prior_config = ProximalPriorConfig(
-            d_x=self.prior_cfg["d_x"],
-            d_z=self.prior_cfg["d_z"],
-            d_w=self.prior_cfg["d_w"],
-            d_u=self.prior_cfg["d_u"],
-            dtype=self.dtype,
-        )
-
         loaders = create_causal_data_loaders(
-            prior_config=prior_config,
-            batch_size=self.data_cfg["batch_size"],
-            samples_per_episode=self.data_cfg["samples_per_episode"],
-            train_episodes=self.data_cfg["train_episodes"],
-            val_episodes=self.data_cfg["val_episodes"],
-            num_workers=self.data_cfg["num_workers"],
-            seed=self.train_cfg["seed"],
+            prior_config=self.prior_config,
+            batch_size=self.data_cfg.get("batch_size", 32),
+            samples_per_episode=self.data_cfg.get("samples_per_episode", 128),
+            train_episodes=self.data_cfg.get("train_episodes", 400),
+            val_episodes=self.data_cfg.get("val_episodes", 400),
+            num_workers=self.data_cfg.get("num_workers", 4),
+            seed=self.train_cfg.get("seed", 1234),
         )
         self.train_loader = loaders["train"]
         self.val_loader = loaders["val"]
 
-        n = self.data_cfg["samples_per_episode"]
+        n = self.data_cfg.get("samples_per_episode", 128)
         self.single_eval_pos = int(n * self.data_cfg.get("context_fraction", 0.8))
 
         # ------------------------------------------------------------------
         # Logging + bookkeeping
         # ------------------------------------------------------------------
-        os.makedirs(self.train_cfg["log_dir"], exist_ok=True)
-        self.writer = SummaryWriter(log_dir=self.train_cfg["log_dir"])
+        log_dir = self.train_cfg.get("log_dir", "runs")
+        os.makedirs(log_dir, exist_ok=True)
+        self.writer = SummaryWriter(log_dir=log_dir)
 
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
