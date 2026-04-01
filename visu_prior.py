@@ -47,8 +47,6 @@ from proximalfm.Structure   import ProximalPriorConfig   # ← adjust to your pa
 from proximalfm.PriorLinear import ProximalPrior
 # from proximalfm.Prior import ProximalPrior
 
-from proximalfm.Structure import NetworkSpec
-
 cfg = ProximalPriorConfig(
     d_x            = 5,
     d_u            = 1,
