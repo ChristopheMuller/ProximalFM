@@ -1,13 +1,25 @@
 import sys
 from unittest.mock import MagicMock, patch
 
-# Mocking torch and pandas before importing proximalfm modules
+# Mocking dependencies before importing proximalfm modules
+# We use a permanent mock in sys.modules for this test session
 mock_torch = MagicMock()
 mock_pandas = MagicMock()
+mock_numpy = MagicMock()
 
-with patch.dict(sys.modules, {"torch": mock_torch, "pandas": mock_pandas}):
-    from proximalfm.PriorLinear import ProximalPrior
-    from proximalfm.Structure import ProximalEpisode, ProximalPriorConfig
+# Only mock if not already present to avoid overriding in environments that have them,
+# though for pure unit testing mocking is often preferred.
+if "torch" not in sys.modules:
+    sys.modules["torch"] = mock_torch
+if "pandas" not in sys.modules:
+    sys.modules["pandas"] = mock_pandas
+if "numpy" not in sys.modules:
+    sys.modules["numpy"] = mock_numpy
+
+# Now we can safely import from proximalfm
+import proximalfm.PriorLinear
+from proximalfm.PriorLinear import ProximalPrior
+from proximalfm.Structure import ProximalEpisode, ProximalPriorConfig
 
 def test_episode_to_dataframe_linear():
     # Setup mock config and prior
@@ -27,6 +39,7 @@ def test_episode_to_dataframe_linear():
             fake_np = MagicMock()
             fake_np.shape = shape
             # Handle slicing: X_np[:, i]
+            # Return a simple list of floats to simulate numpy behavior for testing the dataframe dictionary construction
             fake_np.__getitem__.side_effect = lambda x: [float(i) for i in range(shape[0])]
             mock_cpu.numpy.return_value = fake_np
         else:
@@ -47,24 +60,26 @@ def test_episode_to_dataframe_linear():
         propensity=prepare_mock_tensor("prop", (batch_size,))
     )
 
-    # Test without latents
-    prior.episode_to_dataframe(episode, include_latents=False)
+    # We patch the exact reference used in the method under test
+    with patch("proximalfm.PriorLinear.pd.DataFrame") as mock_df_class:
+        # Test without latents
+        prior.episode_to_dataframe(episode, include_latents=False)
 
-    # Verify pd.DataFrame was called with the correct dictionary
-    mock_pandas.DataFrame.assert_called()
-    called_dict = mock_pandas.DataFrame.call_args[0][0]
+        # Verify pd.DataFrame was called
+        mock_df_class.assert_called()
+        called_dict = mock_df_class.call_args[0][0]
 
-    expected_keys = ["x_0", "x_1", "z_0", "z_1", "w_0", "w_1", "treatment", "outcome", "y0", "y1", "propensity"]
-    for key in expected_keys:
-        assert key in called_dict
-        assert isinstance(called_dict[key], list)
-        assert all(isinstance(val, float) for val in called_dict[key])
+        expected_keys = ["x_0", "x_1", "z_0", "z_1", "w_0", "w_1", "treatment", "outcome", "y0", "y1", "propensity"]
+        for key in expected_keys:
+            assert key in called_dict
+            assert isinstance(called_dict[key], list)
+            assert all(isinstance(val, float) for val in called_dict[key])
 
-    assert "u_0" not in called_dict
+        assert "u_0" not in called_dict
 
-    # Test with latents
-    mock_pandas.DataFrame.reset_mock()
-    prior.episode_to_dataframe(episode, include_latents=True)
-    called_dict_latents = mock_pandas.DataFrame.call_args[0][0]
-    assert "u_0" in called_dict_latents
-    assert all(isinstance(val, float) for val in called_dict_latents["u_0"])
+        # Test with latents
+        mock_df_class.reset_mock()
+        prior.episode_to_dataframe(episode, include_latents=True)
+        called_dict_latents = mock_df_class.call_args[0][0]
+        assert "u_0" in called_dict_latents
+        assert all(isinstance(val, float) for val in called_dict_latents["u_0"])
