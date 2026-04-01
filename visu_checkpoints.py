@@ -67,7 +67,7 @@ def main():
     single_eval_pos = samples_per_episode - 1 
 
     prior_config = ProximalPriorConfig(
-        type="nonlinear",
+        type=prior_cfg["type"],
         d_x=prior_cfg["d_x"],
         d_z=prior_cfg["d_z"],
         d_w=prior_cfg["d_w"],

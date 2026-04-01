@@ -265,7 +265,6 @@ class CATETrainer:
                 self.optimizer.step()
 
                 total_loss += loss.item()
-                pbar.set_postfix({"nll_loss": f"{loss.item():.4f}"})
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -369,7 +368,8 @@ class CATETrainer:
         early_stop_count = 0
         best_val_loss = float("inf")
 
-        for epoch in range(self.train_cfg["epochs"]):
+        epoch = 0
+        for i in range(self.train_cfg["epochs"]):
             train_loss = self.train_epoch(epoch)
             if epoch % self.train_cfg.get("val_freq", 1) == 0:
                 val_loss, rmse = self.validate(epoch)
@@ -392,9 +392,10 @@ class CATETrainer:
                 if early_stop_count >= self.train_cfg["early_stop"]:
                     logger.info(f"Early stopping after {epoch+1} epochs.")
                     break
+            epoch += 1
 
         self.total_training_time = time.time() - training_start
-        self.save_checkpoint(self.train_cfg["epochs"], val_loss, tag="final")
+        self.save_checkpoint(epoch, val_loss, tag="final")
         self.writer.close()
         logger.info("Training complete!")
 
