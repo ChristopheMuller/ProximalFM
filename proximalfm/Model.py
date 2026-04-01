@@ -96,40 +96,29 @@ class ProximalNanoTabICLv2(nn.Module):
         x = x / (
             x[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
         )
-        idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
-        x = torch.stack(
-            [
-                x[:, :, (idxs + (2**i - 1)) % n_cols]
-                for i in range(self.feature_group_size_x)
-            ],
-            dim=-1,
-        )
+        # Vectorized sliding window grouping
+        idxs_x = torch.arange(n_cols, dtype=torch.long, device=x.device)
+        offsets_x = (2**torch.arange(self.feature_group_size_x, device=x.device) - 1)
+        group_idxs_x = (idxs_x[:, None] + offsets_x) % n_cols
+        x = x[:, :, group_idxs_x]
         emb_x = self.x_embed(x)  # emb.shape = (n_batch, n_rows, n_cols, embed_dim)
 
         w = w / (
             w[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
         )
-        idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
-        w = torch.stack(
-            [
-                w[:, :, (idxs + (2**i - 1)) % w.shape[-1]]
-                for i in range(self.feature_group_size_w)
-            ],
-            dim=-1,
-        )
+        idxs_w = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
+        offsets_w = (2**torch.arange(self.feature_group_size_w, device=w.device) - 1)
+        group_idxs_w = (idxs_w[:, None] + offsets_w) % w.shape[-1]
+        w = w[:, :, group_idxs_w]
         emb_w = self.w_embed(w)
 
         z = z / (
             z[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
         )
-        idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
-        z = torch.stack(
-            [
-                z[:, :, (idxs + (2**i - 1)) % z.shape[-1]]
-                for i in range(self.feature_group_size_z)
-            ],
-            dim=-1,
-        )
+        idxs_z = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
+        offsets_z = (2**torch.arange(self.feature_group_size_z, device=z.device) - 1)
+        group_idxs_z = (idxs_z[:, None] + offsets_z) % z.shape[-1]
+        z = z[:, :, group_idxs_z]
         emb_z = self.z_embed(z)
 
         emb_a = self.a_embed(a[:, :, None, None])
