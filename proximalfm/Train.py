@@ -372,7 +372,7 @@ class CATETrainer:
             )
             self.log_metrics(epoch, train_loss, val_loss, rmse)
 
-            if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0:
+            if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
                 self.save_checkpoint(epoch + 1, val_loss)
 
             if val_loss < best_val_loss:
