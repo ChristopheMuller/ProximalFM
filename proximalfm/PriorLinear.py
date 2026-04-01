@@ -23,7 +23,7 @@ class ProximalPrior:
     It ensures that Assumption 4 (completeness) and other conditions of Proximal Causal
     Inference can hold for downstream tasks.
 
-    The continuous dependencies between variables are modeled using simple linear 
+    The continuous dependencies between variables are modeled using simple linear
     relationships controlled by ProximalPriorConfig, replacing the previous BNN approach.
     """
 
@@ -85,7 +85,7 @@ class ProximalPrior:
         Applies a random linear transformation (affine) to the given inputs.
 
         The transformation is instantiated with random weights and biases sampled from
-        normal distributions with scales provided in the NetworkSpec. 
+        normal distributions with scales provided in the NetworkSpec.
 
         Args:
             inputs: The input tensor containing covariates or latent variables.
@@ -97,7 +97,7 @@ class ProximalPrior:
             A tensor containing the linear transformation output.
         """
         input_dim = inputs.shape[-1]
-        
+
         weight = torch.normal(
             mean=0.0,
             std=spec.weight_scale,
@@ -114,7 +114,7 @@ class ProximalPrior:
             generator=generator,
             dtype=self._dtype,
         )
-        
+
         return inputs @ weight + bias
 
     def generate_episode(

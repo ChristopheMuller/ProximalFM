@@ -68,7 +68,14 @@ class ProximalNanoTabICLv2(nn.Module):
         self.out_ln = nn.LayerNorm(icl_dim)
         self.out_mlp = get_mlp(icl_dim, icl_dim * 2, out_dim)
 
-    def forward(self, x: torch.Tensor, a: torch.Tensor, w: torch.Tensor, z: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        a: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
+        y: torch.Tensor,
+    ) -> torch.Tensor:
 
         assert y.shape == a.shape, "y and a must have the same shape"
 
@@ -93,9 +100,7 @@ class ProximalNanoTabICLv2(nn.Module):
 
         # ----- Embedding: repeated feature grouping -> x embedding -> add y embedding to train
 
-        x = x / (
-            x[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        )
+        x = x / (x[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
         x = torch.stack(
             [
@@ -106,9 +111,7 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         emb_x = self.x_embed(x)  # emb.shape = (n_batch, n_rows, n_cols, embed_dim)
 
-        w = w / (
-            w[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        )
+        w = w / (w[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
         w = torch.stack(
             [
@@ -119,9 +122,7 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         emb_w = self.w_embed(w)
 
-        z = z / (
-            z[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        )
+        z = z / (z[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
         z = torch.stack(
             [
@@ -160,7 +161,9 @@ class ProximalNanoTabICLv2(nn.Module):
 
         # ----- TF_icl: add y embedding -> self-attention
         # now emb.shape = (n_batch, n_rows, icl_dim)
-        emb[:, :n_train] += self.y_embed_icl(y[:, :, None]) + self.a_embed_icl(a[:, :, None])
+        emb[:, :n_train] += self.y_embed_icl(y[:, :, None]) + self.a_embed_icl(
+            a[:, :, None]
+        )
         for block in self.icl_blocks[:-1]:
             emb = block(
                 emb, kv_max_idx=n_train

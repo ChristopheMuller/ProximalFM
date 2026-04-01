@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Utilities
 # ---------------------------------------------------------------------------
 
+
 def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -75,6 +76,7 @@ def gaussian_nll_loss(
 # Trainer
 # ---------------------------------------------------------------------------
 
+
 class CATETrainer:
     def __init__(self, config: dict) -> None:
         self.config = config
@@ -110,7 +112,7 @@ class CATETrainer:
         # Model
         # ------------------------------------------------------------------
         self.model = ProximalNanoTabICLv2(
-            out_dim=2, # 2 dimensions: 1 for CATE mean, 1 for log_var
+            out_dim=2,  # 2 dimensions: 1 for CATE mean, 1 for log_var
             embed_dim=self.model_cfg.get("embed_dim", 64),
             col_num_blocks=self.model_cfg.get("col_num_blocks", 3),
             row_num_blocks=self.model_cfg.get("row_num_blocks", 3),
@@ -188,25 +190,30 @@ class CATETrainer:
             for k, v in batch.items()
         }
 
-    def _prepare_inputs(
-            self, batch: dict
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            """
-            Reformat a DataLoader batch for the model's forward signature.
-            DataLoader returns (N, B, D). NanoTab expects (B, N, D).
-            A and Y must be strictly sliced to n_train (single_eval_pos) rows and squeezed to (B, N).
-            """
+    def _prepare_inputs(self, batch: dict) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """
+        Reformat a DataLoader batch for the model's forward signature.
+        DataLoader returns (N, B, D). NanoTab expects (B, N, D).
+        A and Y must be strictly sliced to n_train (single_eval_pos) rows and squeezed to (B, N).
+        """
 
-            x = batch["X"].transpose(0, 1)  
-            z = batch["Z"].transpose(0, 1)  
-            w = batch["W"].transpose(0, 1)  
+        x = batch["X"].transpose(0, 1)
+        z = batch["Z"].transpose(0, 1)
+        w = batch["W"].transpose(0, 1)
 
-            a = batch["A"][:self.single_eval_pos].transpose(0, 1).squeeze(-1)
-            y = batch["Y"][:self.single_eval_pos].transpose(0, 1).squeeze(-1)
+        a = batch["A"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
+        y = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
 
-            ite_query = batch["ITE"][self.single_eval_pos:].transpose(0, 1)
+        ite_query = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
 
-            return x, a, w, z, y, ite_query
+        return x, a, w, z, y, ite_query
 
     # ------------------------------------------------------------------
     # Train epoch
@@ -227,13 +234,15 @@ class CATETrainer:
 
                 # NanoTabICLv2 forward pass
                 out = self.model(x=x, a=a, w=w, z=z, y=y)
-                
+
                 # out shape is (B, N_query, 2). Split into mean and log_var
                 pred_mean = out[..., 0:1]
                 pred_log_var = out[..., 1:2]
 
                 # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
-                alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
+                alpha_epoch_loss = 1 - min(
+                    1, epoch / self.train_cfg.get("warmup_epochs", 300)
+                )
 
                 loss_mse = F.mse_loss(pred_mean, target)
                 loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
@@ -251,7 +260,7 @@ class CATETrainer:
                     lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = lr_scale * self.base_lr
-                
+
                 self.global_step += 1
                 self.optimizer.step()
 
@@ -393,6 +402,7 @@ class CATETrainer:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     config = load_config()

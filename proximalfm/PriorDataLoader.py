@@ -89,10 +89,7 @@ def custom_collate(batch):
     Returns tensors of shape (N, B, D) where N is samples_per_episode and B is batch_size.
     """
     elem = batch[0]
-    return {
-        key: torch.stack([d[key] for d in batch], dim=1)
-        for key in elem.keys()
-    }
+    return {key: torch.stack([d[key] for d in batch], dim=1) for key in elem.keys()}
 
 
 def create_causal_data_loaders(
