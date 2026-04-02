@@ -113,16 +113,21 @@ def main():
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found in {save_dir} matching pattern 'model_epoch_*.pth'")
 
-    # Select up to 6 checkpoints evenly spaced to plot
-    num_plots = min(6, len(checkpoints))
-    indices = np.linspace(0, len(checkpoints) - 1, num_plots, dtype=int)
-    selected_checkpoints = [checkpoints[i] for i in indices]
+    # Select all checkpoints to plot
+    num_plots = len(checkpoints)
+    selected_checkpoints = checkpoints
 
     # ---------------------------------------------------------
     # 4. Evaluate and Plot
     # ---------------------------------------------------------
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    axes = axes.flatten()
+    import math
+    cols = 4
+    rows = math.ceil(num_plots / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(24, 5 * rows))
+
+    # If there's only 1 row and 1 col, axes might not be an array, but here cols=4 so it will be an array
+    # Flattening makes it easier to iterate over
+    axes = np.array(axes).flatten()
 
     for idx, ckpt_path in enumerate(tqdm(selected_checkpoints, desc="Evaluating Checkpoints")):
         epoch = extract_epoch(ckpt_path)
