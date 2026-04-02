@@ -219,10 +219,22 @@ class CATETrainer:
     # Train epoch
     # ------------------------------------------------------------------
 
-    def train_epoch(self, epoch: int) -> float:
+    def train_epoch(self, epoch: int) -> dict:
         self.model.train()
         total_loss = 0.0
+        total_loss_mse = 0.0
+        total_loss_gnll = 0.0
+        sum_sq_err = 0.0
+        total_samples = 0
+        total_variance = 0.0
+        total_grad_norm = 0.0
+
         epoch_start = time.time()
+
+        # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
+        alpha_epoch_loss = 1 - min(
+            1, epoch / self.train_cfg.get("warmup_epochs", 300)
+        )
 
         with tqdm(
             self.train_loader,
@@ -239,11 +251,6 @@ class CATETrainer:
                 pred_mean = out[..., 0:1]
                 pred_log_var = out[..., 1:2]
 
-                # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
-                alpha_epoch_loss = 1 - min(
-                    1, epoch / self.train_cfg.get("warmup_epochs", 300)
-                )
-
                 loss_mse = F.mse_loss(pred_mean, target)
                 loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
 
@@ -251,10 +258,24 @@ class CATETrainer:
 
                 self.optimizer.zero_grad()
                 loss.backward()
+
+                # Calculate and clip gradient norm
                 if self.train_cfg.get("clip_grad", 0.0) > 0:
-                    nn.utils.clip_grad_norm_(
+                    grad_norm = nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.train_cfg["clip_grad"]
-                    )
+                    ).item()
+                else:
+                    # Manually compute grad norm if not clipping
+                    parameters = [p for p in self.model.parameters() if p.grad is not None]
+                    if len(parameters) == 0:
+                        grad_norm = 0.0
+                    else:
+                        device = parameters[0].grad.device
+                        grad_norm = torch.norm(
+                            torch.stack([torch.norm(p.grad.detach(), 2).to(device) for p in parameters]), 2
+                        ).item()
+
+                total_grad_norm += grad_norm
 
                 if self.global_step < self.warmup_steps:
                     lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
@@ -265,24 +286,56 @@ class CATETrainer:
                 self.optimizer.step()
 
                 total_loss += loss.item()
+                total_loss_mse += loss_mse.item()
+                total_loss_gnll += loss_gnll.item()
+
+                sum_sq_err += (pred_mean - target).pow(2).sum().item()
+                total_samples += target.numel()
+                total_variance += pred_log_var.exp().mean().item()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
-        avg_loss = total_loss / len(self.train_loader)
+
+        num_batches = len(self.train_loader)
+        avg_loss = total_loss / num_batches
+        avg_loss_mse = total_loss_mse / num_batches
+        avg_loss_gnll = total_loss_gnll / num_batches
+        rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
+        avg_variance = total_variance / num_batches
+        avg_grad_norm = total_grad_norm / num_batches
+
         self.train_losses.append(avg_loss)
         logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
-        return avg_loss
+
+        return {
+            "loss_total": avg_loss,
+            "loss_mse": avg_loss_mse,
+            "loss_gnll": avg_loss_gnll,
+            "rmse": rmse,
+            "variance": avg_variance,
+            "grad_norm": avg_grad_norm,
+            "alpha": alpha_epoch_loss,
+            "time_s": epoch_time,
+        }
 
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------
 
-    def validate(self, epoch: int) -> Tuple[float, float]:
+    def validate(self, epoch: int) -> dict:
         self.model.eval()
-        total_loss = 0.0
+        total_loss_gnll = 0.0
+        total_loss_mse = 0.0
+        total_loss_total = 0.0
+        total_variance = 0.0
         sum_sq_err = 0.0
         total_samples = 0
         val_start = time.time()
+
+        # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
+        alpha_epoch_loss = 1 - min(
+            1, epoch / self.train_cfg.get("warmup_epochs", 300)
+        )
 
         with torch.no_grad():
             with tqdm(
@@ -298,23 +351,43 @@ class CATETrainer:
                     pred_mean = out[..., 0:1]
                     pred_log_var = out[..., 1:2]
 
-                    loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
-                    total_loss += loss.item()
+                    loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
+                    loss_mse = F.mse_loss(pred_mean, target)
+                    loss_total = alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
+
+                    total_loss_gnll += loss_gnll.item()
+                    total_loss_mse += loss_mse.item()
+                    total_loss_total += loss_total.item()
+
                     sum_sq_err += (pred_mean - target).pow(2).sum().item()
                     total_samples += target.numel()
+                    total_variance += pred_log_var.exp().mean().item()
 
-                    pbar.set_postfix({"nll_loss": f"{loss.item():.4f}"})
+                    pbar.set_postfix({"nll_loss": f"{loss_gnll.item():.4f}"})
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
 
-        avg_loss = total_loss / len(self.val_loader)
+        num_batches = len(self.val_loader)
+        avg_loss_gnll = total_loss_gnll / num_batches
+        avg_loss_mse = total_loss_mse / num_batches
+        avg_loss_total = total_loss_total / num_batches
         rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
-        self.val_losses.append(avg_loss)
+        avg_variance = total_variance / num_batches
+
+        self.val_losses.append(avg_loss_gnll)
         self.val_rmses.append(rmse)
-        self.scheduler.step(avg_loss)
+        self.scheduler.step(avg_loss_gnll)
         logger.info(f"Epoch {epoch+1} val done in {format_time(val_time)}")
-        return avg_loss, rmse
+
+        return {
+            "loss_gnll": avg_loss_gnll,
+            "loss_mse": avg_loss_mse,
+            "loss_total": avg_loss_total,
+            "rmse": rmse,
+            "variance": avg_variance,
+            "time_s": val_time,
+        }
 
     # ------------------------------------------------------------------
     # Checkpointing
@@ -344,18 +417,33 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def log_metrics(
-        self, epoch: int, train_loss: float, val_loss: float, rmse: float
+        self, epoch: int, train_metrics: dict, val_metrics: dict | None = None
     ) -> None:
-        self.writer.add_scalar("Loss/train_nll", train_loss, epoch)
-        self.writer.add_scalar("Loss/val_nll", val_loss, epoch)
-        self.writer.add_scalar("Metrics/val_rmse", rmse, epoch)
-        self.writer.add_scalar(
-            "Learning_rate",
-            self.optimizer.param_groups[0]["lr"],
-            epoch,
-        )
-        if self.epoch_times:
-            self.writer.add_scalar("Time/epoch_s", self.epoch_times[-1], epoch)
+        # Losses
+        self.writer.add_scalar("Loss/train_total", train_metrics["loss_total"], epoch)
+        self.writer.add_scalar("Loss/train_mse", train_metrics["loss_mse"], epoch)
+        self.writer.add_scalar("Loss/train_gnll", train_metrics["loss_gnll"], epoch)
+
+        # Metrics
+        self.writer.add_scalar("Metrics/train_rmse", train_metrics["rmse"], epoch)
+        self.writer.add_scalar("Metrics/train_variance", train_metrics["variance"], epoch)
+
+        # Parameters / Optimization
+        self.writer.add_scalar("Parameters/alpha", train_metrics["alpha"], epoch)
+        self.writer.add_scalar("Parameters/grad_norm", train_metrics["grad_norm"], epoch)
+        self.writer.add_scalar("Parameters/learning_rate", self.optimizer.param_groups[0]["lr"], epoch)
+
+        # Timing
+        self.writer.add_scalar("Time/train_s", train_metrics["time_s"], epoch)
+
+        # Validation Metrics (if available)
+        if val_metrics:
+            self.writer.add_scalar("Loss/val_total", val_metrics["loss_total"], epoch)
+            self.writer.add_scalar("Loss/val_mse", val_metrics["loss_mse"], epoch)
+            self.writer.add_scalar("Loss/val_gnll", val_metrics["loss_gnll"], epoch)
+            self.writer.add_scalar("Metrics/val_rmse", val_metrics["rmse"], epoch)
+            self.writer.add_scalar("Metrics/val_variance", val_metrics["variance"], epoch)
+            self.writer.add_scalar("Time/val_s", val_metrics["time_s"], epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
@@ -370,32 +458,41 @@ class CATETrainer:
 
         epoch = 0
         for i in range(self.train_cfg["epochs"]):
-            train_loss = self.train_epoch(epoch)
+            train_metrics = self.train_epoch(epoch)
+            val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:
-                val_loss, rmse = self.validate(epoch)
+                val_metrics = self.validate(epoch)
+
+            # Extract metrics for console logging
+            train_nll = train_metrics["loss_gnll"]
+            val_nll = val_metrics["loss_gnll"] if val_metrics else float('nan')
+            val_rmse = val_metrics["rmse"] if val_metrics else float('nan')
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
-                f"train_nll={train_loss:.4f}  val_nll={val_loss:.4f}  "
-                f"val_rmse={rmse:.4f}"
+                f"train_nll={train_nll:.4f}  val_nll={val_nll:.4f}  "
+                f"val_rmse={val_rmse:.4f}"
             )
-            self.log_metrics(epoch, train_loss, val_loss, rmse)
+            self.log_metrics(epoch, train_metrics, val_metrics)
 
             if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
-                self.save_checkpoint(epoch + 1, val_loss)
+                # Save using the validation NLL metric for early stopping consistency
+                self.save_checkpoint(epoch + 1, val_nll if val_metrics else train_nll)
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                early_stop_count = 0
-            else:
-                early_stop_count += 1
-                if early_stop_count >= self.train_cfg["early_stop"]:
-                    logger.info(f"Early stopping after {epoch+1} epochs.")
-                    break
+            if val_metrics:
+                if val_nll < best_val_loss:
+                    best_val_loss = val_nll
+                    early_stop_count = 0
+                else:
+                    early_stop_count += 1
+                    if early_stop_count >= self.train_cfg["early_stop"]:
+                        logger.info(f"Early stopping after {epoch+1} epochs.")
+                        break
             epoch += 1
 
         self.total_training_time = time.time() - training_start
-        self.save_checkpoint(epoch, val_loss, tag="final")
+        # Final checkpoint uses the last recorded val_nll
+        self.save_checkpoint(epoch, best_val_loss if early_stop_count > 0 else (val_nll if 'val_nll' in locals() and not np.isnan(val_nll) else train_nll), tag="final")
         self.writer.close()
         logger.info("Training complete!")
 
