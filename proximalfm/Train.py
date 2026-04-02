@@ -457,11 +457,13 @@ class CATETrainer:
         best_val_loss = float("inf")
 
         epoch = 0
+        last_val_nll = float('inf')
         for i in range(self.train_cfg["epochs"]):
             train_metrics = self.train_epoch(epoch)
             val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:
                 val_metrics = self.validate(epoch)
+                last_val_nll = val_metrics["loss_gnll"]
 
             # Extract metrics for console logging
             train_nll = train_metrics["loss_gnll"]
@@ -476,8 +478,8 @@ class CATETrainer:
             self.log_metrics(epoch, train_metrics, val_metrics)
 
             if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
-                # Save using the validation NLL metric for early stopping consistency
-                self.save_checkpoint(epoch + 1, val_nll if val_metrics else train_nll)
+                # Save using the last recorded validation NLL metric
+                self.save_checkpoint(epoch + 1, last_val_nll)
 
             if val_metrics:
                 if val_nll < best_val_loss:
@@ -492,7 +494,7 @@ class CATETrainer:
 
         self.total_training_time = time.time() - training_start
         # Final checkpoint uses the last recorded val_nll
-        self.save_checkpoint(epoch, best_val_loss if early_stop_count > 0 else (val_nll if 'val_nll' in locals() and not np.isnan(val_nll) else train_nll), tag="final")
+        self.save_checkpoint(epoch, last_val_nll, tag="final")
         self.writer.close()
         logger.info("Training complete!")
 
