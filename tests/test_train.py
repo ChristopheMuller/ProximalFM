@@ -181,8 +181,14 @@ def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     # We should let the real model be used, but since we want to avoid heavy compute:
     # Let's mock the loss backward
 
-    avg_loss = trainer.train_epoch(epoch=0)
-    assert isinstance(avg_loss, float)
+    train_metrics = trainer.train_epoch(epoch=0)
+    assert isinstance(train_metrics, dict)
+    assert "loss_total" in train_metrics
+    assert "rmse" in train_metrics
+    assert "variance" in train_metrics
+    assert "grad_norm" in train_metrics
+    assert "alpha" in train_metrics
+    assert "time_s" in train_metrics
     assert len(trainer.train_losses) == 1
 
 @patch("proximalfm.Train.SummaryWriter")
@@ -204,9 +210,14 @@ def test_validate(mock_create_loaders, mock_writer, mock_config):
     mock_out = torch.randn(B, 2, 2)
     trainer.model = MagicMock(return_value=mock_out)
 
-    avg_loss, rmse = trainer.validate(epoch=0)
-    assert isinstance(avg_loss, float)
-    assert isinstance(rmse, np.float64) or isinstance(rmse, float)
+    val_metrics = trainer.validate(epoch=0)
+
+    assert isinstance(val_metrics, dict)
+    assert "loss_gnll" in val_metrics
+    assert "rmse" in val_metrics
+    assert "variance" in val_metrics
+    assert "loss_total" in val_metrics
+    assert isinstance(val_metrics["loss_gnll"], float)
     assert len(trainer.val_losses) == 1
     assert len(trainer.val_rmses) == 1
 
@@ -235,8 +246,8 @@ def test_train_main_loop(mock_create_loaders, mock_writer, mock_config):
     trainer = CATETrainer(mock_config)
 
     # Mock out epoch and val to avoid data loader requirements
-    trainer.train_epoch = MagicMock(return_value=1.0)
-    trainer.validate = MagicMock(return_value=(0.5, 0.1))
+    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0})
+    trainer.validate = MagicMock(return_value={"loss_gnll": 0.5, "loss_mse": 0.5, "loss_total": 0.5, "rmse": 0.1, "variance": 0.1, "time_s": 0.1})
     trainer.save_checkpoint = MagicMock()
 
     trainer.train()
@@ -254,9 +265,12 @@ def test_early_stopping(mock_create_loaders, mock_writer, mock_config):
     mock_create_loaders.return_value = {"train": [], "val": []}
     trainer = CATETrainer(mock_config)
 
-    trainer.train_epoch = MagicMock(return_value=1.0)
+    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0})
     # First epoch improves loss, second worsens it
-    trainer.validate = MagicMock(side_effect=[(0.5, 0.1), (0.6, 0.1)])
+    trainer.validate = MagicMock(side_effect=[
+        {"loss_gnll": 0.5, "loss_mse": 0.5, "loss_total": 0.5, "rmse": 0.1, "variance": 0.1, "time_s": 0.1},
+        {"loss_gnll": 0.6, "loss_mse": 0.6, "loss_total": 0.6, "rmse": 0.1, "variance": 0.1, "time_s": 0.1}
+    ])
 
     trainer.train()
 
