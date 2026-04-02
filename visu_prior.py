@@ -48,16 +48,15 @@ from proximalfm.PriorLinear import ProximalPrior
 # from proximalfm.Prior import ProximalPrior
 
 cfg = ProximalPriorConfig(
-    d_x            = 5,
-    d_u            = 1,
+    d_x            = 1,
+    d_u            = 2,
     d_z            = 2,
     d_w            = 2,
-    noise_scale_x  = 0.10,
-    noise_scale_z  = 0.15,
-    noise_scale_w  = 0.05,
-    noise_scale_y  = 0.10,
+    noise_scale_w  = 1,
+    noise_scale_z  = 1,
+    noise_scale_x  = 1,
     normalize_episode = False,
-    temperature=3,
+    temperature=1,
 )
 
 prior = ProximalPrior(config=cfg, seed=np.random.randint(0, 9999))
@@ -435,6 +434,8 @@ plt.show()
 X_np = episode.X.cpu().numpy()
 
 fig, axes = plt.subplots(1, cfg.d_x, figsize=(5 * cfg.d_x, 4))
+if cfg.d_x == 1:
+    axes = [axes]
 for i, ax in enumerate(axes):
     xi      = X_np[:, i]
     bins    = np.quantile(xi, np.linspace(0, 1, 21))   # 20 equal-frequency bins
@@ -838,27 +839,27 @@ print(f"  Bias                    : {ate_ols_full - ATE_true:+.4f}")
 # ─────────────────────────────────────────────────────────────────────────────
  
 # ── Stage 1 ────────────────────────────────────────────────────────────────
-stage1_features = np.hstack([X_np, Z_np, W_np])     # (N, d_x + d_z + d_w)
-stage1_model    = LinearRegression().fit(stage1_features, A_np)
-A_hat           = stage1_model.predict(stage1_features)  # (N,)  predicted treatment
- 
-print(f"Stage 1  R² = {stage1_model.score(stage1_features, A_np):.4f}  "
-      f"(how well X,Z,W predict A)")
- 
+# Regress the outcome proxy W on A, X, and the treatment proxy Z
+A_col_reshaped = A_np.reshape(-1, 1)
+stage1_features = np.hstack([A_col_reshaped, X_np, Z_np])     # (N, 1 + d_x + d_z)
+
+# This handles multi-output regression seamlessly if W has >1 dimension
+stage1_model = LinearRegression().fit(stage1_features, W_np)
+W_hat        = stage1_model.predict(stage1_features)          # (N, d_w) predicted W
+
 # ── Stage 2 ────────────────────────────────────────────────────────────────
-stage2_features = np.hstack([A_hat.reshape(-1, 1), X_np, W_np])   # (N, 1+d_x+d_w)
+# Regress Y on A, X, and the predicted outcome proxy W_hat
+stage2_features = np.hstack([A_col_reshaped, X_np, W_hat])    # (N, 1 + d_x + d_w)
 stage2_model    = LinearRegression().fit(stage2_features, Y_np)
- 
-# Causal effect = coefficient on Â (first column)
+
+# Causal effect = coefficient on A (first column)
 ate_p2sls    = float(stage2_model.coef_[0])
- 
-# CATE(i): since linear, the treatment effect is homogeneous
 cate_p2sls   = np.full(len(Y_np), ate_p2sls)
- 
-print("── M4: P2SLS ─────────────────────────────────────────────────────────")
-print(f"  Stage 1 features : X, Z, W → Â")
-print(f"  Stage 2 features : Â, X, W → Y")
-print(f"  β_Â (causal ATE) : {ate_p2sls:+.4f}")
+
+print("── M4: P2SLS (Corrected) ──────────────────────────────────────────────")
+print(f"  Stage 1 features : A, X, Z → Ŵ")
+print(f"  Stage 2 features : A, X, Ŵ → Y")
+print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
 print(f"  True ATE         : {ATE_true:+.4f}")
 print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}")
 print()

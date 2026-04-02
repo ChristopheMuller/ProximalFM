@@ -36,8 +36,13 @@ data:
   num_workers: 4           # DataLoader worker processes (0 = main process only)
 
 prior:
-  type : "nonlinear"
-  d_x: 5    # baseline covariates X
-  d_z: 2    # treatment-inducing proxy Z
-  d_w: 2    # outcome-inducing proxy W
-  d_u: 1    # latent confounder U (never observed by the model)
+  type : "linear"
+  d_x            : 1
+  d_u            : 2
+  d_z            : 2
+  d_w            : 2
+  noise_scale_w  : 1
+  noise_scale_z  : 1
+  noise_scale_x  : 1
+  normalize_episode : False
+  temperature    : 1
