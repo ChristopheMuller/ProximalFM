@@ -1,6 +1,0 @@
-early_stop: 10
-epochs: 4
-exp_name: test_exp
-save_dir: test_save
-seed: 42
-start_checkpoint: test_save/test_exp/model_epoch_3_final.pth
