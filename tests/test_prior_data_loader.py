@@ -46,7 +46,7 @@ def test_dataset_initialization(base_config: ProximalPriorConfig) -> None:
 
     assert dataset.num_episodes == num_episodes
     assert dataset.samples_per_episode == samples
-    assert dataset.seed_offset == 123
+    assert dataset.base_seed_offset == 123
 
 
 def test_dataset_validation_dz(base_config: ProximalPriorConfig) -> None:
@@ -193,8 +193,8 @@ def test_create_data_loaders_seed_offsets(base_config: ProximalPriorConfig) -> N
     assert isinstance(val_ds, ProximalDataset)
 
     # Verify seed offsets are disjoint
-    assert train_ds.seed_offset == seed
-    assert val_ds.seed_offset == seed + train_eps
+    assert train_ds.base_seed_offset == seed
+    assert val_ds.base_seed_offset == seed + train_eps
 
 
 @unittest.mock.patch("torch.cuda.is_available")

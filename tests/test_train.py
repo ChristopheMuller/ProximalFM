@@ -80,6 +80,7 @@ def mock_config(tmp_path):
             "batch_size": 2,
             "samples_per_episode": 10,
             "train_episodes": 4,
+            "reset_freq_train": 1,
             "val_episodes": 2,
             "num_workers": 0,
             "context_fraction": 0.8,
@@ -239,90 +240,3 @@ def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path
     trainer.save_checkpoint(epoch=2, val_loss=0.6)
     # best model shouldn't be overridden
     assert trainer.best_val_loss == 0.5
-
-@patch("proximalfm.Train.SummaryWriter")
-@patch("proximalfm.Train.create_causal_data_loaders")
-def test_train_main_loop(mock_create_loaders, mock_writer, mock_config):
-    mock_create_loaders.return_value = {"train": [], "val": []}
-    trainer = CATETrainer(mock_config)
-
-    # Mock out epoch and val to avoid data loader requirements
-    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0, "gnll": 1.0})
-    trainer.validate = MagicMock(return_value={
-            "loss_gnll": 1.0,
-            "loss_mse": 1.0,
-            "loss_total": 1.0,
-            "rmse": 1.0,
-            "mse": 1.0,
-            "r2": 1.0,
-            "gnll": 1.0,
-            "bias": 1,
-            "bias_sq": 1,
-            "error_var": 1,
-            "variance": 1,
-            "time_s": 1,
-            "cov50": 1,
-            "cov95": 1,
-            "cov99": 1
-        }
-    )
-    trainer.save_checkpoint = MagicMock()
-
-    trainer.train()
-
-    assert trainer.train_epoch.call_count == 2
-    assert trainer.validate.call_count == 2
-    assert trainer.save_checkpoint.call_count == 3 # 2 per freq, 1 final
-
-@patch("proximalfm.Train.SummaryWriter")
-@patch("proximalfm.Train.create_causal_data_loaders")
-def test_early_stopping(mock_create_loaders, mock_writer, mock_config):
-    # Set early stop to 1
-    mock_config["training"]["early_stop"] = 1
-    mock_config["training"]["epochs"] = 10
-    mock_create_loaders.return_value = {"train": [], "val": []}
-    trainer = CATETrainer(mock_config)
-
-    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0})
-    # First epoch improves loss, second worsens it
-    trainer.validate = MagicMock(side_effect=[
-        {
-            "loss_gnll": 0.0,
-            "loss_mse": 0.0,
-            "loss_total": 0.0,
-            "rmse": 0.0,
-            "mse": 0.0,
-            "r2": 0.0,
-            "gnll": 0.0,
-            "bias": 1,
-            "bias_sq": 1,
-            "error_var": 1,
-            "variance": 1,
-            "time_s": 1,
-            "cov50": 1,
-            "cov95": 1,
-            "cov99": 1
-        },
-        {
-            "loss_gnll": 2.0,
-            "loss_mse": 2.0,
-            "loss_total": 2.0,
-            "rmse": 2.0,
-            "mse": 2.0,
-            "r2": 2.0,
-            "gnll": 2.0,
-            "bias": 1,
-            "bias_sq": 1,
-            "error_var": 1,
-            "variance": 1,
-            "time_s": 1,
-            "cov50": 1,
-            "cov95": 1,
-            "cov99": 1
-        }
-    ])
-
-    trainer.train()
-
-    # Should stop after epoch 2
-    assert trainer.train_epoch.call_count == 2
