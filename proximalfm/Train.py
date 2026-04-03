@@ -283,9 +283,13 @@ class CATETrainer:
         total_loss_mse = 0.0
         total_loss_gnll = 0.0
         sum_sq_err = 0.0
+        total_gnll = 0.0
         total_samples = 0
         total_variance = 0.0
         total_grad_norm = 0.0
+        total_cov50 = 0
+        total_cov95 = 0
+        total_cov99 = 0
 
         epoch_start = time.time()
 
@@ -354,8 +358,14 @@ class CATETrainer:
                 total_loss_gnll += loss_gnll.item()
 
                 sum_sq_err += (pred_mean - target).pow(2).sum().item()
+                total_gnll += loss_gnll.item() * target.numel()
                 total_samples += target.numel()
                 total_variance += pred_log_var.exp().mean().item()
+
+                abs_error = torch.abs(target - pred_mean)
+                total_cov50 += (abs_error <= 0.674 * pred_log_var.exp().sqrt()).float().sum().item()
+                total_cov95 += (abs_error <= 1.960 * pred_log_var.exp().sqrt()).float().sum().item()
+                total_cov99 += (abs_error <= 2.576 * pred_log_var.exp().sqrt()).float().sum().item()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -365,8 +375,12 @@ class CATETrainer:
         avg_loss_mse = total_loss_mse / num_batches
         avg_loss_gnll = total_loss_gnll / num_batches
         rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
+        gnll = total_gnll / max(total_samples, 1)
         avg_variance = total_variance / num_batches
         avg_grad_norm = total_grad_norm / num_batches
+        cov50 = total_cov50 / max(total_samples, 1)
+        cov95 = total_cov95 / max(total_samples, 1)
+        cov99 = total_cov99 / max(total_samples, 1)
 
         self.train_losses.append(avg_loss)
         logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
@@ -375,11 +389,15 @@ class CATETrainer:
             "loss_total": avg_loss,
             "loss_mse": avg_loss_mse,
             "loss_gnll": avg_loss_gnll,
+            "gnll": gnll,
             "rmse": rmse,
             "variance": avg_variance,
             "grad_norm": avg_grad_norm,
             "alpha": alpha_epoch_loss,
             "time_s": epoch_time,
+            "cov50": cov50,
+            "cov95": cov95,
+            "cov99": cov99,
         }
 
     # ------------------------------------------------------------------
@@ -388,15 +406,23 @@ class CATETrainer:
 
     def validate(self, epoch: int) -> dict:
         self.model.eval()
+        # Existing accumulators
         total_loss_gnll = 0.0
         total_loss_mse = 0.0
         total_loss_total = 0.0
         total_variance = 0.0
         sum_sq_err = 0.0
+        sum_gnll = 0.0
         total_samples = 0
+        total_cov50 = 0
+        total_cov95 = 0
+        total_cov99 = 0
+        
+        # New accumulator for Bias-Variance
+        sum_error = 0.0 
+        
         val_start = time.time()
 
-        # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
         alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
 
         with torch.no_grad():
@@ -412,6 +438,7 @@ class CATETrainer:
 
                     pred_mean = out[..., 0:1]
                     pred_log_var = out[..., 1:2]
+                    pred_std = torch.exp(0.5 * pred_log_var)
 
                     loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
                     loss_mse = F.mse_loss(pred_mean, target)
@@ -423,34 +450,70 @@ class CATETrainer:
                     total_loss_mse += loss_mse.item()
                     total_loss_total += loss_total.item()
 
-                    sum_sq_err += (pred_mean - target).pow(2).sum().item()
+                    # Bias-Variance math
+                    residuals = pred_mean - target
+                    sum_sq_err += residuals.pow(2).sum().item()
+                    sum_error += residuals.sum().item() # Track raw error for Bias
+                    
+                    sum_gnll += loss_gnll.item() * target.numel()
                     total_samples += target.numel()
-                    total_variance += pred_log_var.exp().mean().item()
+                    total_variance += pred_log_var.exp().sum().item()
+
+                    abs_error = torch.abs(residuals)
+
+                    # Coverage
+                    total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
+                    total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
+                    total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
 
                     pbar.set_postfix({"nll_loss": f"{loss_gnll.item():.4f}"})
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
 
+        denom = max(total_samples, 1)
         num_batches = len(self.val_loader)
         avg_loss_gnll = total_loss_gnll / num_batches
         avg_loss_mse = total_loss_mse / num_batches
         avg_loss_total = total_loss_total / num_batches
-        rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
-        avg_variance = total_variance / num_batches
+        
+        mse = sum_sq_err / denom
+        rmse = np.sqrt(mse)
+        
+        # Bias-Variance Decomposition
+        ite_bias = sum_error / denom
+        ite_bias_sq = ite_bias ** 2
+        ite_error_var = mse - ite_bias_sq  # Because MSE = Bias^2 + Var
+        
+        # Global metrics
+        gnll = sum_gnll / denom
+        avg_variance = total_variance / denom
 
-        self.val_losses.append(avg_loss_gnll)
+        cov95 = total_cov95 / denom
+        cov50 = total_cov50 / denom
+        cov99 = total_cov99 / denom
+
+        self.val_losses.append(gnll)
         self.val_rmses.append(rmse)
-        self.scheduler.step(avg_loss_gnll)
-        logger.info(f"Epoch {epoch+1} val done in {format_time(val_time)}")
+        self.scheduler.step(gnll)
+
+        logger.info(f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, Bias={ite_bias:.4f}")
 
         return {
             "loss_gnll": avg_loss_gnll,
             "loss_mse": avg_loss_mse,
             "loss_total": avg_loss_total,
             "rmse": rmse,
+            "mse": mse,
+            "gnll": gnll,
+            "bias": ite_bias,
+            "bias_sq": ite_bias_sq,
+            "error_var": ite_error_var,
             "variance": avg_variance,
             "time_s": val_time,
+            "cov50": cov50,
+            "cov95": cov95,
+            "cov99": cov99,
         }
 
     # ------------------------------------------------------------------
@@ -493,10 +556,11 @@ class CATETrainer:
         self.writer.add_scalar("Loss/train_gnll", train_metrics["loss_gnll"], epoch)
 
         # Metrics
-        self.writer.add_scalar("Metrics/train_rmse", train_metrics["rmse"], epoch)
-        self.writer.add_scalar(
-            "Metrics/train_variance", train_metrics["variance"], epoch
-        )
+        # self.writer.add_scalar("Metrics/train_rmse", train_metrics["rmse"], epoch)
+        # self.writer.add_scalar("Metrics/train_gnll", train_metrics["gnll"], epoch)
+        # self.writer.add_scalar(
+        #     "Metrics/train_variance", train_metrics["variance"], epoch
+        # )
 
         # Parameters / Optimization
         self.writer.add_scalar("Parameters/alpha", train_metrics["alpha"], epoch)
@@ -510,16 +574,29 @@ class CATETrainer:
         # Timing
         self.writer.add_scalar("Time/train_s", train_metrics["time_s"], epoch)
 
+        # Calibration
+        # self.writer.add_scalar("Calibration/train_cov50", train_metrics["cov50"], epoch)
+        # self.writer.add_scalar("Calibration/train_cov95", train_metrics["cov95"], epoch)
+        # self.writer.add_scalar("Calibration/train_cov99", train_metrics["cov99"], epoch)
+
         # Validation Metrics (if available)
         if val_metrics:
             self.writer.add_scalar("Loss/val_total", val_metrics["loss_total"], epoch)
             self.writer.add_scalar("Loss/val_mse", val_metrics["loss_mse"], epoch)
             self.writer.add_scalar("Loss/val_gnll", val_metrics["loss_gnll"], epoch)
             self.writer.add_scalar("Metrics/val_rmse", val_metrics["rmse"], epoch)
+            self.writer.add_scalar("Metrics/val_gnll", val_metrics["gnll"], epoch)
             self.writer.add_scalar(
                 "Metrics/val_variance", val_metrics["variance"], epoch
             )
             self.writer.add_scalar("Time/val_s", val_metrics["time_s"], epoch)
+            self.writer.add_scalar("Calibration/val_cov50", val_metrics["cov50"], epoch)
+            self.writer.add_scalar("Calibration/val_cov95", val_metrics["cov95"], epoch)
+            self.writer.add_scalar("Calibration/val_cov99", val_metrics["cov99"], epoch)
+
+            self.writer.add_scalar("Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch)
+            self.writer.add_scalar("Bias-Variance/val_error_var", val_metrics["error_var"], epoch)
+            self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
