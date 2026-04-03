@@ -74,6 +74,7 @@ def mock_config(tmp_path):
             "save_freq": 1,
             "early_stop": 3,
             "warmup_steps": 2,
+            "exp_name": "experiment_1",
         },
         "data": {
             "batch_size": 2,
@@ -229,7 +230,7 @@ def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path
 
     trainer.save_checkpoint(epoch=1, val_loss=0.5)
 
-    save_dir = mock_config["training"]["save_dir"]
+    save_dir = os.path.join(mock_config["training"]["save_dir"], mock_config["training"]["exp_name"])
     assert os.path.exists(os.path.join(save_dir, "model_epoch_1.pth"))
     assert os.path.exists(os.path.join(save_dir, "best_model.pth"))
 
