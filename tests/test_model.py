@@ -5,7 +5,6 @@ from proximalfm.Model import (
     ProximalNanoTabICLv2,
     ClassEmbedding,
     get_mlp,
-    TableAttnBase,
     InducedTransformerBlock,
     TransformerBlock,
     Rope,

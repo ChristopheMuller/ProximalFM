@@ -3,7 +3,6 @@ import yaml
 import pytest
 import torch
 import numpy as np
-from unittest import mock
 from unittest.mock import MagicMock, patch
 
 from proximalfm.Train import (
