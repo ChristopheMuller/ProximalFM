@@ -17,7 +17,6 @@ if "numpy" not in sys.modules:
     sys.modules["numpy"] = mock_numpy
 
 # Now we can safely import from proximalfm
-import proximalfm.PriorLinear
 from proximalfm.PriorLinear import ProximalPrior
 from proximalfm.Structure import ProximalEpisode, ProximalPriorConfig
 
