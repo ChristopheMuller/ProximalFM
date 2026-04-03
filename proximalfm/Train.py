@@ -183,6 +183,21 @@ class CATETrainer:
         self.validation_times: list[float] = []
         self.total_training_time = 0.0
 
+        # ------------------------------------------------------------------
+        # Checkpoint
+        # ------------------------------------------------------------------
+        path_dir = os.path.join(self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run"))
+        os.makedirs(path_dir, exist_ok=True)
+        train_config_save_path = os.path.join(path_dir, "train_config.yaml")
+        with open(train_config_save_path, "w") as f:
+            yaml.dump(self.train_cfg, f)
+        model_config_save_path = os.path.join(path_dir, "model_config.yaml")
+        with open(model_config_save_path, "w") as f:
+            yaml.dump(self.model_cfg, f)
+        prior_config_save_path = os.path.join(path_dir, "prior_config.yaml")
+        with open(prior_config_save_path, "w") as f:
+            yaml.dump(self.prior_cfg, f)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
