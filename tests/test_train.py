@@ -247,8 +247,25 @@ def test_train_main_loop(mock_create_loaders, mock_writer, mock_config):
     trainer = CATETrainer(mock_config)
 
     # Mock out epoch and val to avoid data loader requirements
-    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0})
-    trainer.validate = MagicMock(return_value={"loss_gnll": 0.5, "loss_mse": 0.5, "loss_total": 0.5, "rmse": 0.1, "variance": 0.1, "time_s": 0.1})
+    trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0, "gnll": 1.0})
+    trainer.validate = MagicMock(return_value={
+            "loss_gnll": 1.0,
+            "loss_mse": 1.0,
+            "loss_total": 1.0,
+            "rmse": 1.0,
+            "mse": 1.0,
+            "r2": 1.0,
+            "gnll": 1.0,
+            "bias": 1,
+            "bias_sq": 1,
+            "error_var": 1,
+            "variance": 1,
+            "time_s": 1,
+            "cov50": 1,
+            "cov95": 1,
+            "cov99": 1
+        }
+    )
     trainer.save_checkpoint = MagicMock()
 
     trainer.train()
@@ -269,8 +286,40 @@ def test_early_stopping(mock_create_loaders, mock_writer, mock_config):
     trainer.train_epoch = MagicMock(return_value={"loss_gnll": 1.0, "loss_mse": 1.0, "loss_total": 1.0, "rmse": 1.0, "variance": 1.0, "grad_norm": 1.0, "alpha": 1.0, "time_s": 1.0})
     # First epoch improves loss, second worsens it
     trainer.validate = MagicMock(side_effect=[
-        {"loss_gnll": 0.5, "loss_mse": 0.5, "loss_total": 0.5, "rmse": 0.1, "variance": 0.1, "time_s": 0.1},
-        {"loss_gnll": 0.6, "loss_mse": 0.6, "loss_total": 0.6, "rmse": 0.1, "variance": 0.1, "time_s": 0.1}
+        {
+            "loss_gnll": 0.0,
+            "loss_mse": 0.0,
+            "loss_total": 0.0,
+            "rmse": 0.0,
+            "mse": 0.0,
+            "r2": 0.0,
+            "gnll": 0.0,
+            "bias": 1,
+            "bias_sq": 1,
+            "error_var": 1,
+            "variance": 1,
+            "time_s": 1,
+            "cov50": 1,
+            "cov95": 1,
+            "cov99": 1
+        },
+        {
+            "loss_gnll": 2.0,
+            "loss_mse": 2.0,
+            "loss_total": 2.0,
+            "rmse": 2.0,
+            "mse": 2.0,
+            "r2": 2.0,
+            "gnll": 2.0,
+            "bias": 1,
+            "bias_sq": 1,
+            "error_var": 1,
+            "variance": 1,
+            "time_s": 1,
+            "cov50": 1,
+            "cov95": 1,
+            "cov99": 1
+        }
     ])
 
     trainer.train()
