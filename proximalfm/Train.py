@@ -418,8 +418,9 @@ class CATETrainer:
         total_cov95 = 0
         total_cov99 = 0
         
-        # New accumulator for Bias-Variance
         sum_error = 0.0 
+        sum_target = 0.0
+        sum_sq_target = 0.0
         
         val_start = time.time()
 
@@ -450,10 +451,14 @@ class CATETrainer:
                     total_loss_mse += loss_mse.item()
                     total_loss_total += loss_total.item()
 
-                    # Bias-Variance math
+                    # Bias-Variance & Error Math
                     residuals = pred_mean - target
                     sum_sq_err += residuals.pow(2).sum().item()
-                    sum_error += residuals.sum().item() # Track raw error for Bias
+                    sum_error += residuals.sum().item() 
+                    
+                    # Accumulate targets for R^2
+                    sum_target += target.sum().item()
+                    sum_sq_target += target.pow(2).sum().item()
                     
                     sum_gnll += loss_gnll.item() * target.numel()
                     total_samples += target.numel()
@@ -483,7 +488,12 @@ class CATETrainer:
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
         ite_bias_sq = ite_bias ** 2
-        ite_error_var = mse - ite_bias_sq  # Because MSE = Bias^2 + Var
+        ite_error_var = mse - ite_bias_sq 
+        ss_tot = sum_sq_target - (sum_target ** 2) / denom
+        if ss_tot > 1e-8:
+            r2 = 1.0 - (sum_sq_err / ss_tot)
+        else:
+            r2 = 0.0
         
         # Global metrics
         gnll = sum_gnll / denom
@@ -497,7 +507,7 @@ class CATETrainer:
         self.val_rmses.append(rmse)
         self.scheduler.step(gnll)
 
-        logger.info(f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, Bias={ite_bias:.4f}")
+        logger.info(f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, R2={r2:.4f}, Bias={ite_bias:.4f}")
 
         return {
             "loss_gnll": avg_loss_gnll,
@@ -505,6 +515,7 @@ class CATETrainer:
             "loss_total": avg_loss_total,
             "rmse": rmse,
             "mse": mse,
+            "r2": r2,
             "gnll": gnll,
             "bias": ite_bias,
             "bias_sq": ite_bias_sq,
@@ -597,6 +608,8 @@ class CATETrainer:
             self.writer.add_scalar("Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch)
             self.writer.add_scalar("Bias-Variance/val_error_var", val_metrics["error_var"], epoch)
             self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
+
+            self.writer.add_scalar("Metrics/val_r2", val_metrics["r2"], epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
