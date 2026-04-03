@@ -1,0 +1,21 @@
+data:
+  batch_size: 2
+  samples_per_episode: 10
+  train_episodes: 2
+  val_episodes: 2
+model:
+  col_nhead: 1
+  col_num_blocks: 1
+  embed_dim: 8
+  icl_nhead: 1
+  icl_num_blocks: 1
+  row_nhead: 1
+  row_num_blocks: 1
+prior: {}
+training:
+  early_stop: 10
+  epochs: 4
+  exp_name: test_exp
+  save_dir: test_save
+  seed: 42
+  start_checkpoint: test_save/test_exp/model_epoch_3_final.pth

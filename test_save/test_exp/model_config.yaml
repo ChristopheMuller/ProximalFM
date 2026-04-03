@@ -1,0 +1,7 @@
+col_nhead: 1
+col_num_blocks: 1
+embed_dim: 8
+icl_nhead: 1
+icl_num_blocks: 1
+row_nhead: 1
+row_num_blocks: 1
