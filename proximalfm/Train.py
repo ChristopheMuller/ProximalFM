@@ -16,7 +16,6 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-# Import your new model instead of PerFeatureTransformerCATE
 from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
@@ -176,13 +175,13 @@ class CATETrainer:
         # ------------------------------------------------------------------
         base_log_dir = self.train_cfg.get("log_dir", "runs")
         run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        
+
         exp_name = self.train_cfg.get("exp_name", "cate_run")
         full_log_dir = os.path.join(base_log_dir, f"{exp_name}_{run_name}")
-        
+
         os.makedirs(full_log_dir, exist_ok=True)
         self.writer = SummaryWriter(log_dir=full_log_dir)
-        
+
         logger.info(f"TensorBoard logging to: {full_log_dir}")
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
@@ -195,7 +194,9 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Checkpoint
         # ------------------------------------------------------------------
-        path_dir = os.path.join(self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run"))
+        path_dir = os.path.join(
+            self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run")
+        )
         os.makedirs(path_dir, exist_ok=True)
         train_config_save_path = os.path.join(path_dir, "train_config.yaml")
         with open(train_config_save_path, "w") as f:
@@ -289,9 +290,7 @@ class CATETrainer:
         epoch_start = time.time()
 
         # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
-        alpha_epoch_loss = 1 - min(
-            1, epoch / self.train_cfg.get("warmup_epochs", 300)
-        )
+        alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
 
         with tqdm(
             self.train_loader,
@@ -323,13 +322,21 @@ class CATETrainer:
                     ).item()
                 else:
                     # Manually compute grad norm if not clipping
-                    parameters = [p for p in self.model.parameters() if p.grad is not None]
+                    parameters = [
+                        p for p in self.model.parameters() if p.grad is not None
+                    ]
                     if len(parameters) == 0:
                         grad_norm = 0.0
                     else:
                         device = parameters[0].grad.device
                         grad_norm = torch.norm(
-                            torch.stack([torch.norm(p.grad.detach(), 2).to(device) for p in parameters]), 2
+                            torch.stack(
+                                [
+                                    torch.norm(p.grad.detach(), 2).to(device)
+                                    for p in parameters
+                                ]
+                            ),
+                            2,
                         ).item()
 
                 total_grad_norm += grad_norm
@@ -390,9 +397,7 @@ class CATETrainer:
         val_start = time.time()
 
         # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
-        alpha_epoch_loss = 1 - min(
-            1, epoch / self.train_cfg.get("warmup_epochs", 300)
-        )
+        alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
 
         with torch.no_grad():
             with tqdm(
@@ -410,7 +415,9 @@ class CATETrainer:
 
                     loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
                     loss_mse = F.mse_loss(pred_mean, target)
-                    loss_total = alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
+                    loss_total = (
+                        alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
+                    )
 
                     total_loss_gnll += loss_gnll.item()
                     total_loss_mse += loss_mse.item()
@@ -451,7 +458,9 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, epoch: int, val_loss: float, tag: str = "") -> None:
-        path_dir = os.path.join(self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run"))
+        path_dir = os.path.join(
+            self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run")
+        )
         os.makedirs(path_dir, exist_ok=True)
         checkpoint = {
             "epoch": epoch,
@@ -485,12 +494,18 @@ class CATETrainer:
 
         # Metrics
         self.writer.add_scalar("Metrics/train_rmse", train_metrics["rmse"], epoch)
-        self.writer.add_scalar("Metrics/train_variance", train_metrics["variance"], epoch)
+        self.writer.add_scalar(
+            "Metrics/train_variance", train_metrics["variance"], epoch
+        )
 
         # Parameters / Optimization
         self.writer.add_scalar("Parameters/alpha", train_metrics["alpha"], epoch)
-        self.writer.add_scalar("Parameters/grad_norm", train_metrics["grad_norm"], epoch)
-        self.writer.add_scalar("Parameters/learning_rate", self.optimizer.param_groups[0]["lr"], epoch)
+        self.writer.add_scalar(
+            "Parameters/grad_norm", train_metrics["grad_norm"], epoch
+        )
+        self.writer.add_scalar(
+            "Parameters/learning_rate", self.optimizer.param_groups[0]["lr"], epoch
+        )
 
         # Timing
         self.writer.add_scalar("Time/train_s", train_metrics["time_s"], epoch)
@@ -501,7 +516,9 @@ class CATETrainer:
             self.writer.add_scalar("Loss/val_mse", val_metrics["loss_mse"], epoch)
             self.writer.add_scalar("Loss/val_gnll", val_metrics["loss_gnll"], epoch)
             self.writer.add_scalar("Metrics/val_rmse", val_metrics["rmse"], epoch)
-            self.writer.add_scalar("Metrics/val_variance", val_metrics["variance"], epoch)
+            self.writer.add_scalar(
+                "Metrics/val_variance", val_metrics["variance"], epoch
+            )
             self.writer.add_scalar("Time/val_s", val_metrics["time_s"], epoch)
 
     # ------------------------------------------------------------------
@@ -526,8 +543,8 @@ class CATETrainer:
 
             # Extract metrics for console logging
             train_nll = train_metrics["loss_gnll"]
-            val_nll = val_metrics["loss_gnll"] if val_metrics else float('nan')
-            val_rmse = val_metrics["rmse"] if val_metrics else float('nan')
+            val_nll = val_metrics["loss_gnll"] if val_metrics else float("nan")
+            val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
@@ -553,7 +570,7 @@ class CATETrainer:
 
         self.total_training_time = time.time() - training_start
         # Final checkpoint uses the last recorded val_nll
-        self.save_checkpoint(epoch+1, last_val_nll, tag="final")
+        self.save_checkpoint(epoch + 1, last_val_nll, tag="final")
         self.writer.close()
         logger.info("Training complete!")
 
