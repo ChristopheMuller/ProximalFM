@@ -357,15 +357,19 @@ class CATETrainer:
                 total_loss_mse += loss_mse.item()
                 total_loss_gnll += loss_gnll.item()
 
-                sum_sq_err += (pred_mean - target).pow(2).sum().item()
+                pred_std = torch.exp(0.5 * pred_log_var)
+                pred_var = pred_std.pow(2)
+                residuals = pred_mean - target
+                abs_error = residuals.abs()
+
+                sum_sq_err += residuals.pow(2).sum().item()
                 total_gnll += loss_gnll.item() * target.numel()
                 total_samples += target.numel()
-                total_variance += pred_log_var.exp().mean().item()
+                total_variance += pred_var.mean().item()
 
-                abs_error = torch.abs(target - pred_mean)
-                total_cov50 += (abs_error <= 0.674 * pred_log_var.exp().sqrt()).float().sum().item()
-                total_cov95 += (abs_error <= 1.960 * pred_log_var.exp().sqrt()).float().sum().item()
-                total_cov99 += (abs_error <= 2.576 * pred_log_var.exp().sqrt()).float().sum().item()
+                total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
+                total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
+                total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -462,9 +466,11 @@ class CATETrainer:
                     
                     sum_gnll += loss_gnll.item() * target.numel()
                     total_samples += target.numel()
-                    total_variance += pred_log_var.exp().sum().item()
 
-                    abs_error = torch.abs(residuals)
+                    pred_var = pred_std.pow(2)
+                    total_variance += pred_var.sum().item()
+
+                    abs_error = residuals.abs()
 
                     # Coverage
                     total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
