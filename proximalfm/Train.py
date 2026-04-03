@@ -144,6 +144,15 @@ class CATETrainer:
         self.global_step = 0
         self.base_lr = self.train_cfg.get("lr", 0.001)
 
+        self.start_epoch = 0
+
+        # ------------------------------------------------------------------
+        # Load Checkpoint (if requested)
+        # ------------------------------------------------------------------
+        start_checkpoint = self.train_cfg.get("start_checkpoint")
+        if start_checkpoint:
+            self._load_checkpoint(start_checkpoint)
+        
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
@@ -236,6 +245,32 @@ class CATETrainer:
         ite_query = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
 
         return x, a, w, z, y, ite_query
+    
+    def _load_checkpoint(self, checkpoint_path: str) -> None:
+        """
+        Load model and optimizer state from a checkpoint file.
+            - checkpoint_path: path to the checkpoint file
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Start checkpoint not found: {checkpoint_path}")
+
+        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        if "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        if "epoch" in checkpoint:
+            self.start_epoch = checkpoint["epoch"]
+
+        if "val_loss" in checkpoint:
+            self.best_val_loss = checkpoint["val_loss"]
+
+        logger.info(f"Resumed training from epoch {self.start_epoch}")
+
 
     # ------------------------------------------------------------------
     # Train epoch
@@ -422,6 +457,7 @@ class CATETrainer:
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
+            "scheduler_state_dict": self.scheduler.state_dict(),
             "val_loss": val_loss,
             "epoch_times": self.epoch_times,
         }
@@ -477,11 +513,11 @@ class CATETrainer:
         os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
 
         early_stop_count = 0
-        best_val_loss = float("inf")
+        best_val_loss = getattr(self, "best_val_loss", float("inf"))
 
-        epoch = 0
+        epoch = self.start_epoch
         last_val_nll = float('inf')
-        for i in range(self.train_cfg["epochs"]):
+        while epoch < self.train_cfg["epochs"]:
             train_metrics = self.train_epoch(epoch)
             val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:
