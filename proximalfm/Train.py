@@ -151,26 +151,8 @@ class CATETrainer:
         # ------------------------------------------------------------------
         start_checkpoint = self.train_cfg.get("start_checkpoint")
         if start_checkpoint:
-            if not os.path.exists(start_checkpoint):
-                raise FileNotFoundError(f"Start checkpoint not found: {start_checkpoint}")
-
-            logger.info(f"Loading checkpoint from: {start_checkpoint}")
-            checkpoint = torch.load(start_checkpoint, map_location=self.device, weights_only=False)
-
-            self.model.load_state_dict(checkpoint["model_state_dict"])
-            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-            if "scheduler_state_dict" in checkpoint:
-                self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-            if "epoch" in checkpoint:
-                self.start_epoch = checkpoint["epoch"]
-
-            if "val_loss" in checkpoint:
-                self.best_val_loss = checkpoint["val_loss"]
-
-            logger.info(f"Resumed training from epoch {self.start_epoch}")
-
+            self._load_checkpoint(start_checkpoint)
+        
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
@@ -263,6 +245,32 @@ class CATETrainer:
         ite_query = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
 
         return x, a, w, z, y, ite_query
+    
+    def _load_checkpoint(self, checkpoint_path: str) -> None:
+        """
+        Load model and optimizer state from a checkpoint file.
+            - checkpoint_path: path to the checkpoint file
+        """
+        if not os.path.exists(checkpoint_path):
+            raise FileNotFoundError(f"Start checkpoint not found: {checkpoint_path}")
+
+        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        if "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        if "epoch" in checkpoint:
+            self.start_epoch = checkpoint["epoch"]
+
+        if "val_loss" in checkpoint:
+            self.best_val_loss = checkpoint["val_loss"]
+
+        logger.info(f"Resumed training from epoch {self.start_epoch}")
+
 
     # ------------------------------------------------------------------
     # Train epoch
