@@ -15,6 +15,7 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
+  exp_name: "cate_run_linear"
 
 model:
   out_dim: 2
@@ -28,11 +29,11 @@ model:
   dtype: "float32"        # "float32" | "bfloat16"
 
 data:
-  batch_size: 32            # number of episodes per batch
-  samples_per_episode: 128 # rows (observations) per episode / context window
+  batch_size: 16           # number of episodes per batch
+  samples_per_episode: 64  # rows (observations) per episode / context window
   context_fraction: 0.75   # fraction of rows used as context; rest are query targets
-  train_episodes: 400     # episodes constituting one training epoch
-  val_episodes: 400        # episodes for validation
+  train_episodes: 2000     # episodes constituting one training epoch
+  val_episodes: 500        # episodes for validation
   num_workers: 4           # DataLoader worker processes (0 = main process only)
 
 prior:
