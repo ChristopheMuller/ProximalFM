@@ -4,6 +4,7 @@ import logging
 import os
 import random
 import time
+from datetime import datetime
 from typing import Tuple
 
 import numpy as np
@@ -164,10 +165,16 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Logging + bookkeeping
         # ------------------------------------------------------------------
-        log_dir = self.train_cfg.get("log_dir", "runs")
-        os.makedirs(log_dir, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=log_dir)
-
+        base_log_dir = self.train_cfg.get("log_dir", "runs")
+        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+        
+        exp_name = self.train_cfg.get("exp_name", "cate_run")
+        full_log_dir = os.path.join(base_log_dir, f"{exp_name}_{run_name}")
+        
+        os.makedirs(full_log_dir, exist_ok=True)
+        self.writer = SummaryWriter(log_dir=full_log_dir)
+        
+        logger.info(f"TensorBoard logging to: {full_log_dir}")
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
         self.val_rmses: list[float] = []
@@ -394,7 +401,8 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, epoch: int, val_loss: float, tag: str = "") -> None:
-        os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
+        path_dir = os.path.join(self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run"))
+        os.makedirs(path_dir, exist_ok=True)
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -403,12 +411,12 @@ class CATETrainer:
             "epoch_times": self.epoch_times,
         }
         name = f"model_epoch_{epoch}{('_' + tag) if tag else ''}.pth"
-        path = os.path.join(self.train_cfg["save_dir"], name)
+        path = os.path.join(path_dir, name)
         torch.save(checkpoint, path)
 
         if val_loss < self.best_val_loss:
             self.best_val_loss = val_loss
-            best_path = os.path.join(self.train_cfg["save_dir"], "best_model.pth")
+            best_path = os.path.join(path_dir, "best_model.pth")
             torch.save(checkpoint, best_path)
             logger.info(f"  → New best model (val NLL: {val_loss:.4f})")
 
@@ -494,7 +502,7 @@ class CATETrainer:
 
         self.total_training_time = time.time() - training_start
         # Final checkpoint uses the last recorded val_nll
-        self.save_checkpoint(epoch, last_val_nll, tag="final")
+        self.save_checkpoint(epoch+1, last_val_nll, tag="final")
         self.writer.close()
         logger.info("Training complete!")
 

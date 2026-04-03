@@ -103,15 +103,15 @@ def main():
     # ---------------------------------------------------------
     # 3. Find and sort checkpoints
     # ---------------------------------------------------------
-    save_dir = train_cfg.get("save_dir", "checkpoints")
-    checkpoints = glob.glob(os.path.join(save_dir, "model_epoch_*.pth"))
+    path = os.path.join(train_cfg["save_dir"], train_cfg.get("exp_name", "cate_run"))
+    checkpoints = glob.glob(os.path.join(path, "model_epoch_*.pth"))
     
     # Filter out "best" to avoid duplicate epoch plots, keeping only numbered epochs
     checkpoints = [c for c in checkpoints if "best" not in c]
     checkpoints.sort(key=extract_epoch)
 
     if not checkpoints:
-        raise FileNotFoundError(f"No checkpoints found in {save_dir} matching pattern 'model_epoch_*.pth'")
+        raise FileNotFoundError(f"No checkpoints found in {path} matching pattern 'model_epoch_*.pth'")
 
     # Select all checkpoints to plot
     num_plots = len(checkpoints)
