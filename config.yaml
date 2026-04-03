@@ -7,7 +7,7 @@ training:
   weight_decay: 0.0001
   clip_grad: 1.5
   early_stop: 15          # patience in epochs before early stopping
-  val_freq: 3
+  val_freq: 2
   save_freq: 10           # save a checkpoint every N epochs
   save_dir: "checkpoints"
   log_dir: "runs/proximalfm"
@@ -15,14 +15,14 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "cate_run_linear"
+  exp_name: "test"
 
 model:
   out_dim: 2
   embed_dim: 64
-  col_num_blocks: 3
-  row_num_blocks: 3
-  icl_num_blocks: 12
+  col_num_blocks: 4
+  row_num_blocks: 4
+  icl_num_blocks: 14
   col_nhead: 8
   row_nhead: 8
   icl_nhead: 8
@@ -32,7 +32,8 @@ data:
   batch_size: 16           # number of episodes per batch
   samples_per_episode: 64  # rows (observations) per episode / context window
   context_fraction: 0.75   # fraction of rows used as context; rest are query targets
-  train_episodes: 2000     # episodes constituting one training epoch
+  train_episodes: 600     # episodes constituting one training epoch
+  reset_freq_train: 1
   val_episodes: 500        # episodes for validation
   num_workers: 4           # DataLoader worker processes (0 = main process only)
 

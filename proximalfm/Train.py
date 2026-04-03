@@ -622,9 +622,15 @@ class CATETrainer:
         early_stop_count = 0
         best_val_loss = getattr(self, "best_val_loss", float("inf"))
 
+        reset_freq = self.data_cfg.get("reset_freq_train", -1)
+
         epoch = self.start_epoch
         last_val_nll = float('inf')
         while epoch < self.train_cfg["epochs"]:
+
+            if hasattr(self.train_loader.dataset, 'set_reset_state') and reset_freq > 0:
+                self.train_loader.dataset.set_reset_state(epoch // reset_freq)
+            
             train_metrics = self.train_epoch(epoch)
             val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:

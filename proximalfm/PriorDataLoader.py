@@ -56,13 +56,23 @@ class ProximalDataset(Dataset):
             self.prior = ProximalPrior(config=self.prior_config)
         self.num_episodes = num_episodes
         self.samples_per_episode = samples_per_episode
-        self.seed_offset = seed_offset
+        self.base_seed_offset = seed_offset
+        self._shared_reset_count = torch.tensor([0], dtype=torch.long)
+        self._shared_reset_count.share_memory_()
+
+    def set_reset_state(self, reset_count: int) -> None:
+        """
+        Updates the internal reset generation.
+        Persistent workers will read this shared tensor on the fly.
+        """
+        self._shared_reset_count[0] = reset_count
 
     def __len__(self) -> int:
         return self.num_episodes
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        episode_seed = self.seed_offset + idx
+        reset_count = self._shared_reset_count.item()
+        episode_seed = self.base_seed_offset + (reset_count * self.num_episodes) + idx
 
         episode = self.prior.generate_episode(
             batch_size=self.samples_per_episode,
