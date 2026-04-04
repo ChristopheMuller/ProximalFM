@@ -125,8 +125,8 @@ class CATETrainer:
             feature_group_size_z=self.prior_config.d_z,
         )
         self.model.to(self.device, dtype=self.dtype)
-        n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        logger.info(f"Model parameters: {n_params:,}")
+        self.n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        logger.info(f"Model parameters: {self.n_params:,}")
 
         # ------------------------------------------------------------------
         # Optimiser + scheduler
@@ -567,6 +567,9 @@ class CATETrainer:
     def log_metrics(
         self, epoch: int, train_metrics: dict, val_metrics: dict | None = None
     ) -> None:
+        if epoch == 0:
+            self.writer.add_scalar("Parameters/total_count", self.n_params, epoch)
+
         # Losses
         self.writer.add_scalar("Loss/train_total", train_metrics["loss_total"], epoch)
         self.writer.add_scalar("Loss/train_mse", train_metrics["loss_mse"], epoch)
