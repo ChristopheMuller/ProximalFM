@@ -6,7 +6,6 @@ import torch
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from tqdm import tqdm
 
@@ -22,18 +21,18 @@ from proximalfm.PriorDataLoader import create_causal_data_loaders
 #%%
 # -- 0. Parameters of Benchmarking --
 
-N_TRAIN = 100
-N_TEST = 10 # 1 test per episode
-N_BATCH = 150 # Number of episodes (datasets) to evaluate on
+N_TRAIN = 218
+N_TEST = 50
+N_BATCH = 50 # Number of episodes (datasets) to evaluate on
 
 methods_to_compare = [
     S_OLS,
-    # S_RF,
+    S_RF,
     # S_TabICL,
     T_OLS,
-    # T_RF,
+    T_RF,
     # T_TabICL,
-    P2SLS,
+    # P2SLS,
 ]
 
 #%%
@@ -82,14 +81,10 @@ samples_per_episode = N_TRAIN + N_TEST
 k_datasets = N_BATCH
 single_eval_pos = samples_per_episode - N_TEST
 
-prior_config = ProximalPriorConfig(
-    type=prior_cfg.get("type", "linear"),
-    d_x=prior_cfg["d_x"],
-    d_z=prior_cfg["d_z"],
-    d_w=prior_cfg["d_w"],
-    d_u=prior_cfg["d_u"],
-    dtype=dtype,
-)
+prior_kwargs = prior_cfg.copy()
+prior_kwargs["dtype"] = dtype
+prior_config = ProximalPriorConfig(**prior_kwargs)
+
 
 loaders = create_causal_data_loaders(
     prior_config=prior_config,
@@ -98,7 +93,7 @@ loaders = create_causal_data_loaders(
     train_episodes=1,            
     val_episodes=k_datasets,     
     num_workers=0,
-    seed=1234, 
+    seed=np.random.randint(0, 10000)
 )
 
 print(f"✓ Initialization complete.")

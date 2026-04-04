@@ -1,7 +1,7 @@
 training:
   seed: 1234
-  epochs: 100
-  lr: 0.0003
+  epochs: 200
+  lr: 0.0004
   warmup_steps: 1000
   warmup_epochs: 50
   weight_decay: 0.0001
@@ -15,13 +15,13 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "test"
+  exp_name: "run4_256"
 
 model:
   out_dim: 2
-  embed_dim: 64
-  col_num_blocks: 4
-  row_num_blocks: 4
+  embed_dim: 32
+  col_num_blocks: 6
+  row_num_blocks: 6
   icl_num_blocks: 14
   col_nhead: 8
   row_nhead: 8
@@ -30,9 +30,9 @@ model:
 
 data:
   batch_size: 16           # number of episodes per batch
-  samples_per_episode: 64  # rows (observations) per episode / context window
-  context_fraction: 0.75   # fraction of rows used as context; rest are query targets
-  train_episodes: 600     # episodes constituting one training epoch
+  samples_per_episode: 256 # rows (observations) per episode / context window
+  context_fraction: 0.85   # fraction of rows used as context; rest are query targets
+  train_episodes: 600      # episodes constituting one training epoch
   reset_freq_train: 1
   val_episodes: 500        # episodes for validation
   num_workers: 4           # DataLoader worker processes (0 = main process only)
