@@ -21,18 +21,18 @@ from proximalfm.PriorDataLoader import create_causal_data_loaders
 #%%
 # -- 0. Parameters of Benchmarking --
 
-N_TRAIN = 218
-N_TEST = 50
-N_BATCH = 50 # Number of episodes (datasets) to evaluate on
+N_TRAIN = 200
+N_TEST = 500
+N_BATCH = 250 # Number of episodes (datasets) to evaluate on
 
 methods_to_compare = [
     S_OLS,
-    S_RF,
+    # S_RF,
     # S_TabICL,
     T_OLS,
-    T_RF,
+    # T_RF,
     # T_TabICL,
-    # P2SLS,
+    P2SLS,
 ]
 
 #%%
@@ -183,46 +183,57 @@ for b in tqdm(range(N_BATCH)):
             preds_dict[name][b] = np.nan
 
 #%%
-# ── 9. Compiling Metrics and Evaluation ────────────────────────────────────
+# ── 9. Compare ATE & CATE ────────────────────────────────────────────────
 
 results = []
 
-# true_ITEs shape is (N_BATCH, N_TEST)
-flattened_true_ITEs = true_ITEs.flatten()
-true_ate_global = flattened_true_ITEs.mean()
-
 for name, preds in preds_dict.items():
-    flattened_preds = preds.flatten()
-    
-    # Calculate Bias, RMSE, and R2 globally across all test points
-    bias = flattened_preds.mean() - true_ate_global
-    
-    # Avoid errors if a model failed and populated NaNs
-    valid_mask = ~np.isnan(flattened_preds)
-    if valid_mask.sum() == 0:
-        rmse, r2 = np.nan, np.nan
-    else:
-        rmse = np.sqrt(np.mean((flattened_preds[valid_mask] - flattened_true_ITEs[valid_mask]) ** 2))
-        r2 = r2_score(flattened_true_ITEs[valid_mask], flattened_preds[valid_mask])
-    
-    results.append({
-        "Estimator": name,
-        "ATE Bias": bias,
-        "CATE RMSE": rmse,
-        "CATE R²": r2
-    })
+    for b in range(N_BATCH):
+        pred_b   = preds[b]
+        true_b   = true_ITEs[b]
+        pred_ate = np.nanmean(pred_b)
+        true_ate = true_b.mean()
 
-df_results = pd.DataFrame(results).set_index("Estimator")
-print("\n" + "="*70)
-print(f"  BENCHMARK SUMMARY ({N_BATCH} episodes, {N_TEST} queries/ep)")
-print("="*70)
-print(df_results.round(4).to_string())
-print("="*70)
+        # R² per episode — degenerate (=nan) with constant ITE, meaningful once you add heterogeneity
+        ite_var = true_b.var()
+        if ite_var < 1e-8 or np.all(np.isnan(pred_b)):
+            r2 = np.nan
+        else:
+            r2 = r2_score(true_b, pred_b)
 
-plt.figure(figsize=(10, 5))
-sns.barplot(x=df_results.index, y=df_results["CATE RMSE"], palette="viridis", hue=df_results.index)
-plt.title("CATE RMSE Comparison")
-plt.ylabel("RMSE (Lower is Better)")
-plt.xticks(rotation=45, ha="right")
+        results.append({
+            "Estimator": name,
+            "Episode":   b,
+            "Pred ATE":  pred_ate,
+            "True ATE":  true_ate,
+            "Error":     pred_ate - true_ate,
+            "R²":        r2,
+        })
+
+df_results = pd.DataFrame(results)
+
+# Updated summary table to include MedAE (Median Absolute Error) for outlier robustness
+df_summary = df_results.groupby("Estimator")["Error"].agg(
+    Bias  = "mean",
+    MedAE = lambda e: e.abs().median(), 
+    MAE   = lambda e: e.abs().mean(),
+    RMSE  = lambda e: np.sqrt((e**2).mean()),
+    Std   = "std",
+).round(4)
+
+print(df_summary)
+
+#%%
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 6))
+sns.boxplot(data=df_results, x="Estimator", y="Error", palette="viridis")
+plt.axhline(0, color='red', linestyle='--')
+plt.title("Distribution of ATE Estimation Error across Episodes")
+plt.ylabel("Error (Pred ATE - True ATE)")
+plt.xticks(rotation=45)
+plt.grid(axis='y', alpha=0.3)
 plt.tight_layout()
 plt.show()
