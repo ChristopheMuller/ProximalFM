@@ -14,7 +14,7 @@ from other_methods import S_OLS, T_OLS, P2SLS
 #%%
 # -- Configuration --
 # Make sure to update this to the timestamped folder you want to evaluate
-DATA_FOLDER = "eval_data/test" 
+DATA_FOLDER = "eval_data/1500" 
 MODEL_CHECK = "run4_256"
 
 methods_to_compare = [
@@ -37,7 +37,7 @@ prior_config_path = os.path.join(DATA_FOLDER, "prior_config.yaml")
 with open(prior_config_path, "r") as f:
     prior_cfg = yaml.safe_load(f)
 
-device_str = "cpu"
+device_str = "mps"
 device = torch.device(device_str)
 dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
@@ -87,11 +87,29 @@ w_full = data["W"].to(device, dtype=dtype)
 a_full = data["A"].to(device, dtype=dtype)
 y_full = data["Y"].to(device, dtype=dtype)
 
+max_batch_size = 30
+cate_preds_nn = np.zeros((N_BATCH, N_TEST))
+
+n_bat = x_full.shape[0] // max_batch_size
+
 with torch.no_grad():
-    a_train = a_full[:, :N_TRAIN, 0]
-    y_train = y_full[:, :N_TRAIN, 0]
-    out = model(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
-    cate_pred_nn_mean = out[:, :, 0].cpu().numpy()
+    for i in range(n_bat):
+        start_idx = i * max_batch_size
+        end_idx = min((i + 1) * max_batch_size, x_full.shape[0])
+        a_train = a_full[start_idx:end_idx, :N_TRAIN, 0]
+        y_train = y_full[start_idx:end_idx, :N_TRAIN, 0]
+        w_full_b = w_full[start_idx:end_idx]
+        z_full_b = z_full[start_idx:end_idx]
+        x_full_b = x_full[start_idx:end_idx]
+        out = model(x=x_full_b, a=a_train, w=w_full_b, z=z_full_b, y=y_train)
+        cate_pred_nn_mean = out[:, :, 0].cpu().numpy()
+        cate_preds_nn[i * max_batch_size:(i + 1) * max_batch_size] = cate_pred_nn_mean
+
+#%% Save the prediction as "exp_name_nn_preds.npz" in the same folder as baselines
+nn_pred_file = os.path.join(DATA_FOLDER, f"{MODEL_CHECK}_preds.npz")
+np.savez(nn_pred_file, preds=cate_preds_nn)
+methods_to_compare.append(MODEL_CHECK)
+print(f"✓ Saved neural model predictions to {nn_pred_file}")
 
 #%%
 # ── 4. Aggregate Predictions ───────────────────────────────────────────────
@@ -99,7 +117,11 @@ print(f"Aggregating baseline predictions from {DATA_FOLDER}...")
 preds_dict = {}
 
 for meth in methods_to_compare:
-    name = meth.__name__
+    if hasattr(meth, "__name__"):
+        name = meth.__name__
+    else:
+        name = str(meth)
+
     pred_file = os.path.join(DATA_FOLDER, f"{name}_preds.npz")
     
     if os.path.exists(pred_file):
@@ -108,8 +130,6 @@ for meth in methods_to_compare:
     else:
         print(f"Warning: Baseline predictions for {name} not found at {pred_file}")
 
-# Add neural model predictions to the dictionary
-preds_dict["ProximalNanoTabICLv2"] = cate_pred_nn_mean
 
 #%%
 # ── 5. Evaluate and Plot ───────────────────────────────────────────────────
@@ -146,23 +166,9 @@ df_summary = df_results.groupby("Estimator")["Error"].agg(
     MedAE = lambda e: e.abs().median(), 
     MAE   = lambda e: e.abs().mean(),
     RMSE  = lambda e: np.sqrt((e**2).mean()),
+    RMedSE = lambda e: np.sqrt(np.median(e**2)),
     Std   = "std",
 ).round(4)
 
 print("\n--- Evaluation Summary ---")
 print(df_summary)
-
-plt.figure(figsize=(10, 6))
-
-# y axis not affected by outliers
-y_lim_max = df_results["Error"].abs().quantile(0.95) * 1.5
-plt.ylim(-y_lim_max, y_lim_max)
-
-sns.boxplot(data=df_results, x="Estimator", y="Error", palette="viridis")
-plt.axhline(0, color='red', linestyle='--')
-plt.title(f"Distribution of ATE Estimation Error across {N_BATCH} Episodes")
-plt.ylabel("Error (Pred ATE - True ATE)")
-plt.xticks(rotation=45)
-plt.grid(axis='y', alpha=0.3)
-plt.tight_layout()
-plt.show()
