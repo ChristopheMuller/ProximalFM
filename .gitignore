@@ -4,3 +4,5 @@ checkpoints/*
 runs/*
 .DS_Store
 .venv/
+
+eval_data/*
