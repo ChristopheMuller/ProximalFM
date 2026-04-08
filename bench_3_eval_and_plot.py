@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 
+from proximalfm.Structure import ModelConfig
 from proximalfm.Model import ProximalNanoTabICLv2
 from other_methods import S_OLS, T_OLS, P2SLS, S_RF, S_TabICL
 
@@ -54,7 +55,8 @@ true_ITEs = data["true_ITEs"]
 
 #%%
 # ── 2. Setup Model & Load Checkpoint ───────────────────────────────────────
-model = ProximalNanoTabICLv2(
+
+model_config = ModelConfig(
     embed_dim=model_cfg.get("embed_dim", 64),
     col_num_blocks=model_cfg.get("col_num_blocks", 3), 
     row_num_blocks=model_cfg.get("row_num_blocks", 3),
@@ -65,6 +67,10 @@ model = ProximalNanoTabICLv2(
     feature_group_size_x=prior_cfg["d_x"],
     feature_group_size_w=prior_cfg["d_w"],
     feature_group_size_z=prior_cfg["d_z"],
+)
+
+model = ProximalNanoTabICLv2(
+    config=model_config
 ).to(device, dtype=dtype)
 
 best_ckpt_path = os.path.join("checkpoints", MODEL_CHECK, "best_model.pth")

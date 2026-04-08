@@ -11,7 +11,7 @@ import yaml
 from tqdm import tqdm
 
 from proximalfm.Model import ProximalNanoTabICLv2
-from proximalfm.Structure import ProximalPriorConfig
+from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
 def load_config(config_path: str = "config.yaml") -> dict:
@@ -42,7 +42,7 @@ def main():
         
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
-    model = ProximalNanoTabICLv2(
+    config_model = ModelConfig(
         embed_dim=model_cfg.get("embed_dim", 64),
         col_num_blocks=model_cfg.get("col_num_blocks", 3), 
         row_num_blocks=model_cfg.get("row_num_blocks", 3),
@@ -53,6 +53,9 @@ def main():
         feature_group_size_x=prior_cfg["d_x"],
         feature_group_size_w=prior_cfg["d_w"],
         feature_group_size_z=prior_cfg["d_z"],
+    )
+    model = ProximalNanoTabICLv2(
+        config=config_model
     ).to(device, dtype=dtype)
     model.eval()
 
