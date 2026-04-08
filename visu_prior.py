@@ -45,10 +45,10 @@ print("✓ Imports OK")
 from proximalfm.Structure   import ProximalPriorConfig
 
 cfg = ProximalPriorConfig(
-    d_x            = 3,
+    d_x            = 5,
     d_u            = 2,
-    d_z            = 2,
-    d_w            = 2,
+    d_z            = 3,
+    d_w            = 3,
     noise_scale_w  = 1,
     noise_scale_z  = 1,
     noise_scale_x  = 1,
@@ -462,55 +462,313 @@ plt.tight_layout()
 plt.show()
 
 
-#%% ── 10. Cross-Episode Stability ────────────────────────────────────────────
+#%% ── 10. PRIOR CHARACTERIZATION ─────────────────────────────────────────────
 #
-#   Generate K episodes and track key statistics across them.
-#   This reveals how much the prior varies from episode to episode.
+#   Treats each episode as ONE SAMPLE from the prior.
+#   Plots the marginal distribution of key statistics across K datasets.
+#   This answers: "what kind of data does this prior tend to generate?"
 # ─────────────────────────────────────────────────────────────────────────────
 
-K       = 50
-N_SMALL = 500    # smaller n to keep it fast
+
+K        = 300   # episodes (= sample size for the prior distribution)
+N_SMALL  = 500   # obs per episode — small enough to be fast
+
+def first_pc(arr: np.ndarray) -> np.ndarray:
+    centered = arr - arr.mean(axis=0)
+    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+    return centered @ Vt[0]
+
+def mean_abs_corr(A: np.ndarray, B: np.ndarray) -> float:
+    """Mean |Pearson r| between every column of A and every column of B."""
+    rs = [abs(float(np.corrcoef(A[:, i], B[:, j])[0, 1]))
+          for i in range(A.shape[1]) for j in range(B.shape[1])]
+    return float(np.mean(rs))
 
 records = []
 for k in range(K):
     ep = prior.generate_episode(batch_size=N_SMALL, episode_seed=k)
-    ite_k = (ep.Y1 - ep.Y0).cpu().numpy()
-    ps_k  = ep.propensity.cpu().numpy()
+
+    ite    = (ep.Y1 - ep.Y0).cpu().numpy()
+    ps     = ep.propensity.cpu().numpy()
+    A_k    = ep.A.cpu().numpy()
+    Y_k    = ep.Y.cpu().numpy()
+    U_k    = ep.U.cpu().numpy()
+    Z_k    = ep.Z.cpu().numpy()
+    W_k    = ep.W.cpu().numpy()
+
+    u_pc   = first_pc(U_k)
+    corr_u_prop, _ = stats.pearsonr(u_pc, ps)
+    corr_u_y,    _ = stats.pearsonr(u_pc, Y_k)
+
     records.append({
-        "episode"       : k,
-        "ATE"           : float(ite_k.mean()),
-        "ITE_std"       : float(ite_k.std()),
-        "treat_rate"    : float(ep.A.mean().item()),
-        "ps_mean"       : float(ps_k.mean()),
-        "ps_std"        : float(ps_k.std()),
-        "Y_std"         : float(ep.Y.std().item()),
+        # ── treatment ────────────────────────────────────────────────────
+        "treat_rate"   : float(A_k.mean()),
+        "ps_mean"      : float(ps.mean()),
+        "ps_std"       : float(ps.std()),
+        "ps_min"       : float(ps.min()),
+        "ps_max"       : float(ps.max()),
+        # ── causal effect ────────────────────────────────────────────────
+        "ATE"          : float(ite.mean()),
+        "ITE_std"      : float(ite.std()),
+        "frac_pos_ITE" : float((ite > 0).mean()),
+        # ── confounding ──────────────────────────────────────────────────
+        "abs_corr_U_prop" : abs(corr_u_prop),
+        "abs_corr_U_Y"    : abs(corr_u_y),
+        # ── proxy quality ────────────────────────────────────────────────
+        "proxy_Z"      : mean_abs_corr(U_k, Z_k),
+        "proxy_W"      : mean_abs_corr(U_k, W_k),
+        # ── outcome scale ────────────────────────────────────────────────
+        "Y_std"        : float(Y_k.std()),
     })
 
 edf = pd.DataFrame(records)
+print(edf.describe().round(3).to_string())
 
-metrics = ["ATE", "ITE_std", "treat_rate", "ps_mean", "ps_std", "Y_std"]
-fig, axes = plt.subplots(2, 3, figsize=(15, 7), sharex=True)
 
-for ax, metric in zip(axes.ravel(), metrics):
-    ax.plot(edf["episode"], edf[metric], linewidth=1.0, alpha=0.7, color=C_ITE)
-    ax.axhline(edf[metric].mean(), color="black", linestyle="--",
-               linewidth=1.2, label=f"μ={edf[metric].mean():.3f}")
-    ax.fill_between(
-        edf["episode"],
-        edf[metric].mean() - edf[metric].std(),
-        edf[metric].mean() + edf[metric].std(),
-        alpha=0.12, color=C_ITE,
-    )
-    ax.set_title(metric, fontweight="bold")
-    ax.set_xlabel("episode index")
-    ax.legend(fontsize=8, frameon=False)
+# ── Plot: one histogram per statistic, grouped by theme ──────────────────────
 
-fig.suptitle(f"Cross-Episode Stability  ({K} episodes, N={N_SMALL} each)",
-             fontweight="bold", y=1.02)
+GROUPS = {
+    "treatment":         ["treat_rate", "ps_std", "ps_min", "ps_max"],
+    "causal effect":     ["ATE", "ITE_std", "frac_pos_ITE"],
+    "confounding":       ["abs_corr_U_prop", "abs_corr_U_Y"],
+    "proxy quality":     ["proxy_Z", "proxy_W"],
+    "outcome scale":     ["Y_std"],
+}
+
+COLORS = {
+    "treatment"    : "#378ADD",   # blue
+    "causal effect": "#1D9E75",   # teal
+    "confounding"  : "#7F77DD",   # purple
+    "proxy quality": "#D85A30",   # coral
+    "outcome scale": "#888780",   # gray
+}
+
+LABELS = {
+    "treat_rate"      : "treatment rate  E[A]",
+    "ps_std"          : "propensity spread  std(e)",
+    "ps_min"          : "min propensity",
+    "ps_max"          : "max propensity",
+    "ATE"             : "ATE  (mean ITE)",
+    "ITE_std"         : "ITE heterogeneity  std(τ)",
+    "frac_pos_ITE"    : "fraction ITE > 0",
+    "abs_corr_U_prop" : "|corr(U pc1, propensity)|",
+    "abs_corr_U_Y"    : "|corr(U pc1, Y)|",
+    "proxy_Z"         : "mean |corr(U, Z)|  — Z proxy",
+    "proxy_W"         : "mean |corr(U, W)|  — W proxy",
+    "Y_std"           : "outcome std  σ(Y)",
+}
+
+n_total = sum(len(v) for v in GROUPS.values())
+fig = plt.figure(figsize=(5 * 4, 4 * ((n_total + 3) // 4)))
+gs  = gridspec.GridSpec((n_total + 3) // 4, 4, figure=fig,
+                         hspace=0.65, wspace=0.38)
+
+ax_iter = iter(fig.add_subplot(gs[i // 4, i % 4]) for i in range(n_total))
+
+for group_name, cols in GROUPS.items():
+    color = COLORS[group_name]
+    for col in cols:
+        ax = next(ax_iter)
+        data = edf[col].dropna().values
+
+        ax.hist(data, bins=30, color=color, alpha=0.75,
+                edgecolor="white", linewidth=0.4, density=True)
+
+        # Overlay KDE
+        try:
+            kde = stats.gaussian_kde(data)
+            xg  = np.linspace(data.min(), data.max(), 200)
+            ax.plot(xg, kde(xg), color=color, linewidth=1.8, alpha=0.9)
+        except Exception:
+            pass
+
+        # Mean ± std band
+        mu, sd = data.mean(), data.std()
+        ax.axvline(mu, color="black", linewidth=1.2, linestyle="--", alpha=0.8)
+        ax.axvspan(mu - sd, mu + sd, color="black", alpha=0.07)
+
+        # Annotation: μ ± σ
+        ax.text(0.97, 0.93, f"μ={mu:.3f}\nσ={sd:.3f}",
+                transform=ax.transAxes, fontsize=8,
+                ha="right", va="top",
+                bbox=dict(boxstyle="round,pad=0.25", fc="white", alpha=0.6, ec="none"))
+
+        ax.set_title(LABELS[col], fontsize=9, fontweight="bold", pad=6)
+        ax.set_ylabel("density", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        # Subtle group label on first stat in group
+        if col == cols[0]:
+            ax.text(-0.02, 1.18, group_name.upper(),
+                    transform=ax.transAxes, fontsize=8,
+                    color=color, fontweight="bold", va="top")
+
+fig.suptitle(
+    f"Prior characterization  —  distribution of statistics across {K} datasets  "
+    f"(N={N_SMALL} obs each)",
+    fontsize=13, fontweight="bold", y=1.01,
+)
+plt.show()
+print("✓ prior characterization done")
+
+
+#%% ── 10b. SENSITIVITY — temperature vs propensity spread ────────────────────
+
+K_SWEEP  = 200
+N_SWEEP  = 500
+
+TEMPERATURES = [0.5, 1.0, 2.0, 4.0, 8.0]
+
+def sweep_stat(param_name, param_values, stat_fn,
+               base_config_kwargs=None, K=K_SWEEP, N=N_SWEEP):
+    """
+    For each value in param_values, build a prior with that param set,
+    generate K episodes, apply stat_fn(episode) -> float, return dict.
+    """
+    base_kw = base_config_kwargs or {}
+    results = {}
+    for val in param_values:
+        kw = {**base_kw, param_name: val}
+        p  = ProximalPrior(config=ProximalPriorConfig(**{**vars(cfg), **kw}),
+                           seed=0)
+        results[val] = [
+            stat_fn(p.generate_episode(batch_size=N, episode_seed=k))
+            for k in range(K)
+        ]
+    return results
+
+
+# ── stat functions ────────────────────────────────────────────────────────────
+
+def stat_ps_std(ep):
+    return float(ep.propensity.cpu().numpy().std())
+
+def stat_abs_corr_U_Y(ep):
+    u_pc = first_pc(ep.U.cpu().numpy())
+    r, _ = stats.pearsonr(u_pc, ep.Y.cpu().numpy())
+    return abs(r)
+
+def stat_abs_corr_U_prop(ep):
+    u_pc = first_pc(ep.U.cpu().numpy())
+    r, _ = stats.pearsonr(u_pc, ep.propensity.cpu().numpy())
+    return abs(r)
+
+
+# ── run sweeps ────────────────────────────────────────────────────────────────
+
+temp_results       = sweep_stat("temperature",         TEMPERATURES,
+                                stat_ps_std)
+
+CONFOUNDING_LEVELS = [0.25, 0.5, 1.0, 2.0, 4.0]
+
+conf_results_Y     = sweep_stat("confounding_strength", CONFOUNDING_LEVELS,
+                                stat_abs_corr_U_Y)
+conf_results_prop  = sweep_stat("confounding_strength", CONFOUNDING_LEVELS,
+                                stat_abs_corr_U_prop)
+
+
+# ── palette helpers ───────────────────────────────────────────────────────────
+
+def param_palette(values, cmap_name="Blues"):
+    cmap   = plt.get_cmap(cmap_name)
+    lo, hi = 0.35, 0.90
+    return {v: cmap(lo + (hi - lo) * i / (len(values) - 1))
+            for i, v in enumerate(values)}
+
+def draw_kde_panel(ax, results, palette, xlabel, title,
+                   label_fmt="{}", vline=None):
+    """
+    Overlay one KDE per parameter value.  Lighter = lower value by convention.
+    """
+    for val, data in results.items():
+        data = np.array(data)
+        kde  = stats.gaussian_kde(data, bw_method="scott")
+        xg   = np.linspace(max(0, data.min() - data.std() * 0.3),
+                           data.max() + data.std() * 0.3, 300)
+        color = palette[val]
+        ax.plot(xg, kde(xg), color=color, linewidth=2.0,
+                label=label_fmt.format(val))
+        ax.fill_between(xg, kde(xg), alpha=0.10, color=color)
+        ax.axvline(data.mean(), color=color, linewidth=0.8,
+                   linestyle=":", alpha=0.7)
+
+    if vline is not None:
+        ax.axvline(vline, color="black", linewidth=1.0,
+                   linestyle="--", alpha=0.4, label=f"ref={vline}")
+
+    ax.set_xlabel(xlabel, fontsize=10)
+    ax.set_ylabel("density",  fontsize=10)
+    ax.set_title(title, fontsize=10, fontweight="bold", pad=8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    leg = ax.legend(fontsize=8, frameon=False, title_fontsize=8)
+    leg.set_title(ax.get_title().split("—")[0].strip())  # reuse group label
+    ax.tick_params(labelsize=8)
+
+
+# ── figure 1: temperature → ps_std ───────────────────────────────────────────
+
+pal_temp = param_palette(TEMPERATURES, "Blues")
+
+fig, ax = plt.subplots(figsize=(7, 4))
+draw_kde_panel(
+    ax, temp_results, pal_temp,
+    xlabel = "propensity spread  std(e(·))",
+    title  = "temperature  →  propensity spread",
+    label_fmt = "T = {}",
+    vline  = None,
+)
+# annotate direction
+ax.text(0.97, 0.95,
+        "← lower T\n   sharper treatment\n   selection",
+        transform=ax.transAxes, fontsize=8, ha="right", va="top",
+        color="#185FA5",
+        bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7, ec="none"))
+
+fig.suptitle(
+    f"Sensitivity: temperature  ({K_SWEEP} episodes × N={N_SWEEP})",
+    fontsize=12, fontweight="bold")
 plt.tight_layout()
 plt.show()
 
-print(edf.describe().round(4).to_string())
+
+# ── figure 2: confounding_strength → corr(U,Y) and corr(U, propensity) ───────
+
+pal_conf = param_palette(CONFOUNDING_LEVELS, "Purples")
+
+fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharey=False)
+
+draw_kde_panel(
+    axes[0], conf_results_prop, pal_conf,
+    xlabel    = "|corr(U pc1, propensity)|",
+    title     = "confounding strength  →  U ↔ propensity",
+    label_fmt = "cs = {}",
+)
+draw_kde_panel(
+    axes[1], conf_results_Y, pal_conf,
+    xlabel    = "|corr(U pc1, Y)|",
+    title     = "confounding strength  →  U ↔ Y",
+    label_fmt = "cs = {}",
+)
+
+# shared annotation
+for ax, msg in zip(axes, ["confounding in\ntreatment selection",
+                           "confounding in\noutcome"]):
+    ax.text(0.97, 0.95, f"darker = stronger\n{msg}",
+            transform=ax.transAxes, fontsize=8, ha="right", va="top",
+            color="#534AB7",
+            bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7, ec="none"))
+
+fig.suptitle(
+    f"Sensitivity: confounding_strength  ({K_SWEEP} episodes × N={N_SWEEP})",
+    fontsize=12, fontweight="bold")
+plt.tight_layout()
+plt.show()
+
+print("✓ sensitivity plots done")
+
 
 
 #%% ── 11. DataLoader Batch Inspection ────────────────────────────────────────
@@ -652,404 +910,3 @@ fig.suptitle("ProximalPrior — Summary Dashboard", fontsize=16,
              fontweight="bold", y=0.995)
 plt.show()
 print("✓ Dashboard")
-
-# %%===========================================================================
-#  CHAPTER 14 — Basic CATE Estimation Strategies
-#
-#  Six estimators of increasing sophistication, all evaluated against the
-#  oracle ITE = Y(1) - Y(0) stored in the episode.
-#
-#  Ground truth available because ProximalPrior gives us both potential outcomes.
-#
-#  Estimators
-#  ──────────
-#  M1  Difference-in-means          → constant ATE, ignores confounding & X
-#  M2  OLS: Y ~ X + A               → constant causal coefficient, no proxy
-#  M3  OLS: Y ~ X + A + W + Z       → naïve inclusion of proxies as controls
-#  M4  P2SLS (Proximal 2SLS)        → principled linear proximal estimator
-#  M5  OLS: Y ~ X + A + X*A         → heterogeneous, but ignores confounding
-#  M6  P2SLS with X*A interaction   → principled heterogeneous causal estimator
-#
-#  Metrics reported per estimator
-#  ──────────────────────────────
-#  • ATE bias   = estimated_ATE − true_ATE
-#  • RMSE(CATE) = sqrt( mean( (ĈATEᵢ − ITEᵢ)² ) )
-#  • R²(CATE)   = 1 − Var(ĈATEᵢ − ITEᵢ) / Var(ITEᵢ)
-# ============================================================================
-
-# ── 14.0  Prepare numpy arrays from the episode ─────────────────────────────
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
- 
-# ── Observed variables (what a learner actually sees) ──────────────────────
-X_np  = episode.X.cpu().float().numpy()          # (N, d_x)
-Z_np  = episode.Z.cpu().float().numpy()          # (N, d_z)
-W_np  = episode.W.cpu().float().numpy()          # (N, d_w)
-A_np  = episode.A.cpu().float().numpy()          # (N,)
-Y_np  = episode.Y.cpu().float().numpy()          # (N,)
- 
-# ── Oracle quantities (not available to a real learner) ────────────────────
-Y0_np  = episode.Y0.cpu().float().numpy()        # (N,)
-Y1_np  = episode.Y1.cpu().float().numpy()        # (N,)
-ITE_np = Y1_np - Y0_np                           # (N,)   ground truth
-ATE_true = float(ITE_np.mean())
- 
-print(f"True ATE  : {ATE_true:+.4f}")
-print(f"True CATE std (heterogeneity) : {ITE_np.std():.4f}")
-print(f"N observations : {len(Y_np)}\n")
- 
- 
-#%% ── 14.1  M1 — Difference in Means ─────────────────────────────────────────
-mask1 = A_np == 1.0
-mask0 = A_np == 0.0
- 
-ate_dm   = float(Y_np[mask1].mean() - Y_np[mask0].mean())
-cate_dm  = np.full(len(Y_np), ate_dm)    # constant prediction
- 
-print("── M1: Difference in Means ───────────────────────────────────────────")
-print(f"  Estimated ATE : {ate_dm:+.4f}")
-print(f"  True ATE      : {ATE_true:+.4f}")
-print(f"  Bias          : {ate_dm - ATE_true:+.4f}\n")
- 
- 
-#%% ── 14.2  M2 — OLS: Y ~ X + A ──────────────────────────────────────────────
-A_col = A_np.reshape(-1, 1)
-XA    = np.hstack([X_np, A_col])            # (N, d_x + 1)
- 
-ols_xa = LinearRegression().fit(XA, Y_np)
- 
-XA1 = XA.copy(); XA1[:, -1] = 1.0
-XA0 = XA.copy(); XA0[:, -1] = 0.0
- 
-cate_ols_xa = ols_xa.predict(XA1) - ols_xa.predict(XA0)
-ate_ols_xa  = float(cate_ols_xa.mean())
-coef_A_m2   = ols_xa.coef_[-1]
- 
-print("── M2: OLS  Y ~ X + A ────────────────────────────────────────────────")
-print(f"  β_A (coef on treatment) : {coef_A_m2:+.4f}")
-print(f"  Estimated ATE           : {ate_ols_xa:+.4f}")
-print(f"  True ATE                : {ATE_true:+.4f}")
-print(f"  Bias                    : {ate_ols_xa - ATE_true:+.4f}\n")
- 
- 
-#%% ── 14.3  M3 — OLS: Y ~ X + A + W + Z ─────────────────────────────────────
-XAWZ  = np.hstack([X_np, A_col, W_np, Z_np])   # (N, d_x + 1 + d_w + d_z)
-ols_full = LinearRegression().fit(XAWZ, Y_np)
- 
-n_feat   = XAWZ.shape[1]
-a_idx    = X_np.shape[1]   
- 
-XAWZ1    = XAWZ.copy(); XAWZ1[:, a_idx] = 1.0
-XAWZ0    = XAWZ.copy(); XAWZ0[:, a_idx] = 0.0
- 
-cate_ols_full  = ols_full.predict(XAWZ1) - ols_full.predict(XAWZ0)
-ate_ols_full   = float(cate_ols_full.mean())
-coef_A_m3      = ols_full.coef_[a_idx]
- 
-print("── M3: OLS  Y ~ X + A + W + Z ───────────────────────────────────────")
-print(f"  β_A (coef on treatment) : {coef_A_m3:+.4f}")
-print(f"  Estimated ATE           : {ate_ols_full:+.4f}")
-print(f"  True ATE                : {ATE_true:+.4f}")
-print(f"  Bias                    : {ate_ols_full - ATE_true:+.4f}\n")
- 
- 
-#%% ── 14.4  M4 — P2SLS: Proximal Two-Stage Least Squares ─────────────────────
-# ── Stage 1 ────────────────────────────────────────────────────────────────
-A_col_reshaped  = A_np.reshape(-1, 1)
-stage1_features = np.hstack([A_col_reshaped, X_np, Z_np])     
-stage1_model    = LinearRegression().fit(stage1_features, W_np)
-W_hat           = stage1_model.predict(stage1_features)       
-
-# ── Stage 2 ────────────────────────────────────────────────────────────────
-stage2_features = np.hstack([A_col_reshaped, X_np, W_hat])    
-stage2_model    = LinearRegression().fit(stage2_features, Y_np)
-
-ate_p2sls  = float(stage2_model.coef_[0])
-cate_p2sls = np.full(len(Y_np), ate_p2sls)
-
-print("── M4: P2SLS ──────────────────────────────────────────────")
-print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
-print(f"  True ATE         : {ATE_true:+.4f}")
-print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}\n")
-
-
-#%% ── 14.5  M5 — OLS: Y ~ X + A + X*A ────────────────────────────────────────
-# Introduces heterogeneity by interacting Treatment (A) with Covariates (X).
-X_A_inter = X_np * A_col_reshaped
-XA_int    = np.hstack([X_np, A_col_reshaped, X_A_inter])
-ols_xa_int = LinearRegression().fit(XA_int, Y_np)
-
-# Predict potential outcomes for CATE
-XA_int1 = np.hstack([X_np, np.ones_like(A_col_reshaped), X_np * 1.0])
-XA_int0 = np.hstack([X_np, np.zeros_like(A_col_reshaped), X_np * 0.0])
-
-cate_ols_xa_int = ols_xa_int.predict(XA_int1) - ols_xa_int.predict(XA_int0)
-ate_ols_xa_int  = float(cate_ols_xa_int.mean())
-
-print("── M5: OLS Y ~ X + A + X*A ──────────────────────────────────────────")
-print(f"  Estimated ATE : {ate_ols_xa_int:+.4f}")
-print(f"  True ATE      : {ATE_true:+.4f}")
-print(f"  Bias          : {ate_ols_xa_int - ATE_true:+.4f}\n")
-
-
-#%% ── 14.6  M6 — P2SLS with X*A interaction ──────────────────────────────────
-# Combines the unconfounded proximal guarantees with CATE heterogeneity.
-# Uses W_hat from M4's Stage 1, interacting A with X in Stage 2.
-stage2_features_int = np.hstack([A_col_reshaped, X_np, X_A_inter, W_hat])
-stage2_model_int    = LinearRegression().fit(stage2_features_int, Y_np)
-
-# Predict potential outcomes using Stage 2 model
-s2_feat_1 = np.hstack([np.ones_like(A_col_reshaped), X_np, X_np * 1.0, W_hat])
-s2_feat_0 = np.hstack([np.zeros_like(A_col_reshaped), X_np, np.zeros_like(X_np), W_hat])
-
-cate_p2sls_int = stage2_model_int.predict(s2_feat_1) - stage2_model_int.predict(s2_feat_0)
-ate_p2sls_int  = float(cate_p2sls_int.mean())
-
-print("── M6: P2SLS with X*A interaction ───────────────────────────────────")
-print(f"  Estimated ATE : {ate_p2sls_int:+.4f}")
-print(f"  True ATE      : {ATE_true:+.4f}")
-print(f"  Bias          : {ate_p2sls_int - ATE_true:+.4f}\n")
- 
- 
-#%% ── 14.7  Compare Estimators — Bar Charts ─────────────────────────────────
-estimators = {
-    "M1  DiM"           : (ate_dm,          cate_dm),
-    "M2  OLS(X,A)"      : (ate_ols_xa,      cate_ols_xa),
-    "M3  OLS(X,A,W,Z)"  : (ate_ols_full,    cate_ols_full),
-    "M4  P2SLS"         : (ate_p2sls,       cate_p2sls),
-    "M5  OLS(X,A,X*A)"  : (ate_ols_xa_int,  cate_ols_xa_int),
-    "M6  P2SLS(X*A)"    : (ate_p2sls_int,   cate_p2sls_int),
-}
- 
-# Extend palette for the two new estimators
-colors_est = [PALETTE[6], PALETTE[0], PALETTE[1], PALETTE[2], PALETTE[3], PALETTE[4]]
- 
-fig, axes = plt.subplots(1, 3, figsize=(18, 5))
- 
-# ── Panel A: ATE estimate vs truth
-ate_names  = list(estimators.keys())
-ate_values = [v[0] for v in estimators.values()]
-biases     = [v - ATE_true for v in ate_values]
- 
-bars = axes[0].barh(ate_names, biases,
-                    color=[c + (0.8,) if isinstance(c, tuple) else c
-                           for c in colors_est],
-                    edgecolor="white", height=0.5)
-axes[0].axvline(0, color="black", linewidth=1.5, linestyle="--", label="zero bias")
-for bar, bias in zip(bars, biases):
-    axes[0].text(
-        bias + (0.003 if bias >= 0 else -0.003),
-        bar.get_y() + bar.get_height() / 2,
-        f"{bias:+.4f}", fontsize=9,
-    )
-axes[0].set_title("ATE Bias  (estimated − true)", fontweight="bold")
-axes[0].set_xlabel("Bias")
-axes[0].legend(frameon=False, fontsize=9)
- 
-# ── Panel B: RMSE of CATE estimate 
-rmse_vals = []
-r2_vals   = []
-for name, (ate_est, cate_est) in estimators.items():
-    rmse = float(np.sqrt(np.mean((cate_est - ITE_np) ** 2)))
-    r2   = float(r2_score(ITE_np, cate_est))
-    rmse_vals.append(rmse)
-    r2_vals.append(r2)
- 
-axes[1].bar(ate_names, rmse_vals, color=colors_est, edgecolor="white", alpha=0.85)
-for i, val in enumerate(rmse_vals):
-    axes[1].text(i, val + 0.002, f"{val:.4f}", va="bottom", fontsize=9)
-axes[1].set_title("RMSE( ĈATEᵢ , ITEᵢ )", fontweight="bold")
-axes[1].set_ylabel("RMSE")
-axes[1].tick_params(axis="x", rotation=15)
- 
-# ── Panel C: R² of CATE estimate 
-axes[2].bar(ate_names, r2_vals, color=colors_est, edgecolor="white", alpha=0.85)
-axes[2].axhline(0, color="red", linestyle=":", linewidth=1.2, alpha=0.7)
-for i, val in enumerate(r2_vals):
-    axes[2].text(i, val + 0.01, f"{val:.3f}", va="bottom", fontsize=9)
-axes[2].set_title("R²( ĈATEᵢ , ITEᵢ )", fontweight="bold")
-axes[2].set_ylabel("R²")
-axes[2].tick_params(axis="x", rotation=45)
- 
-fig.suptitle("Estimator Comparison — ATE Bias, CATE RMSE, CATE R²",
-             fontweight="bold", y=1.02)
-plt.tight_layout()
-plt.show()
- 
- 
-#%% ── 14.8  CATE Scatter — Estimated vs Oracle ITE ──────────────────────────
-fig, axes = plt.subplots(1, 6, figsize=(24, 5))
-vmin, vmax = ITE_np.min(), ITE_np.max()
- 
-for ax, (name, (ate_est, cate_est)), color in zip(axes, estimators.items(), colors_est):
-    sc = ax.scatter(
-        ITE_np, cate_est,
-        c=ITE_np, cmap="coolwarm", vmin=vmin, vmax=vmax,
-        alpha=0.3, s=8, rasterized=True,
-    )
-    lim = [min(ITE_np.min(), cate_est.min()) - 0.1,
-           max(ITE_np.max(), cate_est.max()) + 0.1]
-    ax.plot(lim, lim, "k--", linewidth=1.2, alpha=0.6, label="perfect")
-    ax.axhline(ate_est, color=color, linewidth=1.5, linestyle="-.",
-               label=f"est. ATE={ate_est:.3f}")
-    ax.axhline(ATE_true, color="black", linewidth=1.0, linestyle=":",
-               alpha=0.5, label=f"true ATE={ATE_true:.3f}")
-    rmse_i = float(np.sqrt(np.mean((cate_est - ITE_np) ** 2)))
-    ax.set_title(f"{name}\nRMSE={rmse_i:.4f}", fontweight="bold", fontsize=9)
-    ax.set_xlabel("True ITE")
-    if ax == axes[0]: ax.set_ylabel("Estimated CATE")
-    ax.legend(fontsize=7, frameon=False)
- 
-plt.colorbar(sc, ax=axes[-1], label="True ITE", fraction=0.04)
-fig.suptitle("Estimated CATE vs Oracle ITE  (ideal = diagonal)",
-             fontweight="bold", y=1.05)
-plt.tight_layout()
-plt.show()
- 
- 
-#%% ── 14.9  Residual Analysis — Where Does Each Estimator Fail? ──────────────
-ps_np = episode.propensity.cpu().numpy()
-u_pc1 = first_pc(episode.U.cpu().float().numpy())   # defined in chapter 8
- 
-fig, axes = plt.subplots(6, 3, figsize=(15, 24), sharey="row")
- 
-covariates_diag = {
-    "X_0":         X_np[:, 0],
-    "Propensity":  ps_np,
-    "U (PC1)":     u_pc1,
-}
- 
-for row_idx, (est_name, (_, cate_est)) in enumerate(estimators.items()):
-    residuals = cate_est - ITE_np
- 
-    for col_idx, (cov_name, cov_vals) in enumerate(covariates_diag.items()):
-        ax = axes[row_idx, col_idx]
-        ax.scatter(cov_vals, residuals, alpha=0.2, s=6,
-                   color=colors_est[row_idx], rasterized=True)
-        ax.axhline(0, color="black", linewidth=1.2, linestyle="--")
-        r, p = stats.pearsonr(cov_vals, residuals)
-        m, b = np.polyfit(cov_vals, residuals, 1)
-        xline = np.linspace(cov_vals.min(), cov_vals.max(), 100)
-        ax.plot(xline, m * xline + b, "k-", linewidth=1.2, alpha=0.6)
-        ax.set_title(f"{est_name}\nvs {cov_name}  (r={r:.3f})", fontsize=8, fontweight="bold")
-        if row_idx == 5: ax.set_xlabel(cov_name, fontsize=8)
-        if col_idx == 0: ax.set_ylabel("Residual\n(ĈATEᵢ − ITEᵢ)", fontsize=8)
- 
-fig.suptitle("Residual Analysis — Systematic Bias per Estimator\n"
-             "(non-zero slope → the estimator misses that source of heterogeneity)",
-             fontweight="bold", y=1.01, fontsize=12)
-plt.tight_layout()
-plt.show()
- 
- 
-#%% ── 14.10  Cross-Episode Stability of ATE Estimates ───────────────────────
-K_est = 30
- 
-cross_ep_records = []
-for k in range(K_est):
-    ep_k   = prior.generate_episode(batch_size=N_OBS, episode_seed=1000 + k)
- 
-    X_k   = ep_k.X.cpu().float().numpy()
-    Z_k   = ep_k.Z.cpu().float().numpy()
-    W_k   = ep_k.W.cpu().float().numpy()
-    A_k   = ep_k.A.cpu().float().numpy()
-    Y_k   = ep_k.Y.cpu().float().numpy()
-    ITE_k = (ep_k.Y1 - ep_k.Y0).cpu().float().numpy()
-    true_ate_k = float(ITE_k.mean())
- 
-    A_col_k = A_k.reshape(-1, 1)
-
-    # M1
-    m1 = float(Y_k[A_k == 1].mean() - Y_k[A_k == 0].mean())
- 
-    # M2
-    XA_k = np.hstack([X_k, A_col_k])
-    m2   = float(LinearRegression().fit(XA_k, Y_k).coef_[-1])
- 
-    # M3
-    XAWZ_k = np.hstack([X_k, A_col_k, W_k, Z_k])
-    m3     = float(LinearRegression().fit(XAWZ_k, Y_k).coef_[X_k.shape[1]])
- 
-    # M4 P2SLS
-    stage1_features_k = np.hstack([A_col_k, X_k, Z_k])     
-    W_hat_k = LinearRegression().fit(stage1_features_k, W_k).predict(stage1_features_k)
-    stage2_features_k = np.hstack([A_col_k, X_k, W_hat_k])    
-    m4 = float(LinearRegression().fit(stage2_features_k, Y_k).coef_[0])
-
-    # M5 OLS with X*A
-    XA_int_k = np.hstack([X_k, A_col_k, X_k * A_col_k])
-    m5_model = LinearRegression().fit(XA_int_k, Y_k)
-    s2_m5_1  = np.hstack([X_k, np.ones_like(A_col_k), X_k * 1.0])
-    s2_m5_0  = np.hstack([X_k, np.zeros_like(A_col_k), X_k * 0.0])
-    m5 = float((m5_model.predict(s2_m5_1) - m5_model.predict(s2_m5_0)).mean())
-
-    # M6 P2SLS with X*A
-    stage2_features_int_k = np.hstack([A_col_k, X_k, X_k * A_col_k, W_hat_k])
-    m6_model = LinearRegression().fit(stage2_features_int_k, Y_k)
-    s2_m6_1  = np.hstack([np.ones_like(A_col_k), X_k, X_k * 1.0, W_hat_k])
-    s2_m6_0  = np.hstack([np.zeros_like(A_col_k), X_k, np.zeros_like(X_k), W_hat_k])
-    m6 = float((m6_model.predict(s2_m6_1) - m6_model.predict(s2_m6_0)).mean())
-
-    cross_ep_records.append({
-        "episode": k, "true_ATE": true_ate_k,
-        "M1_DiM": m1, "M2_OLS_XA": m2,
-        "M3_OLS_full": m3, "M4_P2SLS": m4,
-        "M5_OLS_int": m5, "M6_P2SLS_int": m6
-    })
- 
-ced = pd.DataFrame(cross_ep_records)
- 
-fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=True)
-method_cols  = ["M1_DiM", "M2_OLS_XA", "M3_OLS_full", "M4_P2SLS", "M5_OLS_int", "M6_P2SLS_int"]
-method_names = list(estimators.keys())
- 
-for ax, col, name, color in zip(axes.ravel(), method_cols, method_names, colors_est):
-    bias_series = ced[col] - ced["true_ATE"]
- 
-    ax.plot(ced["episode"], ced["true_ATE"], color="black",
-            linewidth=1.0, linestyle=":", alpha=0.6, label="true ATE")
-    ax.plot(ced["episode"], ced[col], color=color, linewidth=1.5, label=name)
- 
-    mean_bias = bias_series.mean()
-    std_bias  = bias_series.std()
-    ax.set_title(
-        f"{name}\nMean bias={mean_bias:+.4f}  ±{std_bias:.4f}",
-        fontweight="bold", fontsize=10,
-    )
-    if ax in axes[1, :]: ax.set_xlabel("Episode")
-    if ax in axes[:, 0]: ax.set_ylabel("ATE estimate")
-    ax.legend(fontsize=8, frameon=False)
- 
-fig.suptitle(f"ATE Estimate Stability Across {K_est} Episodes\n"
-             "(black dotted = oracle true ATE per episode)",
-             fontweight="bold", y=1.02)
-plt.tight_layout()
-plt.show()
- 
-print(ced[["true_ATE"] + method_cols].describe().round(4).to_string())
- 
- 
-#%% ── 14.11  Summary Table ───────────────────────────────────────────────────
-summary_rows = []
-for (name, (ate_est, cate_est)), col in zip(estimators.items(), method_cols):
-    bias_series_full = ced[col] - ced["true_ATE"]
-    summary_rows.append({
-        "Estimator"       : name,
-        "ATE (single ep)" : f"{ate_est:+.4f}",
-        "Bias (single ep)": f"{ate_est - ATE_true:+.4f}",
-        "RMSE CATE"       : f"{np.sqrt(np.mean((cate_est - ITE_np)**2)):.4f}",
-        "R² CATE"         : f"{r2_score(ITE_np, cate_est):.4f}",
-        "Cross-ep mean |bias|" : f"{np.abs(bias_series_full).mean():+.4f}",
-        "Cross-up median |bias|" : f"{np.abs(bias_series_full).median():+.4f}",
-        "Cross-ep bias σ" : f"{bias_series_full.std():.4f}",
-    })
- 
-summary_df = pd.DataFrame(summary_rows).set_index("Estimator")
-print("\n" + "=" * 90)
-print("CATE ESTIMATOR SUMMARY")
-print("=" * 90)
-print(summary_df.to_string())
-print("=" * 90)
-print(f"\nOracle true ATE (single episode) : {ATE_true:+.4f}")
-print("Note: M1-M4 are LINEAR → CATE is constant (= ATE estimate).")
-print("      M5-M6 incorporate X*A interactions to model true heterogeneity.")
