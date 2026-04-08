@@ -2,18 +2,18 @@ import unittest.mock
 import pytest
 import torch
 
-from proximalfm.Prior import ProximalPrior
+from proximalfm.prior import BNNPrior
 from proximalfm.Structure import ProximalPriorConfig, NetworkSpec
 
 
 @pytest.fixture
-def prior() -> ProximalPrior:
-    return ProximalPrior(seed=42)
+def prior() -> BNNPrior:
+    return BNNPrior(seed=42)
 
 def test_episode_extreme_temperature() -> None:
     # High temperature -> propensities close to 0.5
     config_high = ProximalPriorConfig(temperature=100.0, min_propensity=0.0, max_propensity=1.0)
-    prior_high = ProximalPrior(config=config_high, seed=7)
+    prior_high = BNNPrior(config=config_high, seed=7)
     ep_high = prior_high.generate_episode(batch_size=1000, episode_seed=7)
 
     # Sigmoid of near 0 is 0.5
@@ -21,7 +21,7 @@ def test_episode_extreme_temperature() -> None:
 
     # Low temperature -> extreme propensities (close to min/max bounds)
     config_low = ProximalPriorConfig(temperature=0.001, min_propensity=0.1, max_propensity=0.9)
-    prior_low = ProximalPrior(config=config_low, seed=8)
+    prior_low = BNNPrior(config=config_low, seed=8)
     ep_low = prior_low.generate_episode(batch_size=1000, episode_seed=8)
 
     # We should see many clamped values at the bounds
@@ -31,11 +31,11 @@ def test_episode_extreme_temperature() -> None:
 
 def test_init_defaults() -> None:
     # Ensure it can be initialized without arguments
-    default_prior = ProximalPrior()
+    default_prior = BNNPrior()
     assert isinstance(default_prior.config, ProximalPriorConfig)
     assert default_prior.seed is None
 
-def test_episode_batch_size_one(prior: ProximalPrior) -> None:
+def test_episode_batch_size_one(prior: BNNPrior) -> None:
     ep = prior.generate_episode(batch_size=1, episode_seed=9)
 
     assert ep.X.shape[0] == 1
@@ -47,7 +47,7 @@ def test_episode_batch_size_one(prior: ProximalPrior) -> None:
     assert not torch.isnan(ep.W).any()
     assert not torch.isnan(ep.Y).any()
 
-def test_episode_shapes_and_sizes(prior: ProximalPrior) -> None:
+def test_episode_shapes_and_sizes(prior: BNNPrior) -> None:
     episode = prior.generate_episode(batch_size=16, episode_seed=0)
 
     assert episode.X.shape == (16, prior.config.d_x)
@@ -61,20 +61,20 @@ def test_episode_shapes_and_sizes(prior: ProximalPrior) -> None:
     assert episode.propensity.shape == (16,)
 
 
-def test_propensity_bounds_are_respected(prior: ProximalPrior) -> None:
+def test_propensity_bounds_are_respected(prior: BNNPrior) -> None:
     episode = prior.generate_episode(batch_size=64, episode_seed=1)
     assert episode.propensity.min().item() >= prior.config.min_propensity
     assert episode.propensity.max().item() <= prior.config.max_propensity
 
 
-def test_counterfactual_noise_is_shared(prior: ProximalPrior) -> None:
+def test_counterfactual_noise_is_shared(prior: BNNPrior) -> None:
     episode = prior.generate_episode(batch_size=32, episode_seed=2)
     difference = episode.Y - episode.Y0
     expected = episode.A * (episode.Y1 - episode.Y0)
     assert torch.allclose(difference, expected, atol=1e-5)
 
 
-def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
+def test_y_is_independent_of_z_given_axu(prior: BNNPrior) -> None:
     episode = prior.generate_episode(batch_size=128, episode_seed=3)
     features = torch.cat([episode.A.unsqueeze(-1), episode.X, episode.U], dim=-1)
     target = episode.Y.unsqueeze(-1)
@@ -92,7 +92,7 @@ def test_y_is_independent_of_z_given_axu(prior: ProximalPrior) -> None:
     
     assert torch.all(correlations < 0.25)
 
-def test_episode_to_dataframe(prior: ProximalPrior) -> None:
+def test_episode_to_dataframe(prior: BNNPrior) -> None:
     batch_size = 16
     episode = prior.generate_episode(batch_size=batch_size, episode_seed=4)
 
@@ -125,15 +125,15 @@ def test_episode_to_dataframe(prior: ProximalPrior) -> None:
 def test_invalid_config_dz_too_small() -> None:
     config = ProximalPriorConfig(d_u=4, d_z=3, d_w=6)
     with pytest.raises(ValueError):
-        ProximalPrior(config=config)
+        BNNPrior(config=config)
 
 
 def test_invalid_config_dw_too_small() -> None:
     config = ProximalPriorConfig(d_u=4, d_z=6, d_w=3)
     with pytest.raises(ValueError):
-        ProximalPrior(config=config)
+        BNNPrior(config=config)
 
-def test_make_generator_deterministic(prior: ProximalPrior) -> None:
+def test_make_generator_deterministic(prior: BNNPrior) -> None:
     # Same episode seed -> same sequence of numbers
     gen1 = prior._make_generator(episode_seed=123)
     gen2 = prior._make_generator(episode_seed=123)
@@ -146,7 +146,7 @@ def test_make_generator_deterministic(prior: ProximalPrior) -> None:
     val3 = torch.rand(10, generator=gen3)
     assert not torch.allclose(val1, val3)
 
-def test_random_bnn_shape(prior: ProximalPrior) -> None:
+def test_random_bnn_shape(prior: BNNPrior) -> None:
     gen = prior._make_generator(episode_seed=2)
     inputs = torch.randn(10, 5, generator=gen)
     spec = NetworkSpec(num_layers=3, hidden_size=8, weight_scale=1.0, bias_scale=0.1)
@@ -156,7 +156,7 @@ def test_random_bnn_shape(prior: ProximalPrior) -> None:
 
     assert list(output.shape) == [10, output_dim]
 
-def test_random_bnn_single_layer(prior: ProximalPrior) -> None:
+def test_random_bnn_single_layer(prior: BNNPrior) -> None:
     gen = prior._make_generator(episode_seed=3)
     inputs = torch.randn(10, 5, generator=gen)
     spec = NetworkSpec(num_layers=1, hidden_size=8, weight_scale=1.0, bias_scale=0.1)
@@ -167,7 +167,7 @@ def test_random_bnn_single_layer(prior: ProximalPrior) -> None:
     assert list(output.shape) == [10, output_dim]
 
 @pytest.mark.parametrize("regime", ["u_to_x", "x_to_u", "shared"])
-def test_generate_x_u_regimes(prior: ProximalPrior, regime: str) -> None:
+def test_generate_x_u_regimes(prior: BNNPrior, regime: str) -> None:
     gen = prior._make_generator(episode_seed=5)
     batch_size = 12
     with unittest.mock.patch.object(prior, "_sample_regime", return_value=regime):
@@ -176,7 +176,7 @@ def test_generate_x_u_regimes(prior: ProximalPrior, regime: str) -> None:
         assert list(X.shape) == [batch_size, prior.config.d_x]
         assert list(U.shape) == [batch_size, prior.config.d_u]
 
-def test_sample_regime(prior: ProximalPrior) -> None:
+def test_sample_regime(prior: BNNPrior) -> None:
     gen = prior._make_generator(episode_seed=4)
     regimes_sampled = set()
     expected_regimes = {"u_to_x", "x_to_u", "shared"}
@@ -188,7 +188,7 @@ def test_sample_regime(prior: ProximalPrior) -> None:
     assert regimes_sampled.issubset(expected_regimes)
     assert regimes_sampled == expected_regimes
 
-def test_noise_shape_and_scale(prior: ProximalPrior) -> None:
+def test_noise_shape_and_scale(prior: BNNPrior) -> None:
     gen = prior._make_generator(episode_seed=1)
     shape = [1000, 5]
     scale = 0.5
@@ -200,14 +200,14 @@ def test_noise_shape_and_scale(prior: ProximalPrior) -> None:
 
 def test_make_generator_non_deterministic() -> None:
     # If prior has no seed and episode_seed is None, it should use completely random seed
-    prior_no_seed = ProximalPrior(seed=None)
+    prior_no_seed = BNNPrior(seed=None)
     gen1 = prior_no_seed._make_generator(episode_seed=None)
     gen2 = prior_no_seed._make_generator(episode_seed=None)
     val1 = torch.rand(10, generator=gen1)
     val2 = torch.rand(10, generator=gen2)
     assert not torch.allclose(val1, val2)
 
-def test_generate_dataset_num_workers(prior: ProximalPrior) -> None:
+def test_generate_dataset_num_workers(prior: BNNPrior) -> None:
     num_episodes = 4
     batch_size = 16
 

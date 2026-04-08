@@ -11,10 +11,10 @@ import pandas as pd
 import torch
 from torch import Generator, Tensor
 
-from .Structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
+from ..Structure import NetworkSpec, ProximalEpisode, ProximalPriorConfig
 
 
-class ProximalPrior:
+class LinearPrior:
     """
     A generative prior that samples datasets consistent with the proximal causal DAG.
 
@@ -289,4 +289,4 @@ class ProximalPrior:
         return X, U
 
 
-__all__ = ["ProximalPrior", "ProximalEpisode", "ProximalPriorConfig", "NetworkSpec"]
+__all__ = ["LinearPrior", "ProximalEpisode", "ProximalPriorConfig", "NetworkSpec"]

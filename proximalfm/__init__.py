@@ -1,6 +1,6 @@
 """Top-level API for the proximalfm package."""
 
-from .Prior import ProximalPrior
 from .Structure import ProximalEpisode
+from .prior import BNNPrior, ConfoundingLinearPrior, LinearPrior
 
-__all__ = ["ProximalEpisode", "ProximalPrior"]
+__all__ = ["ProximalEpisode", "BNNPrior", "LinearPrior", "ConfoundingLinearPrior"]

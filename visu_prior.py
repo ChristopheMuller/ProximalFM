@@ -10,9 +10,9 @@ from scipy import stats
 
 ## choose the prior to investigate:
 
-# from proximalfm.PriorLinear import ProximalPrior
-# from proximalfm.Prior import ProximalPrior
-from proximalfm.PriorLinearConfounding import ProximalPrior
+# from proximalfm.prior import LinearPrior as ProximalPrior
+# from proximalfm.prior import BNNPrior as ProximalPrior
+from proximalfm.prior import ConfoundingLinearPrior as ProximalPrior
 
 # ── Aesthetics ─────────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
