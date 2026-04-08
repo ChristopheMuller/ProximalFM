@@ -277,17 +277,17 @@ class CATETrainer:
 
     def train_epoch(self, epoch: int) -> dict:
         self.model.train()
-        total_loss = 0.0
-        total_loss_mse = 0.0
-        total_loss_gnll = 0.0
-        sum_sq_err = 0.0
-        total_gnll = 0.0
+        total_loss = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_loss_mse = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_loss_gnll = torch.zeros(1, device=self.device, dtype=torch.float32)
+        sum_sq_err = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_gnll = torch.zeros(1, device=self.device, dtype=torch.float32)
         total_samples = 0
-        total_variance = 0.0
-        total_grad_norm = 0.0
-        total_cov50 = 0
-        total_cov95 = 0
-        total_cov99 = 0
+        total_variance = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_grad_norm = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_cov50 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_cov95 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_cov99 = torch.zeros(1, device=self.device, dtype=torch.float32)
 
         epoch_start = time.time()
 
@@ -321,14 +321,14 @@ class CATETrainer:
                 if self.train_cfg.get("clip_grad", 0.0) > 0:
                     grad_norm = nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.train_cfg["clip_grad"]
-                    ).item()
+                    )
                 else:
                     # Manually compute grad norm if not clipping
                     parameters = [
                         p for p in self.model.parameters() if p.grad is not None
                     ]
                     if len(parameters) == 0:
-                        grad_norm = 0.0
+                        grad_norm = torch.zeros(1, device=self.device, dtype=torch.float32)
                     else:
                         device = parameters[0].grad.device
                         grad_norm = torch.norm(
@@ -339,7 +339,7 @@ class CATETrainer:
                                 ]
                             ),
                             2,
-                        ).item()
+                        )
 
                 total_grad_norm += grad_norm
 
@@ -351,38 +351,38 @@ class CATETrainer:
                 self.global_step += 1
                 self.optimizer.step()
 
-                total_loss += loss.item()
-                total_loss_mse += loss_mse.item()
-                total_loss_gnll += loss_gnll.item()
+                total_loss += loss
+                total_loss_mse += loss_mse
+                total_loss_gnll += loss_gnll
 
                 pred_std = torch.exp(0.5 * pred_log_var)
                 pred_var = pred_std.pow(2)
                 residuals = pred_mean - target
                 abs_error = residuals.abs()
 
-                sum_sq_err += residuals.pow(2).sum().item()
-                total_gnll += loss_gnll.item() * target.numel()
+                sum_sq_err += residuals.pow(2).sum()
+                total_gnll += loss_gnll * target.numel()
                 total_samples += target.numel()
-                total_variance += pred_var.mean().item()
+                total_variance += pred_var.mean()
 
-                total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
-                total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
-                total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
+                total_cov50 += (abs_error <= 0.674 * pred_std).float().sum()
+                total_cov95 += (abs_error <= 1.960 * pred_std).float().sum()
+                total_cov99 += (abs_error <= 2.576 * pred_std).float().sum()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
 
         num_batches = len(self.train_loader)
-        avg_loss = total_loss / num_batches
-        avg_loss_mse = total_loss_mse / num_batches
-        avg_loss_gnll = total_loss_gnll / num_batches
-        rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
-        gnll = total_gnll / max(total_samples, 1)
-        avg_variance = total_variance / num_batches
-        avg_grad_norm = total_grad_norm / num_batches
-        cov50 = total_cov50 / max(total_samples, 1)
-        cov95 = total_cov95 / max(total_samples, 1)
-        cov99 = total_cov99 / max(total_samples, 1)
+        avg_loss = total_loss.item() / num_batches
+        avg_loss_mse = total_loss_mse.item() / num_batches
+        avg_loss_gnll = total_loss_gnll.item() / num_batches
+        rmse = np.sqrt(sum_sq_err.item() / max(total_samples, 1))
+        gnll = total_gnll.item() / max(total_samples, 1)
+        avg_variance = total_variance.item() / num_batches
+        avg_grad_norm = total_grad_norm.item() / num_batches
+        cov50 = total_cov50.item() / max(total_samples, 1)
+        cov95 = total_cov95.item() / max(total_samples, 1)
+        cov99 = total_cov99.item() / max(total_samples, 1)
 
         self.train_losses.append(avg_loss)
         logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
@@ -409,20 +409,20 @@ class CATETrainer:
     def validate(self, epoch: int) -> dict:
         self.model.eval()
         # Existing accumulators
-        total_loss_gnll = 0.0
-        total_loss_mse = 0.0
-        total_loss_total = 0.0
-        total_variance = 0.0
-        sum_sq_err = 0.0
-        sum_gnll = 0.0
+        total_loss_gnll = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_loss_mse = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_loss_total = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_variance = torch.zeros(1, device=self.device, dtype=torch.float32)
+        sum_sq_err = torch.zeros(1, device=self.device, dtype=torch.float32)
+        sum_gnll = torch.zeros(1, device=self.device, dtype=torch.float32)
         total_samples = 0
-        total_cov50 = 0
-        total_cov95 = 0
-        total_cov99 = 0
+        total_cov50 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_cov95 = torch.zeros(1, device=self.device, dtype=torch.float32)
+        total_cov99 = torch.zeros(1, device=self.device, dtype=torch.float32)
         
-        sum_error = 0.0 
-        sum_target = 0.0
-        sum_sq_target = 0.0
+        sum_error = torch.zeros(1, device=self.device, dtype=torch.float32)
+        sum_target = torch.zeros(1, device=self.device, dtype=torch.float32)
+        sum_sq_target = torch.zeros(1, device=self.device, dtype=torch.float32)
         
         val_start = time.time()
 
@@ -449,31 +449,31 @@ class CATETrainer:
                         alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
                     )
 
-                    total_loss_gnll += loss_gnll.item()
-                    total_loss_mse += loss_mse.item()
-                    total_loss_total += loss_total.item()
+                    total_loss_gnll += loss_gnll
+                    total_loss_mse += loss_mse
+                    total_loss_total += loss_total
 
                     # Bias-Variance & Error Math
                     residuals = pred_mean - target
-                    sum_sq_err += residuals.pow(2).sum().item()
-                    sum_error += residuals.sum().item() 
+                    sum_sq_err += residuals.pow(2).sum()
+                    sum_error += residuals.sum()
                     
                     # Accumulate targets for R^2
-                    sum_target += target.sum().item()
-                    sum_sq_target += target.pow(2).sum().item()
+                    sum_target += target.sum()
+                    sum_sq_target += target.pow(2).sum()
                     
-                    sum_gnll += loss_gnll.item() * target.numel()
+                    sum_gnll += loss_gnll * target.numel()
                     total_samples += target.numel()
 
                     pred_var = pred_std.pow(2)
-                    total_variance += pred_var.sum().item()
+                    total_variance += pred_var.sum()
 
                     abs_error = residuals.abs()
 
                     # Coverage
-                    total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
-                    total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
-                    total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
+                    total_cov50 += (abs_error <= 0.674 * pred_std).float().sum()
+                    total_cov95 += (abs_error <= 1.960 * pred_std).float().sum()
+                    total_cov99 += (abs_error <= 2.576 * pred_std).float().sum()
 
                     pbar.set_postfix({"nll_loss": f"{loss_gnll.item():.4f}"})
 
@@ -482,30 +482,30 @@ class CATETrainer:
 
         denom = max(total_samples, 1)
         num_batches = len(self.val_loader)
-        avg_loss_gnll = total_loss_gnll / num_batches
-        avg_loss_mse = total_loss_mse / num_batches
-        avg_loss_total = total_loss_total / num_batches
+        avg_loss_gnll = total_loss_gnll.item() / num_batches
+        avg_loss_mse = total_loss_mse.item() / num_batches
+        avg_loss_total = total_loss_total.item() / num_batches
         
-        mse = sum_sq_err / denom
+        mse = sum_sq_err.item() / denom
         rmse = np.sqrt(mse)
         
         # Bias-Variance Decomposition
-        ite_bias = sum_error / denom
+        ite_bias = sum_error.item() / denom
         ite_bias_sq = ite_bias ** 2
         ite_error_var = mse - ite_bias_sq 
-        ss_tot = sum_sq_target - (sum_target ** 2) / denom
+        ss_tot = sum_sq_target.item() - (sum_target.item() ** 2) / denom
         if ss_tot > 1e-8:
-            r2 = 1.0 - (sum_sq_err / ss_tot)
+            r2 = 1.0 - (sum_sq_err.item() / ss_tot)
         else:
             r2 = 0.0
         
         # Global metrics
-        gnll = sum_gnll / denom
-        avg_variance = total_variance / denom
+        gnll = sum_gnll.item() / denom
+        avg_variance = total_variance.item() / denom
 
-        cov95 = total_cov95 / denom
-        cov50 = total_cov50 / denom
-        cov99 = total_cov99 / denom
+        cov95 = total_cov95.item() / denom
+        cov50 = total_cov50.item() / denom
+        cov99 = total_cov99.item() / denom
 
         self.val_losses.append(gnll)
         self.val_rmses.append(rmse)
