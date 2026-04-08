@@ -179,18 +179,6 @@ class ConfoundingLinearPrior:
         Y1 = Y1_raw + shared_noise
         Y = torch.where(A == 0.0, Y0, Y1)
 
-        if c.normalize_episode:
-            X = (X - X.mean(dim=0)) / (X.std(dim=0) + 1e-8)
-            Z = (Z - Z.mean(dim=0)) / (Z.std(dim=0) + 1e-8)
-            W = (W - W.mean(dim=0)) / (W.std(dim=0) + 1e-8)
-
-            Y_all = torch.stack([Y0, Y1])
-            y_mean = Y_all.mean()
-            y_std = Y_all.std() + 1e-8
-            Y = (Y - y_mean) / y_std
-            Y0 = (Y0 - y_mean) / y_std
-            Y1 = (Y1 - y_mean) / y_std
-
         return ProximalEpisode(
             X=X, Z=Z, W=W, A=A, Y=Y, Y0=Y0, Y1=Y1, U=U, propensity=propensity
         )

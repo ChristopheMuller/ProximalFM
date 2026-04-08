@@ -49,7 +49,6 @@ def test_proximal_prior_config_defaults():
     assert config.max_propensity == 0.95
     assert config.device == "cpu"
     assert config.dtype == torch.float32
-    assert config.normalize_episode is False
 
     # Check that default_factory creates distinct NetworkSpec instances
     assert isinstance(config.x_spec, NetworkSpec)

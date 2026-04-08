@@ -50,9 +50,6 @@ class ProximalPriorConfig:
 
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
-    normalize_episode: bool = (
-        False  ## Important to be False: information leakage otherwise!
-    )
 
     confounding_strength: float = 1.0 # for high confounding prior only
 
