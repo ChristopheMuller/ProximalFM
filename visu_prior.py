@@ -837,13 +837,13 @@ ate_p2sls    = float(stage2_model.coef_[0])
 cate_p2sls   = np.full(len(Y_np), ate_p2sls)
 
 print("── M4: P2SLS (Corrected) ──────────────────────────────────────────────")
-print("Stage 2 coefficient breakdown:")
-print(f"  Stage 1 features : A, X, Z → Ŵ")
-print(f"  Stage 2 features : A, X, Ŵ → Y")
+print("  Stage 1 features : A, X, Z → Ŵ")
+print("  Stage 2 features : A, X, Ŵ → Y")
 s2_names  = ["Â (causal)"] + [f"X_{i}" for i in range(X_np.shape[1])] \
             + [f"W_{i}" for i in range(W_np.shape[1])]
 for name, coef in zip(s2_names, stage2_model.coef_):
-    print(f"    {name:15s} : {coef:+.4f}")
+    print(f"        {name:15s} : {coef:+.4f}")
+
 
 print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
 print(f"  True ATE         : {ATE_true:+.4f}")

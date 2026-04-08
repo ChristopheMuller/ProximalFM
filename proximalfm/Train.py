@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from proximalfm.Model import ProximalNanoTabICLv2
-from proximalfm.Structure import ProximalPriorConfig
+from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
 logging.basicConfig(
@@ -111,18 +111,17 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Model
         # ------------------------------------------------------------------
-        self.model = ProximalNanoTabICLv2(
-            embed_dim=self.model_cfg.get("embed_dim", 64),
-            col_num_blocks=self.model_cfg.get("col_num_blocks", 3),
-            row_num_blocks=self.model_cfg.get("row_num_blocks", 3),
-            icl_num_blocks=self.model_cfg.get("icl_num_blocks", 12),
-            col_nhead=self.model_cfg.get("col_nhead", 8),
-            row_nhead=self.model_cfg.get("row_nhead", 8),
-            icl_nhead=self.model_cfg.get("icl_nhead", 8),
-            feature_group_size_x=self.prior_config.d_x,
-            feature_group_size_w=self.prior_config.d_w,
-            feature_group_size_z=self.prior_config.d_z,
-        )
+        model_kwargs = self.model_cfg.copy()
+        # Ensure feature sizes match prior config
+        model_kwargs["feature_group_size_x"] = self.prior_config.d_x
+        model_kwargs["feature_group_size_w"] = self.prior_config.d_w
+        model_kwargs["feature_group_size_z"] = self.prior_config.d_z
+
+        # Remove keys that are not part of ModelConfig
+        if "dtype" in model_kwargs:
+            del model_kwargs["dtype"]
+
+        self.model = ProximalNanoTabICLv2(config=ModelConfig(**model_kwargs))
         self.model.to(self.device, dtype=self.dtype)
         self.n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         logger.info(f"Model parameters: {self.n_params:,}")

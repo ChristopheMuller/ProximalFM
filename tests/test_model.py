@@ -1,6 +1,7 @@
 import pytest
 import torch
 import torch.nn as nn
+from proximalfm.Structure import ModelConfig
 from proximalfm.Model import (
     ProximalNanoTabICLv2,
     ClassEmbedding,
@@ -105,7 +106,7 @@ def test_induced_transformer_block():
     assert out_row.shape == (2, 5, 6, 64)
 
 def test_proximal_nanotab_icl_v2():
-    model = ProximalNanoTabICLv2(
+    config = ModelConfig(
         embed_dim=32,
         col_num_blocks=1,
         row_num_blocks=1,
@@ -119,6 +120,7 @@ def test_proximal_nanotab_icl_v2():
         n_cls_cols=4,
         n_cls_rows=16,
     )
+    model = ProximalNanoTabICLv2(config)
 
     n_batch = 2
     n_rows = 20
@@ -152,7 +154,7 @@ def test_proximal_nanotab_icl_v2():
 
 def test_proximal_nanotab_icl_v2_zero_blocks():
     # Test boundary case with minimal blocks
-    model = ProximalNanoTabICLv2(
+    config = ModelConfig(
         embed_dim=16,
         col_num_blocks=0,
         row_num_blocks=1, # Must be >=1 as row_blocks[-1] is accessed
@@ -161,6 +163,7 @@ def test_proximal_nanotab_icl_v2_zero_blocks():
         feature_group_size_w=1,
         feature_group_size_z=1,
     )
+    model = ProximalNanoTabICLv2(config)
     x = torch.randn(3, 10, 5)
     w = torch.randn(3, 10, 4)
     z = torch.randn(3, 10, 6)

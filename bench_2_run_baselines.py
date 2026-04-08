@@ -8,7 +8,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from other_methods import S_OLS, T_OLS, P2SLS, S_RF, S_TabICL
+from other_methods import S_OLS, T_OLS, P2SLS
 
 # -- Configuration --
 DATA_FOLDER = "eval_data/conf_2000"

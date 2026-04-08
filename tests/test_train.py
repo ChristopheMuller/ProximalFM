@@ -117,6 +117,7 @@ def test_cate_trainer_init(mock_model_cls, mock_create_loaders, mock_writer, moc
 
     assert trainer.device == torch.device("cpu")
     mock_model_cls.assert_called_once()
+    assert mock_model_cls.call_args[1]["config"].__class__.__name__ == "ModelConfig"
     mock_create_loaders.assert_called_once()
     assert trainer.train_loader == ["train_batch"]
     assert trainer.val_loader == ["val_batch"]
