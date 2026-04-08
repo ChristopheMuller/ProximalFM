@@ -256,6 +256,94 @@ class CATETrainer:
         w = group_norm(w)
 
         return x, a, w, z, y_norm, target_norm, y_mean, y_std    
+    def _forward_and_loss(
+        self,
+        x: torch.Tensor,
+        a: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
+        y_norm: torch.Tensor,
+        target_norm: torch.Tensor,
+        alpha: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
+        pred_mean_norm = out[..., 0:1]
+        pred_log_var_norm = out[..., 1:2]
+
+        loss_mse = F.mse_loss(pred_mean_norm, target_norm)
+        loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
+        loss = alpha * loss_mse + (1 - alpha) * loss_gnll
+
+        return loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm
+
+    def _optimization_step(self, loss: torch.Tensor) -> float:
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        if self.train_cfg.get("clip_grad", 0.0) > 0:
+            grad_norm = nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.train_cfg["clip_grad"]
+            ).item()
+        else:
+            parameters = [p for p in self.model.parameters() if p.grad is not None]
+            if len(parameters) == 0:
+                grad_norm = 0.0
+            else:
+                device = parameters[0].grad.device
+                grad_norm = torch.norm(
+                    torch.stack(
+                        [torch.norm(p.grad.detach(), 2).to(device) for p in parameters]
+                    ),
+                    2,
+                ).item()
+
+        if self.global_step < self.warmup_steps:
+            lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
+            for param_group in self.optimizer.param_groups:
+                param_group["lr"] = lr_scale * self.base_lr
+
+        self.global_step += 1
+        self.optimizer.step()
+
+        return grad_norm
+
+    def _compute_batch_metrics(
+        self,
+        pred_mean_norm: torch.Tensor,
+        pred_log_var_norm: torch.Tensor,
+        target_norm: torch.Tensor,
+        y_mean: torch.Tensor,
+        y_std: torch.Tensor,
+        loss_gnll: torch.Tensor,
+    ) -> dict:
+        with torch.no_grad():
+            y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
+            y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+
+            pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
+            target_orig = (target_norm * y_std_exp) + y_mean_exp
+
+            pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
+            pred_std_orig = pred_std_norm * y_std_exp
+            pred_var_orig = pred_std_orig.pow(2)
+
+            residuals = pred_mean_orig - target_orig
+            abs_error = residuals.abs()
+
+            return {
+                "sum_sq_err": residuals.pow(2).sum().item(),
+                "sum_error": residuals.sum().item(),
+                "sum_target": target_orig.sum().item(),
+                "sum_sq_target": target_orig.pow(2).sum().item(),
+                "sum_gnll": loss_gnll.item() * target_norm.numel(),
+                "num_samples": target_norm.numel(),
+                "variance_mean": pred_var_orig.mean().item(),
+                "variance_sum": pred_var_orig.sum().item(),
+                "cov50": (abs_error <= 0.674 * pred_std_orig).float().sum().item(),
+                "cov95": (abs_error <= 1.960 * pred_std_orig).float().sum().item(),
+                "cov99": (abs_error <= 2.576 * pred_std_orig).float().sum().item(),
+            }
+
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         """
         Load model and optimizer state from a checkpoint file.
@@ -317,82 +405,27 @@ class CATETrainer:
                 if target_norm.dim() == 2:
                     target_norm = target_norm.unsqueeze(-1)
 
-                # NanoTabICLv2 forward pass
-                out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
-                pred_mean_norm = out[..., 0:1]
-                pred_log_var_norm = out[..., 1:2]
+                loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
+                    self._forward_and_loss(x, a, w, z, y_norm, target_norm, alpha_epoch_loss)
+                )
 
-                loss_mse = F.mse_loss(pred_mean_norm, target_norm)
-                loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
-                loss = alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
-        
-                self.optimizer.zero_grad()
-                loss.backward()
-
-                # Calculate and clip gradient norm
-                if self.train_cfg.get("clip_grad", 0.0) > 0:
-                    grad_norm = nn.utils.clip_grad_norm_(
-                        self.model.parameters(), self.train_cfg["clip_grad"]
-                    ).item()
-                else:
-                    # Manually compute grad norm if not clipping
-                    parameters = [
-                        p for p in self.model.parameters() if p.grad is not None
-                    ]
-                    if len(parameters) == 0:
-                        grad_norm = 0.0
-                    else:
-                        device = parameters[0].grad.device
-                        grad_norm = torch.norm(
-                            torch.stack(
-                                [
-                                    torch.norm(p.grad.detach(), 2).to(device)
-                                    for p in parameters
-                                ]
-                            ),
-                            2,
-                        ).item()
-
-                total_grad_norm += grad_norm
-
-                if self.global_step < self.warmup_steps:
-                    lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
-                    for param_group in self.optimizer.param_groups:
-                        param_group["lr"] = lr_scale * self.base_lr
-
-                self.global_step += 1
-                self.optimizer.step()
+                total_grad_norm += self._optimization_step(loss)
 
                 total_loss += loss.item()
                 total_loss_mse += loss_mse.item()
                 total_loss_gnll += loss_gnll.item()
 
-                # Calculate metrics strictly inside a no_grad block
-                with torch.no_grad():
-                    # Ensure y_mean and y_std can broadcast over (B, N_query, 1)
-                    y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
-                    y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+                metrics = self._compute_batch_metrics(
+                    pred_mean_norm, pred_log_var_norm, target_norm, y_mean, y_std, loss_gnll
+                )
 
-                    # Denormalize Mean
-                    pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
-                    target_orig = (target_norm * y_std_exp) + y_mean_exp
-            
-                    # Denormalize Standard Deviation
-                    pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
-                    pred_std_orig = pred_std_norm * y_std_exp
-                    pred_var_orig = pred_std_orig.pow(2)
-
-                    residuals = pred_mean_orig - target_orig
-                    abs_error = residuals.abs()
-
-                    sum_sq_err += residuals.pow(2).sum().item()
-                    total_gnll += loss_gnll.item() * target_norm.numel()
-                    total_samples += target_norm.numel()
-                    total_variance += pred_var_orig.mean().item()
-
-                    total_cov50 += (abs_error <= 0.674 * pred_std_orig).float().sum().item()
-                    total_cov95 += (abs_error <= 1.960 * pred_std_orig).float().sum().item()
-                    total_cov99 += (abs_error <= 2.576 * pred_std_orig).float().sum().item()
+                sum_sq_err += metrics["sum_sq_err"]
+                total_gnll += metrics["sum_gnll"]
+                total_samples += metrics["num_samples"]
+                total_variance += metrics["variance_mean"]
+                total_cov50 += metrics["cov50"]
+                total_cov95 += metrics["cov95"]
+                total_cov99 += metrics["cov99"]
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -464,51 +497,28 @@ class CATETrainer:
                     if target_norm.dim() == 2:
                         target_norm = target_norm.unsqueeze(-1)
 
-                    out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
-
-                    pred_mean_norm = out[..., 0:1]
-                    pred_log_var_norm = out[..., 1:2]
-
-                    loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
-                    loss_mse = F.mse_loss(pred_mean_norm, target_norm)
-                    loss_total = (
-                        alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
+                    loss_total, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
+                        self._forward_and_loss(x, a, w, z, y_norm, target_norm, alpha_epoch_loss)
                     )
 
                     total_loss_gnll += loss_gnll.item()
                     total_loss_mse += loss_mse.item()
                     total_loss_total += loss_total.item()
 
-                    y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
-                    y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+                    metrics = self._compute_batch_metrics(
+                        pred_mean_norm, pred_log_var_norm, target_norm, y_mean, y_std, loss_gnll
+                    )
 
-                    pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
-                    target_orig = (target_norm * y_std_exp) + y_mean_exp
-
-                    pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
-                    pred_std_orig = pred_std_norm * y_std_exp
-                    pred_var_orig = pred_std_orig.pow(2)
-
-                    # Bias-Variance & Error Math (using original scale!)
-                    residuals = pred_mean_orig - target_orig
-                    sum_sq_err += residuals.pow(2).sum().item()
-                    sum_error += residuals.sum().item() 
-                    
-                    # Accumulate targets for R^2 (using original scale!)
-                    sum_target += target_orig.sum().item()
-                    sum_sq_target += target_orig.pow(2).sum().item()
-                    
-                    sum_gnll += loss_gnll.item() * target_norm.numel()
-                    total_samples += target_norm.numel()
-
-                    total_variance += pred_var_orig.sum().item()
-
-                    abs_error = residuals.abs()
-
-                    # Coverage (using original scale)
-                    total_cov50 += (abs_error <= 0.674 * pred_std_orig).float().sum().item()
-                    total_cov95 += (abs_error <= 1.960 * pred_std_orig).float().sum().item()
-                    total_cov99 += (abs_error <= 2.576 * pred_std_orig).float().sum().item()
+                    sum_sq_err += metrics["sum_sq_err"]
+                    sum_error += metrics["sum_error"]
+                    sum_target += metrics["sum_target"]
+                    sum_sq_target += metrics["sum_sq_target"]
+                    sum_gnll += metrics["sum_gnll"]
+                    total_samples += metrics["num_samples"]
+                    total_variance += metrics["variance_sum"]
+                    total_cov50 += metrics["cov50"]
+                    total_cov95 += metrics["cov95"]
+                    total_cov99 += metrics["cov99"]
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
