@@ -679,13 +679,14 @@ class CATETrainer:
 
             # Extract metrics for console logging
             train_nll = train_metrics["loss_gnll"]
-            val_nll = val_metrics["loss_gnll"] if val_metrics else float("nan")
-            val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
+            train_mse = train_metrics["loss_mse"]
+            train_total = train_metrics["loss_total"]
+            val_total = val_metrics["loss_total"] if val_metrics else float("nan")
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
-                f"train_nll={train_nll:.4f}  val_nll={val_nll:.4f}  "
-                f"val_rmse={val_rmse:.4f}"
+                f"train_nll={train_nll:.4f}  train_rmse={train_mse:.4f}  "
+                f"train_total={train_total:.4f}"
             )
             self.log_metrics(epoch, train_metrics, val_metrics)
 
@@ -694,8 +695,8 @@ class CATETrainer:
                 self.save_checkpoint(epoch + 1, last_val_nll)
 
             if val_metrics:
-                if val_nll < best_val_loss:
-                    best_val_loss = val_nll
+                if val_total < best_val_loss:
+                    best_val_loss = val_total
                     early_stop_count = 0
                 else:
                     early_stop_count += 1
