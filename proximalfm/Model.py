@@ -70,25 +70,8 @@ class ProximalNanoTabICLv2(nn.Module):
         n_batch, n_rows, n_cols = x.shape
         n_batch, n_train = y.shape
 
-        x_mean = x[:, :n_train].mean(dim=1, keepdim=True)
-        x_std = x[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        x = (x - x_mean) / x_std
-
-        w_mean = w[:, :n_train].mean(dim=1, keepdim=True)
-        w_std = w[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        w = (w - w_mean) / w_std
-
-        z_mean = z[:, :n_train].mean(dim=1, keepdim=True)
-        z_std = z[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        z = (z - z_mean) / z_std
-
-        y_mean = y.mean(dim=1, keepdim=True)
-        y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        y = (y - y_mean) / y_std
-
         # ----- Embedding: repeated feature grouping -> x embedding -> add y embedding to train
 
-        x = x / (x[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
         x = torch.stack(
             [
@@ -99,7 +82,6 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         emb_x = self.x_embed(x)  # emb.shape = (n_batch, n_rows, n_cols, embed_dim)
 
-        w = w / (w[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
         w = torch.stack(
             [
@@ -110,7 +92,6 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         emb_w = self.w_embed(w)
 
-        z = z / (z[:, :n_train].std(dim=1, unbiased=False, keepdim=True) + 1e-8)
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
         z = torch.stack(
             [

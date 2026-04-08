@@ -227,24 +227,35 @@ class CATETrainer:
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor,
+        torch.Tensor
     ]:
-        """
-        Reformat a DataLoader batch for the model's forward signature.
-        DataLoader returns (N, B, D). NanoTab expects (B, N, D).
-        A and Y must be strictly sliced to n_train (single_eval_pos) rows and squeezed to (B, N).
-        """
-
         x = batch["X"].transpose(0, 1)
         z = batch["Z"].transpose(0, 1)
         w = batch["W"].transpose(0, 1)
 
         a = batch["A"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
-        y = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
+        y_context = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
+        target = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
 
-        ite_query = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
+        y_mean = y_context.mean(dim=1, keepdim=True)
+        y_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+        y_norm = (y_context - y_mean) / y_std        
+        target_norm = (target - y_mean.unsqueeze(-1)) / y_std.unsqueeze(-1)
 
-        return x, a, w, z, y, ite_query
-    
+        def group_norm(tensor: torch.Tensor) -> torch.Tensor:
+            context_slice = tensor[:, :self.single_eval_pos, :]
+            
+            tensor_mean = context_slice.mean(dim=1, keepdim=True)
+            tensor_std = context_slice.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+            
+            return (tensor - tensor_mean) / tensor_std
+
+        x = group_norm(x)
+        z = group_norm(z)
+        w = group_norm(w)
+
+        return x, a, w, z, y_norm, target_norm, y_mean, y_std    
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         """
         Load model and optimizer state from a checkpoint file.
@@ -300,20 +311,21 @@ class CATETrainer:
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
-                x, a, w, z, y, target = self._prepare_inputs(batch)
+                x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(batch)
+
+                # Ensure target_norm has shape (B, N_query, 1) to match predictions
+                if target_norm.dim() == 2:
+                    target_norm = target_norm.unsqueeze(-1)
 
                 # NanoTabICLv2 forward pass
-                out = self.model(x=x, a=a, w=w, z=z, y=y)
+                out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
+                pred_mean_norm = out[..., 0:1]
+                pred_log_var_norm = out[..., 1:2]
 
-                # out shape is (B, N_query, 2). Split into mean and log_var
-                pred_mean = out[..., 0:1]
-                pred_log_var = out[..., 1:2]
-
-                loss_mse = F.mse_loss(pred_mean, target)
-                loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
-
+                loss_mse = F.mse_loss(pred_mean_norm, target_norm)
+                loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
                 loss = alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
-
+        
                 self.optimizer.zero_grad()
                 loss.backward()
 
@@ -355,19 +367,32 @@ class CATETrainer:
                 total_loss_mse += loss_mse.item()
                 total_loss_gnll += loss_gnll.item()
 
-                pred_std = torch.exp(0.5 * pred_log_var)
-                pred_var = pred_std.pow(2)
-                residuals = pred_mean - target
-                abs_error = residuals.abs()
+                # Calculate metrics strictly inside a no_grad block
+                with torch.no_grad():
+                    # Ensure y_mean and y_std can broadcast over (B, N_query, 1)
+                    y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
+                    y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
 
-                sum_sq_err += residuals.pow(2).sum().item()
-                total_gnll += loss_gnll.item() * target.numel()
-                total_samples += target.numel()
-                total_variance += pred_var.mean().item()
+                    # Denormalize Mean
+                    pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
+                    target_orig = (target_norm * y_std_exp) + y_mean_exp
+            
+                    # Denormalize Standard Deviation
+                    pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
+                    pred_std_orig = pred_std_norm * y_std_exp
+                    pred_var_orig = pred_std_orig.pow(2)
 
-                total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
-                total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
-                total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
+                    residuals = pred_mean_orig - target_orig
+                    abs_error = residuals.abs()
+
+                    sum_sq_err += residuals.pow(2).sum().item()
+                    total_gnll += loss_gnll.item() * target_norm.numel()
+                    total_samples += target_norm.numel()
+                    total_variance += pred_var_orig.mean().item()
+
+                    total_cov50 += (abs_error <= 0.674 * pred_std_orig).float().sum().item()
+                    total_cov95 += (abs_error <= 1.960 * pred_std_orig).float().sum().item()
+                    total_cov99 += (abs_error <= 2.576 * pred_std_orig).float().sum().item()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -435,16 +460,17 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, a, w, z, y, target = self._prepare_inputs(batch)
+                    x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(batch)
+                    if target_norm.dim() == 2:
+                        target_norm = target_norm.unsqueeze(-1)
 
-                    out = self.model(x=x, a=a, w=w, z=z, y=y)
+                    out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
 
-                    pred_mean = out[..., 0:1]
-                    pred_log_var = out[..., 1:2]
-                    pred_std = torch.exp(0.5 * pred_log_var)
+                    pred_mean_norm = out[..., 0:1]
+                    pred_log_var_norm = out[..., 1:2]
 
-                    loss_gnll = gaussian_nll_loss(pred_mean, pred_log_var, target)
-                    loss_mse = F.mse_loss(pred_mean, target)
+                    loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
+                    loss_mse = F.mse_loss(pred_mean_norm, target_norm)
                     loss_total = (
                         alpha_epoch_loss * loss_mse + (1 - alpha_epoch_loss) * loss_gnll
                     )
@@ -453,27 +479,36 @@ class CATETrainer:
                     total_loss_mse += loss_mse.item()
                     total_loss_total += loss_total.item()
 
-                    # Bias-Variance & Error Math
-                    residuals = pred_mean - target
+                    y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
+                    y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+
+                    pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
+                    target_orig = (target_norm * y_std_exp) + y_mean_exp
+
+                    pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
+                    pred_std_orig = pred_std_norm * y_std_exp
+                    pred_var_orig = pred_std_orig.pow(2)
+
+                    # Bias-Variance & Error Math (using original scale!)
+                    residuals = pred_mean_orig - target_orig
                     sum_sq_err += residuals.pow(2).sum().item()
                     sum_error += residuals.sum().item() 
                     
-                    # Accumulate targets for R^2
-                    sum_target += target.sum().item()
-                    sum_sq_target += target.pow(2).sum().item()
+                    # Accumulate targets for R^2 (using original scale!)
+                    sum_target += target_orig.sum().item()
+                    sum_sq_target += target_orig.pow(2).sum().item()
                     
-                    sum_gnll += loss_gnll.item() * target.numel()
-                    total_samples += target.numel()
+                    sum_gnll += loss_gnll.item() * target_norm.numel()
+                    total_samples += target_norm.numel()
 
-                    pred_var = pred_std.pow(2)
-                    total_variance += pred_var.sum().item()
+                    total_variance += pred_var_orig.sum().item()
 
                     abs_error = residuals.abs()
 
-                    # Coverage
-                    total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
-                    total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
-                    total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
+                    # Coverage (using original scale)
+                    total_cov50 += (abs_error <= 0.674 * pred_std_orig).float().sum().item()
+                    total_cov95 += (abs_error <= 1.960 * pred_std_orig).float().sum().item()
+                    total_cov99 += (abs_error <= 2.576 * pred_std_orig).float().sum().item()
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)

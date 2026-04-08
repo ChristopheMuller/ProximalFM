@@ -140,7 +140,7 @@ def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
         "ITE": torch.randn(N, B, 1),
     }
 
-    x, a, w, z, y, target = trainer._prepare_inputs(batch)
+    x, a, w, z, y_norm, target_norm, y_mean, y_std = trainer._prepare_inputs(batch)
 
     # Expected shapes: NanoTab expects (B, N, D)
     assert x.shape == (B, N, D)
@@ -150,10 +150,15 @@ def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
     # A and Y should be sliced to n_train (single_eval_pos = 8) and squeezed to (B, N)
     n_train = 8
     assert a.shape == (B, n_train)
-    assert y.shape == (B, n_train)
+    assert y_norm.shape == (B, n_train)
 
     # Target should be remaining rows: (B, N - n_train, 1)
-    assert target.shape == (B, N - n_train, 1)
+    assert target_norm.shape == (B, N - n_train, 1)
+
+    assert y_mean.shape == (B, 1) or y_mean.shape == (B,)
+    assert y_std.shape == (B, 1) or y_std.shape == (B,)
+
+    assert y_std.gt(0).all()
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
