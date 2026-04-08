@@ -1,11 +1,3 @@
-# =============================================================================
-#  Proximal Prior — Exploratory Visualization Script
-#  Run cell-by-cell in VSCode (Python Interactive / Jupyter mode)
-# =============================================================================
-# Each #%% block is a self-contained "chapter".
-# Run them in order: later chapters build on objects created earlier.
-# =============================================================================
-
 #%% ── 0. Imports & Style ──────────────────────────────────────────────────────
 
 import numpy as np
@@ -16,16 +8,22 @@ import seaborn as sns
 import torch
 from scipy import stats
 
+## choose the prior to investigate:
+
+# from proximalfm.PriorLinear import ProximalPrior
+# from proximalfm.Prior import ProximalPrior
+from proximalfm.PriorLinearConfounding import ProximalPrior
+
 # ── Aesthetics ─────────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
 PALETTE   = sns.color_palette("tab10")
-C_X       = PALETTE[0]   # blue  — covariates X
-C_Z       = PALETTE[1]   # orange— treatment proxy Z
-C_W       = PALETTE[2]   # green — outcome proxy W
-C_U       = PALETTE[4]   # purple— latent confounder U
-C_A0      = PALETTE[7]   # grey  — control
-C_A1      = PALETTE[3]   # red   — treated
-C_ITE     = PALETTE[5]   # brown — ITE / causal estimands
+C_X       = PALETTE[0]
+C_Z       = PALETTE[1]
+C_W       = PALETTE[2]
+C_U       = PALETTE[4]
+C_A0      = PALETTE[7]
+C_A1      = PALETTE[3]
+C_ITE     = PALETTE[5]
 
 plt.rcParams.update({
     "figure.dpi"        : 120,
@@ -43,9 +41,7 @@ print("✓ Imports OK")
 #   every plot is readable.  Adjust freely.
 # ─────────────────────────────────────────────────────────────────────────────
 
-from proximalfm.Structure   import ProximalPriorConfig   # ← adjust to your package path
-from proximalfm.PriorLinear import ProximalPrior
-# from proximalfm.Prior import ProximalPrior
+from proximalfm.Structure   import ProximalPriorConfig
 
 cfg = ProximalPriorConfig(
     d_x            = 1,
@@ -56,12 +52,13 @@ cfg = ProximalPriorConfig(
     noise_scale_z  = 1,
     noise_scale_x  = 1,
     normalize_episode = False,
-    temperature=1,
+    temperature=2,
+    confounding_strength=1
 )
 
 prior = ProximalPrior(config=cfg, seed=np.random.randint(0, 9999))
 
-N_OBS = 2_000   # observations per episode
+N_OBS = 5_000   # observations per episode
 episode = prior.generate_episode(batch_size=N_OBS, episode_seed=42)
 
 print("Episode generated successfully.")
@@ -135,6 +132,7 @@ plt.show()
 #%% ── 4. Treatment Distribution — Propensity & Assignment ────────────────────
 
 A_np   = episode.A.cpu().numpy()
+Prop_np = episode.propensity.cpu().numpy()
 ps_np  = episode.propensity.cpu().numpy()
 
 fig, axes = plt.subplots(1, 3, figsize=(14, 4))
@@ -231,6 +229,7 @@ plt.tight_layout()
 plt.show()
 
 print(f"ATE (mean ITE)   : {ITE_np.mean():.4f}")
+print(f"Diff in means Y|A=1 - Y|A=0 : {Y_np[A_np==1].mean() - Y_np[A_np==0].mean():.4f}")
 print(f"ITE std          : {ITE_np.std():.4f}")
 print(f"Fraction ITE > 0 : {(ITE_np > 0).mean():.4f}")
 
@@ -400,12 +399,15 @@ w_pc = first_pc(W_np)
 u_pc = first_pc(U_np)
 
 pairs = [
-    (z_pc,  A_np, "Z (PC1)", "A",        "Z ↔ A  [expected: strong]", C_Z),
+    # (z_pc,  A_np, "Z (PC1)", "A",        "Z ↔ A  [expected: strong]", C_Z),
+    (z_pc,  Prop_np, "Z (PC1)", "Prop",        "Z ↔ Prop(A)  [expected: strong]", C_Z),
     (w_pc,  Y_np, "W (PC1)", "Y",        "W ↔ Y  [expected: strong]", C_W),
-    (u_pc,  A_np, "U (PC1)", "A",        "U ↔ A  [expected: strong]", C_U),
+    # (u_pc,  A_np, "U (PC1)", "A",        "U ↔ A  [expected: strong]", C_U),
+    (u_pc,  Prop_np, "U (PC1)", "Prop",        "U ↔ Prop(A)  [expected: strong]", C_U),
     (u_pc,  Y_np, "U (PC1)", "Y",        "U ↔ Y  [expected: strong]", C_U),
     (z_pc,  Y_np, "Z (PC1)", "Y",        "Z ↔ Y  [expected: weaker]", C_Z),
-    (w_pc,  A_np, "W (PC1)", "A",        "W ↔ A  [expected: weaker]", C_W),
+    # (w_pc,  A_np, "W (PC1)", "A",        "W ↔ A  [expected: weaker]", C_W),
+    (w_pc,  Prop_np, "W (PC1)", "Prop",        "W ↔ Prop(A)  [expected: weaker]", C_W),
 ]
 
 fig, axes = plt.subplots(2, 3, figsize=(15, 8))
@@ -538,27 +540,6 @@ for key, tensor in batch.items():
           f"min={tensor.min():.3f}  max={tensor.max():.3f}")
 
 
-#%% ── 11b. Batch Heatmap — N×B for one variable ─────────────────────────────
-#
-#   Visualise the (N, B) matrix for Y and ITE to confirm each column
-#   (episode) has its own statistical fingerprint.
-# ─────────────────────────────────────────────────────────────────────────────
-
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-for ax, key, cmap in [(axes[0], "Y", "coolwarm"), (axes[1], "ITE", "PiYG")]:
-    data = batch[key].squeeze(-1).numpy()   # (N, B)
-    im = ax.imshow(data, aspect="auto", cmap=cmap, interpolation="nearest")
-    plt.colorbar(im, ax=ax, fraction=0.03)
-    ax.set_title(f"{key}  —  shape {data.shape}  (rows=obs, cols=episodes)",
-                 fontweight="bold")
-    ax.set_xlabel("Episode in batch")
-    ax.set_ylabel("Observation index")
-
-fig.suptitle("DataLoader Batch Heatmap", fontweight="bold", y=1.02)
-plt.tight_layout()
-plt.show()
-
-
 #%% ── 12. Train / Val Distribution Comparison ────────────────────────────────
 #
 #   Sanity check: train and val batches should look statistically equivalent
@@ -672,7 +653,7 @@ fig.suptitle("ProximalPrior — Summary Dashboard", fontsize=16,
 plt.show()
 print("✓ Dashboard")
 
-# =============================================================================
+# %%===========================================================================
 #  CHAPTER 14 — Basic CATE Estimation Strategies
 #
 #  Four estimators of increasing sophistication, all evaluated against the
@@ -694,16 +675,15 @@ print("✓ Dashboard")
 #  • ATE bias   = estimated_ATE − true_ATE
 #  • RMSE(CATE) = sqrt( mean( (ĈATEᵢ − ITEᵢ)² ) )
 #  • R²(CATE)   = 1 − Var(ĈATEᵢ − ITEᵢ) / Var(ITEᵢ)
-# =============================================================================
- 
-#%% ── 14.0  Prepare numpy arrays from the episode ────────────────────────────
+# ============================================================================
+
+# ── 14.0  Prepare numpy arrays from the episode ─────────────────────────────
 #
 #   We reuse the `episode` object generated in Chapter 1.
 #   All arrays are (N,) or (N, d_*) float64 numpy for sklearn compatibility.
 # ─────────────────────────────────────────────────────────────────────────────
  
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
  
 # ── Observed variables (what a learner actually sees) ──────────────────────
@@ -857,17 +837,19 @@ ate_p2sls    = float(stage2_model.coef_[0])
 cate_p2sls   = np.full(len(Y_np), ate_p2sls)
 
 print("── M4: P2SLS (Corrected) ──────────────────────────────────────────────")
+print("Stage 2 coefficient breakdown:")
 print(f"  Stage 1 features : A, X, Z → Ŵ")
 print(f"  Stage 2 features : A, X, Ŵ → Y")
+s2_names  = ["Â (causal)"] + [f"X_{i}" for i in range(X_np.shape[1])] \
+            + [f"W_{i}" for i in range(W_np.shape[1])]
+for name, coef in zip(s2_names, stage2_model.coef_):
+    print(f"    {name:15s} : {coef:+.4f}")
+
 print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
 print(f"  True ATE         : {ATE_true:+.4f}")
 print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}")
 print()
-print("Stage 2 coefficient breakdown:")
-s2_names  = ["Â (causal)"] + [f"X_{i}" for i in range(X_np.shape[1])] \
-            + [f"W_{i}" for i in range(W_np.shape[1])]
-for name, coef in zip(s2_names, stage2_model.coef_):
-    print(f"  {name:15s} : {coef:+.4f}")
+
  
  
 #%% ── 14.5  Compare Estimators — ATE Bias Bar Chart ─────────────────────────
@@ -1044,10 +1026,14 @@ for k in range(K_est):
     m3     = LinearRegression().fit(XAWZ_k, Y_k).coef_[X_k.shape[1]]
  
     # M4 P2SLS
-    s1_feat_k = np.hstack([X_k, Z_k, W_k])
-    A_hat_k   = LinearRegression().fit(s1_feat_k, A_k).predict(s1_feat_k)
-    s2_feat_k = np.hstack([A_hat_k.reshape(-1, 1), X_k, W_k])
-    m4        = LinearRegression().fit(s2_feat_k, Y_k).coef_[0]
+    A_col_reshaped = A_k.reshape(-1, 1)
+    stage1_features = np.hstack([A_col_reshaped, X_k, Z_k])     # (N, 1 + d_x + d_z)
+    stage1_model = LinearRegression().fit(stage1_features, W_k)
+    W_hat        = stage1_model.predict(stage1_features)          # (N, d_w) predicted W
+    stage2_features = np.hstack([A_col_reshaped, X_k, W_hat])    # (N, 1 + d_x + d_w)
+    stage2_model    = LinearRegression().fit(stage2_features, Y_k)
+    m4    = float(stage2_model.coef_[0])
+
  
     cross_ep_records.append({
         "episode": k, "true_ATE": true_ate_k,
@@ -1067,10 +1053,6 @@ for ax, col, name, color in zip(axes.ravel(), method_cols, method_names, colors_
     ax.plot(ced["episode"], ced["true_ATE"], color="black",
             linewidth=1.0, linestyle=":", alpha=0.6, label="true ATE")
     ax.plot(ced["episode"], ced[col], color=color, linewidth=1.5, label=name)
-    ax.fill_between(ced["episode"],
-                    ced[col] - bias_series.std(),
-                    ced[col] + bias_series.std(),
-                    alpha=0.12, color=color)
  
     mean_bias = bias_series.mean()
     std_bias  = bias_series.std()
@@ -1103,6 +1085,7 @@ for (name, (ate_est, cate_est)), col in zip(estimators.items(), method_cols):
         "RMSE CATE"       : f"{np.sqrt(np.mean((cate_est - ITE_np)**2)):.4f}",
         "R² CATE"         : f"{r2_score(ITE_np, cate_est):.4f}",
         "Cross-ep bias μ" : f"{bias_series_full.mean():+.4f}",
+        "Cross-up median bias" : f"{bias_series_full.median():+.4f}",
         "Cross-ep bias σ" : f"{bias_series_full.std():.4f}",
     })
  
