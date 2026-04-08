@@ -54,6 +54,8 @@ class ProximalPriorConfig:
         False  ## Important to be False: information leakage otherwise!
     )
 
+    confounding_strength: float = 1.0 # for high confounding prior only
+
 
 @dataclass
 class ProximalEpisode:

@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from .Structure import ProximalPriorConfig
 from .Prior import ProximalPrior
 from .PriorLinear import ProximalPrior as ProximalPriorLinear
+from .PriorLinearConfounding import ProximalPrior as ProximalPriorLinearConfounding
 
 
 class ProximalDataset(Dataset):
@@ -52,6 +53,8 @@ class ProximalDataset(Dataset):
 
         if self.prior_config.type == "linear":
             self.prior = ProximalPriorLinear(config=self.prior_config)
+        elif self.prior_config.type == "linear_confounding":
+            self.prior = ProximalPriorLinearConfounding(config=self.prior_config)
         else:
             self.prior = ProximalPrior(config=self.prior_config)
         self.num_episodes = num_episodes
