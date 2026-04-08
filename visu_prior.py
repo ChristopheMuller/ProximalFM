@@ -12,7 +12,8 @@ from scipy import stats
 
 # from proximalfm.prior import LinearPrior as ProximalPrior
 # from proximalfm.prior import BNNPrior as ProximalPrior
-from proximalfm.prior import ConfoundingLinearPrior as ProximalPrior
+# from proximalfm.prior import ConfoundingLinearPrior as ProximalPrior
+from proximalfm.prior import CATELinearPrior as ProximalPrior
 
 # ── Aesthetics ─────────────────────────────────────────────────────────────
 sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
@@ -44,7 +45,7 @@ print("✓ Imports OK")
 from proximalfm.Structure   import ProximalPriorConfig
 
 cfg = ProximalPriorConfig(
-    d_x            = 1,
+    d_x            = 3,
     d_u            = 2,
     d_z            = 2,
     d_w            = 2,
@@ -151,7 +152,7 @@ axes[1].bar(["Control (A=0)", "Treated (A=1)"],
             color=[C_A0, C_A1], edgecolor="white")
 for bar, val in zip(axes[1].patches, treat_counts.values):
     axes[1].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 10,
-                 f"{val} ({val/N_OBS*100:.1f}%)", ha="center", va="bottom", fontsize=10)
+                 f"{val} ({val/N_OBS*100:.1f}%)", va="bottom", fontsize=10)
 axes[1].set_title("Treatment Assignment", fontweight="bold")
 axes[1].set_ylabel("count")
 
@@ -366,9 +367,9 @@ scatter_panel(fig, gs_top, U_np, Z_np, "U", "Z", C_Z)
 scatter_panel(fig, gs_bot, U_np, W_np, "U", "W", C_W)
 
 fig.text(0.5, 0.97, "Latent U  vs  Treatment Proxy Z",
-         ha="center", fontweight="bold", fontsize=13)
+        fontweight="bold", fontsize=13)
 fig.text(0.5, 0.47, "Latent U  vs  Outcome Proxy W",
-         ha="center", fontweight="bold", fontsize=13)
+         fontweight="bold", fontsize=13)
 plt.show()
 
 
@@ -655,7 +656,7 @@ print("✓ Dashboard")
 # %%===========================================================================
 #  CHAPTER 14 — Basic CATE Estimation Strategies
 #
-#  Four estimators of increasing sophistication, all evaluated against the
+#  Six estimators of increasing sophistication, all evaluated against the
 #  oracle ITE = Y(1) - Y(0) stored in the episode.
 #
 #  Ground truth available because ProximalPrior gives us both potential outcomes.
@@ -666,8 +667,8 @@ print("✓ Dashboard")
 #  M2  OLS: Y ~ X + A               → constant causal coefficient, no proxy
 #  M3  OLS: Y ~ X + A + W + Z       → naïve inclusion of proxies as controls
 #  M4  P2SLS (Proximal 2SLS)        → principled linear proximal estimator
-#         Stage 1 : Â  = OLS(A  ~ X, Z, W)   — Z instruments, W controls
-#         Stage 2 : Y  = OLS(Y  ~ Â, X, W)   — coefficient on Â is causal
+#  M5  OLS: Y ~ X + A + X*A         → heterogeneous, but ignores confounding
+#  M6  P2SLS with X*A interaction   → principled heterogeneous causal estimator
 #
 #  Metrics reported per estimator
 #  ──────────────────────────────
@@ -677,11 +678,6 @@ print("✓ Dashboard")
 # ============================================================================
 
 # ── 14.0  Prepare numpy arrays from the episode ─────────────────────────────
-#
-#   We reuse the `episode` object generated in Chapter 1.
-#   All arrays are (N,) or (N, d_*) float64 numpy for sklearn compatibility.
-# ─────────────────────────────────────────────────────────────────────────────
- 
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
  
@@ -700,18 +696,10 @@ ATE_true = float(ITE_np.mean())
  
 print(f"True ATE  : {ATE_true:+.4f}")
 print(f"True CATE std (heterogeneity) : {ITE_np.std():.4f}")
-print(f"N observations : {len(Y_np)}")
+print(f"N observations : {len(Y_np)}\n")
  
  
 #%% ── 14.1  M1 — Difference in Means ─────────────────────────────────────────
-#
-#   Simplest possible estimator: compare average outcomes between arms.
-#   Assumes no confounding.  In the presence of U this will be biased.
-#
-#   ATE_DM  = E[Y | A=1] - E[Y | A=0]
-#   CATE(i) = ATE_DM   for all i   (constant, no personalisation)
-# ─────────────────────────────────────────────────────────────────────────────
- 
 mask1 = A_np == 1.0
 mask0 = A_np == 0.0
  
@@ -721,56 +709,35 @@ cate_dm  = np.full(len(Y_np), ate_dm)    # constant prediction
 print("── M1: Difference in Means ───────────────────────────────────────────")
 print(f"  Estimated ATE : {ate_dm:+.4f}")
 print(f"  True ATE      : {ATE_true:+.4f}")
-print(f"  Bias          : {ate_dm - ATE_true:+.4f}")
+print(f"  Bias          : {ate_dm - ATE_true:+.4f}\n")
  
  
 #%% ── 14.2  M2 — OLS: Y ~ X + A ──────────────────────────────────────────────
-#
-#   Linear regression adjusting for X but ignoring U.
-#   The coefficient β_A is taken as a (constant) ATE estimate.
-#   CATE(i) is obtained by predicting Ŷ(x_i, 1) − Ŷ(x_i, 0).
-#
-#   Note: this is the standard "regression adjustment" estimator.
-#         With unobserved confounding it will still be biased.
-# ─────────────────────────────────────────────────────────────────────────────
- 
 A_col = A_np.reshape(-1, 1)
 XA    = np.hstack([X_np, A_col])            # (N, d_x + 1)
  
 ols_xa = LinearRegression().fit(XA, Y_np)
  
-# Predict potential outcomes by setting A column to 0 / 1
 XA1 = XA.copy(); XA1[:, -1] = 1.0
 XA0 = XA.copy(); XA0[:, -1] = 0.0
  
 cate_ols_xa = ols_xa.predict(XA1) - ols_xa.predict(XA0)
 ate_ols_xa  = float(cate_ols_xa.mean())
- 
-# The coefficient on A is exactly the ATE in a linear model with A binary
-coef_A_m2 = ols_xa.coef_[-1]
+coef_A_m2   = ols_xa.coef_[-1]
  
 print("── M2: OLS  Y ~ X + A ────────────────────────────────────────────────")
 print(f"  β_A (coef on treatment) : {coef_A_m2:+.4f}")
 print(f"  Estimated ATE           : {ate_ols_xa:+.4f}")
 print(f"  True ATE                : {ATE_true:+.4f}")
-print(f"  Bias                    : {ate_ols_xa - ATE_true:+.4f}")
+print(f"  Bias                    : {ate_ols_xa - ATE_true:+.4f}\n")
  
  
 #%% ── 14.3  M3 — OLS: Y ~ X + A + W + Z ─────────────────────────────────────
-#
-#   Naïvely add both proxies as additional controls.
-#   This is NOT principled: including Z and W as plain covariates can
-#   introduce collider bias or attenuate the causal effect.
-#   Included here as a "what happens if you just throw everything in" baseline.
-# ─────────────────────────────────────────────────────────────────────────────
- 
 XAWZ  = np.hstack([X_np, A_col, W_np, Z_np])   # (N, d_x + 1 + d_w + d_z)
- 
 ols_full = LinearRegression().fit(XAWZ, Y_np)
  
-# Again: predict at A=1 vs A=0, holding X, W, Z fixed
 n_feat   = XAWZ.shape[1]
-a_idx    = X_np.shape[1]   # column index of A in XAWZ
+a_idx    = X_np.shape[1]   
  
 XAWZ1    = XAWZ.copy(); XAWZ1[:, a_idx] = 1.0
 XAWZ0    = XAWZ.copy(); XAWZ0[:, a_idx] = 0.0
@@ -783,88 +750,83 @@ print("── M3: OLS  Y ~ X + A + W + Z ─────────────
 print(f"  β_A (coef on treatment) : {coef_A_m3:+.4f}")
 print(f"  Estimated ATE           : {ate_ols_full:+.4f}")
 print(f"  True ATE                : {ATE_true:+.4f}")
-print(f"  Bias                    : {ate_ols_full - ATE_true:+.4f}")
+print(f"  Bias                    : {ate_ols_full - ATE_true:+.4f}\n")
  
  
 #%% ── 14.4  M4 — P2SLS: Proximal Two-Stage Least Squares ─────────────────────
-#
-#   Grounded in the linear proximal causal learning framework.
-#
-#   Key idea (linear case)
-#   ──────────────────────
-#   We have two proxy "channels" for the unobserved confounder U:
-#     • Z  — treatment-side proxy:  correlated with U, used as IV for A
-#     • W  — outcome-side proxy:    correlated with U, acts as bridge control
-#
-#   Stage 1  (first-stage IV regression)
-#   ─────────────────────────────────────
-#     Â = OLS( A ~ X, Z, W )
-#
-#     Including W alongside Z in Stage 1 helps purge the part of A that is
-#     driven by the confounded path U→A, while Z provides the exogenous
-#     variation needed to identify the causal effect.
-#
-#   Stage 2  (structural equation)
-#   ──────────────────────────────
-#     Y = OLS( Y ~ Â, X, W )
-#
-#     W in Stage 2 absorbs residual confounding via the outcome proxy channel.
-#     The coefficient on Â is the linear proximal ATE estimate.
-#
-#   CATE(i) is still constant (linear model), but the ATE is asymptotically
-#   unbiased under the completeness conditions verified in Chapter 7.
-#
-#   Reference: Miao & Tchetgen Tchetgen (2018); Mastouri et al. (2021)
-# ─────────────────────────────────────────────────────────────────────────────
- 
 # ── Stage 1 ────────────────────────────────────────────────────────────────
-# Regress the outcome proxy W on A, X, and the treatment proxy Z
-A_col_reshaped = A_np.reshape(-1, 1)
-stage1_features = np.hstack([A_col_reshaped, X_np, Z_np])     # (N, 1 + d_x + d_z)
-
-# This handles multi-output regression seamlessly if W has >1 dimension
-stage1_model = LinearRegression().fit(stage1_features, W_np)
-W_hat        = stage1_model.predict(stage1_features)          # (N, d_w) predicted W
+A_col_reshaped  = A_np.reshape(-1, 1)
+stage1_features = np.hstack([A_col_reshaped, X_np, Z_np])     
+stage1_model    = LinearRegression().fit(stage1_features, W_np)
+W_hat           = stage1_model.predict(stage1_features)       
 
 # ── Stage 2 ────────────────────────────────────────────────────────────────
-# Regress Y on A, X, and the predicted outcome proxy W_hat
-stage2_features = np.hstack([A_col_reshaped, X_np, W_hat])    # (N, 1 + d_x + d_w)
+stage2_features = np.hstack([A_col_reshaped, X_np, W_hat])    
 stage2_model    = LinearRegression().fit(stage2_features, Y_np)
 
-# Causal effect = coefficient on A (first column)
-ate_p2sls    = float(stage2_model.coef_[0])
-cate_p2sls   = np.full(len(Y_np), ate_p2sls)
+ate_p2sls  = float(stage2_model.coef_[0])
+cate_p2sls = np.full(len(Y_np), ate_p2sls)
 
-print("── M4: P2SLS (Corrected) ──────────────────────────────────────────────")
-print("  Stage 1 features : A, X, Z → Ŵ")
-print("  Stage 2 features : A, X, Ŵ → Y")
-s2_names  = ["Â (causal)"] + [f"X_{i}" for i in range(X_np.shape[1])] \
-            + [f"W_{i}" for i in range(W_np.shape[1])]
-for name, coef in zip(s2_names, stage2_model.coef_):
-    print(f"        {name:15s} : {coef:+.4f}")
-
-
+print("── M4: P2SLS ──────────────────────────────────────────────")
 print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
 print(f"  True ATE         : {ATE_true:+.4f}")
-print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}")
-print()
+print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}\n")
 
+
+#%% ── 14.5  M5 — OLS: Y ~ X + A + X*A ────────────────────────────────────────
+# Introduces heterogeneity by interacting Treatment (A) with Covariates (X).
+X_A_inter = X_np * A_col_reshaped
+XA_int    = np.hstack([X_np, A_col_reshaped, X_A_inter])
+ols_xa_int = LinearRegression().fit(XA_int, Y_np)
+
+# Predict potential outcomes for CATE
+XA_int1 = np.hstack([X_np, np.ones_like(A_col_reshaped), X_np * 1.0])
+XA_int0 = np.hstack([X_np, np.zeros_like(A_col_reshaped), X_np * 0.0])
+
+cate_ols_xa_int = ols_xa_int.predict(XA_int1) - ols_xa_int.predict(XA_int0)
+ate_ols_xa_int  = float(cate_ols_xa_int.mean())
+
+print("── M5: OLS Y ~ X + A + X*A ──────────────────────────────────────────")
+print(f"  Estimated ATE : {ate_ols_xa_int:+.4f}")
+print(f"  True ATE      : {ATE_true:+.4f}")
+print(f"  Bias          : {ate_ols_xa_int - ATE_true:+.4f}\n")
+
+
+#%% ── 14.6  M6 — P2SLS with X*A interaction ──────────────────────────────────
+# Combines the unconfounded proximal guarantees with CATE heterogeneity.
+# Uses W_hat from M4's Stage 1, interacting A with X in Stage 2.
+stage2_features_int = np.hstack([A_col_reshaped, X_np, X_A_inter, W_hat])
+stage2_model_int    = LinearRegression().fit(stage2_features_int, Y_np)
+
+# Predict potential outcomes using Stage 2 model
+s2_feat_1 = np.hstack([np.ones_like(A_col_reshaped), X_np, X_np * 1.0, W_hat])
+s2_feat_0 = np.hstack([np.zeros_like(A_col_reshaped), X_np, np.zeros_like(X_np), W_hat])
+
+cate_p2sls_int = stage2_model_int.predict(s2_feat_1) - stage2_model_int.predict(s2_feat_0)
+ate_p2sls_int  = float(cate_p2sls_int.mean())
+
+print("── M6: P2SLS with X*A interaction ───────────────────────────────────")
+print(f"  Estimated ATE : {ate_p2sls_int:+.4f}")
+print(f"  True ATE      : {ATE_true:+.4f}")
+print(f"  Bias          : {ate_p2sls_int - ATE_true:+.4f}\n")
  
  
-#%% ── 14.5  Compare Estimators — ATE Bias Bar Chart ─────────────────────────
- 
+#%% ── 14.7  Compare Estimators — Bar Charts ─────────────────────────────────
 estimators = {
-    "M1  DiM"         : (ate_dm,        cate_dm),
-    "M2  OLS(X,A)"    : (ate_ols_xa,    cate_ols_xa),
-    "M3  OLS(X,A,W,Z)": (ate_ols_full,  cate_ols_full),
-    "M4  P2SLS"       : (ate_p2sls,     cate_p2sls),
+    "M1  DiM"           : (ate_dm,          cate_dm),
+    "M2  OLS(X,A)"      : (ate_ols_xa,      cate_ols_xa),
+    "M3  OLS(X,A,W,Z)"  : (ate_ols_full,    cate_ols_full),
+    "M4  P2SLS"         : (ate_p2sls,       cate_p2sls),
+    "M5  OLS(X,A,X*A)"  : (ate_ols_xa_int,  cate_ols_xa_int),
+    "M6  P2SLS(X*A)"    : (ate_p2sls_int,   cate_p2sls_int),
 }
  
-colors_est = [PALETTE[6], PALETTE[0], PALETTE[1], PALETTE[2]]
+# Extend palette for the two new estimators
+colors_est = [PALETTE[6], PALETTE[0], PALETTE[1], PALETTE[2], PALETTE[3], PALETTE[4]]
  
-fig, axes = plt.subplots(1, 3, figsize=(17, 5))
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
  
-# ── Panel A: ATE estimate vs truth ─────────────────────────────────────────
+# ── Panel A: ATE estimate vs truth
 ate_names  = list(estimators.keys())
 ate_values = [v[0] for v in estimators.values()]
 biases     = [v - ATE_true for v in ate_values]
@@ -878,13 +840,13 @@ for bar, bias in zip(bars, biases):
     axes[0].text(
         bias + (0.003 if bias >= 0 else -0.003),
         bar.get_y() + bar.get_height() / 2,
-        f"{bias:+.4f}", va="center", ha="left" if bias >= 0 else "right", fontsize=9,
+        f"{bias:+.4f}", fontsize=9,
     )
 axes[0].set_title("ATE Bias  (estimated − true)", fontweight="bold")
 axes[0].set_xlabel("Bias")
 axes[0].legend(frameon=False, fontsize=9)
  
-# ── Panel B: RMSE of CATE estimate ─────────────────────────────────────────
+# ── Panel B: RMSE of CATE estimate 
 rmse_vals = []
 r2_vals   = []
 for name, (ate_est, cate_est) in estimators.items():
@@ -895,19 +857,19 @@ for name, (ate_est, cate_est) in estimators.items():
  
 axes[1].bar(ate_names, rmse_vals, color=colors_est, edgecolor="white", alpha=0.85)
 for i, val in enumerate(rmse_vals):
-    axes[1].text(i, val + 0.002, f"{val:.4f}", ha="center", va="bottom", fontsize=9)
+    axes[1].text(i, val + 0.002, f"{val:.4f}", va="bottom", fontsize=9)
 axes[1].set_title("RMSE( ĈATEᵢ , ITEᵢ )", fontweight="bold")
 axes[1].set_ylabel("RMSE")
 axes[1].tick_params(axis="x", rotation=15)
  
-# ── Panel C: R² of CATE estimate ───────────────────────────────────────────
+# ── Panel C: R² of CATE estimate 
 axes[2].bar(ate_names, r2_vals, color=colors_est, edgecolor="white", alpha=0.85)
 axes[2].axhline(0, color="red", linestyle=":", linewidth=1.2, alpha=0.7)
 for i, val in enumerate(r2_vals):
-    axes[2].text(i, val + 0.01, f"{val:.3f}", ha="center", va="bottom", fontsize=9)
+    axes[2].text(i, val + 0.01, f"{val:.3f}", va="bottom", fontsize=9)
 axes[2].set_title("R²( ĈATEᵢ , ITEᵢ )", fontweight="bold")
 axes[2].set_ylabel("R²")
-axes[2].tick_params(axis="x", rotation=15)
+axes[2].tick_params(axis="x", rotation=45)
  
 fig.suptitle("Estimator Comparison — ATE Bias, CATE RMSE, CATE R²",
              fontweight="bold", y=1.02)
@@ -915,14 +877,8 @@ plt.tight_layout()
 plt.show()
  
  
-#%% ── 14.6  CATE Scatter — Estimated vs Oracle ITE ──────────────────────────
-#
-#   For a perfect estimator all points would lie on the y = x diagonal.
-#   Constant estimators (M1–M4 linear) produce a vertical line at the ATE.
-#   Colour encodes the true ITE to reveal where each estimator fails.
-# ─────────────────────────────────────────────────────────────────────────────
- 
-fig, axes = plt.subplots(1, 4, figsize=(18, 5))
+#%% ── 14.8  CATE Scatter — Estimated vs Oracle ITE ──────────────────────────
+fig, axes = plt.subplots(1, 6, figsize=(24, 5))
 vmin, vmax = ITE_np.min(), ITE_np.max()
  
 for ax, (name, (ate_est, cate_est)), color in zip(axes, estimators.items(), colors_est):
@@ -941,27 +897,21 @@ for ax, (name, (ate_est, cate_est)), color in zip(axes, estimators.items(), colo
     rmse_i = float(np.sqrt(np.mean((cate_est - ITE_np) ** 2)))
     ax.set_title(f"{name}\nRMSE={rmse_i:.4f}", fontweight="bold", fontsize=9)
     ax.set_xlabel("True ITE")
-    ax.set_ylabel("Estimated CATE")
+    if ax == axes[0]: ax.set_ylabel("Estimated CATE")
     ax.legend(fontsize=7, frameon=False)
  
 plt.colorbar(sc, ax=axes[-1], label="True ITE", fraction=0.04)
 fig.suptitle("Estimated CATE vs Oracle ITE  (ideal = diagonal)",
-             fontweight="bold", y=1.02)
+             fontweight="bold", y=1.05)
 plt.tight_layout()
 plt.show()
  
  
-#%% ── 14.7  Residual Analysis — Where Does Each Estimator Fail? ──────────────
-#
-#   Residual = estimated_CATE − true_ITE.
-#   We examine whether residuals correlate with X, propensity, or U_PC1,
-#   which would reveal systematic biases the estimator cannot capture.
-# ─────────────────────────────────────────────────────────────────────────────
- 
+#%% ── 14.9  Residual Analysis — Where Does Each Estimator Fail? ──────────────
 ps_np = episode.propensity.cpu().numpy()
 u_pc1 = first_pc(episode.U.cpu().float().numpy())   # defined in chapter 8
  
-fig, axes = plt.subplots(4, 3, figsize=(15, 16), sharey="row")
+fig, axes = plt.subplots(6, 3, figsize=(15, 24), sharey="row")
  
 covariates_diag = {
     "X_0":         X_np[:, 0],
@@ -982,9 +932,8 @@ for row_idx, (est_name, (_, cate_est)) in enumerate(estimators.items()):
         xline = np.linspace(cov_vals.min(), cov_vals.max(), 100)
         ax.plot(xline, m * xline + b, "k-", linewidth=1.2, alpha=0.6)
         ax.set_title(f"{est_name}\nvs {cov_name}  (r={r:.3f})", fontsize=8, fontweight="bold")
-        ax.set_xlabel(cov_name, fontsize=8)
-        if col_idx == 0:
-            ax.set_ylabel("Residual\n(ĈATEᵢ − ITEᵢ)", fontsize=8)
+        if row_idx == 5: ax.set_xlabel(cov_name, fontsize=8)
+        if col_idx == 0: ax.set_ylabel("Residual\n(ĈATEᵢ − ITEᵢ)", fontsize=8)
  
 fig.suptitle("Residual Analysis — Systematic Bias per Estimator\n"
              "(non-zero slope → the estimator misses that source of heterogeneity)",
@@ -993,12 +942,7 @@ plt.tight_layout()
 plt.show()
  
  
-#%% ── 14.8  Cross-Episode Stability of ATE Estimates ────────────────────────
-#
-#   Generate K episodes and track each estimator's ATE across them.
-#   This shows variance and bias stability, not just single-episode performance.
-# ─────────────────────────────────────────────────────────────────────────────
- 
+#%% ── 14.10  Cross-Episode Stability of ATE Estimates ───────────────────────
 K_est = 30
  
 cross_ep_records = []
@@ -1013,38 +957,51 @@ for k in range(K_est):
     ITE_k = (ep_k.Y1 - ep_k.Y0).cpu().float().numpy()
     true_ate_k = float(ITE_k.mean())
  
+    A_col_k = A_k.reshape(-1, 1)
+
     # M1
     m1 = float(Y_k[A_k == 1].mean() - Y_k[A_k == 0].mean())
  
     # M2
-    XA_k  = np.hstack([X_k, A_k.reshape(-1, 1)])
-    m2    = LinearRegression().fit(XA_k, Y_k).coef_[-1]
+    XA_k = np.hstack([X_k, A_col_k])
+    m2   = float(LinearRegression().fit(XA_k, Y_k).coef_[-1])
  
     # M3
-    XAWZ_k = np.hstack([X_k, A_k.reshape(-1, 1), W_k, Z_k])
-    m3     = LinearRegression().fit(XAWZ_k, Y_k).coef_[X_k.shape[1]]
+    XAWZ_k = np.hstack([X_k, A_col_k, W_k, Z_k])
+    m3     = float(LinearRegression().fit(XAWZ_k, Y_k).coef_[X_k.shape[1]])
  
     # M4 P2SLS
-    A_col_reshaped = A_k.reshape(-1, 1)
-    stage1_features = np.hstack([A_col_reshaped, X_k, Z_k])     # (N, 1 + d_x + d_z)
-    stage1_model = LinearRegression().fit(stage1_features, W_k)
-    W_hat        = stage1_model.predict(stage1_features)          # (N, d_w) predicted W
-    stage2_features = np.hstack([A_col_reshaped, X_k, W_hat])    # (N, 1 + d_x + d_w)
-    stage2_model    = LinearRegression().fit(stage2_features, Y_k)
-    m4    = float(stage2_model.coef_[0])
+    stage1_features_k = np.hstack([A_col_k, X_k, Z_k])     
+    W_hat_k = LinearRegression().fit(stage1_features_k, W_k).predict(stage1_features_k)
+    stage2_features_k = np.hstack([A_col_k, X_k, W_hat_k])    
+    m4 = float(LinearRegression().fit(stage2_features_k, Y_k).coef_[0])
 
- 
+    # M5 OLS with X*A
+    XA_int_k = np.hstack([X_k, A_col_k, X_k * A_col_k])
+    m5_model = LinearRegression().fit(XA_int_k, Y_k)
+    s2_m5_1  = np.hstack([X_k, np.ones_like(A_col_k), X_k * 1.0])
+    s2_m5_0  = np.hstack([X_k, np.zeros_like(A_col_k), X_k * 0.0])
+    m5 = float((m5_model.predict(s2_m5_1) - m5_model.predict(s2_m5_0)).mean())
+
+    # M6 P2SLS with X*A
+    stage2_features_int_k = np.hstack([A_col_k, X_k, X_k * A_col_k, W_hat_k])
+    m6_model = LinearRegression().fit(stage2_features_int_k, Y_k)
+    s2_m6_1  = np.hstack([np.ones_like(A_col_k), X_k, X_k * 1.0, W_hat_k])
+    s2_m6_0  = np.hstack([np.zeros_like(A_col_k), X_k, np.zeros_like(X_k), W_hat_k])
+    m6 = float((m6_model.predict(s2_m6_1) - m6_model.predict(s2_m6_0)).mean())
+
     cross_ep_records.append({
         "episode": k, "true_ATE": true_ate_k,
-        "M1_DiM": m1, "M2_OLS_XA": float(m2),
-        "M3_OLS_full": float(m3), "M4_P2SLS": float(m4),
+        "M1_DiM": m1, "M2_OLS_XA": m2,
+        "M3_OLS_full": m3, "M4_P2SLS": m4,
+        "M5_OLS_int": m5, "M6_P2SLS_int": m6
     })
  
 ced = pd.DataFrame(cross_ep_records)
  
-fig, axes = plt.subplots(2, 2, figsize=(14, 9), sharex=True)
-method_cols  = ["M1_DiM", "M2_OLS_XA", "M3_OLS_full", "M4_P2SLS"]
-method_names = ["M1  DiM", "M2  OLS(X,A)", "M3  OLS(X,A,W,Z)", "M4  P2SLS"]
+fig, axes = plt.subplots(2, 3, figsize=(18, 9), sharex=True)
+method_cols  = ["M1_DiM", "M2_OLS_XA", "M3_OLS_full", "M4_P2SLS", "M5_OLS_int", "M6_P2SLS_int"]
+method_names = list(estimators.keys())
  
 for ax, col, name, color in zip(axes.ravel(), method_cols, method_names, colors_est):
     bias_series = ced[col] - ced["true_ATE"]
@@ -1059,8 +1016,8 @@ for ax, col, name, color in zip(axes.ravel(), method_cols, method_names, colors_
         f"{name}\nMean bias={mean_bias:+.4f}  ±{std_bias:.4f}",
         fontweight="bold", fontsize=10,
     )
-    ax.set_xlabel("Episode")
-    ax.set_ylabel("ATE estimate")
+    if ax in axes[1, :]: ax.set_xlabel("Episode")
+    if ax in axes[:, 0]: ax.set_ylabel("ATE estimate")
     ax.legend(fontsize=8, frameon=False)
  
 fig.suptitle(f"ATE Estimate Stability Across {K_est} Episodes\n"
@@ -1072,8 +1029,7 @@ plt.show()
 print(ced[["true_ATE"] + method_cols].describe().round(4).to_string())
  
  
-#%% ── 14.9  Summary Table ────────────────────────────────────────────────────
- 
+#%% ── 14.11  Summary Table ───────────────────────────────────────────────────
 summary_rows = []
 for (name, (ate_est, cate_est)), col in zip(estimators.items(), method_cols):
     bias_series_full = ced[col] - ced["true_ATE"]
@@ -1083,17 +1039,17 @@ for (name, (ate_est, cate_est)), col in zip(estimators.items(), method_cols):
         "Bias (single ep)": f"{ate_est - ATE_true:+.4f}",
         "RMSE CATE"       : f"{np.sqrt(np.mean((cate_est - ITE_np)**2)):.4f}",
         "R² CATE"         : f"{r2_score(ITE_np, cate_est):.4f}",
-        "Cross-ep bias μ" : f"{bias_series_full.mean():+.4f}",
-        "Cross-up median bias" : f"{bias_series_full.median():+.4f}",
+        "Cross-ep mean |bias|" : f"{np.abs(bias_series_full).mean():+.4f}",
+        "Cross-up median |bias|" : f"{np.abs(bias_series_full).median():+.4f}",
         "Cross-ep bias σ" : f"{bias_series_full.std():.4f}",
     })
  
 summary_df = pd.DataFrame(summary_rows).set_index("Estimator")
-print("\n" + "=" * 80)
+print("\n" + "=" * 90)
 print("CATE ESTIMATOR SUMMARY")
-print("=" * 80)
+print("=" * 90)
 print(summary_df.to_string())
-print("=" * 80)
+print("=" * 90)
 print(f"\nOracle true ATE (single episode) : {ATE_true:+.4f}")
-print("Note: All methods are LINEAR → CATE is constant (= ATE estimate).")
-print("      Non-zero R²(CATE) requires heterogeneous treatment effect models.")
+print("Note: M1-M4 are LINEAR → CATE is constant (= ATE estimate).")
+print("      M5-M6 incorporate X*A interactions to model true heterogeneity.")
