@@ -129,7 +129,7 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Optimiser + scheduler
         # ------------------------------------------------------------------
-        self.optimizer = optim.Adam(
+        self.optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.train_cfg.get("lr", 0.001),
             weight_decay=self.train_cfg.get("weight_decay", 1e-4),
@@ -474,8 +474,6 @@ class CATETrainer:
                     total_cov50 += (abs_error <= 0.674 * pred_std).float().sum().item()
                     total_cov95 += (abs_error <= 1.960 * pred_std).float().sum().item()
                     total_cov99 += (abs_error <= 2.576 * pred_std).float().sum().item()
-
-                    pbar.set_postfix({"nll_loss": f"{loss_gnll.item():.4f}"})
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
