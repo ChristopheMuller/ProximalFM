@@ -48,7 +48,6 @@ All training and model parameters are defined in `config.yaml`.
 | | `epochs` | Number of training iterations over the prior. |
 | | `save_dir` | Directory to save model checkpoints. |
 | **model** | `embed_dim` | Embedding dimension for the model. |
-| | `out_dim` | Output dimension for the model predictions. |
 | | `*_num_blocks` | Number of blocks for col, row, and icl components (e.g. `col_num_blocks`). |
 | | `*_nhead` | Number of attention heads for col, row, and icl components (e.g. `col_nhead`). |
 | **data** | `batch_size` | Number of episodes per batch. |

@@ -4,7 +4,6 @@ import typing, math, torch, torch.nn as nn
 class ProximalNanoTabICLv2(nn.Module):
     def __init__(
         self,
-        out_dim: int,
         embed_dim: int = 64,
         col_num_blocks: int = 3,
         row_num_blocks: int = 3,
@@ -18,7 +17,6 @@ class ProximalNanoTabICLv2(nn.Module):
         n_cls_cols: int = 4,
         n_cls_rows: int = 128,
     ):
-        # classification: max_classes = out_dim (= 10 typically); regression: max_classes = 0, out_dim = n_quantiles
         super().__init__()
         self.feature_group_size_x = feature_group_size_x
         self.feature_group_size_w = feature_group_size_w
@@ -66,7 +64,7 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         self.row_ln = nn.LayerNorm(embed_dim)
         self.out_ln = nn.LayerNorm(icl_dim)
-        self.out_mlp = get_mlp(icl_dim, icl_dim * 2, out_dim)
+        self.out_mlp = get_mlp(icl_dim, icl_dim * 2, 2)
 
     def forward(
         self,

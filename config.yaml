@@ -15,18 +15,17 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "run4_256"
+  exp_name: "run1_256"
 
 model:
-  out_dim: 2
-  embed_dim: 32
-  col_num_blocks: 6
-  row_num_blocks: 6
-  icl_num_blocks: 14
   col_nhead: 8
-  row_nhead: 8
+  col_num_blocks: 6
+  dtype: float32
+  embed_dim: 64
   icl_nhead: 8
-  dtype: "float32"        # "float32" | "bfloat16"
+  icl_num_blocks: 14
+  row_nhead: 8
+  row_num_blocks: 6      # "float32" | "bfloat16"
 
 data:
   batch_size: 16           # number of episodes per batch

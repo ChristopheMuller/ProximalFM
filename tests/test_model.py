@@ -106,7 +106,6 @@ def test_induced_transformer_block():
 
 def test_proximal_nanotab_icl_v2():
     model = ProximalNanoTabICLv2(
-        out_dim=10,
         embed_dim=32,
         col_num_blocks=1,
         row_num_blocks=1,
@@ -134,7 +133,7 @@ def test_proximal_nanotab_icl_v2():
     y = torch.randn(n_batch, n_train)
 
     out = model(x, a, w, z, y)
-    assert out.shape == (n_batch, n_rows - n_train, 10)
+    assert out.shape == (n_batch, n_rows - n_train, 2)
 
     # Edge case: assertion error on shape mismatch
     with pytest.raises(AssertionError, match="y and a must have the same shape"):
@@ -148,13 +147,12 @@ def test_proximal_nanotab_icl_v2():
     y_const = torch.ones(n_batch, n_train)
 
     out_const = model(x_const, a, w_const, z_const, y_const)
-    assert out_const.shape == (n_batch, n_rows - n_train, 10)
+    assert out_const.shape == (n_batch, n_rows - n_train, 2)
     assert not torch.isnan(out_const).any()
 
 def test_proximal_nanotab_icl_v2_zero_blocks():
     # Test boundary case with minimal blocks
     model = ProximalNanoTabICLv2(
-        out_dim=2,
         embed_dim=16,
         col_num_blocks=0,
         row_num_blocks=1, # Must be >=1 as row_blocks[-1] is accessed

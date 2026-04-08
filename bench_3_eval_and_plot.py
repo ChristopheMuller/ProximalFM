@@ -57,7 +57,6 @@ true_ITEs = data["true_ITEs"]
 #%%
 # ── 2. Setup Model & Load Checkpoint ───────────────────────────────────────
 model = ProximalNanoTabICLv2(
-    out_dim=2,
     embed_dim=model_cfg.get("embed_dim", 64),
     col_num_blocks=model_cfg.get("col_num_blocks", 3), 
     row_num_blocks=model_cfg.get("row_num_blocks", 3),

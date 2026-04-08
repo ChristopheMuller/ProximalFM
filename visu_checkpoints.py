@@ -43,7 +43,6 @@ def main():
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
     model = ProximalNanoTabICLv2(
-        out_dim=2, # 2 dimensions: 1 for CATE mean, 1 for log_var
         embed_dim=model_cfg.get("embed_dim", 64),
         col_num_blocks=model_cfg.get("col_num_blocks", 3), 
         row_num_blocks=model_cfg.get("row_num_blocks", 3),
