@@ -10,27 +10,6 @@ from proximalfm.Structure import ProximalPriorConfig, NetworkSpec
 def prior() -> ProximalPrior:
     return ProximalPrior(seed=42)
 
-
-def test_episode_normalization(prior: ProximalPrior) -> None:
-    # Test with normalization (default)
-    prior.config.normalize_episode = True
-    ep_norm = prior.generate_episode(batch_size=1000, episode_seed=6)
-
-    # Check that variables have roughly zero mean and unit variance
-    assert torch.allclose(ep_norm.X.mean(dim=0), torch.zeros_like(ep_norm.X.mean(dim=0)), atol=0.1)
-    assert torch.allclose(ep_norm.X.std(dim=0), torch.ones_like(ep_norm.X.std(dim=0)), atol=0.1)
-
-    assert torch.isclose(ep_norm.Y.mean(), torch.tensor(0.0), atol=0.1)
-    # The std is based on [Y0, Y1], so Y's std will be roughly 1
-    assert torch.isclose(ep_norm.Y.std(), torch.tensor(1.0), atol=0.2)
-
-    # Test without normalization
-    prior.config.normalize_episode = False
-    ep_unnorm = prior.generate_episode(batch_size=1000, episode_seed=6)
-
-    # Check that they differ, proving normalization was skipped
-    assert not torch.allclose(ep_unnorm.X.mean(dim=0), torch.zeros_like(ep_unnorm.X.mean(dim=0)), atol=0.1)
-
 def test_episode_extreme_temperature() -> None:
     # High temperature -> propensities close to 0.5
     config_high = ProximalPriorConfig(temperature=100.0, min_propensity=0.0, max_propensity=1.0)
@@ -57,9 +36,6 @@ def test_init_defaults() -> None:
     assert default_prior.seed is None
 
 def test_episode_batch_size_one(prior: ProximalPrior) -> None:
-    # A batch size of 1 shouldn't crash.
-    # With normalize_episode=False as default, no standardization occurs, 
-    # so we expect valid numbers instead of NaNs.
     ep = prior.generate_episode(batch_size=1, episode_seed=9)
 
     assert ep.X.shape[0] == 1

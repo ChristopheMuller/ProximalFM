@@ -28,7 +28,6 @@ def load_config(config_path: str = "config.yaml") -> dict:
         'noise_scale_w': 1,
         'noise_scale_z': 1,
         'noise_scale_x': 1,
-        'normalize_episode': False,
         'temperature': 1,
         'confounding_strength': 3.0
     }
