@@ -280,6 +280,11 @@ class CATETrainer:
         self.optimizer.zero_grad()
         loss.backward()
 
+        if self.global_step % 32 == 0: 
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    layer_norm = param.grad.detach().norm(2).item()
+                    self.writer.add_scalar(f"GradNorm_Layers/{name}", layer_norm, self.global_step)
         if self.train_cfg.get("clip_grad", 0.0) > 0:
             grad_norm = nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.train_cfg["clip_grad"]
