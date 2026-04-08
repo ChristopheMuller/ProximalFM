@@ -9,18 +9,18 @@ from proximalfm.PriorDataLoader import create_causal_data_loaders
 
 #%%
 # -- Parameters --
-N_TRAIN = 200
-N_TEST = 50
-N_BATCH = 100
+N_TRAIN = 2000
+N_TEST = 100
+N_BATCH = 1000
 # name_save = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-name_save = "test"
+name_save = "conf_2000"
 OUTPUT_FOLDER = f"eval_data/{name_save}/"
 
 def load_config(config_path: str = "config.yaml") -> dict:
     # with open(config_path, "r") as f:
     #     return yaml.safe_load(f)["prior"]
     return {
-        'type': 'linear',
+        'type': 'test',
         'd_x': 1,
         'd_u': 2,
         'd_z': 2,
@@ -29,7 +29,8 @@ def load_config(config_path: str = "config.yaml") -> dict:
         'noise_scale_z': 1,
         'noise_scale_x': 1,
         'normalize_episode': False,
-        'temperature': 1
+        'temperature': 1,
+        'confounding_strength': 3.0
     }
 
 #%%

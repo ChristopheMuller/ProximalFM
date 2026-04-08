@@ -9,16 +9,18 @@ import seaborn as sns
 from sklearn.metrics import r2_score
 
 from proximalfm.Model import ProximalNanoTabICLv2
-from other_methods import S_OLS, T_OLS, P2SLS
+from other_methods import S_OLS, T_OLS, P2SLS, S_RF, S_TabICL
 
 #%%
 # -- Configuration --
 # Make sure to update this to the timestamped folder you want to evaluate
-DATA_FOLDER = "eval_data/1500" 
+DATA_FOLDER = "eval_data/conf_2000"
 MODEL_CHECK = "run4_256"
 
 methods_to_compare = [
     S_OLS,
+    S_RF,
+    S_TabICL,
     T_OLS,
     P2SLS,
 ]
@@ -87,7 +89,7 @@ w_full = data["W"].to(device, dtype=dtype)
 a_full = data["A"].to(device, dtype=dtype)
 y_full = data["Y"].to(device, dtype=dtype)
 
-max_batch_size = 30
+max_batch_size = 10
 cate_preds_nn = np.zeros((N_BATCH, N_TEST))
 
 n_bat = x_full.shape[0] // max_batch_size
