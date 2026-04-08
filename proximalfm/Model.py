@@ -1,68 +1,58 @@
-import typing, math, torch, torch.nn as nn
+import typing
+import math
+import torch
+import torch.nn as nn
+from proximalfm.Structure import ModelConfig
 
 
 class ProximalNanoTabICLv2(nn.Module):
-    def __init__(
-        self,
-        embed_dim: int = 64,
-        col_num_blocks: int = 3,
-        row_num_blocks: int = 3,
-        icl_num_blocks: int = 12,
-        col_nhead: int = 8,
-        row_nhead: int = 8,
-        icl_nhead: int = 8,
-        feature_group_size_x: int = 2,
-        feature_group_size_w: int = 4,
-        feature_group_size_z: int = 2,
-        n_cls_cols: int = 4,
-        n_cls_rows: int = 128,
-    ):
+    def __init__(self, config: ModelConfig):
         super().__init__()
-        self.feature_group_size_x = feature_group_size_x
-        self.feature_group_size_w = feature_group_size_w
-        self.feature_group_size_z = feature_group_size_z
-        icl_dim = embed_dim * n_cls_cols
+        self.feature_group_size_x = config.feature_group_size_x
+        self.feature_group_size_w = config.feature_group_size_w
+        self.feature_group_size_z = config.feature_group_size_z
+        icl_dim = config.embed_dim * config.n_cls_cols
 
-        self.x_embed = nn.Linear(feature_group_size_x, embed_dim)
-        self.w_embed = nn.Linear(feature_group_size_w, embed_dim)
-        self.z_embed = nn.Linear(feature_group_size_z, embed_dim)
+        self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
+        self.w_embed = nn.Linear(config.feature_group_size_w, config.embed_dim)
+        self.z_embed = nn.Linear(config.feature_group_size_z, config.embed_dim)
 
-        self.a_embed = nn.Linear(1, embed_dim)
+        self.a_embed = nn.Linear(1, config.embed_dim)
         self.a_embed_icl = nn.Linear(1, icl_dim)
 
-        self.y_embed_in = nn.Linear(1, embed_dim)
+        self.y_embed_in = nn.Linear(1, config.embed_dim)
         self.y_embed_icl = nn.Linear(1, icl_dim)
 
         self.col_blocks = nn.ModuleList(
             [
                 InducedTransformerBlock(
-                    embed_dim=embed_dim,
-                    num_heads=col_nhead,
-                    n_inducing=n_cls_rows,
+                    embed_dim=config.embed_dim,
+                    num_heads=config.col_nhead,
+                    n_inducing=config.n_cls_rows,
                     ssmax=True,
                 )
-                for _ in range(col_num_blocks)
+                for _ in range(config.col_num_blocks)
             ]
         )
         self.row_blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    embed_dim=embed_dim, num_heads=row_nhead, use_rope=True
+                    embed_dim=config.embed_dim, num_heads=config.row_nhead, use_rope=True
                 )
-                for _ in range(row_num_blocks)
+                for _ in range(config.row_num_blocks)
             ]
         )
         self.icl_blocks = nn.ModuleList(
             [
-                TransformerBlock(embed_dim=icl_dim, num_heads=icl_nhead, ssmax=True)
-                for _ in range(icl_num_blocks)
+                TransformerBlock(embed_dim=icl_dim, num_heads=config.icl_nhead, ssmax=True)
+                for _ in range(config.icl_num_blocks)
             ]
         )
 
         self.row_cls_tokens = nn.Parameter(
-            0.02 * torch.randn(1, 1, n_cls_cols, embed_dim)
+            0.02 * torch.randn(1, 1, config.n_cls_cols, config.embed_dim)
         )
-        self.row_ln = nn.LayerNorm(embed_dim)
+        self.row_ln = nn.LayerNorm(config.embed_dim)
         self.out_ln = nn.LayerNorm(icl_dim)
         self.out_mlp = get_mlp(icl_dim, icl_dim * 2, 2)
 

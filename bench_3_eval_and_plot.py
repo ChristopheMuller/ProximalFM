@@ -4,8 +4,6 @@ import yaml
 import torch
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import r2_score
 
 from proximalfm.Model import ProximalNanoTabICLv2

@@ -68,3 +68,18 @@ class ProximalEpisode:
     Y1: Tensor
     U: Tensor
     propensity: Tensor
+
+@dataclass
+class ModelConfig:
+    embed_dim: int = 64
+    col_num_blocks: int = 3
+    row_num_blocks: int = 3
+    icl_num_blocks: int = 12
+    col_nhead: int = 8
+    row_nhead: int = 8
+    icl_nhead: int = 8
+    feature_group_size_x: int = 2
+    feature_group_size_w: int = 4
+    feature_group_size_z: int = 2
+    n_cls_cols: int = 4
+    n_cls_rows: int = 128

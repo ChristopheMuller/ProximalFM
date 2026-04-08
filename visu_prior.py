@@ -703,7 +703,6 @@ print("✓ Dashboard")
 # ─────────────────────────────────────────────────────────────────────────────
  
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score
  
 # ── Observed variables (what a learner actually sees) ──────────────────────
@@ -857,8 +856,8 @@ ate_p2sls    = float(stage2_model.coef_[0])
 cate_p2sls   = np.full(len(Y_np), ate_p2sls)
 
 print("── M4: P2SLS (Corrected) ──────────────────────────────────────────────")
-print(f"  Stage 1 features : A, X, Z → Ŵ")
-print(f"  Stage 2 features : A, X, Ŵ → Y")
+print("  Stage 1 features : A, X, Z → Ŵ")
+print("  Stage 2 features : A, X, Ŵ → Y")
 print(f"  β_A (causal ATE) : {ate_p2sls:+.4f}")
 print(f"  True ATE         : {ATE_true:+.4f}")
 print(f"  Bias             : {ate_p2sls - ATE_true:+.4f}")
