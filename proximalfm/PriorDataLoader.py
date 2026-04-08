@@ -6,9 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .Structure import ProximalPriorConfig
-from .Prior import ProximalPrior
-from .PriorLinear import ProximalPrior as ProximalPriorLinear
-from .PriorLinearConfounding import ProximalPrior as ProximalPriorLinearConfounding
+from .prior import BNNPrior, ConfoundingLinearPrior, LinearPrior
 
 
 class ProximalDataset(Dataset):
@@ -52,11 +50,11 @@ class ProximalDataset(Dataset):
             )
 
         if self.prior_config.type == "linear":
-            self.prior = ProximalPriorLinear(config=self.prior_config)
+            self.prior = LinearPrior(config=self.prior_config)
         elif self.prior_config.type == "linear_confounding":
-            self.prior = ProximalPriorLinearConfounding(config=self.prior_config)
+            self.prior = ConfoundingLinearPrior(config=self.prior_config)
         else:
-            self.prior = ProximalPrior(config=self.prior_config)
+            self.prior = BNNPrior(config=self.prior_config)
         self.num_episodes = num_episodes
         self.samples_per_episode = samples_per_episode
         self.base_seed_offset = seed_offset

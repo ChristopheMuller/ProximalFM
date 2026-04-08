@@ -17,13 +17,13 @@ if "numpy" not in sys.modules:
     sys.modules["numpy"] = mock_numpy
 
 # Now we can safely import from proximalfm
-from proximalfm.PriorLinear import ProximalPrior
+from proximalfm.prior import LinearPrior
 from proximalfm.Structure import ProximalEpisode, ProximalPriorConfig
 
 def test_episode_to_dataframe_linear():
     # Setup mock config and prior
     mock_config = ProximalPriorConfig(d_x=2, d_z=2, d_w=2, d_u=1)
-    prior = ProximalPrior(config=mock_config)
+    prior = LinearPrior(config=mock_config)
 
     # Setup mock episode with Tensors that have .cpu().numpy()
     batch_size = 5
@@ -60,7 +60,7 @@ def test_episode_to_dataframe_linear():
     )
 
     # We patch the exact reference used in the method under test
-    with patch("proximalfm.PriorLinear.pd.DataFrame") as mock_df_class:
+    with patch("proximalfm.prior.LinearPrior.pd.DataFrame") as mock_df_class:
         # Test without latents
         prior.episode_to_dataframe(episode, include_latents=False)
 
