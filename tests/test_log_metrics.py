@@ -94,7 +94,7 @@ def test_log_metrics_with_validation(trainer):
         "loss_total": 0.6, "loss_mse": 0.5, "loss_gnll": 0.15,
         "rmse": 0.3, "gnll": 0.12, "variance": 0.05, "time_s": 2.0,
         "cov50": 0.5, "cov95": 0.95, "cov99": 0.99,
-        "bias_sq": 0.01, "error_var": 0.04, "mse": 0.05, "r2": 0.9
+            "bias_sq": 0.01, "error_var": 0.04, "mse": 0.05, "r2": 0.9, "mspe": 0.01
     }
     epoch = 5
 
