@@ -329,10 +329,12 @@ class CATETrainer:
 
             residuals = pred_mean_orig - target_orig
             abs_error = residuals.abs()
+            percentage_errors = residuals / (target_orig + 1e-8)
 
             return {
                 "sum_sq_err": residuals.pow(2).sum().item(),
                 "sum_error": residuals.sum().item(),
+                "sum_sq_pe": percentage_errors.pow(2).sum().item(),
                 "sum_target": target_orig.sum().item(),
                 "sum_sq_target": target_orig.pow(2).sum().item(),
                 "sum_gnll": loss_gnll.item() * target_norm.numel(),
@@ -380,6 +382,7 @@ class CATETrainer:
         total_loss_mse = 0.0
         total_loss_gnll = 0.0
         sum_sq_err = 0.0
+        sum_sq_pe = 0.0
         total_gnll = 0.0
         total_samples = 0
         total_variance = 0.0
@@ -420,6 +423,7 @@ class CATETrainer:
                 )
 
                 sum_sq_err += metrics["sum_sq_err"]
+                sum_sq_pe += metrics["sum_sq_pe"]
                 total_gnll += metrics["sum_gnll"]
                 total_samples += metrics["num_samples"]
                 total_variance += metrics["variance_mean"]
@@ -442,6 +446,8 @@ class CATETrainer:
         cov95 = total_cov95 / max(total_samples, 1)
         cov99 = total_cov99 / max(total_samples, 1)
 
+        mspe = sum_sq_pe / max(total_samples, 1)
+
         self.train_losses.append(avg_loss)
         logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
 
@@ -451,6 +457,7 @@ class CATETrainer:
             "loss_gnll": avg_loss_gnll,
             "gnll": gnll,
             "rmse": rmse,
+            "mspe": mspe,
             "variance": avg_variance,
             "grad_norm": avg_grad_norm,
             "alpha": alpha_epoch_loss,
@@ -472,6 +479,7 @@ class CATETrainer:
         total_loss_total = 0.0
         total_variance = 0.0
         sum_sq_err = 0.0
+        sum_sq_pe = 0.0
         sum_gnll = 0.0
         total_samples = 0
         total_cov50 = 0
@@ -510,6 +518,7 @@ class CATETrainer:
                     )
 
                     sum_sq_err += metrics["sum_sq_err"]
+                    sum_sq_pe += metrics["sum_sq_pe"]
                     sum_error += metrics["sum_error"]
                     sum_target += metrics["sum_target"]
                     sum_sq_target += metrics["sum_sq_target"]
@@ -531,6 +540,7 @@ class CATETrainer:
         
         mse = sum_sq_err / denom
         rmse = np.sqrt(mse)
+        mspe = sum_sq_pe / denom
         
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
@@ -562,6 +572,7 @@ class CATETrainer:
             "loss_total": avg_loss_total,
             "rmse": rmse,
             "mse": mse,
+            "mspe": mspe,
             "r2": r2,
             "gnll": gnll,
             "bias": ite_bias,
@@ -646,6 +657,7 @@ class CATETrainer:
             self.writer.add_scalar("Loss/val_mse", val_metrics["loss_mse"], epoch)
             self.writer.add_scalar("Loss/val_gnll", val_metrics["loss_gnll"], epoch)
             self.writer.add_scalar("Metrics/val_rmse", val_metrics["rmse"], epoch)
+            self.writer.add_scalar("Metrics/val_mspe", val_metrics["mspe"], epoch)
             self.writer.add_scalar("Metrics/val_gnll", val_metrics["gnll"], epoch)
             self.writer.add_scalar(
                 "Metrics/val_variance", val_metrics["variance"], epoch
