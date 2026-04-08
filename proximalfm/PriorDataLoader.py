@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .Structure import ProximalPriorConfig
-from .prior import BNNPrior, ConfoundingLinearPrior, LinearPrior
+from .prior import BNNPrior, ConfoundingLinearPrior, LinearPrior, CATELinearPrior
 
 
 class ProximalDataset(Dataset):
@@ -53,6 +53,8 @@ class ProximalDataset(Dataset):
             self.prior = LinearPrior(config=self.prior_config)
         elif self.prior_config.type == "linear_confounding":
             self.prior = ConfoundingLinearPrior(config=self.prior_config)
+        elif self.prior_config.type == "cate_linear":
+            self.prior = CATELinearPrior(config=self.prior_config)
         else:
             self.prior = BNNPrior(config=self.prior_config)
         self.num_episodes = num_episodes
