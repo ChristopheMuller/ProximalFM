@@ -289,4 +289,9 @@ class ConfoundingLinearPrior:
         return X, U
 
 
-__all__ = ["ConfoundingLinearPrior", "ProximalEpisode", "ProximalPriorConfig", "NetworkSpec"]
+__all__ = [
+    "ConfoundingLinearPrior",
+    "ProximalEpisode",
+    "ProximalPriorConfig",
+    "NetworkSpec",
+]

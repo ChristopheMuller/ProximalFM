@@ -123,7 +123,9 @@ class CATETrainer:
 
         self.model = ProximalNanoTabICLv2(config=ModelConfig(**model_kwargs))
         self.model.to(self.device, dtype=self.dtype)
-        self.n_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        self.n_params = sum(
+            p.numel() for p in self.model.parameters() if p.requires_grad
+        )
         logger.info(f"Model parameters: {self.n_params:,}")
 
         # ------------------------------------------------------------------
@@ -149,7 +151,7 @@ class CATETrainer:
         start_checkpoint = self.train_cfg.get("start_checkpoint")
         if start_checkpoint:
             self._load_checkpoint(start_checkpoint)
-        
+
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
@@ -231,7 +233,7 @@ class CATETrainer:
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
-        torch.Tensor
+        torch.Tensor,
     ]:
         x = batch["X"].transpose(0, 1)
         z = batch["Z"].transpose(0, 1)
@@ -243,22 +245,23 @@ class CATETrainer:
 
         y_mean = y_context.mean(dim=1, keepdim=True)
         y_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        y_norm = (y_context - y_mean) / y_std        
+        y_norm = (y_context - y_mean) / y_std
         target_norm = (target - y_mean.unsqueeze(-1)) / y_std.unsqueeze(-1)
 
         def group_norm(tensor: torch.Tensor) -> torch.Tensor:
-            context_slice = tensor[:, :self.single_eval_pos, :]
-            
+            context_slice = tensor[:, : self.single_eval_pos, :]
+
             tensor_mean = context_slice.mean(dim=1, keepdim=True)
             tensor_std = context_slice.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-            
+
             return (tensor - tensor_mean) / tensor_std
 
         x = group_norm(x)
         z = group_norm(z)
         w = group_norm(w)
 
-        return x, a, w, z, y_norm, target_norm, y_mean, y_std    
+        return x, a, w, z, y_norm, target_norm, y_mean, y_std
+
     def _forward_and_loss(
         self,
         x: torch.Tensor,
@@ -283,11 +286,13 @@ class CATETrainer:
         self.optimizer.zero_grad()
         loss.backward()
 
-        if self.global_step % 32 == 0: 
+        if self.global_step % 32 == 0:
             for name, param in self.model.named_parameters():
                 if param.grad is not None:
                     layer_norm = param.grad.detach().norm(2).item()
-                    self.writer.add_scalar(f"GradNorm_Layers/{name}", layer_norm, self.global_step)
+                    self.writer.add_scalar(
+                        f"GradNorm_Layers/{name}", layer_norm, self.global_step
+                    )
         if self.train_cfg.get("clip_grad", 0.0) > 0:
             grad_norm = nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.train_cfg["clip_grad"]
@@ -363,7 +368,9 @@ class CATETrainer:
             raise FileNotFoundError(f"Start checkpoint not found: {checkpoint_path}")
 
         logger.info(f"Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        checkpoint = torch.load(
+            checkpoint_path, map_location=self.device, weights_only=False
+        )
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -378,7 +385,6 @@ class CATETrainer:
             self.best_val_loss = checkpoint["val_loss"]
 
         logger.info(f"Resumed training from epoch {self.start_epoch}")
-
 
     # ------------------------------------------------------------------
     # Train epoch
@@ -410,14 +416,18 @@ class CATETrainer:
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
-                x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(batch)
+                x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(
+                    batch
+                )
 
                 # Ensure target_norm has shape (B, N_query, 1) to match predictions
                 if target_norm.dim() == 2:
                     target_norm = target_norm.unsqueeze(-1)
 
                 loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
-                    self._forward_and_loss(x, a, w, z, y_norm, target_norm, alpha_epoch_loss)
+                    self._forward_and_loss(
+                        x, a, w, z, y_norm, target_norm, alpha_epoch_loss
+                    )
                 )
 
                 total_grad_norm += self._optimization_step(loss)
@@ -427,7 +437,12 @@ class CATETrainer:
                 total_loss_gnll += loss_gnll.item()
 
                 metrics = self._compute_batch_metrics(
-                    pred_mean_norm, pred_log_var_norm, target_norm, y_mean, y_std, loss_gnll
+                    pred_mean_norm,
+                    pred_log_var_norm,
+                    target_norm,
+                    y_mean,
+                    y_std,
+                    loss_gnll,
                 )
 
                 sum_sq_err += metrics["sum_sq_err"]
@@ -493,11 +508,11 @@ class CATETrainer:
         total_cov50 = 0
         total_cov95 = 0
         total_cov99 = 0
-        
-        sum_error = 0.0 
+
+        sum_error = 0.0
         sum_target = 0.0
         sum_sq_target = 0.0
-        
+
         val_start = time.time()
 
         alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
@@ -509,12 +524,20 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(batch)
+                    x, a, w, z, y_norm, target_norm, y_mean, y_std = (
+                        self._prepare_inputs(batch)
+                    )
                     if target_norm.dim() == 2:
                         target_norm = target_norm.unsqueeze(-1)
 
-                    loss_total, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
-                        self._forward_and_loss(x, a, w, z, y_norm, target_norm, alpha_epoch_loss)
+                    (
+                        loss_total,
+                        loss_mse,
+                        loss_gnll,
+                        pred_mean_norm,
+                        pred_log_var_norm,
+                    ) = self._forward_and_loss(
+                        x, a, w, z, y_norm, target_norm, alpha_epoch_loss
                     )
 
                     total_loss_gnll += loss_gnll.item()
@@ -522,7 +545,12 @@ class CATETrainer:
                     total_loss_total += loss_total.item()
 
                     metrics = self._compute_batch_metrics(
-                        pred_mean_norm, pred_log_var_norm, target_norm, y_mean, y_std, loss_gnll
+                        pred_mean_norm,
+                        pred_log_var_norm,
+                        target_norm,
+                        y_mean,
+                        y_std,
+                        loss_gnll,
                     )
 
                     sum_sq_err += metrics["sum_sq_err"]
@@ -545,21 +573,21 @@ class CATETrainer:
         avg_loss_gnll = total_loss_gnll / num_batches
         avg_loss_mse = total_loss_mse / num_batches
         avg_loss_total = total_loss_total / num_batches
-        
+
         mse = sum_sq_err / denom
         rmse = np.sqrt(mse)
         mspe = sum_sq_pe / denom
-        
+
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
-        ite_bias_sq = ite_bias ** 2
-        ite_error_var = mse - ite_bias_sq 
-        ss_tot = sum_sq_target - (sum_target ** 2) / denom
+        ite_bias_sq = ite_bias**2
+        ite_error_var = mse - ite_bias_sq
+        ss_tot = sum_sq_target - (sum_target**2) / denom
         if ss_tot > 1e-8:
             r2 = 1.0 - (sum_sq_err / ss_tot)
         else:
             r2 = 0.0
-        
+
         # Global metrics
         gnll = sum_gnll / denom
         avg_variance = total_variance / denom
@@ -572,7 +600,9 @@ class CATETrainer:
         self.val_rmses.append(rmse)
         self.scheduler.step(gnll)
 
-        logger.info(f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, R2={r2:.4f}, Bias={ite_bias:.4f}")
+        logger.info(
+            f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, R2={r2:.4f}, Bias={ite_bias:.4f}"
+        )
 
         return {
             "loss_gnll": avg_loss_gnll,
@@ -675,8 +705,12 @@ class CATETrainer:
             self.writer.add_scalar("Calibration/val_cov95", val_metrics["cov95"], epoch)
             self.writer.add_scalar("Calibration/val_cov99", val_metrics["cov99"], epoch)
 
-            self.writer.add_scalar("Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch)
-            self.writer.add_scalar("Bias-Variance/val_error_var", val_metrics["error_var"], epoch)
+            self.writer.add_scalar(
+                "Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch
+            )
+            self.writer.add_scalar(
+                "Bias-Variance/val_error_var", val_metrics["error_var"], epoch
+            )
             self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
 
             self.writer.add_scalar("Metrics/val_r2", val_metrics["r2"], epoch)
@@ -695,12 +729,12 @@ class CATETrainer:
         reset_freq = self.data_cfg.get("reset_freq_train", -1)
 
         epoch = self.start_epoch
-        last_val_nll = float('inf')
+        last_val_nll = float("inf")
         while epoch < self.train_cfg["epochs"]:
 
-            if hasattr(self.train_loader.dataset, 'set_reset_state') and reset_freq > 0:
+            if hasattr(self.train_loader.dataset, "set_reset_state") and reset_freq > 0:
                 self.train_loader.dataset.set_reset_state(epoch // reset_freq)
-            
+
             train_metrics = self.train_epoch(epoch)
             val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:

@@ -37,14 +37,18 @@ class ProximalNanoTabICLv2(nn.Module):
         self.row_blocks = nn.ModuleList(
             [
                 TransformerBlock(
-                    embed_dim=config.embed_dim, num_heads=config.row_nhead, use_rope=True
+                    embed_dim=config.embed_dim,
+                    num_heads=config.row_nhead,
+                    use_rope=True,
                 )
                 for _ in range(config.row_num_blocks)
             ]
         )
         self.icl_blocks = nn.ModuleList(
             [
-                TransformerBlock(embed_dim=icl_dim, num_heads=config.icl_nhead, ssmax=True)
+                TransformerBlock(
+                    embed_dim=icl_dim, num_heads=config.icl_nhead, ssmax=True
+                )
                 for _ in range(config.icl_num_blocks)
             ]
         )

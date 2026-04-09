@@ -51,7 +51,7 @@ class ProximalPriorConfig:
     device: str = "cpu"
     dtype: torch.dtype = torch.float32
 
-    confounding_strength: float = 1.0 # for high confounding prior only
+    confounding_strength: float = 1.0
 
 
 @dataclass
@@ -65,6 +65,7 @@ class ProximalEpisode:
     Y1: Tensor
     U: Tensor
     propensity: Tensor
+
 
 @dataclass
 class ModelConfig:
