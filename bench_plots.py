@@ -51,6 +51,41 @@ def plot_true_vs_pred_ate(csv_path: str):
     output_file = Path(csv_path).parent / "plot_ate_scatter.png"
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
+    plt.close()
+
+def plot_cate_r2_boxplot(csv_path: str):
+    df = pd.read_csv(csv_path)
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+    # Filter out homogeneous episodes where CATE R2 is undefined/NaN
+    df_valid = df.dropna(subset=["cate_r2_shape"]).copy()
+
+    plt.figure(figsize=(10, 6))
+
+    # Create the horizontal boxplot
+    ax = sns.boxplot(
+        data=df_valid,
+        x="cate_r2_shape",
+        y="method",
+        palette="viridis",
+    )
+
+    # Add reference lines for R^2 = 0 (predicting the mean) and R^2 = 1 (perfect)
+    ax.axvline(0, color="black", linestyle="--", alpha=0.6, label="R² = 0 (Baseline)")
+    ax.axvline(1, color="green", linestyle="--", alpha=0.6, label="R² = 1 (Perfect)")
+
+    # Clip the X-axis so massive negative outliers don't squash the plot
+    ax.set_xlim(-2.05, 1.05)
+
+    plt.title("CATE Estimation: R² (Shape) Distribution", fontsize=16, fontweight="bold")
+    plt.xlabel("CATE R² (pure shape recovery, ATE bias removed)")
+    plt.ylabel("")
+    plt.legend(loc="lower left")
+
+    output_file = Path(csv_path).parent / "plot_cate_r2_box.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print(f"Plot saved successfully to: {output_file}")
+    plt.close()
 
 
 if __name__ == "__main__":
@@ -61,3 +96,4 @@ if __name__ == "__main__":
 
     full_csv_path = Path("results") / args.exp / "results" / "results.csv"
     plot_true_vs_pred_ate(full_csv_path)
+    plot_cate_r2_boxplot(full_csv_path)
