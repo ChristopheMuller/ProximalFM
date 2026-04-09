@@ -145,6 +145,7 @@ class S_Learner(CATEEstimator):
     Args:
         base_model : a fitted sklearn-compatible estimator.
         use_W, use_Z: whether to include proxy variables as features.
+        interactions: whether to include A×X interaction terms.
     """
 
     def __init__(
@@ -152,8 +153,9 @@ class S_Learner(CATEEstimator):
         base_model,
         use_W: bool = True,
         use_Z: bool = True,
+        interactions: bool = False,
     ):
-        self.fb    = FeatureBuilder(use_W=use_W, use_Z=use_Z)
+        self.fb    = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=interactions) 
         self.model = base_model
 
     def fit(self, X, A, Y, *, W=None, Z=None):
@@ -392,6 +394,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             base_model=_make_base_model(cfg.get("base", "linear")),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+            interactions=cfg.get("interactions", False), 
         )
 
     elif cls == "T_Learner":

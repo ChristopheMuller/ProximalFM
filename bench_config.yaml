@@ -70,17 +70,25 @@ methods:
     use_W: true
     use_Z: true
 
+  - name: S-OLS(W,Z)+AX
+    cls:   S_Learner
+    base:  linear
+    use_W: true
+    use_Z: true
+    interactions: true
+
   - name: S-RF(W,Z)
     cls:   S_Learner
     base:  rf
     use_W: true
     use_Z: true
 
-  - name: S-OLS(no-proxy)
+  - name: S-TabICL(W,Z)
     cls:   S_Learner
-    base:  linear
-    use_W: false
-    use_Z: false
+    base:  tabicl
+    use_W: true
+    use_Z: true
+    interactions: false
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS(W,Z)

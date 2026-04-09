@@ -228,13 +228,16 @@ def make_ate_rich_table(ate_summary: pd.DataFrame, title: str = "ATE Estimation"
     for col in ate_summary.columns:
         tbl.add_column(col, justify="right")
 
+    medAE_015 = ate_summary["MedAE"].quantile(0.15)
+    medAE_085 = ate_summary["MedAE"].quantile(0.85)
+
     for method, row in ate_summary.iterrows():
-        # Colour the Bias column: green if |bias| < 0.05, yellow < 0.2, red otherwise
-        bias = abs(row["Bias"])
-        bias_style = "green" if bias < 0.05 else ("yellow" if bias < 0.2 else "red")
+        # Colour the MedAE column: green if |MedAE| < 0.05, yellow < 0.2, red otherwise
+        medAE = abs(row["MedAE"])
+        medAE_style = "green" if medAE < medAE_015 else ("yellow" if medAE < medAE_085 else "red")
         cells = []
         for i, val in enumerate(row):
-            style = bias_style if ate_summary.columns[i] == "Bias" else ""
+            style = medAE_style if ate_summary.columns[i] == "MedAE" else ""
             cells.append(f"[{style}]{val}[/{style}]" if style else str(val))
         tbl.add_row(str(method), *cells)
 
