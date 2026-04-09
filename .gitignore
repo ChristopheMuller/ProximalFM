@@ -6,3 +6,4 @@ runs/*
 .venv/
 
 eval_data/*
+results/*

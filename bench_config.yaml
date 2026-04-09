@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# bench_config.yaml — Single source of truth for the entire benchmark.
+#
+# WHY a single config file?
+#   Reproducibility: one file captures every experimental choice.
+#   You can commit it to git alongside your results and know exactly
+#   what produced them.  Changing one flag here propagates everywhere.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Data ──────────────────────────────────────────────────────────────────────
+data:
+  # "generate" creates new data from the prior; "load" reuses a saved file.
+  # If generate is chosen and data.pt already exists, it is reused
+  # (use run.force_regen: true to overwrite).
+  source: generate
+  output_dir: results/first_test
+
+  # ── Dataset sizes ────────────────────────────────────────────────────────
+  n_train: 218    # context samples shown to each estimator
+  n_test:  38     # query samples for evaluation  (n_test > 1 enables CATE R²)
+  n_batch: 500    # number of independent datasets (episodes)
+
+  # ── Prior (only used when source=generate; paste the one from the checkpoints)
+  prior:
+    confounding_strength: 1
+    d_x: 5
+    d_u: 2
+    d_w: 3
+    d_z: 3
+    noise_scale_w: 1
+    noise_scale_x: 1
+    noise_scale_z: 1
+    temperature: 2
+    type: cate_linear
+
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+run:
+  seed:      1234
+  n_workers: 8      # parallel worker processes for baseline methods
+  device: mps       # cpu | cuda | mps  — only used for neural checkpoints
+  force_rerun: false
+  # If force_rerun is false, any method whose prediction file already exists
+  # is skipped.  Flip to true to recompute everything from scratch.
+
+
+# ── Methods ───────────────────────────────────────────────────────────────────
+# Each entry configures one CATE estimator instance.
+#
+# Required keys
+#   name : display label (must be filesystem-safe, used as filename stem)
+#   cls  : class from bench_methods.py — S_Learner | T_Learner | P2SLS
+#
+# Optional keys (depend on cls)
+#   base        : "linear" | "rf" | "tabicl"   (S/T-Learner only)
+#   use_W       : include outcome proxy W       (S/T-Learner, default true)
+#   use_Z       : include treatment proxy Z     (S/T-Learner, default true)
+#   interactions: A×X interaction terms in stage 2 (P2SLS only, default false)
+#
+# WHY configure instances rather than subclasses?
+#   A method "S-OLS without proxies" and "S-OLS with proxies" differ only
+#   in use_W/use_Z.  Encoding that as two config entries is far less code
+#   than two new subclasses, and the comparison is immediately legible here.
+methods:
+
+  # ── S-Learner baselines ──────────────────────────────────────────────────
+  - name: S-OLS(W,Z)
+    cls:   S_Learner
+    base:  linear
+    use_W: true
+    use_Z: true
+
+  - name: S-RF(W,Z)
+    cls:   S_Learner
+    base:  rf
+    use_W: true
+    use_Z: true
+
+  - name: S-OLS(no-proxy)
+    cls:   S_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+
+  # ── T-Learner baselines ──────────────────────────────────────────────────
+  - name: T-OLS(W,Z)
+    cls:   T_Learner
+    base:  linear
+    use_W: true
+    use_Z: true
+
+  - name: T-OLS(no-proxy)
+    cls:   T_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+
+  # ── Proximal baselines ───────────────────────────────────────────────────
+  - name: P2SLS
+    cls:          P2SLS
+    interactions: false
+
+  - name: P2SLS+AX
+    cls:          P2SLS
+    interactions: true
+
+# ── Neural model checkpoints ─────────────────────────────────────────────────
+
+models:
+  - name:       cate_very_small
+    checkpoint: checkpoints/very_small
+
+  - name:       cate_mini
+    checkpoint: checkpoints/mini
+
+  - name:       dim64
+    checkpoint: checkpoints/dim64_but_only_4_blocks
