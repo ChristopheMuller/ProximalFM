@@ -344,14 +344,6 @@ class CATETrainer:
             abs_error = residuals.abs()
             percentage_errors = residuals / (target_orig + 1e-8)
 
-            # To compute proper CATE R2 per episode globally, we must accumulate
-            # the sums of squares per episode, not average batch-level R2.
-            # But wait, episodes DO NOT span across multiple batches!
-            # The DataLoader groups them as (N, B, D) where B is batch size
-            # and N is all samples for that episode. So each column in dim 1
-            # is a full, complete episode.
-            # So `residuals.pow(2).sum(dim=0)` IS the total SS_res for that episode.
-
             # CATE R2 per episode
             ss_res_episode = residuals.pow(2).sum(dim=0)
             target_mean_episode = target_orig.mean(dim=0, keepdim=True)
