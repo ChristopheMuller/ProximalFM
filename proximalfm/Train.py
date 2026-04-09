@@ -205,6 +205,9 @@ class CATETrainer:
         prior_config_save_path = os.path.join(path_dir, "prior_config.yaml")
         with open(prior_config_save_path, "w") as f:
             yaml.dump(self.prior_cfg, f)
+        data_config_save_path = os.path.join(path_dir, "data_config.yaml")
+        with open(data_config_save_path, "w") as f:
+            yaml.dump(config.get("data", {}), f)
 
     # ------------------------------------------------------------------
     # Helpers
