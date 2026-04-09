@@ -344,6 +344,29 @@ class CATETrainer:
             abs_error = residuals.abs()
             percentage_errors = residuals / (target_orig + 1e-8)
 
+            # To compute proper CATE R2 per episode globally, we must accumulate
+            # the sums of squares per episode, not average batch-level R2.
+            # But wait, episodes DO NOT span across multiple batches!
+            # The DataLoader groups them as (N, B, D) where B is batch size
+            # and N is all samples for that episode. So each column in dim 1
+            # is a full, complete episode.
+            # So `residuals.pow(2).sum(dim=0)` IS the total SS_res for that episode.
+
+            # CATE R2 per episode
+            ss_res_episode = residuals.pow(2).sum(dim=0)
+            target_mean_episode = target_orig.mean(dim=0, keepdim=True)
+            ss_tot_episode = (target_orig - target_mean_episode).pow(2).sum(dim=0)
+            r2_episode = torch.where(
+                ss_tot_episode > 1e-8,
+                1.0 - (ss_res_episode / ss_tot_episode),
+                torch.zeros_like(ss_tot_episode)
+            )
+
+            # ATE statistics per episode (each episode is fully contained in this batch)
+            ate_true_episode = target_orig.mean(dim=0)
+            ate_pred_episode = pred_mean_orig.mean(dim=0)
+            ate_residuals = ate_pred_episode - ate_true_episode
+
             return {
                 "sum_sq_err": residuals.pow(2).sum().item(),
                 "sum_error": residuals.sum().item(),
@@ -357,6 +380,12 @@ class CATETrainer:
                 "cov50": (abs_error <= 0.674 * pred_std_orig).float().sum().item(),
                 "cov95": (abs_error <= 1.960 * pred_std_orig).float().sum().item(),
                 "cov99": (abs_error <= 2.576 * pred_std_orig).float().sum().item(),
+                # New metrics
+                "sum_cate_r2": r2_episode.sum().item(),
+                "num_episodes": target_orig.size(1),
+                "sum_ate_true": ate_true_episode.sum().item(),
+                "sum_sq_ate_true": ate_true_episode.pow(2).sum().item(),
+                "sum_sq_ate_err": ate_residuals.pow(2).sum().item(),
             }
 
     def _load_checkpoint(self, checkpoint_path: str) -> None:
@@ -404,6 +433,12 @@ class CATETrainer:
         total_cov50 = 0
         total_cov95 = 0
         total_cov99 = 0
+
+        total_cate_r2 = 0.0
+        total_episodes = 0
+        total_ate_true = 0.0
+        total_sq_ate_true = 0.0
+        total_sq_ate_err = 0.0
 
         epoch_start = time.time()
 
@@ -453,6 +488,12 @@ class CATETrainer:
                 total_cov50 += metrics["cov50"]
                 total_cov95 += metrics["cov95"]
                 total_cov99 += metrics["cov99"]
+
+                total_cate_r2 += metrics["sum_cate_r2"]
+                total_episodes += metrics["num_episodes"]
+                total_ate_true += metrics["sum_ate_true"]
+                total_sq_ate_true += metrics["sum_sq_ate_true"]
+                total_sq_ate_err += metrics["sum_sq_ate_err"]
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -513,6 +554,12 @@ class CATETrainer:
         sum_target = 0.0
         sum_sq_target = 0.0
 
+        total_cate_r2 = 0.0
+        total_episodes = 0
+        total_ate_true = 0.0
+        total_sq_ate_true = 0.0
+        total_sq_ate_err = 0.0
+
         val_start = time.time()
 
         alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
@@ -565,6 +612,12 @@ class CATETrainer:
                     total_cov95 += metrics["cov95"]
                     total_cov99 += metrics["cov99"]
 
+                    total_cate_r2 += metrics["sum_cate_r2"]
+                    total_episodes += metrics["num_episodes"]
+                    total_ate_true += metrics["sum_ate_true"]
+                    total_sq_ate_true += metrics["sum_sq_ate_true"]
+                    total_sq_ate_err += metrics["sum_sq_ate_err"]
+
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
 
@@ -582,11 +635,17 @@ class CATETrainer:
         ite_bias = sum_error / denom
         ite_bias_sq = ite_bias**2
         ite_error_var = mse - ite_bias_sq
-        ss_tot = sum_sq_target - (sum_target**2) / denom
-        if ss_tot > 1e-8:
-            r2 = 1.0 - (sum_sq_err / ss_tot)
+
+        # CATE R2 Mean (per episode)
+        cate_r2_mean = total_cate_r2 / max(total_episodes, 1)
+
+        # ATE R2 (across episodes)
+        episodes_denom = max(total_episodes, 1)
+        ss_tot_ate = total_sq_ate_true - (total_ate_true**2) / episodes_denom
+        if ss_tot_ate > 1e-8:
+            ate_r2 = 1.0 - (total_sq_ate_err / ss_tot_ate)
         else:
-            r2 = 0.0
+            ate_r2 = 0.0
 
         # Global metrics
         gnll = sum_gnll / denom
@@ -601,7 +660,7 @@ class CATETrainer:
         self.scheduler.step(gnll)
 
         logger.info(
-            f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, R2={r2:.4f}, Bias={ite_bias:.4f}"
+            f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
         )
 
         return {
@@ -611,7 +670,8 @@ class CATETrainer:
             "rmse": rmse,
             "mse": mse,
             "mspe": mspe,
-            "r2": r2,
+            "cate_r2_mean": cate_r2_mean,
+            "ate_r2": ate_r2,
             "gnll": gnll,
             "bias": ite_bias,
             "bias_sq": ite_bias_sq,
@@ -713,7 +773,8 @@ class CATETrainer:
             )
             self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
 
-            self.writer.add_scalar("Metrics/val_r2", val_metrics["r2"], epoch)
+            self.writer.add_scalar("Metrics/val_cate_r2_mean", val_metrics["cate_r2_mean"], epoch)
+            self.writer.add_scalar("Metrics/val_ate_r2", val_metrics["ate_r2"], epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
