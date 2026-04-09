@@ -22,7 +22,7 @@ Pipeline
 Design notes
 ────────────
 * Incremental saving
-    Each method's predictions are saved to {output_dir}/{name}_preds.npz
+    Each method's predictions are saved to {output_dir}/preds/{name}_preds.npz
     as soon as they complete.  If the process is interrupted and restarted,
     already-saved methods are skipped automatically.  Pass --force to redo.
 
@@ -353,7 +353,7 @@ def run_neural_model(
     data: dict,
     prior_cfg: dict,
     device_str: str,
-    output_dir: Path,
+    preds_dir: Path,
     force: bool,
 ) -> tuple[str, np.ndarray] | None:
     """Load a ProximalNanoTabICLv2 checkpoint and run inference.
@@ -369,7 +369,7 @@ def run_neural_model(
 
     name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
-    pred_file = output_dir / f"{name}_preds.npz"
+    pred_file = preds_dir / f"{name}_preds.npz"
 
     if pred_file.exists() and not force:
         console.print(f"    [dim]Skip {name!r} — predictions already saved.[/]")
@@ -495,7 +495,13 @@ def main() -> None:
 
     cfg = load_config(args.config)
     output_dir = Path(cfg["data"]["output_dir"])
+    preds_dir = output_dir / "preds"
+    results_dir = output_dir / "results"
+
     output_dir.mkdir(parents=True, exist_ok=True)
+    preds_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     force = args.force or cfg["run"].get("force_rerun", False)
     n_workers = cfg["run"].get("n_workers", max(1, (os.cpu_count() or 4) - 2))
 
@@ -557,7 +563,7 @@ def main() -> None:
     with progress:
         for mcfg in method_cfgs:
             name = mcfg["name"]
-            pred_file = output_dir / f"{name}_preds.npz"
+            pred_file = preds_dir / f"{name}_preds.npz"
 
             if pred_file.exists() and not force:
                 preds = np.load(pred_file)["preds"]
@@ -575,9 +581,7 @@ def main() -> None:
 
             # Incremental save
             np.savez(pred_file, preds=preds)
-            console.print(
-                f"  [green]✓[/] {name:<28} saved  " f"[dim]({elapsed:.1f}s)[/]"
-            )
+            console.print(f"  [green]✓[/] {name:<28} saved  [dim]({elapsed:.1f}s)[/]")
             accumulated[name] = preds
 
             # Show partial results after each method completes
@@ -591,7 +595,7 @@ def main() -> None:
         device = cfg["run"].get("device", "cpu")
 
         for mcfg in model_cfgs:
-            result = run_neural_model(mcfg, data, prior_cfg, device, output_dir, force)
+            result = run_neural_model(mcfg, data, prior_cfg, device, preds_dir, force)
             if result is not None:
                 name, preds = result
                 accumulated[name] = preds
@@ -618,10 +622,10 @@ def main() -> None:
     console.print(Padding(make_cate_rich_table(cate_summary), (1, 4)))
 
     # Save full episode-level results for further analysis
-    results_csv = output_dir / "results.csv"
+    results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)
-    ate_summary.to_csv(output_dir / "ate_summary.csv")
-    cate_summary.to_csv(output_dir / "cate_summary.csv")
+    ate_summary.to_csv(results_dir / "ate_summary.csv")
+    cate_summary.to_csv(results_dir / "cate_summary.csv")
 
     console.print(f"  [green]✓[/] Full results → [cyan]{results_csv}[/]")
     console.print(Rule("[bold green]Done[/]"))
