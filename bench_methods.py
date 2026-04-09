@@ -25,7 +25,6 @@ Design principles
 from __future__ import annotations
 
 from typing import Callable, Optional
-
 import warnings
 
 # Add this at the very top of your script
@@ -37,38 +36,67 @@ from sklearn.ensemble import RandomForestRegressor
 
 try:
     from tabicl import TabICLRegressor
-
     _TABICL_AVAILABLE = True
 except ImportError:
     _TABICL_AVAILABLE = False
 
 import sys
 import os
-
 import torch
 
 # --- CausalFM Setup ---
+## assumes you did: "git clone https://github.com/yccm/CausalFM-toolkit.git CausalFM" beforehand
 toolkit_path = os.path.abspath("CausalFM")
 if toolkit_path not in sys.path:
     sys.path.append(toolkit_path)
 try:
     import causalfm
     from causalfm.models import StandardCATEModel
-
     _CAUSALFM_AVAILABLE = True
 except ImportError:
     _CAUSALFM_AVAILABLE = False
 
 # --- DoPFN Setup ---
+## assumes you did: "git clone https://github.com/yccm/DoPFN.git DoPFN" beforehand
 dopfn_path = os.path.abspath("DoPFN")
 if dopfn_path not in sys.path:
     sys.path.append(dopfn_path)
 try:
     from DoPFN.scripts.transformer_prediction_interface.base import DoPFNRegressor
-
     _DOPFN_AVAILABLE = True
 except ImportError:
     _DOPFN_AVAILABLE = False
+
+# --- CausalPFN Setup (with FAISS Monkeypatch) ---
+try:
+    # 1. Stop PyTorch and FAISS from fighting over Mac C++ threads
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    os.environ["KMP_DUPLICATE_OK"] = "True"
+
+    import faiss
+
+    # 2. Monkeypatch FAISS to protect it from internal data corruption
+    _original_add = faiss.IndexFlatL2.add
+    _original_search = faiss.IndexFlatL2.search
+
+    def _safe_add(self, x):
+        x_safe = np.ascontiguousarray(x, dtype=np.float32)
+        return _original_add(self, x_safe)
+
+    def _safe_search(self, x, k):
+        x_safe = np.ascontiguousarray(x, dtype=np.float32)
+        return _original_search(self, x_safe, k)
+
+    faiss.IndexFlatL2.add = _safe_add
+    faiss.IndexFlatL2.search = _safe_search
+
+    # Alias the import so it doesn't collide with the CATEEstimator base class!
+    from causalpfn import CATEEstimator as CausalPFN_Model
+    _CAUSALPFN_AVAILABLE = True
+except ImportError:
+    _CAUSALPFN_AVAILABLE = False
 
 
 from contextlib import contextmanager
@@ -156,11 +184,11 @@ class FeatureBuilder:
         if A is not None:
             a = np.asarray(A, dtype=float)
             if a.ndim == 1:
-                a = a[:, None]  # (n,) → (n, 1)
+                a = a[:, None]
             parts.append(a)
 
             if self.interaction_AX:
-                parts.append(a * X)  # (n, d_x) — effect heterogeneity terms
+                parts.append(a * X)
 
         return np.hstack(parts)
 
@@ -171,8 +199,6 @@ class FeatureBuilder:
 
 
 class CATEEstimator:
-    """Abstract base class.  Subclasses must implement fit() and predict()."""
-
     def fit(
         self,
         X: np.ndarray,
@@ -257,7 +283,7 @@ class T_Learner(CATEEstimator):
         self.model1 = base_model_factory()
 
     def fit(self, X, A, Y, *, W=None, Z=None):
-        feat = self.fb.build(X, W=W, Z=Z)  # A excluded
+        feat = self.fb.build(X, W=W, Z=Z)
         mask0 = A == 0
         mask1 = A == 1
         if mask0.any():
@@ -415,8 +441,8 @@ class P2SLS(CATEEstimator):
 # Foundation Model Wrappers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# MODULE-LEVEL CACHE FOR CAUSALFM
 _CAUSALFM_CACHE = {}
+_CAUSALPFN_CACHE = {}
 
 
 class CausalFM_Estimator(CATEEstimator):
@@ -508,8 +534,7 @@ class DoPFN_Estimator(CATEEstimator):
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
-        # DoPFN expects A concatenated with features.
-        # FeatureBuilder inherently handles this.
+        
         feat = self.fb.build(X, A=A, W=W, Z=Z)
 
         with silent():
@@ -535,6 +560,51 @@ class DoPFN_Estimator(CATEEstimator):
             pred0 = pred0.detach().cpu().numpy()
 
         return (pred1 - pred0).squeeze()
+
+
+class CausalPFN_Estimator(CATEEstimator):
+    def __init__(
+        self,
+        use_W: bool = True,
+        use_Z: bool = True,
+    ):
+        if not _CAUSALPFN_AVAILABLE:
+            raise ImportError("causalpfn is not installed or the FAISS patch failed.")
+
+        torch.set_num_threads(1)
+
+        if "default" not in _CAUSALPFN_CACHE:
+            with silent():
+                # verbose=False might help silence it further natively
+                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(device="cpu", verbose=False)
+
+        self.model = _CAUSALPFN_CACHE["default"]
+        
+        # We don't build A into the features because CausalPFN takes it explicitly
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+
+        # Enforce C-contiguous memory, float32, and 1D shapes for A and Y
+        X_train = np.ascontiguousarray(feat, dtype=np.float32)
+        A_train = np.ascontiguousarray(A.ravel(), dtype=np.float32)
+        Y_train = np.ascontiguousarray(Y.ravel(), dtype=np.float32)
+
+        with silent():
+            self.model.fit(X_train, A_train, Y_train)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+        
+        # Enforce C-contiguous float32 for inference
+        X_test = np.ascontiguousarray(feat, dtype=np.float32)
+
+        with silent():
+            estimated_cate = self.model.estimate_cate(X_test)
+
+        return np.asarray(estimated_cate).squeeze()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -585,8 +655,6 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
 
     elif cls == "T_Learner":
         base_name = cfg.get("base", "linear")
-        # Pass a factory (not an instance) so T_Learner can create two
-        # independent model objects.  The lambda captures base_name by value.
         method = T_Learner(
             base_model_factory=lambda bn=base_name: _make_base_model(bn),
             use_W=cfg.get("use_W", True),
@@ -609,10 +677,16 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_Z=cfg.get("use_Z", True),
         )
 
+    elif cls == "CausalPFN":
+        method = CausalPFN_Estimator(
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        )
+
     else:
         raise ValueError(
             f"Unknown method class {cls!r}. "
-            "Valid choices: 'S_Learner', 'T_Learner', 'P2SLS', 'CausalFM', 'DoPFN'."
+            "Valid choices: 'S_Learner', 'T_Learner', 'P2SLS', 'CausalFM', 'DoPFN', 'CausalPFN'."
         )
 
     return name, method

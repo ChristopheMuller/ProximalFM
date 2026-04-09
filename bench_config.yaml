@@ -123,6 +123,11 @@ methods:
     cls:  DoPFN
     use_W: true
     use_Z: true
+  
+  - name: CausalPFN(W,Z)
+    cls:  CausalPFN
+    use_W: true
+    use_Z: true
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
