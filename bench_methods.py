@@ -26,6 +26,11 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+import warnings
+
+# Add this at the very top of your script
+warnings.simplefilter(action="ignore", category=FutureWarning)
+
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
@@ -42,6 +47,7 @@ import os
 
 import torch
 
+# --- CausalFM Setup ---
 toolkit_path = os.path.abspath("CausalFM")
 if toolkit_path not in sys.path:
     sys.path.append(toolkit_path)
@@ -53,19 +59,42 @@ try:
 except ImportError:
     _CAUSALFM_AVAILABLE = False
 
+# --- DoPFN Setup ---
+dopfn_path = os.path.abspath("DoPFN")
+if dopfn_path not in sys.path:
+    sys.path.append(dopfn_path)
+try:
+    from DoPFN.scripts.transformer_prediction_interface.base import DoPFNRegressor
+
+    _DOPFN_AVAILABLE = True
+except ImportError:
+    _DOPFN_AVAILABLE = False
+
+
 from contextlib import contextmanager
 
 
 @contextmanager
 def silent():
-    """Context manager to suppress stdout (print statements)."""
+    """Context manager to suppress stdout, stderr, and Python warnings."""
     with open(os.devnull, "w") as devnull:
+        # Save the original streams
         old_stdout = sys.stdout
+        old_stderr = sys.stderr
+
+        # Redirect both stdout and stderr to the black hole
         sys.stdout = devnull
-        try:
-            yield
-        finally:
-            sys.stdout = old_stdout
+        sys.stderr = devnull
+
+        # Catch and ignore all PyTorch/Python warnings temporarily
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                yield
+            finally:
+                # Restore the original streams
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -383,8 +412,11 @@ class P2SLS(CATEEstimator):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CausalFM wrapper
+# Foundation Model Wrappers
 # ─────────────────────────────────────────────────────────────────────────────
+
+# MODULE-LEVEL CACHE FOR CAUSALFM
+_CAUSALFM_CACHE = {}
 
 
 class CausalFM_Estimator(CATEEstimator):
@@ -406,9 +438,16 @@ class CausalFM_Estimator(CATEEstimator):
                 "Ensure it is installed or your sys.path is configured correctly."
             )
 
-        # Load the model once
-        with silent():
-            self.model = StandardCATEModel.from_pretrained(checkpoint_path)
+        torch.set_num_threads(1)
+
+        if checkpoint_path not in _CAUSALFM_CACHE:
+            with silent():
+                _CAUSALFM_CACHE[checkpoint_path] = StandardCATEModel.from_pretrained(
+                    checkpoint_path
+                )
+
+        self.model = _CAUSALFM_CACHE[checkpoint_path]
+
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
         # Placeholders for in-context training data
@@ -428,9 +467,7 @@ class CausalFM_Estimator(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         if self.ctx_x is None:
-            raise ValueError(
-                "Must call fit() to provide context before calling predict()."
-            )
+            raise ValueError("Must call fit() before predict().")
 
         # Build test covariate matrix
         feat = self.fb.build(X, W=W, Z=Z)
@@ -443,6 +480,61 @@ class CausalFM_Estimator(CATEEstimator):
 
         # Convert back to numpy array of shape (n,)
         return result["cate"].cpu().numpy().squeeze()
+
+
+class DoPFN_Estimator(CATEEstimator):
+    """Wrapper for DoPFNRegressor.
+
+    Uses in-context learning by storing the training data via .fit() and
+    evaluating counterfactuals during .predict().
+    """
+
+    def __init__(
+        self,
+        use_W: bool = True,
+        use_Z: bool = True,
+    ):
+        if not _DOPFN_AVAILABLE:
+            raise ImportError(
+                "DoPFN is not installed or cannot be found. "
+                "Ensure it is installed and sys.path is correct."
+            )
+
+        torch.set_num_threads(1)
+
+        with silent():
+            self.model = DoPFNRegressor()
+
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        # DoPFN expects A concatenated with features.
+        # FeatureBuilder inherently handles this.
+        feat = self.fb.build(X, A=A, W=W, Z=Z)
+
+        with silent():
+            self.model.fit(feat, Y)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        n = X.shape[0]
+
+        # Build counterfactual covariate matrices
+        feat1 = self.fb.build(X, A=np.ones(n), W=W, Z=Z)
+        feat0 = self.fb.build(X, A=np.zeros(n), W=W, Z=Z)
+
+        with silent():
+            with torch.no_grad():
+                pred1 = self.model.predict(torch.Tensor(feat1))
+                pred0 = self.model.predict(torch.Tensor(feat0))
+
+        # Convert to numpy and calculate CATE (Y1 - Y0)
+        if isinstance(pred1, torch.Tensor):
+            pred1 = pred1.detach().cpu().numpy()
+        if isinstance(pred0, torch.Tensor):
+            pred0 = pred0.detach().cpu().numpy()
+
+        return (pred1 - pred0).squeeze()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -463,10 +555,7 @@ def _make_base_model(name: str):
         return RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42)
     if name == "tabicl":
         if not _TABICL_AVAILABLE:
-            raise ImportError(
-                "tabicl is not installed. Run `pip install tabicl` or remove "
-                "TabICL methods from bench_config.yaml."
-            )
+            raise ImportError("tabicl is not installed.")
         return TabICLRegressor()
     raise ValueError(f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'.")
 
@@ -514,10 +603,16 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_Z=cfg.get("use_Z", True),
         )
 
+    elif cls == "DoPFN":
+        method = DoPFN_Estimator(
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        )
+
     else:
         raise ValueError(
             f"Unknown method class {cls!r}. "
-            "Valid choices: 'S_Learner', 'T_Learner', 'P2SLS'."
+            "Valid choices: 'S_Learner', 'T_Learner', 'P2SLS', 'CausalFM', 'DoPFN'."
         )
 
     return name, method

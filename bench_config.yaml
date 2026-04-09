@@ -119,6 +119,11 @@ methods:
     use_W: false
     use_Z: false
 
+  - name: DoPFN(W,Z)
+    cls:  DoPFN
+    use_W: true
+    use_Z: true
+
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:

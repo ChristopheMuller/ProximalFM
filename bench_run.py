@@ -640,6 +640,6 @@ if __name__ == "__main__":
     # On Windows "spawn" is the only option — the benchmark still works, just
     # slower to start each worker.
     if sys.platform != "win32":
-        multiprocessing.set_start_method("fork", force=True)
+        multiprocessing.set_start_method("spawn", force=True)
 
     main()
