@@ -87,6 +87,7 @@ try:
     from proximalfm.Structure import ProximalPriorConfig, ModelConfig
     from proximalfm.PriorDataLoader import create_causal_data_loaders
     from proximalfm.Model import ProximalNanoTabICLv2
+
     _PROXFM_AVAILABLE = True
 except ImportError:
     _PROXFM_AVAILABLE = False
@@ -97,6 +98,7 @@ console = Console()
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def load_config(path: str) -> dict:
     with open(path) as f:
@@ -112,6 +114,7 @@ def load_config(path: str) -> dict:
 # Step 1 — Data
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     """Generate synthetic datasets from the prior and save to disk."""
     if not _PROXFM_AVAILABLE:
@@ -120,11 +123,11 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
             "existing data file, or install proximalfm to generate new data."
         )
 
-    n_train  = data_cfg["n_train"]
-    n_test   = data_cfg["n_test"]
-    n_batch  = data_cfg["n_batch"]
+    n_train = data_cfg["n_train"]
+    n_test = data_cfg["n_test"]
+    n_batch = data_cfg["n_batch"]
     prior_kw = data_cfg["prior"].copy()
-    seed     = run_cfg.get("seed", 42)
+    seed = run_cfg.get("seed", 42)
 
     prior_kw["dtype"] = torch.float32
     prior_config = ProximalPriorConfig(**prior_kw)
@@ -153,7 +156,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         # true_ITEs: (n_batch, n_test) — test-set ground truth
         "true_ITEs": batch["ITE"][n_train:, :, 0].transpose(0, 1).cpu().numpy(),
         "N_TRAIN": n_train,
-        "N_TEST":  n_test,
+        "N_TEST": n_test,
         "N_BATCH": n_batch,
     }
     torch.save(data, output_dir / "data.pt")
@@ -167,7 +170,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
 def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     """Return dataset dict — generate or load depending on config."""
     data_path = output_dir / "data.pt"
-    source    = cfg["data"].get("source", "generate")
+    source = cfg["data"].get("source", "generate")
 
     if source == "generate" and (force_regen or not data_path.exists()):
         return _generate_data(cfg["data"], cfg["run"], output_dir)
@@ -198,7 +201,7 @@ def build_batches(data: dict) -> list[dict]:
 
     return [
         {
-            "b":     b,
+            "b": b,
             # Training context (seen by the estimator during fit)
             "X_ctx": X_np[b, :N_TRAIN],
             "W_ctx": W_np[b, :N_TRAIN],
@@ -206,9 +209,9 @@ def build_batches(data: dict) -> list[dict]:
             "A_ctx": A_np[b, :N_TRAIN, 0],  # squeeze feature dim; A is scalar
             "Y_ctx": Y_np[b, :N_TRAIN, 0],
             # Query points (held-out test set)
-            "X_q":   X_np[b, N_TRAIN:],
-            "W_q":   W_np[b, N_TRAIN:],
-            "Z_q":   Z_np[b, N_TRAIN:],
+            "X_q": X_np[b, N_TRAIN:],
+            "W_q": W_np[b, N_TRAIN:],
+            "Z_q": Z_np[b, N_TRAIN:],
         }
         for b in range(data["N_BATCH"])
     ]
@@ -217,6 +220,7 @@ def build_batches(data: dict) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 2 — Parallel method runner
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _worker(args: tuple) -> tuple[int, np.ndarray | None, str | None]:
     """Worker function: fit one method on one batch and return predictions.
@@ -257,8 +261,8 @@ def run_method_parallel(
     Returns:
         preds array of shape (n_batch, n_test).  NaN where a batch failed.
     """
-    n_batch  = len(batches)
-    preds    = np.full((n_batch, n_test), np.nan, dtype=np.float32)
+    n_batch = len(batches)
+    preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
     n_errors = 0
 
     task = progress.add_task(
@@ -268,10 +272,16 @@ def run_method_parallel(
 
     args_list = [
         (
-            b["b"], method_cfg,
-            b["X_ctx"], b["A_ctx"], b["Y_ctx"],
-            b["W_ctx"], b["Z_ctx"],
-            b["X_q"], b["W_q"], b["Z_q"],
+            b["b"],
+            method_cfg,
+            b["X_ctx"],
+            b["A_ctx"],
+            b["Y_ctx"],
+            b["W_ctx"],
+            b["Z_ctx"],
+            b["X_q"],
+            b["W_q"],
+            b["Z_q"],
         )
         for b in batches
     ]
@@ -303,7 +313,7 @@ def run_method_sequential(
 ) -> np.ndarray:
     """Single-process fallback — useful for debugging."""
     n_batch = len(batches)
-    preds   = np.full((n_batch, n_test), np.nan, dtype=np.float32)
+    preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
 
     task = progress.add_task(
         f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]",
@@ -312,10 +322,16 @@ def run_method_sequential(
 
     for b_dict in batches:
         args = (
-            b_dict["b"], method_cfg,
-            b_dict["X_ctx"], b_dict["A_ctx"], b_dict["Y_ctx"],
-            b_dict["W_ctx"], b_dict["Z_ctx"],
-            b_dict["X_q"], b_dict["W_q"], b_dict["Z_q"],
+            b_dict["b"],
+            method_cfg,
+            b_dict["X_ctx"],
+            b_dict["A_ctx"],
+            b_dict["Y_ctx"],
+            b_dict["W_ctx"],
+            b_dict["Z_ctx"],
+            b_dict["X_q"],
+            b_dict["W_q"],
+            b_dict["Z_q"],
         )
         b_idx, result, err = _worker(args)
         if result is not None:
@@ -331,6 +347,7 @@ def run_method_sequential(
 # Step 3 (optional) — Neural model inference
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def run_neural_model(
     model_cfg: dict,
     data: dict,
@@ -345,10 +362,12 @@ def run_neural_model(
         (name, preds) or None if skipped / failed.
     """
     if not _PROXFM_AVAILABLE:
-        console.print("    [yellow]⚠[/] proximalfm not installed — skipping neural models.")
+        console.print(
+            "    [yellow]⚠[/] proximalfm not installed — skipping neural models."
+        )
         return None
 
-    name     = model_cfg["name"]
+    name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
     pred_file = output_dir / f"{name}_preds.npz"
 
@@ -357,7 +376,7 @@ def run_neural_model(
         return name, np.load(pred_file)["preds"]
 
     config_path = ckpt_dir / "model_config.yaml"
-    best_path   = ckpt_dir / "best_model.pth"
+    best_path = ckpt_dir / "best_model.pth"
 
     if not best_path.exists():
         console.print(f"    [red]✗[/] Checkpoint not found: {best_path}")
@@ -367,7 +386,7 @@ def run_neural_model(
         mcfg = yaml.safe_load(f)
 
     device = torch.device(device_str)
-    dtype  = getattr(torch, mcfg.get("dtype", "float32"))
+    dtype = getattr(torch, mcfg.get("dtype", "float32"))
 
     model_config = ModelConfig(
         embed_dim=mcfg.get("embed_dim", 64),
@@ -382,13 +401,13 @@ def run_neural_model(
         feature_group_size_z=prior_cfg["d_z"],
     )
     model = ProximalNanoTabICLv2(config=model_config).to(device, dtype=dtype)
-    ckpt  = torch.load(best_path, map_location=device, weights_only=True)
+    ckpt = torch.load(best_path, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     console.print(f"    [green]✓[/] Loaded {name!r} (epoch {ckpt.get('epoch', '?')})")
 
     N_TRAIN = data["N_TRAIN"]
-    N_TEST  = data["N_TEST"]
+    N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
 
     x_t = data["X"].to(device, dtype=dtype)
@@ -397,13 +416,13 @@ def run_neural_model(
     a_t = data["A"].to(device, dtype=dtype)
     y_t = data["Y"].to(device, dtype=dtype)
 
-    preds   = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
-    chunk   = 10
+    preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
+    chunk = 10
 
     with torch.no_grad():
         for start in range(0, N_BATCH, chunk):
-            end   = min(start + chunk, N_BATCH)
-            out   = model(
+            end = min(start + chunk, N_BATCH)
+            out = model(
                 x=x_t[start:end],
                 a=a_t[start:end, :N_TRAIN, 0],
                 w=w_t[start:end],
@@ -421,6 +440,7 @@ def run_neural_model(
 # ─────────────────────────────────────────────────────────────────────────────
 # Partial results printer (called after each method completes)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def print_partial_results(
     accumulated: dict[str, np.ndarray],
@@ -451,29 +471,33 @@ def print_partial_results(
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="CATE benchmark — generate data, run methods, evaluate."
     )
     parser.add_argument(
-        "--config", default="bench_config.yaml",
+        "--config",
+        default="bench_config.yaml",
         help="Path to the YAML config file (default: bench_config.yaml).",
     )
     parser.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="Recompute predictions even if they are already saved.",
     )
     parser.add_argument(
-        "--no-parallel", action="store_true",
+        "--no-parallel",
+        action="store_true",
         help="Run sequentially (useful for debugging / profiling).",
     )
     args = parser.parse_args()
 
-    cfg        = load_config(args.config)
+    cfg = load_config(args.config)
     output_dir = Path(cfg["data"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    force      = args.force or cfg["run"].get("force_rerun", False)
-    n_workers  = cfg["run"].get("n_workers", max(1, (os.cpu_count() or 4) - 2))
+    force = args.force or cfg["run"].get("force_rerun", False)
+    n_workers = cfg["run"].get("n_workers", max(1, (os.cpu_count() or 4) - 2))
 
     console.print(Rule("[bold blue]CATE Benchmark[/]"))
     console.print(f"  Config   : [cyan]{args.config}[/]")
@@ -486,9 +510,9 @@ def main() -> None:
     console.print(Rule("[bold]Step 1  Data[/]"))
     data = get_data(cfg, output_dir, force_regen=force)
 
-    N_TEST    = data["N_TEST"]
-    N_BATCH   = data["N_BATCH"]
-    true_ITEs = data["true_ITEs"]   # (N_BATCH, N_TEST)
+    N_TEST = data["N_TEST"]
+    N_BATCH = data["N_BATCH"]
+    true_ITEs = data["true_ITEs"]  # (N_BATCH, N_TEST)
 
     console.print(
         f"    [green]✓[/] Loaded: "
@@ -527,19 +551,17 @@ def main() -> None:
         TextColumn("·"),
         TimeElapsedColumn(),
         console=console,
-        transient=False,   # keep finished bars visible
+        transient=False,  # keep finished bars visible
     )
 
     with progress:
         for mcfg in method_cfgs:
-            name      = mcfg["name"]
+            name = mcfg["name"]
             pred_file = output_dir / f"{name}_preds.npz"
 
             if pred_file.exists() and not force:
                 preds = np.load(pred_file)["preds"]
-                console.print(
-                    f"  [dim]↩  {name:<28} loaded from cache[/]"
-                )
+                console.print(f"  [dim]↩  {name:<28} loaded from cache[/]")
                 accumulated[name] = preds
                 continue
 
@@ -554,8 +576,7 @@ def main() -> None:
             # Incremental save
             np.savez(pred_file, preds=preds)
             console.print(
-                f"  [green]✓[/] {name:<28} saved  "
-                f"[dim]({elapsed:.1f}s)[/]"
+                f"  [green]✓[/] {name:<28} saved  " f"[dim]({elapsed:.1f}s)[/]"
             )
             accumulated[name] = preds
 
@@ -567,12 +588,10 @@ def main() -> None:
     if model_cfgs:
         console.print(Rule(f"[bold]Step 3  Neural Models ({len(model_cfgs)})[/]"))
         prior_cfg = cfg["data"]["prior"]
-        device    = cfg["run"].get("device", "cpu")
+        device = cfg["run"].get("device", "cpu")
 
         for mcfg in model_cfgs:
-            result = run_neural_model(
-                mcfg, data, prior_cfg, device, output_dir, force
-            )
+            result = run_neural_model(mcfg, data, prior_cfg, device, output_dir, force)
             if result is not None:
                 name, preds = result
                 accumulated[name] = preds
@@ -586,7 +605,10 @@ def main() -> None:
         return
 
     all_results = pd.concat(
-        [compute_all_metrics(preds, true_ITEs, name) for name, preds in accumulated.items()],
+        [
+            compute_all_metrics(preds, true_ITEs, name)
+            for name, preds in accumulated.items()
+        ],
         ignore_index=True,
     )
 

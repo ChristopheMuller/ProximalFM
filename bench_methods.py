@@ -32,14 +32,46 @@ from sklearn.ensemble import RandomForestRegressor
 
 try:
     from tabicl import TabICLRegressor
+
     _TABICL_AVAILABLE = True
 except ImportError:
     _TABICL_AVAILABLE = False
+
+import sys
+import os
+
+import torch
+
+toolkit_path = os.path.abspath("CausalFM")
+if toolkit_path not in sys.path:
+    sys.path.append(toolkit_path)
+try:
+    import causalfm
+    from causalfm.models import StandardCATEModel
+
+    _CAUSALFM_AVAILABLE = True
+except ImportError:
+    _CAUSALFM_AVAILABLE = False
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def silent():
+    """Context manager to suppress stdout (print statements)."""
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        sys.stdout = devnull
+        try:
+            yield
+        finally:
+            sys.stdout = old_stdout
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature construction
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class FeatureBuilder:
     """Centralises feature-stacking so every estimator sees the same matrix.
@@ -95,11 +127,11 @@ class FeatureBuilder:
         if A is not None:
             a = np.asarray(A, dtype=float)
             if a.ndim == 1:
-                a = a[:, None]          # (n,) → (n, 1)
+                a = a[:, None]  # (n,) → (n, 1)
             parts.append(a)
 
             if self.interaction_AX:
-                parts.append(a * X)     # (n, d_x) — effect heterogeneity terms
+                parts.append(a * X)  # (n, d_x) — effect heterogeneity terms
 
         return np.hstack(parts)
 
@@ -107,6 +139,7 @@ class FeatureBuilder:
 # ─────────────────────────────────────────────────────────────────────────────
 # Base interface
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class CATEEstimator:
     """Abstract base class.  Subclasses must implement fit() and predict()."""
@@ -137,6 +170,7 @@ class CATEEstimator:
 # Meta-learners
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class S_Learner(CATEEstimator):
     """S-Learner: one model sees (X, [W], [Z], A) and predicts Y.
 
@@ -155,7 +189,7 @@ class S_Learner(CATEEstimator):
         use_Z: bool = True,
         interactions: bool = False,
     ):
-        self.fb    = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=interactions) 
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=interactions)
         self.model = base_model
 
     def fit(self, X, A, Y, *, W=None, Z=None):
@@ -164,7 +198,7 @@ class S_Learner(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         n = X.shape[0]
-        y1 = self.model.predict(self.fb.build(X, A=np.ones(n),  W=W, Z=Z))
+        y1 = self.model.predict(self.fb.build(X, A=np.ones(n), W=W, Z=Z))
         y0 = self.model.predict(self.fb.build(X, A=np.zeros(n), W=W, Z=Z))
         return y1 - y0
 
@@ -189,14 +223,14 @@ class T_Learner(CATEEstimator):
         use_W: bool = True,
         use_Z: bool = True,
     ):
-        self.fb     = FeatureBuilder(use_W=use_W, use_Z=use_Z)
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z)
         self.model0 = base_model_factory()
         self.model1 = base_model_factory()
 
     def fit(self, X, A, Y, *, W=None, Z=None):
-        feat   = self.fb.build(X, W=W, Z=Z)   # A excluded
-        mask0  = (A == 0)
-        mask1  = (A == 1)
+        feat = self.fb.build(X, W=W, Z=Z)  # A excluded
+        mask0 = A == 0
+        mask1 = A == 1
         if mask0.any():
             self.model0.fit(feat[mask0], Y[mask0])
         if mask1.any():
@@ -212,19 +246,20 @@ class T_Learner(CATEEstimator):
 # Proximal 2SLS
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class P2SLS(CATEEstimator):
     """Proximal Two-Stage Least Squares causal estimator.
- 
+
     Notation
     ────────
         Z — treatment-inducing proxy  (instrument; correlated with A, not Y|U,X)
         W — outcome-inducing proxy    (pre-treatment; correlated with U, not A|U,X)
         U — unmeasured confounder
- 
+
     Stage 1  (nuisance / bridge function)
     ──────────────────────────────────────
         Ŵ = α₀ + α_A·A + α_X·X + α_Z·Z  [+ α_AX·(A⊗X)  if interactions]
- 
+
         Why A⊗X in stage 1 when interactions=True?
             Standard 2SLS requires the first stage to include every exogenous
             regressor that appears in the structural (second-stage) equation.
@@ -232,48 +267,48 @@ class P2SLS(CATEEstimator):
             Omitting it from stage 1 causes the stage-1 residuals to correlate
             with A⊗X, violating the orthogonality condition needed for
             consistent estimation of the bridge function coefficients.
- 
+
     Stage 2  (outcome / structural equation)
     ─────────────────────────────────────────
         Y = β₀ + β_A·A + β_X·X + β_W·Ŵ  [+ β_AX·(A⊗X)  if interactions]
- 
+
         Substituting Ŵ removes the confounding path through W.
         β_A is the ATE; β_AX encodes effect heterogeneity in X.
- 
+
     CATE identification and the pre-treatment cancellation
     ───────────────────────────────────────────────────────
         W is measured *before* treatment, so the potential outcome W(a) = W
         for all a — intervening on A does not change W.  This means that in
         the structural equation the term β_W·W is the *same* under A=1 and A=0:
- 
+
             CATE(x, w) = h(w, 1, x) − h(w, 0, x)
                        = (β_A + β_X·x + β_W·w + β_AX·x)
                          − (β_X·x + β_W·w)
                        = β_A + β_AX·x
- 
+
         The β_W·w terms cancel exactly.  The CATE depends only on X, not on W.
- 
+
         Consequence for predict():
             We must use the *same* W (or Ŵ) for both counterfactuals.
             Using W_hat(A=1) for the A=1 branch and W_hat(A=0) for the A=0
             branch introduces a spurious term  β_W·(Ŵ₁ − Ŵ₀)  that has no
             causal interpretation and biases the CATE estimate.
- 
+
     Args:
         interactions : if True, append A×X columns to *both* stage 1 and
                        stage 2 feature matrices.
     """
- 
+
     def __init__(self, interactions: bool = False):
         self.interactions = interactions
         self.stage1 = LinearRegression()
         self.stage2 = LinearRegression()
- 
+
     # ── internal helpers ──────────────────────────────────────────────────
- 
+
     def _s1_features(self, A: np.ndarray, X: np.ndarray, Z: np.ndarray) -> np.ndarray:
         """[A, X, Z, (A⊗X)] — same column set at fit and predict time.
- 
+
         A⊗X is included whenever interactions=True because every exogenous
         column that appears in stage 2 must appear in stage 1 (2SLS requirement).
         """
@@ -282,7 +317,7 @@ class P2SLS(CATEEstimator):
         if self.interactions:
             parts.append(a * X)
         return np.hstack(parts)
- 
+
     def _s2_features(self, A: np.ndarray, X: np.ndarray, W: np.ndarray) -> np.ndarray:
         """[A, X, W, (A⊗X)] — W here is either Ŵ (training) or W_fixed (predict)."""
         a = A.reshape(-1, 1)
@@ -290,9 +325,9 @@ class P2SLS(CATEEstimator):
         if self.interactions:
             parts.append(a * X)
         return np.hstack(parts)
- 
+
     # ── public interface ──────────────────────────────────────────────────
- 
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError(
@@ -306,19 +341,19 @@ class P2SLS(CATEEstimator):
         # Stage 2: regress Y on treatment, covariates, and instrumented proxy
         self.stage2.fit(self._s2_features(A, X, W_hat), Y)
         return self
- 
+
     def predict(self, X, *, W=None, Z=None) -> np.ndarray:
         """Estimate CATE as h(W_fixed, 1, X) − h(W_fixed, 0, X).
- 
+
         W_fixed is held constant across both counterfactuals, reflecting the
         fact that W is pre-treatment and does not respond to A.
- 
+
         Priority for W_fixed:
             1. Observed W_q  — use directly; it cancels in the contrast anyway.
             2. Z available   — predict Ŵ from stage 1 using a neutral A=0
                                (any fixed A works since the β_W term cancels).
             3. Neither       — raise, because we cannot form a valid contrast.
- 
+
         Note: because β_W·W_fixed cancels in the difference, the CATE result
         is numerically identical regardless of which W_fixed is chosen.
         The choice matters only for the *level* of Ŷ(a), not the contrast.
@@ -328,19 +363,19 @@ class P2SLS(CATEEstimator):
                 "P2SLS.predict() needs at least W (observed proxy) or Z "
                 "(to predict Ŵ).  Both are None."
             )
- 
+
         n = X.shape[0]
- 
+
         if W is not None:
             # Observed pre-treatment proxy — preferred, no stage-1 needed
             W_fixed = W
         else:
             # Predict Ŵ from Z; use A=0 as neutral value (cancels in contrast)
             W_fixed = self.stage1.predict(self._s1_features(np.zeros(n), X, Z))
- 
+
         A1 = np.ones(n)
         A0 = np.zeros(n)
- 
+
         # Same W_fixed for both branches — spurious β_W·(Ŵ₁ − Ŵ₀) term is gone
         y1 = self.stage2.predict(self._s2_features(A1, X, W_fixed))
         y0 = self.stage2.predict(self._s2_features(A0, X, W_fixed))
@@ -348,8 +383,72 @@ class P2SLS(CATEEstimator):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# CausalFM wrapper
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class CausalFM_Estimator(CATEEstimator):
+    """Wrapper for the CausalFM StandardCATEModel.
+
+    Foundation models use in-context learning. The fit() method stores the
+    training episode as context, and predict() evaluates the query points.
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: str,
+        use_W: bool = True,
+        use_Z: bool = True,
+    ):
+        if not _CAUSALFM_AVAILABLE:
+            raise ImportError(
+                "causalfm is not installed or cannot be found. "
+                "Ensure it is installed or your sys.path is configured correctly."
+            )
+
+        # Load the model once
+        with silent():
+            self.model = StandardCATEModel.from_pretrained(checkpoint_path)
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+        # Placeholders for in-context training data
+        self.ctx_x = None
+        self.ctx_a = None
+        self.ctx_y = None
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        # Build unified covariate matrix (stacking X, W, Z if configured)
+        feat = self.fb.build(X, W=W, Z=Z)
+
+        # Store as PyTorch tensors with correct shapes (n, 1) for A and Y
+        self.ctx_x = torch.Tensor(feat)
+        self.ctx_a = torch.Tensor(A).reshape(-1, 1)
+        self.ctx_y = torch.Tensor(Y).reshape(-1, 1)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        if self.ctx_x is None:
+            raise ValueError(
+                "Must call fit() to provide context before calling predict()."
+            )
+
+        # Build test covariate matrix
+        feat = self.fb.build(X, W=W, Z=Z)
+        x_test = torch.Tensor(feat)
+
+        with torch.no_grad():
+            result = self.model.estimate_cate(
+                self.ctx_x, self.ctx_a, self.ctx_y, x_test
+            )
+
+        # Convert back to numpy array of shape (n,)
+        return result["cate"].cpu().numpy().squeeze()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def _make_base_model(name: str):
     """Return a fresh sklearn estimator by short name.
@@ -369,9 +468,7 @@ def _make_base_model(name: str):
                 "TabICL methods from bench_config.yaml."
             )
         return TabICLRegressor()
-    raise ValueError(
-        f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'."
-    )
+    raise ValueError(f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'.")
 
 
 def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
@@ -387,14 +484,14 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         (display_name, estimator_instance)
     """
     name = cfg["name"]
-    cls  = cfg["cls"]
+    cls = cfg["cls"]
 
     if cls == "S_Learner":
         method = S_Learner(
             base_model=_make_base_model(cfg.get("base", "linear")),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
-            interactions=cfg.get("interactions", False), 
+            interactions=cfg.get("interactions", False),
         )
 
     elif cls == "T_Learner":
@@ -409,6 +506,13 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
 
     elif cls == "P2SLS":
         method = P2SLS(interactions=cfg.get("interactions", False))
+
+    elif cls == "CausalFM":
+        method = CausalFM_Estimator(
+            checkpoint_path=cfg["checkpoint"],
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        )
 
     else:
         raise ValueError(

@@ -22,7 +22,7 @@ data:
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 1
+    confounding_strength: 10
     d_x: 5
     d_u: 2
     d_w: 3
@@ -83,12 +83,12 @@ methods:
     use_W: true
     use_Z: true
 
-  - name: S-TabICL(W,Z)
-    cls:   S_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
-    interactions: false
+  # - name: S-TabICL(W,Z)
+  #   cls:   S_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
+  #   interactions: false
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS(W,Z)
@@ -112,14 +112,21 @@ methods:
     cls:          P2SLS
     interactions: true
 
+  # ── Tabular Causal Models ─────────────────────────────────────────────────
+  - name: CausalFM(W,Z)
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
+
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
   - name:       cate_very_small
     checkpoint: checkpoints/very_small
 
-  - name:       cate_mini
-    checkpoint: checkpoints/mini
+  # - name:       cate_mini
+  #   checkpoint: checkpoints/mini
 
-  - name:       dim64
-    checkpoint: checkpoints/dim64_but_only_4_blocks
+  # - name:       dim64
+  #   checkpoint: checkpoints/dim64_but_only_4_blocks

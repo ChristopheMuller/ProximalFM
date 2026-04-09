@@ -1,30 +1,31 @@
 training:
-  seed: 1234
-  epochs: 100
-  lr: 0.0006
-  warmup_steps: 1500
-  warmup_epochs: 100
-  weight_decay: 0.0002
   clip_grad: 1.5
-  early_stop: 15          # patience in epochs before early stopping
+  device: mps
+  early_stop: 15
+  epochs: 100
+  exp_name: test_cate_new_normalization
+  gpu: 0
+  log_dir: runs/proximalfm
+  lr: 0.0006
+  save_dir: checkpoints
+  save_freq: 10
+  seed: 1234
   val_freq: 3
-  save_freq: 10           # save a checkpoint every N epochs
-  save_dir: "checkpoints"
-  log_dir: "runs/proximalfm"
-  device: "mps"           # "cuda" | "mps" | "cpu"
-  gpu: 0                  # GPU index (only used when device == "cuda")
-  zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
-  x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "tobedeleted"
+  warmup_epochs: 100
+  warmup_steps: 1500
+  weight_decay: 0.0002
+  x_mask_prob: 0.0
+  zw_mask_prob: 0.0
+
 
 model:
-  dtype: float32
   col_nhead: 8
-  icl_nhead: 8
-  row_nhead: 8
   col_num_blocks: 6
+  dtype: float32
   embed_dim: 32
+  icl_nhead: 8
   icl_num_blocks: 14
+  row_nhead: 8
   row_num_blocks: 6
 
 data:
@@ -37,13 +38,13 @@ data:
   num_workers: 4            # DataLoader worker processes (0 = main process only)
 
 prior:
-  type : "cate_linear"
-  d_x            : 5
-  d_u            : 2
-  d_z            : 3
-  d_w            : 3
-  noise_scale_w  : 1
-  noise_scale_z  : 1
-  noise_scale_x  : 1
-  temperature    : 2
   confounding_strength: 1
+  d_u: 2
+  d_w: 3
+  d_x: 5
+  d_z: 3
+  noise_scale_w: 1
+  noise_scale_x: 1
+  noise_scale_z: 1
+  temperature: 2
+  type: cate_linear
