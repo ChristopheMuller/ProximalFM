@@ -367,41 +367,88 @@ def build_summary_tables(
 # Rich-formatted display helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _get_column_styles(series: pd.Series, col_name: str) -> dict:
+    """Returns a dict mapping dataframe index to a rich color string.
+    Dynamically infers whether higher/lower/closer to 0 is better based on the col name.
+    """
+    styles = {}
+    
+    if col_name in ["⚠ note", "Episodes used"]:
+        return {k: "" for k in series.index}
+        
+    # Convert to numeric to safely compute quantiles
+    valid = pd.to_numeric(series, errors='coerce').dropna()
+    if len(valid) == 0:
+        return {k: "" for k in series.index}
+
+    # 1. R² Metrics: Higher is better (Fixed absolute thresholds)
+    if "R²" in col_name and "Std" not in col_name:
+        for k, v in series.items():
+            if pd.isna(v) or isinstance(v, str): styles[k] = ""
+            elif v > 0.5: styles[k] = "green"
+            elif v > 0.0: styles[k] = "yellow"
+            else: styles[k] = "red"
+        return styles
+        
+    # 2. Penalty Metric: Lower is better (Fixed absolute thresholds)
+    if "penalty" in col_name.lower():
+        for k, v in series.items():
+            if pd.isna(v) or isinstance(v, str): styles[k] = ""
+            elif v < 0.1: styles[k] = "green"
+            elif v < 0.5: styles[k] = "yellow"
+            else: styles[k] = "red"
+        return styles
+
+    # 3. Bias Metrics: Closer to 0 is better (Relative quantiles)
+    if "Bias" in col_name:
+        abs_valid = valid.abs()
+        q_green = abs_valid.quantile(0.33)
+        q_yellow = abs_valid.quantile(0.66)
+        for k, v in series.items():
+            if pd.isna(v) or isinstance(v, str): styles[k] = ""
+            else:
+                v_abs = abs(v)
+                if v_abs <= q_green: styles[k] = "green"
+                elif v_abs <= q_yellow: styles[k] = "yellow"
+                else: styles[k] = "red"
+        return styles
+
+    # 4. Error Metrics (MAE, RMSE, Std, etc.): Lower is better (Relative quantiles)
+    q_green = valid.quantile(0.33)
+    q_yellow = valid.quantile(0.66)
+    for k, v in series.items():
+        if pd.isna(v) or isinstance(v, str): styles[k] = ""
+        elif v <= q_green: styles[k] = "green"
+        elif v <= q_yellow: styles[k] = "yellow"
+        else: styles[k] = "red"
+        
+    return styles
+
 
 def make_ate_rich_table(
     ate_summary: pd.DataFrame, title: str = "ATE Estimation"
 ) -> "Table":  # noqa: F821
-    """Build a Rich Table for the ATE summary.  Imported lazily to keep metrics
-    module usable without rich installed."""
+    """Build a Rich Table for the ATE summary."""
     from rich.table import Table
     from rich import box
 
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
+    
+    # Add columns right-aligned
     for col in ate_summary.columns:
         tbl.add_column(col, justify="right")
 
-    norm_mae_015 = ate_summary["NormMAE"].quantile(0.15)
-    norm_mae_085 = ate_summary["NormMAE"].quantile(0.85)
+    # Pre-calculate column styles universally
+    col_styles = {
+        col: _get_column_styles(ate_summary[col], col)
+        for col in ate_summary.columns
+    }
 
     for method, row in ate_summary.iterrows():
         cells = []
         for col_name, val in row.items():
-            style = ""
-            if col_name == "NormMAE":
-                v = abs(val)
-                style = (
-                    "green" if v < norm_mae_015 else
-                    ("yellow" if v < norm_mae_085 else "red")
-                )
-            elif col_name == "ATE R²":
-                try:
-                    style = (
-                        "green" if val > 0.5 else
-                        ("yellow" if val > 0.0 else "red")
-                    )
-                except (TypeError, ValueError):
-                    style = ""
+            style = col_styles[col_name].get(method, "")
             cells.append(f"[{style}]{val}[/{style}]" if style else str(val))
         tbl.add_row(str(method), *cells)
 
@@ -411,52 +458,27 @@ def make_ate_rich_table(
 def make_cate_rich_table(
     cate_summary: pd.DataFrame, title: str = "CATE Estimation"
 ) -> "Table":  # noqa: F821
+    """Build a Rich Table for the CATE summary."""
     from rich.table import Table
     from rich import box
 
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
+    
+    # Add columns right-aligned
     for col in cate_summary.columns:
         tbl.add_column(col, justify="right")
 
+    # Pre-calculate column styles universally
+    col_styles = {
+        col: _get_column_styles(cate_summary[col], col)
+        for col in cate_summary.columns
+    }
+
     for method, row in cate_summary.iterrows():
-        # Colour anchor: Mean R²(shape) — the most interpretable R² column.
-        r2_shape = row.get("Mean R²(shape)", float("nan"))
-        try:
-            r2_style = (
-                "green" if r2_shape > 0.5 else
-                ("yellow" if r2_shape > 0.0 else "red")
-            )
-        except (TypeError, ValueError):
-            r2_style = ""
-
-        # NormMAE colouring: relative within the table.
-        norm_mae_vals = cate_summary["NormMAE"].dropna()
-        nm_015 = norm_mae_vals.quantile(0.15) if len(norm_mae_vals) > 0 else 0
-        nm_085 = norm_mae_vals.quantile(0.85) if len(norm_mae_vals) > 0 else 1
-
         cells = []
         for col_name, val in row.items():
-            style = ""
-            if "R²" in str(col_name):
-                style = r2_style
-            elif col_name == "NormMAE":
-                try:
-                    style = (
-                        "green" if val < nm_015 else
-                        ("yellow" if val < nm_085 else "red")
-                    )
-                except (TypeError, ValueError):
-                    style = ""
-            elif col_name == "Mean ATE penalty":
-                # High penalty = ATE bias is hurting R² a lot → flag in yellow/red.
-                try:
-                    style = (
-                        "green" if val < 0.1 else
-                        ("yellow" if val < 0.5 else "red")
-                    )
-                except (TypeError, ValueError):
-                    style = ""
+            style = col_styles[col_name].get(method, "")
             cells.append(f"[{style}]{val}[/{style}]" if style else str(val))
         tbl.add_row(str(method), *cells)
 
