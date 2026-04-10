@@ -151,6 +151,66 @@ class ProximalNanoTabICLv2(nn.Module):
 
         return torch.cat([pred_mean_raw, pred_log_var_raw], dim=-1)
 
+    def estimate_CATE(
+        self,
+        x_train: torch.Tensor,
+        a_train: torch.Tensor,
+        w_train: torch.Tensor,
+        z_train: torch.Tensor,
+        y_train: torch.Tensor,
+        x_test: torch.Tensor,
+        w_test: torch.Tensor,
+        z_test: torch.Tensor,
+        return_variance: bool = False,
+    ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Estimates the Conditional Average Treatment Effect (CATE) for a set of test points,
+        given a set of training context points.
+        """
+        # Batch dimension check
+        batch_size = x_train.shape[0]
+        if not all(
+            tensor.shape[0] == batch_size
+            for tensor in [a_train, w_train, z_train, y_train, x_test, w_test, z_test]
+        ):
+            raise ValueError("All inputs must have the same batch size (dimension 0).")
+
+        # Train sequence length check
+        n_train = x_train.shape[1]
+        if not all(
+            tensor.shape[1] == n_train
+            for tensor in [a_train, w_train, z_train, y_train]
+        ):
+            raise ValueError("All train inputs must have the same sequence length (dimension 1).")
+
+        # Test sequence length check
+        n_test = x_test.shape[1]
+        if not all(tensor.shape[1] == n_test for tensor in [w_test, z_test]):
+            raise ValueError("All test inputs must have the same sequence length (dimension 1).")
+
+        # Concatenate train and test along the sequence dimension (dim=1)
+        x_full = torch.cat([x_train, x_test], dim=1)
+        w_full = torch.cat([w_train, w_test], dim=1)
+        z_full = torch.cat([z_train, z_test], dim=1)
+
+        # Forward pass
+        # The forward method expects a_train and y_train to correspond to the context length
+        out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
+
+        # Extract predictions for the test sequence
+        # The model's forward pass returns predictions ONLY for the test (query) points:
+        # emb = self.icl_blocks[-1](emb[:, n_train:], emb[:, :n_train])
+        # So 'out' has shape [batch_size, n_test, 2]
+        pred_test = out
+
+        mean = pred_test[..., 0:1]
+        if return_variance:
+            log_var = pred_test[..., 1:2]
+            variance = torch.exp(log_var)
+            return mean, variance
+
+        return mean
+
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:
         nn.init.uniform_(
