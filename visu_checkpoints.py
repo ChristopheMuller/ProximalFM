@@ -14,9 +14,29 @@ from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-def load_config(config_path: str = "config.yaml") -> dict:
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
+MODEL = "test_cate_new_normalization"
+FILTER_REMOVE_EPOCHS = [10, 30, 50, 70, 90, 101]
+
+def load_config() -> dict:
+
+    full_config = {}
+    config_training_path = os.path.join("checkpoints", MODEL, "train_config.yaml")
+    with open(config_training_path, "r") as f:
+        full_config["training"] = yaml.safe_load(f)
+
+    config_prior_path = os.path.join("checkpoints", MODEL, "prior_config.yaml")
+    with open(config_prior_path, "r") as f:
+        full_config["prior"] = yaml.safe_load(f)
+
+    config_model_path = os.path.join("checkpoints", MODEL, "model_config.yaml")
+    with open(config_model_path, "r") as f:
+        full_config["model"] = yaml.safe_load(f)
+
+    config_data_path = os.path.join("checkpoints", MODEL, "data_config.yaml")
+    with open(config_data_path, "r") as f:
+        full_config["data"] = yaml.safe_load(f)
+
+    return full_config
 
 def extract_epoch(filepath: str) -> int:
     """Extract epoch number from checkpoint filename for sorting."""
@@ -117,13 +137,13 @@ def main():
 
     # Select all checkpoints to plot
     num_plots = len(checkpoints)
-    selected_checkpoints = checkpoints
+    selected_checkpoints = [c for c in checkpoints if extract_epoch(c) not in FILTER_REMOVE_EPOCHS]
 
     # ---------------------------------------------------------
     # 4. Evaluate and Plot
     # ---------------------------------------------------------
     import math
-    cols = 4
+    cols = 3
     rows = math.ceil(num_plots / cols)
     fig, axes = plt.subplots(rows, cols, figsize=(24, 5 * rows))
 
