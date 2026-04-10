@@ -312,9 +312,9 @@ class CATETrainer:
             percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
-            ss_res_episode = residuals.pow(2).sum(dim=0)
-            target_mean_episode = target.mean(dim=0, keepdim=True)
-            ss_tot_episode = (target - target_mean_episode).pow(2).sum(dim=0)
+            ss_res_episode = residuals.pow(2).sum(dim=1)
+            target_mean_episode = target.mean(dim=1, keepdim=True)
+            ss_tot_episode = (target - target_mean_episode).pow(2).sum(dim=1)
             r2_episode = torch.where(
                 ss_tot_episode > 1e-8,
                 1.0 - (ss_res_episode / ss_tot_episode),
@@ -322,10 +322,10 @@ class CATETrainer:
             )
 
             # ATE statistics per episode (each episode is fully contained in this batch)
-            # target shape: [n_query, batch_size, 1] — dim=0 is query, dim=1 is episode.
-            n_query = target.size(0)
-            ate_true_episode = target.mean(dim=0)          # [batch_size, 1]
-            ate_pred_episode = pred_mean.mean(dim=0)       # [batch_size, 1]
+            # target shape: [batch, query, 1] — dim=0 is batch, dim=1 is episode.
+            n_query = target.size(1)
+            ate_true_episode = target.mean(dim=1)          # [batch_size, 1]
+            ate_pred_episode = pred_mean.mean(dim=1)       # [batch_size, 1]
             ate_residuals = ate_pred_episode - ate_true_episode  # [batch_size, 1]
 
             # ── Benchmark-aligned metrics ────────────────────────────────────
