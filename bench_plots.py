@@ -59,8 +59,11 @@ def plot_cate_r2_boxplot(csv_path: str):
     df = pd.read_csv(csv_path)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-    # Filter out homogeneous episodes where CATE R2 is undefined/NaN
     df_valid = df.dropna(subset=["cate_r2_shape"]).copy()
+
+    if df_valid.empty:
+        warnings.warn("No heterogeneity in treatment effect. Skipping CATE R2 boxplot.")
+        return
 
     plt.figure(figsize=(10, 6))
 
@@ -97,8 +100,12 @@ def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
         
     data = torch.load(data_path, weights_only=False)
     true_cate = data["true_ITEs"][episode_idx]
-    
-    # 2. Gather predictions from all methods for this episode
+
+    true_cate_eval = np.array(true_cate.cpu() if hasattr(true_cate, "cpu") else true_cate)
+    if np.allclose(true_cate_eval, true_cate_eval[0]):
+        warnings.warn(f"No heterogeneity in treatment effect for episode {episode_idx}. Skipping plot.")
+        return
+
     preds_dir = exp_dir / "preds"
     records = []
     
@@ -150,7 +157,7 @@ def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
                  y=1.02, fontsize=16, fontweight="bold")
     
     # 4. Save
-    output_file = exp_dir / f"plot_cate_scatter_ep{episode_idx}.png"
+    output_file = exp_dir / "results" / f"plot_cate_scatter_ep{episode_idx}.png"
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
@@ -164,4 +171,5 @@ if __name__ == "__main__":
     full_csv_path = Path("results") / args.exp / "results" / "results.csv"
     plot_true_vs_pred_ate(full_csv_path)
     plot_cate_r2_boxplot(full_csv_path)
-    plot_single_episode_cate(full_csv_path.parent.parent, episode_idx=0)
+    for i in range(5):
+        plot_single_episode_cate(full_csv_path.parent.parent, episode_idx=i)
