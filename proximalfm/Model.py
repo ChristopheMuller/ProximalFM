@@ -153,45 +153,79 @@ class ProximalNanoTabICLv2(nn.Module):
 
     def estimate_CATE(
         self,
-        x_train: torch.Tensor,
+        x: torch.Tensor,
         a_train: torch.Tensor,
-        w_train: torch.Tensor,
-        z_train: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
         y_train: torch.Tensor,
-        x_test: torch.Tensor,
-        w_test: torch.Tensor,
-        z_test: torch.Tensor,
+        x_test: typing.Optional[torch.Tensor] = None,
+        w_test: typing.Optional[torch.Tensor] = None,
+        z_test: typing.Optional[torch.Tensor] = None,
         return_variance: bool = False,
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
         Estimates the Conditional Average Treatment Effect (CATE) for a set of test points,
         given a set of training context points.
+
+        Can be used in two modes:
+        1. Providing train points (x, w, z) and explicit test points (x_test, w_test, z_test).
+        2. Providing full sequences (x, w, z) where the first n points correspond to the
+           training labels (a_train, y_train), and the remaining points are treated as test points.
         """
-        # Batch dimension check
-        batch_size = x_train.shape[0]
-        if not all(
-            tensor.shape[0] == batch_size
-            for tensor in [a_train, w_train, z_train, y_train, x_test, w_test, z_test]
-        ):
-            raise ValueError("All inputs must have the same batch size (dimension 0).")
+        batch_size = x.shape[0]
+        mode = "explicit_test" if (x_test is not None and w_test is not None and z_test is not None) else "full_sequence"
 
-        # Train sequence length check
-        n_train = x_train.shape[1]
-        if not all(
-            tensor.shape[1] == n_train
-            for tensor in [a_train, w_train, z_train, y_train]
-        ):
-            raise ValueError("All train inputs must have the same sequence length (dimension 1).")
+        if mode == "explicit_test":
+            # Batch dimension check
+            if not all(
+                tensor.shape[0] == batch_size
+                for tensor in [a_train, w, z, y_train, x_test, w_test, z_test]
+            ):
+                raise ValueError("All inputs must have the same batch size (dimension 0).")
 
-        # Test sequence length check
-        n_test = x_test.shape[1]
-        if not all(tensor.shape[1] == n_test for tensor in [w_test, z_test]):
-            raise ValueError("All test inputs must have the same sequence length (dimension 1).")
+            # Train sequence length check
+            n_train = x.shape[1]
+            if not all(
+                tensor.shape[1] == n_train
+                for tensor in [a_train, w, z, y_train]
+            ):
+                raise ValueError("All train inputs must have the same sequence length (dimension 1).")
 
-        # Concatenate train and test along the sequence dimension (dim=1)
-        x_full = torch.cat([x_train, x_test], dim=1)
-        w_full = torch.cat([w_train, w_test], dim=1)
-        z_full = torch.cat([z_train, z_test], dim=1)
+            # Test sequence length check
+            n_test = x_test.shape[1]
+            if not all(tensor.shape[1] == n_test for tensor in [w_test, z_test]):
+                raise ValueError("All test inputs must have the same sequence length (dimension 1).")
+
+            # Concatenate train and test along the sequence dimension (dim=1)
+            x_full = torch.cat([x, x_test], dim=1)
+            w_full = torch.cat([w, w_test], dim=1)
+            z_full = torch.cat([z, z_test], dim=1)
+        else:
+            if x_test is not None or w_test is not None or z_test is not None:
+                raise ValueError("Either provide all of x_test, w_test, z_test or none of them.")
+
+            # Batch dimension check
+            if not all(
+                tensor.shape[0] == batch_size
+                for tensor in [a_train, w, z, y_train]
+            ):
+                raise ValueError("All inputs must have the same batch size (dimension 0).")
+
+            # Length validation
+            n_full = x.shape[1]
+            if not all(tensor.shape[1] == n_full for tensor in [w, z]):
+                raise ValueError("x, w, and z must have the same sequence length (dimension 1) when test points are not explicitly provided.")
+
+            n_train = a_train.shape[1]
+            if y_train.shape[1] != n_train:
+                raise ValueError("a_train and y_train must have the same sequence length (dimension 1).")
+
+            if n_full <= n_train:
+                raise ValueError("When providing full sequences, the length of x, w, z must be greater than the length of a_train and y_train to include test points.")
+
+            x_full = x
+            w_full = w
+            z_full = z
 
         # Forward pass
         # The forward method expects a_train and y_train to correspond to the context length

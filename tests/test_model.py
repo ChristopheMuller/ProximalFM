@@ -203,10 +203,10 @@ def test_estimate_cate_success():
 
     # Test without variance
     mean = model.estimate_CATE(
-        x_train=x_train,
+        x=x_train,
         a_train=a_train,
-        w_train=w_train,
-        z_train=z_train,
+        w=w_train,
+        z=z_train,
         y_train=y_train,
         x_test=x_test,
         w_test=w_test,
@@ -217,10 +217,10 @@ def test_estimate_cate_success():
 
     # Test with variance
     mean, var = model.estimate_CATE(
-        x_train=x_train,
+        x=x_train,
         a_train=a_train,
-        w_train=w_train,
-        z_train=z_train,
+        w=w_train,
+        z=z_train,
         y_train=y_train,
         x_test=x_test,
         w_test=w_test,
@@ -257,10 +257,10 @@ def test_estimate_cate_batch_size_mismatch():
 
     with pytest.raises(ValueError, match="All inputs must have the same batch size"):
         model.estimate_CATE(
-            x_train=x_train,
+            x=x_train,
             a_train=a_train,
-            w_train=w_train,
-            z_train=z_train,
+            w=w_train,
+            z=z_train,
             y_train=y_train,
             x_test=x_test,
             w_test=w_test,
@@ -292,10 +292,10 @@ def test_estimate_cate_train_length_mismatch():
 
     with pytest.raises(ValueError, match="All train inputs must have the same sequence length"):
         model.estimate_CATE(
-            x_train=x_train,
+            x=x_train,
             a_train=a_train,
-            w_train=w_train,
-            z_train=z_train,
+            w=w_train,
+            z=z_train,
             y_train=y_train,
             x_test=x_test,
             w_test=w_test,
@@ -327,12 +327,85 @@ def test_estimate_cate_test_length_mismatch():
 
     with pytest.raises(ValueError, match="All test inputs must have the same sequence length"):
         model.estimate_CATE(
-            x_train=x_train,
+            x=x_train,
             a_train=a_train,
-            w_train=w_train,
-            z_train=z_train,
+            w=w_train,
+            z=z_train,
             y_train=y_train,
             x_test=x_test,
             w_test=w_test,
             z_test=z_test
+        )
+
+def test_estimate_cate_full_sequence_mode():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+    n_full = n_train + n_test
+
+    x_full = torch.randn(batch_size, n_full, 4)
+    w_full = torch.randn(batch_size, n_full, 4)
+    z_full = torch.randn(batch_size, n_full, 4)
+    a_train = torch.randn(batch_size, n_train)
+    y_train = torch.randn(batch_size, n_train)
+
+    mean = model.estimate_CATE(
+        x=x_full,
+        a_train=a_train,
+        w=w_full,
+        z=z_full,
+        y_train=y_train,
+        return_variance=False
+    )
+    assert mean.shape == (batch_size, n_test, 1)
+
+    # Test with variance
+    mean, var = model.estimate_CATE(
+        x=x_full,
+        a_train=a_train,
+        w=w_full,
+        z=z_full,
+        y_train=y_train,
+        return_variance=True
+    )
+    assert mean.shape == (batch_size, n_test, 1)
+    assert var.shape == (batch_size, n_test, 1)
+
+def test_estimate_cate_partial_test_args():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+
+    x_full = torch.randn(batch_size, n_train + 3, 4)
+    w_full = torch.randn(batch_size, n_train + 3, 4)
+    z_full = torch.randn(batch_size, n_train + 3, 4)
+    a_train = torch.randn(batch_size, n_train)
+    y_train = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, 3, 4)
+
+    # Missing w_test and z_test
+    with pytest.raises(ValueError, match="Either provide all of x_test, w_test, z_test or none of them"):
+        model.estimate_CATE(
+            x=x_full,
+            a_train=a_train,
+            w=w_full,
+            z=z_full,
+            y_train=y_train,
+            x_test=x_test
         )
