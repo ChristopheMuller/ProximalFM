@@ -172,3 +172,167 @@ def test_proximal_nanotab_icl_v2_zero_blocks():
 
     out = model(x, a, w, z, y)
     assert out.shape == (3, 2, 2)
+
+def test_estimate_cate_success():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_cls_cols=1,
+        n_cls_rows=1,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+
+    x_train = torch.randn(batch_size, n_train, 4)
+    w_train = torch.randn(batch_size, n_train, 4)
+    z_train = torch.randn(batch_size, n_train, 4)
+    a_train = torch.randn(batch_size, n_train)
+    y_train = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    # Test without variance
+    mean = model.estimate_CATE(
+        x_train=x_train,
+        a_train=a_train,
+        w_train=w_train,
+        z_train=z_train,
+        y_train=y_train,
+        x_test=x_test,
+        w_test=w_test,
+        z_test=z_test,
+        return_variance=False
+    )
+    assert mean.shape == (batch_size, n_test, 1)
+
+    # Test with variance
+    mean, var = model.estimate_CATE(
+        x_train=x_train,
+        a_train=a_train,
+        w_train=w_train,
+        z_train=z_train,
+        y_train=y_train,
+        x_test=x_test,
+        w_test=w_test,
+        z_test=z_test,
+        return_variance=True
+    )
+    assert mean.shape == (batch_size, n_test, 1)
+    assert var.shape == (batch_size, n_test, 1)
+    assert torch.all(var >= 0)  # Variance should be non-negative (since it's exp(log_var))
+
+def test_estimate_cate_batch_size_mismatch():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+
+    x_train = torch.randn(batch_size, n_train, 4)
+    a_train = torch.randn(batch_size, n_train)
+    w_train = torch.randn(batch_size, n_train, 4)
+    z_train = torch.randn(batch_size, n_train, 4)
+    y_train = torch.randn(batch_size, n_train)
+
+    # Mismatched batch size for x_test
+    x_test = torch.randn(batch_size + 1, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    with pytest.raises(ValueError, match="All inputs must have the same batch size"):
+        model.estimate_CATE(
+            x_train=x_train,
+            a_train=a_train,
+            w_train=w_train,
+            z_train=z_train,
+            y_train=y_train,
+            x_test=x_test,
+            w_test=w_test,
+            z_test=z_test
+        )
+
+def test_estimate_cate_train_length_mismatch():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+
+    x_train = torch.randn(batch_size, n_train, 4)
+    a_train = torch.randn(batch_size, n_train + 1) # Mismatch
+    w_train = torch.randn(batch_size, n_train, 4)
+    z_train = torch.randn(batch_size, n_train, 4)
+    y_train = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    with pytest.raises(ValueError, match="All train inputs must have the same sequence length"):
+        model.estimate_CATE(
+            x_train=x_train,
+            a_train=a_train,
+            w_train=w_train,
+            z_train=z_train,
+            y_train=y_train,
+            x_test=x_test,
+            w_test=w_test,
+            z_test=z_test
+        )
+
+def test_estimate_cate_test_length_mismatch():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+
+    x_train = torch.randn(batch_size, n_train, 4)
+    a_train = torch.randn(batch_size, n_train)
+    w_train = torch.randn(batch_size, n_train, 4)
+    z_train = torch.randn(batch_size, n_train, 4)
+    y_train = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test + 1, 4) # Mismatch
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    with pytest.raises(ValueError, match="All test inputs must have the same sequence length"):
+        model.estimate_CATE(
+            x_train=x_train,
+            a_train=a_train,
+            w_train=w_train,
+            z_train=z_train,
+            y_train=y_train,
+            x_test=x_test,
+            w_test=w_test,
+            z_test=z_test
+        )
