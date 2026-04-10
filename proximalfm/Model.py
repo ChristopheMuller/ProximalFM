@@ -74,79 +74,82 @@ class ProximalNanoTabICLv2(nn.Module):
         n_batch, n_rows, n_cols = x.shape
         n_batch, n_train = y.shape
 
-        # ----- Embedding: repeated feature grouping -> x embedding -> add y embedding to train
+        # ─── 1. INTERNAL NORMALIZATION (Zero Data Leakage) ───────────────────
+        # Compute stats strictly from the context points (first n_train rows)
+        y_mean = y.mean(dim=1, keepdim=True)
+        y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+        y_norm = (y - y_mean) / y_std
 
+        def group_norm(tensor: torch.Tensor) -> torch.Tensor:
+            context_slice = tensor[:, :n_train, :]
+            tensor_mean = context_slice.mean(dim=1, keepdim=True)
+            tensor_std = context_slice.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+            return (tensor - tensor_mean) / tensor_std
+
+        x_norm = group_norm(x)
+        w_norm = group_norm(w)
+        z_norm = group_norm(z)
+
+        # ─── 2. EMBEDDING ────────────────────────────────────────────────────
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
         x = torch.stack(
-            [
-                x[:, :, (idxs + (2**i - 1)) % n_cols]
-                for i in range(self.feature_group_size_x)
-            ],
-            dim=-1,
+            [x_norm[:, :, (idxs + (2**i - 1)) % n_cols] for i in range(self.feature_group_size_x)], dim=-1
         )
-        emb_x = self.x_embed(x)  # emb.shape = (n_batch, n_rows, n_cols, embed_dim)
+        emb_x = self.x_embed(x)
 
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
         w = torch.stack(
-            [
-                w[:, :, (idxs + (2**i - 1)) % w.shape[-1]]
-                for i in range(self.feature_group_size_w)
-            ],
-            dim=-1,
+            [w_norm[:, :, (idxs + (2**i - 1)) % w.shape[-1]] for i in range(self.feature_group_size_w)], dim=-1
         )
         emb_w = self.w_embed(w)
 
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
         z = torch.stack(
-            [
-                z[:, :, (idxs + (2**i - 1)) % z.shape[-1]]
-                for i in range(self.feature_group_size_z)
-            ],
-            dim=-1,
+            [z_norm[:, :, (idxs + (2**i - 1)) % z.shape[-1]] for i in range(self.feature_group_size_z)], dim=-1
         )
         emb_z = self.z_embed(z)
 
         emb_a = self.a_embed(a[:, :, None, None])
-
-        emb_y = self.y_embed_in(y[:, :, None, None])
+        
+        # Use the normalized Y for embedding
+        emb_y = self.y_embed_in(y_norm[:, :, None, None])
 
         emb = torch.concatenate([emb_x, emb_w, emb_z], dim=-2)
         emb[:, :n_train] += emb_y + emb_a
 
-        # ----- TF_col: induced self-attention within each column
+        # ─── 3. TRANSFORMER BLOCKS ───────────────────────────────────────────
         for block in self.col_blocks:
-            emb = block.col_attn(
-                emb, kv_max_idx=n_train
-            )  # all rows only attend to training rows
+            emb = block.col_attn(emb, kv_max_idx=n_train)
 
-        # ----- TF_row: concat CLS tokens as extra columns -> row attention -> norm + merge cls tokens
-        emb = torch.cat(
-            [self.row_cls_tokens.expand(n_batch, n_rows, -1, -1), emb], dim=2
-        )
+        emb = torch.cat([self.row_cls_tokens.expand(n_batch, n_rows, -1, -1), emb], dim=2)
         for block in self.row_blocks[:-1]:
             emb = block.row_attn(emb)
-        emb = self.row_blocks[-1].row_attn(
-            emb, q_max_idx=self.row_cls_tokens.size(-2)
-        )  # need only the cls token values
-        emb = self.row_ln(emb).flatten(
-            -2, -1
-        )  # norm + merge cls tokens into one bigger token
+        emb = self.row_blocks[-1].row_attn(emb, q_max_idx=self.row_cls_tokens.size(-2))
+        
+        emb = self.row_ln(emb).flatten(-2, -1)
 
-        # ----- TF_icl: add y embedding -> self-attention
-        # now emb.shape = (n_batch, n_rows, icl_dim)
-        emb[:, :n_train] += self.y_embed_icl(y[:, :, None]) + self.a_embed_icl(
-            a[:, :, None]
-        )
+        # Use the normalized Y here as well
+        emb[:, :n_train] += self.y_embed_icl(y_norm[:, :, None]) + self.a_embed_icl(a[:, :, None])
+        
         for block in self.icl_blocks[:-1]:
-            emb = block(
-                emb, kv_max_idx=n_train
-            )  # all rows only attend to training rows
-        emb = self.icl_blocks[-1](
-            emb[:, n_train:], emb[:, :n_train]
-        )  # need only test predictions
+            emb = block(emb, kv_max_idx=n_train)
+        emb = self.icl_blocks[-1](emb[:, n_train:], emb[:, :n_train])
 
-        return self.out_mlp(self.out_ln(emb))  # output MLP
+        out = self.out_mlp(self.out_ln(emb)) 
 
+        # ─── 4. OUTPUT DENORMALIZATION ───────────────────────────────────────
+        pred_mean_norm = out[..., 0:1]
+        pred_log_var_norm = out[..., 1:2]
+
+        y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+
+        # ITE is a difference, so we scale by std, but DO NOT add the mean back
+        pred_mean_raw = pred_mean_norm * y_std_expanded
+        
+        # Variance scales by std^2. Therefore, log_var shifts by log(std^2) = 2 * log(std)
+        pred_log_var_raw = pred_log_var_norm + 2 * torch.log(y_std_expanded)
+
+        return torch.cat([pred_mean_raw, pred_log_var_raw], dim=-1)
 
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:

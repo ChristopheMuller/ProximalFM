@@ -225,62 +225,35 @@ class CATETrainer:
             for k, v in batch.items()
         }
 
-    def _prepare_inputs(self, batch: dict) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-        torch.Tensor,
-    ]:
+    def _prepare_inputs(self, batch: dict):
         x = batch["X"].transpose(0, 1)
         z = batch["Z"].transpose(0, 1)
         w = batch["W"].transpose(0, 1)
-
+        
         a = batch["A"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
-        y_context = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
+        y = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
         target = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
+        
+        y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+        
+        return x, a, w, z, y, target, y_std
 
-        y_mean = y_context.mean(dim=1, keepdim=True)
-        y_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        y_norm = (y_context - y_mean) / y_std
-        target_norm = (target - y_mean.unsqueeze(-1)) / y_std.unsqueeze(-1)
+    def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
 
-        def group_norm(tensor: torch.Tensor) -> torch.Tensor:
-            context_slice = tensor[:, : self.single_eval_pos, :]
+        out = self.model(x=x, a=a, w=w, z=z, y=y)
+        pred_mean_raw = out[..., 0:1]
+        pred_log_var_raw = out[..., 1:2]
 
-            tensor_mean = context_slice.mean(dim=1, keepdim=True)
-            tensor_std = context_slice.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+        loss_mse_raw = F.mse_loss(pred_mean_raw, target)
+        
+        y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+        loss_mse_normalized = F.mse_loss(pred_mean_raw / y_std_expanded, target / y_std_expanded)
 
-            return (tensor - tensor_mean) / tensor_std
+        loss_gnll = gaussian_nll_loss(pred_mean_raw, pred_log_var_raw, target)
+        
+        loss = alpha * loss_mse_normalized + (1 - alpha) * loss_gnll
 
-        x = group_norm(x)
-        z = group_norm(z)
-        w = group_norm(w)
-
-        return x, a, w, z, y_norm, target_norm, y_mean, y_std
-
-    def _forward_and_loss(
-        self,
-        x: torch.Tensor,
-        a: torch.Tensor,
-        w: torch.Tensor,
-        z: torch.Tensor,
-        y_norm: torch.Tensor,
-        target_norm: torch.Tensor,
-        alpha: float,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        out = self.model(x=x, a=a, w=w, z=z, y=y_norm)
-        pred_mean_norm = out[..., 0:1]
-        pred_log_var_norm = out[..., 1:2]
-
-        loss_mse = F.mse_loss(pred_mean_norm, target_norm)
-        loss_gnll = gaussian_nll_loss(pred_mean_norm, pred_log_var_norm, target_norm)
-        loss = alpha * loss_mse + (1 - alpha) * loss_gnll
-
-        return loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm
+        return loss, loss_mse_raw, loss_gnll, pred_mean_raw, pred_log_var_raw
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
@@ -322,32 +295,26 @@ class CATETrainer:
 
     def _compute_batch_metrics(
         self,
-        pred_mean_norm: torch.Tensor,
-        pred_log_var_norm: torch.Tensor,
-        target_norm: torch.Tensor,
-        y_mean: torch.Tensor,
-        y_std: torch.Tensor,
+        pred_mean: torch.Tensor,
+        pred_log_var: torch.Tensor,
+        target: torch.Tensor,
         loss_gnll: torch.Tensor,
     ) -> dict:
         with torch.no_grad():
-            y_mean_exp = y_mean.unsqueeze(-1) if y_mean.dim() == 2 else y_mean
-            y_std_exp = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+            # Since the model handles normalization internally, 
+            # we work directly with raw scale predictions and targets.
+            
+            pred_std = torch.exp(0.5 * pred_log_var)
+            pred_var = pred_std.pow(2)
 
-            pred_mean_orig = (pred_mean_norm * y_std_exp) + y_mean_exp
-            target_orig = (target_norm * y_std_exp) + y_mean_exp
-
-            pred_std_norm = torch.exp(0.5 * pred_log_var_norm)
-            pred_std_orig = pred_std_norm * y_std_exp
-            pred_var_orig = pred_std_orig.pow(2)
-
-            residuals = pred_mean_orig - target_orig
+            residuals = pred_mean - target
             abs_error = residuals.abs()
-            percentage_errors = residuals / (target_orig + 1e-8)
+            percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
             ss_res_episode = residuals.pow(2).sum(dim=0)
-            target_mean_episode = target_orig.mean(dim=0, keepdim=True)
-            ss_tot_episode = (target_orig - target_mean_episode).pow(2).sum(dim=0)
+            target_mean_episode = target.mean(dim=0, keepdim=True)
+            ss_tot_episode = (target - target_mean_episode).pow(2).sum(dim=0)
             r2_episode = torch.where(
                 ss_tot_episode > 1e-8,
                 1.0 - (ss_res_episode / ss_tot_episode),
@@ -355,10 +322,10 @@ class CATETrainer:
             )
 
             # ATE statistics per episode (each episode is fully contained in this batch)
-            # target_orig shape: [n_query, batch_size, 1] — dim=0 is query, dim=1 is episode.
-            n_query = target_orig.size(0)
-            ate_true_episode = target_orig.mean(dim=0)          # [batch_size, 1]
-            ate_pred_episode = pred_mean_orig.mean(dim=0)       # [batch_size, 1]
+            # target shape: [n_query, batch_size, 1] — dim=0 is query, dim=1 is episode.
+            n_query = target.size(0)
+            ate_true_episode = target.mean(dim=0)          # [batch_size, 1]
+            ate_pred_episode = pred_mean.mean(dim=0)       # [batch_size, 1]
             ate_residuals = ate_pred_episode - ate_true_episode  # [batch_size, 1]
 
             # ── Benchmark-aligned metrics ────────────────────────────────────
@@ -385,18 +352,18 @@ class CATETrainer:
                 "sum_sq_err": residuals.pow(2).sum().item(),
                 "sum_error": residuals.sum().item(),
                 "sum_sq_pe": percentage_errors.pow(2).sum().item(),
-                "sum_target": target_orig.sum().item(),
-                "sum_sq_target": target_orig.pow(2).sum().item(),
-                "sum_gnll": loss_gnll.item() * target_norm.numel(),
-                "num_samples": target_norm.numel(),
-                "variance_mean": pred_var_orig.mean().item(),
-                "variance_sum": pred_var_orig.sum().item(),
-                "cov50": (abs_error <= 0.674 * pred_std_orig).float().sum().item(),
-                "cov95": (abs_error <= 1.960 * pred_std_orig).float().sum().item(),
-                "cov99": (abs_error <= 2.576 * pred_std_orig).float().sum().item(),
+                "sum_target": target.sum().item(),
+                "sum_sq_target": target.pow(2).sum().item(),
+                "sum_gnll": loss_gnll.item() * target.numel(),
+                "num_samples": target.numel(),
+                "variance_mean": pred_var.mean().item(),
+                "variance_sum": pred_var.sum().item(),
+                "cov50": (abs_error <= 0.674 * pred_std).float().sum().item(),
+                "cov95": (abs_error <= 1.960 * pred_std).float().sum().item(),
+                "cov99": (abs_error <= 2.576 * pred_std).float().sum().item(),
                 # ── CATE R² (existing) ────────────────────────────────────────
                 "sum_cate_r2": r2_episode.sum().item(),
-                "num_episodes": target_orig.size(1),
+                "num_episodes": target.size(1),
                 # ── ATE R² (existing) ─────────────────────────────────────────
                 "sum_ate_true": ate_true_episode.sum().item(),
                 "sum_sq_ate_true": ate_true_episode.pow(2).sum().item(),
@@ -476,17 +443,17 @@ class CATETrainer:
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
-                x, a, w, z, y_norm, target_norm, y_mean, y_std = self._prepare_inputs(
+                x, a, w, z, y, target, y_std = self._prepare_inputs(
                     batch
                 )
 
-                # Ensure target_norm has shape (B, N_query, 1) to match predictions
-                if target_norm.dim() == 2:
-                    target_norm = target_norm.unsqueeze(-1)
+                # Ensure target has shape (B, N_query, 1) to match predictions
+                if target.dim() == 2:
+                    target = target.unsqueeze(-1)
 
                 loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
                     self._forward_and_loss(
-                        x, a, w, z, y_norm, target_norm, alpha_epoch_loss
+                        x, a, w, z, y, target, y_std, alpha_epoch_loss
                     )
                 )
 
@@ -499,9 +466,7 @@ class CATETrainer:
                 metrics = self._compute_batch_metrics(
                     pred_mean_norm,
                     pred_log_var_norm,
-                    target_norm,
-                    y_mean,
-                    y_std,
+                    target,
                     loss_gnll,
                 )
 
@@ -604,11 +569,11 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, a, w, z, y_norm, target_norm, y_mean, y_std = (
+                    x, a, w, z, y, target, y_std = (
                         self._prepare_inputs(batch)
                     )
-                    if target_norm.dim() == 2:
-                        target_norm = target_norm.unsqueeze(-1)
+                    if target.dim() == 2:
+                        target = target.unsqueeze(-1)
 
                     (
                         loss_total,
@@ -617,7 +582,7 @@ class CATETrainer:
                         pred_mean_norm,
                         pred_log_var_norm,
                     ) = self._forward_and_loss(
-                        x, a, w, z, y_norm, target_norm, alpha_epoch_loss
+                        x, a, w, z, y, target, y_std, alpha_epoch_loss
                     )
 
                     total_loss_gnll += loss_gnll.item()
@@ -627,9 +592,7 @@ class CATETrainer:
                     metrics = self._compute_batch_metrics(
                         pred_mean_norm,
                         pred_log_var_norm,
-                        target_norm,
-                        y_mean,
-                        y_std,
+                        target,
                         loss_gnll,
                     )
 
@@ -892,7 +855,7 @@ class CATETrainer:
             train_nll = train_metrics["loss_gnll"]
             train_mse = train_metrics["loss_mse"]
             train_total = train_metrics["loss_total"]
-            val_total = val_metrics["loss_total"] if val_metrics else float("nan")
+            val_gnll = val_metrics["loss_gnll"] if val_metrics else float("nan")
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
@@ -906,8 +869,8 @@ class CATETrainer:
                 self.save_checkpoint(epoch + 1, last_val_nll)
 
             if val_metrics:
-                if val_total < best_val_loss:
-                    best_val_loss = val_total
+                if val_gnll < best_val_loss:
+                    best_val_loss = val_gnll
                     early_stop_count = 0
                 else:
                     early_stop_count += 1
