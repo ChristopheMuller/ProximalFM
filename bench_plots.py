@@ -11,6 +11,176 @@ import warnings
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Method Styling Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Grouping: 
+# - OLS : Blue
+# - RF : Green
+# - TabICL : Purple
+# - P2SLS : Orange
+# - Tabular / Neural Causal Models : Red
+METHOD_STYLES = {
+    # ── OLS baselines (Blue) ──
+    "S-OLS":      {"color": "#1f77b4", "marker": "o"},  # circle
+    "S-OLS+AX":   {"color": "#1f77b4", "marker": "s"},  # square
+    "T-OLS":      {"color": "#1f77b4", "marker": "^"},  # triangle up
+
+    # ── RF baselines (Green) ──
+    "S-RF":       {"color": "#2ca02c", "marker": "o"},
+    "T-RF":       {"color": "#2ca02c", "marker": "^"},
+
+    # ── TabICL baselines (Purple) ──
+    "S-TabICL":   {"color": "#9467bd", "marker": "o"},
+    "T-TabICL":   {"color": "#9467bd", "marker": "^"},
+
+    # ── Proximal baselines (Orange) ──
+    "P2SLS":      {"color": "#ff7f0e", "marker": "o"},
+    "P2SLS+AX":   {"color": "#ff7f0e", "marker": "s"},
+
+    # ── Tabular & Neural Models (Red) ──
+    "CausalFM":   {"color": "#d62728", "marker": "X"},  # cross
+    "DoPFN":      {"color": "#d62728", "marker": "D"},  # diamond
+    "CausalPFN":  {"color": "#d62728", "marker": "P"},  # plus
+    "ProximalFM": {"color": "#d62728", "marker": "*", "s": 200},  # big star
+}
+
+
+def plot_ate_vs_cate_r2(results_dir: Path):
+    """
+    Plots a unit square comparing Cross-Episode ATE R² vs Average CATE R².
+    """
+    ate_csv = results_dir / "ate_summary.csv"
+    cate_csv = results_dir / "cate_summary.csv"
+
+    if not ate_csv.exists() or not cate_csv.exists():
+        warnings.warn(f"Summary CSVs not found in {results_dir}. Skipping ATE vs CATE R² plot.")
+        return
+
+    df_ate = pd.read_csv(ate_csv, index_col="method")
+    df_cate = pd.read_csv(cate_csv, index_col="method")
+
+    # We use standard "Mean R²" for CATE. You could change this to "Mean R²(shape)" if preferred.
+    df = pd.DataFrame({
+        "ATE_R2": df_ate["ATE R²"],
+        "CATE_R2": df_cate["Mean R²"]
+    }).dropna()
+
+    plt.figure(figsize=(7, 7))
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+    # Add reference quadrants & target lines
+    plt.axhline(0, color='black', linestyle='-', alpha=0.2, zorder=0)
+    plt.axvline(0, color='black', linestyle='-', alpha=0.2, zorder=0)
+    plt.plot([-1, 1], [-1, 1], ls="--", color="gray", alpha=0.4, zorder=0, label="y = x")
+    
+    # Unit square boundaries
+    plt.axhline(1, color='green', linestyle=':', alpha=0.5, zorder=0)
+    plt.axvline(1, color='green', linestyle=':', alpha=0.5, zorder=0)
+
+    # Plot each method
+    for method, row in df.iterrows():
+        style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
+        
+        plt.scatter(
+            row["ATE_R2"], 
+            row["CATE_R2"],
+            color=style.get("color"),
+            marker=style.get("marker"),
+            s=style.get("s", 120),  # default size 120
+            label=method,
+            edgecolors='white',
+            linewidths=0.8,
+            zorder=5
+        )
+
+    # Formatting the Unit Square
+    # We clip the lower bound slightly below 0 so bad models are visible, but the focus is [0, 1]
+    plt.xlim(-0.2, 1.05)
+    plt.ylim(-0.2, 1.05)
+    
+    plt.title("ATE vs CATE Estimation Performance ($R^2$)", fontsize=14, fontweight="bold", pad=15)
+    plt.xlabel("ATE $R^2$ (Cross-Episode Tracking)")
+    plt.ylabel("CATE $R^2$ (Average per Episode)")
+    
+    # Legend formatting (put it outside the unit square if it gets crowded)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., title="Methods", frameon=False)
+
+    output_file = results_dir / "plot_ate_vs_cate_r2.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print(f"Plot saved successfully to: {output_file}")
+    plt.close()
+
+def plot_ate_vs_cate_normrmse(results_dir: Path):
+    """
+    Plots a scatter comparing Cross-Episode ATE NormRMSE vs Average CATE NormRMSE.
+    Ideal performance is at the origin (0, 0).
+    """
+    ate_csv = results_dir / "ate_summary.csv"
+    cate_csv = results_dir / "cate_summary.csv"
+
+    if not ate_csv.exists() or not cate_csv.exists():
+        warnings.warn(f"Summary CSVs not found in {results_dir}. Skipping NormRMSE plot.")
+        return
+
+    df_ate = pd.read_csv(ate_csv, index_col="method")
+    df_cate = pd.read_csv(cate_csv, index_col="method")
+
+    df = pd.DataFrame({
+        "ATE_NormRMSE": df_ate["NormRMSE"],
+        "CATE_NormRMSE": df_cate["NormRMSE"]
+    }).dropna()
+
+    plt.figure(figsize=(7, 7))
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+    # Plot each method
+    for method, row in df.iterrows():
+        style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
+        
+        plt.scatter(
+            row["ATE_NormRMSE"], 
+            row["CATE_NormRMSE"],
+            color=style.get("color"),
+            marker=style.get("marker"),
+            s=style.get("s", 120),  # default size 120
+            label=method,
+            edgecolors='white',
+            linewidths=0.8,
+            zorder=5
+        )
+
+    # Calculate dynamic limits to frame the data properly
+    max_val = max(df["ATE_NormRMSE"].max(), df["CATE_NormRMSE"].max())
+    pad = max_val * 0.1
+    
+    # Add reference line y=x (Where ATE error = CATE error)
+    plt.plot([-pad, max_val + pad], [-pad, max_val + pad], ls="--", color="gray", alpha=0.4, zorder=0, label="y = x")
+    
+    # Emphasize the axes/origin (0 is perfect)
+    plt.axhline(0, color='black', linestyle='-', alpha=0.4, zorder=0)
+    plt.axvline(0, color='black', linestyle='-', alpha=0.4, zorder=0)
+
+    # Set limits starting slightly below 0 so the origin is clearly visible
+    min_limit = min(df["ATE_NormRMSE"].min(), df["CATE_NormRMSE"].min()) - 0.03
+    plt.xlim(min_limit, max_val + pad)
+    plt.ylim(min_limit, max_val + pad)
+
+    # use log scale for x and y
+    plt.xscale("log")
+    plt.yscale("log")
+    
+    plt.title("ATE vs CATE Estimation Error (NormRMSE)\n[Closer to Origin is Better]", fontsize=14, fontweight="bold", pad=15)
+    plt.xlabel("ATE NormRMSE (Cross-Episode)")
+    plt.ylabel("CATE NormRMSE (Average per Episode)")
+    
+    # Legend formatting
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', borderaxespad=0., title="Methods", frameon=False)
+
+    output_file = results_dir / "plot_ate_vs_cate_normrmse.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print(f"Plot saved successfully to: {output_file}")
+    plt.close()
 
 def plot_true_vs_pred_ate(csv_path: str):
     df = pd.read_csv(csv_path)
@@ -168,8 +338,14 @@ if __name__ == "__main__":
     parser.add_argument("--exp", default="first_test", help="Experiment name")
     args = parser.parse_args()
 
-    full_csv_path = Path("results") / args.exp / "results" / "results.csv"
+    results_dir = Path("results") / args.exp / "results"
+    full_csv_path = results_dir / "results.csv"
+    
+    # Existing Plots
     plot_true_vs_pred_ate(full_csv_path)
     plot_cate_r2_boxplot(full_csv_path)
+    plot_ate_vs_cate_r2(results_dir)
+    plot_ate_vs_cate_normrmse(results_dir)
+
     for i in range(5):
         plot_single_episode_cate(full_csv_path.parent.parent, episode_idx=i)
