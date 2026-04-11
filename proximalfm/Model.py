@@ -161,7 +161,7 @@ class ProximalNanoTabICLv2(nn.Module):
         x_test: typing.Optional[torch.Tensor] = None,
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
-        return_variance: bool = False,
+        return_log_variance: bool = False,
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
         Estimates the Conditional Average Treatment Effect (CATE) for a set of test points,
@@ -171,6 +171,8 @@ class ProximalNanoTabICLv2(nn.Module):
         1. Providing train points (x, w, z) and explicit test points (x_test, w_test, z_test).
         2. Providing full sequences (x, w, z) where the first n points correspond to the
            training labels (a_train, y_train), and the remaining points are treated as test points.
+
+        return_log_variance: If True, also returns the log variance of the predictions (tuple). Otherwise, only returns the mean.
         """
         batch_size = x.shape[0]
         mode = "explicit_test" if (x_test is not None and w_test is not None and z_test is not None) else "full_sequence"
@@ -238,10 +240,9 @@ class ProximalNanoTabICLv2(nn.Module):
         pred_test = out
 
         mean = pred_test[..., 0:1]
-        if return_variance:
+        if return_log_variance:
             log_var = pred_test[..., 1:2]
-            variance = torch.exp(log_var)
-            return mean, variance
+            return mean, log_var
 
         return mean
 

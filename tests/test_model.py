@@ -211,12 +211,12 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_variance=False
+        return_log_variance=False
     )
     assert mean.shape == (batch_size, n_test, 1)
 
     # Test with variance
-    mean, var = model.estimate_CATE(
+    mean, log_var = model.estimate_CATE(
         x=x_train,
         a_train=a_train,
         w=w_train,
@@ -225,11 +225,11 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_variance=True
+        return_log_variance=True
     )
     assert mean.shape == (batch_size, n_test, 1)
-    assert var.shape == (batch_size, n_test, 1)
-    assert torch.all(var >= 0)  # Variance should be non-negative (since it's exp(log_var))
+    assert log_var.shape == (batch_size, n_test, 1)
+
 
 def test_estimate_cate_batch_size_mismatch():
     config = ModelConfig(
@@ -363,21 +363,21 @@ def test_estimate_cate_full_sequence_mode():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_variance=False
+        return_log_variance=False
     )
     assert mean.shape == (batch_size, n_test, 1)
 
     # Test with variance
-    mean, var = model.estimate_CATE(
+    mean, log_var = model.estimate_CATE(
         x=x_full,
         a_train=a_train,
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_variance=True
+        return_log_variance=True
     )
     assert mean.shape == (batch_size, n_test, 1)
-    assert var.shape == (batch_size, n_test, 1)
+    assert log_var.shape == (batch_size, n_test, 1)
 
 def test_estimate_cate_partial_test_args():
     config = ModelConfig(
