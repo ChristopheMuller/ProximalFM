@@ -18,7 +18,7 @@ from proximalfm.PriorDataLoader import create_causal_data_loaders
 
 MODEL = "cate_big"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 440]
+FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 40, 50, 70, 100, 150, 250, 350, 440]
 
 def load_config() -> dict:
     full_config = {}
@@ -105,7 +105,7 @@ def main():
         train_episodes=1,            
         val_episodes=1,     
         num_workers=1,
-        seed=np.random.randint(0, 10000),
+        seed=9999999,
     )
     
     # Grab the single batch
@@ -206,6 +206,7 @@ def main():
         fig.delaxes(axes[j])
 
     plt.tight_layout()
+    plt.savefig(f"cate_checkpoints_{MODEL}.pdf")
     plt.show()
 
 if __name__ == "__main__":

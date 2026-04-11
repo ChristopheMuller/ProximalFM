@@ -1,50 +1,49 @@
 training:
-  clip_grad: 1.5
-  device: mps
-  early_stop: 15
-  epochs: 100
-  exp_name: test_cate_new_normalization
-  gpu: 0
-  log_dir: runs/proximalfm
-  lr: 0.0006
-  save_dir: checkpoints
-  save_freq: 10
   seed: 1234
-  val_freq: 3
-  warmup_epochs: 100
+  epochs: 500
+  lr: 0.0004
   warmup_steps: 1500
+  warmup_epochs: 100
   weight_decay: 0.0002
-  x_mask_prob: 0.0
-  zw_mask_prob: 0.0
-
+  clip_grad: 1.5
+  early_stop: 15          # patience in epochs before early stopping
+  val_freq: 3
+  save_freq: 10           # save a checkpoint every N epochs
+  save_dir: "checkpoints"
+  log_dir: "runs/cate_focus"
+  device: "mps"           # "cuda" | "mps" | "cpu"
+  gpu: 0                  # GPU index (only used when device == "cuda")
+  zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
+  x_mask_prob: 0.0        # probability of masking X type tokens
+  exp_name: "cate_big"
 
 model:
-  col_nhead: 8
-  col_num_blocks: 6
   dtype: float32
-  embed_dim: 32
+  col_nhead: 8
   icl_nhead: 8
-  icl_num_blocks: 14
   row_nhead: 8
-  row_num_blocks: 6
+  embed_dim: 64
+  icl_num_blocks: 16
+  row_num_blocks: 8
+  col_num_blocks: 8
 
 data:
-  batch_size: 8             # number of episodes per batch
+  batch_size: 16             # number of episodes per batch
   samples_per_episode: 256  # rows (observations) per episode / context window
   context_fraction: 0.85    # fraction of rows used as context; rest are query targets
-  train_episodes: 500       # episodes constituting one training epoch
+  train_episodes: 1000       # episodes constituting one training epoch
   reset_freq_train: 1       # frequency (in episodes) to replace episodes in the training set with new ones (0 = never replace)
   val_episodes: 500         # episodes for validation
   num_workers: 4            # DataLoader worker processes (0 = main process only)
 
 prior:
+  type : "cate_linear"
+  d_x            : 5
+  d_u            : 2
+  d_z            : 3
+  d_w            : 3
+  noise_scale_w  : 1
+  noise_scale_z  : 1
+  noise_scale_x  : 1
+  temperature    : 2
   confounding_strength: 1
-  d_u: 2
-  d_w: 3
-  d_x: 5
-  d_z: 3
-  noise_scale_w: 1
-  noise_scale_x: 1
-  noise_scale_z: 1
-  temperature: 2
-  type: cate_linear

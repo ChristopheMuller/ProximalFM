@@ -93,9 +93,13 @@ class EpisodeMetrics:
     # ── CATE absolute ────────────────────────────────────────────────────────
     cate_mae: Optional[float]        # None when all_nan
     cate_rmse: Optional[float]
+    cate_medae: Optional[float]      # <-- NEW
+    cate_rmedse: Optional[float]     # <-- NEW
+    
     cate_mae_norm: Optional[float]   # None when all_nan or homogeneous
     cate_rmse_norm: Optional[float]
-
+    cate_medae_norm: Optional[float] # <-- NEW
+    cate_rmedse_norm: Optional[float]# <-- NEW
     # ── CATE R² ──────────────────────────────────────────────────────────────
     cate_r2: Optional[float]             # None when homogeneous or all_nan
     cate_r2_shape: Optional[float]       # None when homogeneous or all_nan
@@ -143,21 +147,27 @@ def compute_episode_metrics(
     ate_error_norm = ate_error / (ite_std + _EPS)
 
     # ── CATE absolute ────────────────────────────────────────────────────────
+# ── CATE absolute ────────────────────────────────────────────────────────
     if all_nan:
-        cate_mae = cate_rmse = cate_mae_norm = cate_rmse_norm = None
+        cate_mae = cate_rmse = cate_medae = cate_rmedse = None
+        cate_mae_norm = cate_rmse_norm = cate_medae_norm = cate_rmedse_norm = None
     else:
         pred_clean   = np.where(np.isnan(pred), ate_pred, pred)
         residuals    = pred_clean - true_ite
+        
         cate_mae     = float(np.abs(residuals).mean())
         cate_rmse    = float(np.sqrt((residuals ** 2).mean()))
+        cate_medae   = float(np.median(np.abs(residuals)))          # <-- NEW
+        cate_rmedse  = float(np.sqrt(np.median(residuals ** 2)))    # <-- NEW
+        
         if homogeneous:
-            # Normalisation is undefined (SD(τ) ≈ 0); keep absolute values only.
-            cate_mae_norm  = None
-            cate_rmse_norm = None
+            cate_mae_norm = cate_rmse_norm = cate_medae_norm = cate_rmedse_norm = None
         else:
-            cate_mae_norm  = cate_mae  / (ite_std + _EPS)
-            cate_rmse_norm = cate_rmse / (ite_std + _EPS)
-
+            cate_mae_norm    = cate_mae  / (ite_std + _EPS)
+            cate_rmse_norm   = cate_rmse / (ite_std + _EPS)
+            cate_medae_norm  = cate_medae / (ite_std + _EPS)        # <-- NEW
+            cate_rmedse_norm = cate_rmedse / (ite_std + _EPS)       # <-- NEW
+    
     # ── CATE R² family ───────────────────────────────────────────────────────
     # R² is only meaningful when the true effect has non-trivial variance.
     # Skipped entirely when all predictions are NaN.
@@ -184,8 +194,12 @@ def compute_episode_metrics(
         ate_error_norm=ate_error_norm,
         cate_mae=cate_mae,
         cate_rmse=cate_rmse,
+        cate_medae=cate_medae,              # <-- NEW
+        cate_rmedse=cate_rmedse,            # <-- NEW
         cate_mae_norm=cate_mae_norm,
         cate_rmse_norm=cate_rmse_norm,
+        cate_medae_norm=cate_medae_norm,    # <-- NEW
+        cate_rmedse_norm=cate_rmedse_norm,  # <-- NEW    
         cate_r2=cate_r2,
         cate_r2_shape=cate_r2_shape,
         cate_r2_ate_penalty=cate_r2_ate_penalty,
@@ -265,7 +279,9 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
             # ── Normalised (÷ SD(τ)) ─────────────────────────────────────────
             "NormBias":  round(e_norm.mean(), 4),
             "NormMAE":   round(e_norm.abs().mean(), 4),
+            "NormMedAE": round(e_norm.abs().median(), 4),
             "NormRMSE":  round(np.sqrt((e_norm ** 2).mean()), 4),
+            "NormRMedSE":round(np.sqrt(np.median(e_norm ** 2)), 4),
             # ── Cross-episode R² ─────────────────────────────────────────────
             "ATE R²":  ate_r2,
         }
@@ -273,39 +289,40 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
 
 
 def _summarise_cate(df: pd.DataFrame) -> pd.Series:
-    """CATE summary: absolute metrics + R² family, excluding homogeneous episodes.
-
-    Absolute metrics (MAE, RMSE) are averaged over episodes where predictions
-    exist, regardless of homogeneity.  The normalised variants (÷ SD(τ)) and
-    all R²-family metrics are restricted to heterogeneous episodes.
-
-    Reports 'Episodes used' and 'Fraction used' so the reader knows how
-    informative the R²-family stats are.
-    """
     heterogeneous = df.loc[~df["homogeneous"]]
     n_total = len(df)
     n_valid = len(heterogeneous)
     frac_used = n_valid / n_total if n_total > 0 else 0.0
 
     # ── Absolute CATE metrics (all non-all-NaN episodes) ─────────────────────
-    mae_vals  = df["cate_mae"].dropna()
-    rmse_vals = df["cate_rmse"].dropna()
-    mean_mae  = round(mae_vals.mean(),  4) if len(mae_vals)  > 0 else float("nan")
-    mean_rmse = round(rmse_vals.mean(), 4) if len(rmse_vals) > 0 else float("nan")
+    mae_vals    = df["cate_mae"].dropna()
+    rmse_vals   = df["cate_rmse"].dropna()
+    medae_vals  = df["cate_medae"].dropna()
+    rmedse_vals = df["cate_rmedse"].dropna()
+    
+    mean_mae    = round(mae_vals.mean(),  4) if len(mae_vals)  > 0 else float("nan")
+    mean_rmse   = round(rmse_vals.mean(), 4) if len(rmse_vals) > 0 else float("nan")
+    mean_medae  = round(medae_vals.mean(), 4) if len(medae_vals) > 0 else float("nan")
+    mean_rmedse = round(rmedse_vals.mean(), 4) if len(rmedse_vals) > 0 else float("nan")
 
     # Normalised absolute (heterogeneous episodes only)
-    mae_n_vals  = heterogeneous["cate_mae_norm"].dropna()
-    rmse_n_vals = heterogeneous["cate_rmse_norm"].dropna()
-    mean_mae_n  = round(mae_n_vals.mean(),  4) if len(mae_n_vals)  > 0 else float("nan")
-    mean_rmse_n = round(rmse_n_vals.mean(), 4) if len(rmse_n_vals) > 0 else float("nan")
+    mae_n_vals    = heterogeneous["cate_mae_norm"].dropna()
+    rmse_n_vals   = heterogeneous["cate_rmse_norm"].dropna()
+    medae_n_vals  = heterogeneous["cate_medae_norm"].dropna()
+    rmedse_n_vals = heterogeneous["cate_rmedse_norm"].dropna()
+    
+    mean_mae_n    = round(mae_n_vals.mean(),  4) if len(mae_n_vals)  > 0 else float("nan")
+    mean_rmse_n   = round(rmse_n_vals.mean(), 4) if len(rmse_n_vals) > 0 else float("nan")
+    mean_medae_n  = round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan")
+    mean_rmedse_n = round(rmedse_n_vals.mean(), 4) if len(rmedse_n_vals) > 0 else float("nan")
 
     if n_valid == 0:
         return pd.Series(
             {
-                "MAE":           mean_mae,
                 "RMSE":          mean_rmse,
-                "NormMAE":       float("nan"),
+                "RMedSE":        mean_rmedse,
                 "NormRMSE":      float("nan"),
+                "NormRMedSE":    float("nan"),
                 "Mean R²":       float("nan"),
                 "Median R²":     float("nan"),
                 "Mean R²(shape)":   float("nan"),
@@ -322,18 +339,15 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
     return pd.Series(
         {
             # ── Absolute ─────────────────────────────────────────────────────
-            "MAE":      mean_mae,
-            "RMSE":     mean_rmse,
-            "NormMAE":  mean_mae_n,
-            "NormRMSE": mean_rmse_n,
+            "RMSE":       mean_rmse,
+            "RMedSE":     mean_rmedse,
+            "NormRMSE":   mean_rmse_n,
+            "NormRMedSE": mean_rmedse_n,
             # ── Standard R² ──────────────────────────────────────────────────
             "Mean R²":   round(r2_vals.mean(),   4),
             "Median R²": round(r2_vals.median(), 4),
             "Std R²":    round(r2_vals.std(),    4),
             # ── R² decomposition ─────────────────────────────────────────────
-            # R²(shape): pure heterogeneity recovery, ATE bias removed.
-            # ATE penalty: fraction of variance lost due to ATE mis-estimation.
-            # Identity: Mean R² ≈ Mean R²(shape) − Mean ATE penalty
             "Mean R²(shape)":    round(r2s_vals.mean(),   4),
             "Median R²(shape)":  round(r2s_vals.median(), 4),
             "Mean ATE penalty":  round(r2pen_vals.mean(), 4),
@@ -344,7 +358,6 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
             ),
         }
     )
-
 
 def build_summary_tables(
     all_results: pd.DataFrame,
