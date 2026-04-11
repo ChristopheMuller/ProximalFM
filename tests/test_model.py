@@ -211,7 +211,7 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_variance=False
+        return_log_variance=False
     )
     assert mean.shape == (batch_size, n_test, 1)
 
@@ -225,7 +225,7 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_variance=True
+        return_log_variance=True
     )
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
@@ -363,7 +363,7 @@ def test_estimate_cate_full_sequence_mode():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_variance=False
+        return_log_variance=False
     )
     assert mean.shape == (batch_size, n_test, 1)
 
@@ -374,7 +374,7 @@ def test_estimate_cate_full_sequence_mode():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_variance=True
+        return_log_variance=True
     )
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)

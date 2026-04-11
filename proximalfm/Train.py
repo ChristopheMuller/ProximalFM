@@ -571,7 +571,7 @@ class CATETrainer:
                         target = target.unsqueeze(-1)
 
                     pred_mean, pred_log_var = self.model.estimate_CATE(
-                        x=x, a_train=a, w=w, z=z, y_train=y, return_variance=True
+                        x=x, a_train=a, w=w, z=z, y_train=y, return_log_variance=True
                     )
 
                     metrics = self._compute_batch_metrics(
