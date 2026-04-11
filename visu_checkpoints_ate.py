@@ -18,7 +18,7 @@ from proximalfm.PriorDataLoader import create_causal_data_loaders
 MODEL = "cate_big"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 440]
+FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 40, 50, 70, 100, 150, 250, 350, 440]
 
 def load_config() -> dict:
 
@@ -84,11 +84,11 @@ def main():
     # ---------------------------------------------------------
     # 2. Generate exactly K test datasets
     # ---------------------------------------------------------
-    k_datasets = 150 # Number of test datasets (episodes)
+    k_datasets = 100 # Number of test datasets (episodes)
     
     # Define how many points are used as context vs test
     n_train = int(config["data"]["samples_per_episode"] * 0.85)
-    n_test = 200
+    n_test = 500
     samples_per_episode = n_train + n_test
 
     prior_config = ProximalPriorConfig(
@@ -107,7 +107,7 @@ def main():
         train_episodes=1,            
         val_episodes=k_datasets,     
         num_workers=1,
-        seed=1234, 
+        seed=9999999, 
     )
     
     # Grab the single batch
@@ -139,10 +139,10 @@ def main():
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found in {path} matching pattern 'model_epoch_*.pth'")
 
-    num_plots = len(checkpoints)
     if FILTER_KEEP_EPOCHS:
         checkpoints = [c for c in checkpoints if extract_epoch(c) in FILTER_KEEP_EPOCHS]
     selected_checkpoints = [c for c in checkpoints if extract_epoch(c) not in FILTER_REMOVE_EPOCHS]
+    num_plots = len(checkpoints)
 
     # ---------------------------------------------------------
     # 4. Evaluate and Plot
@@ -158,32 +158,34 @@ def main():
         checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
         model.load_state_dict(checkpoint["model_state_dict"])
         
+        chunk = 10
+        pred_ates = np.zeros((x.size(0),))  # (B,)
         with torch.no_grad():
-            # Slice A and Y to only include the context rows
-            a_train = a_full[:, :n_train, 0] # (B, n_train)
-            y_train = y_full[:, :n_train, 0] # (B, n_train)
-            
-            # Forward pass (model evaluates the remaining n_test points automatically)
-            out = model(x=x, a=a_train, w=w, z=z, y=y_train)
-            
-            # Extract query predictions. `out` has shape (B, n_test, 2)
-            pred_cate = out[:, :, 0].cpu().numpy()  # (B, n_test)
-            
-            # Calculate the predicted ATE per episode
-            pred_ate = pred_cate.mean(axis=1)       # (B,)
+
+            for start in range(0, k_datasets, chunk):
+                end = min(start + chunk, k_datasets)
+                x_chunk = x[start:end, :, :]
+                z_chunk = z[start:end, :, :]
+                w_chunk = w[start:end, :, :]
+                a_chunk = a_full[start:end, :n_train, 0]
+                y_chunk = y_full[start:end, :n_train, 0]
+                out = model(x=x_chunk, a=a_chunk, w=w_chunk, z=z_chunk, y=y_chunk)
+                pred_cate = out[:, :, 0].cpu().numpy()  # (B, chunk)
+                pred_ate_chunk = pred_cate.mean(axis=1)  # (B,)
+                pred_ates[start:end] = pred_ate_chunk
 
         # Plotting
         ax = axes[idx]
         
         # Perfect prediction line
-        min_val = min(true_ate.min(), pred_ate.min()) - 1
-        max_val = max(true_ate.max(), pred_ate.max()) + 1
+        min_val = min(true_ate.min(), pred_ates.min()) - 1
+        max_val = max(true_ate.max(), pred_ates.max()) + 1
         ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label="Perfect Prediction")
 
         # Scatter the ATE predictions
         ax.scatter(
             true_ate, 
-            pred_ate, 
+            pred_ates, 
             alpha=0.6, 
             s=40,
             edgecolors='w',
@@ -205,6 +207,7 @@ def main():
         fig.delaxes(axes[j])
 
     plt.tight_layout()
+    plt.savefig(f"ate_checkpoints_{MODEL}.pdf")
     plt.show()
 
 if __name__ == "__main__":

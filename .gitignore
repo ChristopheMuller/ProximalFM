@@ -7,3 +7,5 @@ runs/*
 
 eval_data/*
 results/*
+
+*.pdf
