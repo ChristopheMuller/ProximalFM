@@ -68,7 +68,6 @@ class ProximalNanoTabICLv2(nn.Module):
         z: torch.Tensor,
         y: torch.Tensor,
     ) -> torch.Tensor:
-
         assert y.shape == a.shape, "y and a must have the same shape"
 
         n_batch, n_rows, n_cols = x.shape
@@ -93,24 +92,36 @@ class ProximalNanoTabICLv2(nn.Module):
         # ─── 2. EMBEDDING ────────────────────────────────────────────────────
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
         x = torch.stack(
-            [x_norm[:, :, (idxs + (2**i - 1)) % n_cols] for i in range(self.feature_group_size_x)], dim=-1
+            [
+                x_norm[:, :, (idxs + (2**i - 1)) % n_cols]
+                for i in range(self.feature_group_size_x)
+            ],
+            dim=-1,
         )
         emb_x = self.x_embed(x)
 
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
         w = torch.stack(
-            [w_norm[:, :, (idxs + (2**i - 1)) % w.shape[-1]] for i in range(self.feature_group_size_w)], dim=-1
+            [
+                w_norm[:, :, (idxs + (2**i - 1)) % w.shape[-1]]
+                for i in range(self.feature_group_size_w)
+            ],
+            dim=-1,
         )
         emb_w = self.w_embed(w)
 
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
         z = torch.stack(
-            [z_norm[:, :, (idxs + (2**i - 1)) % z.shape[-1]] for i in range(self.feature_group_size_z)], dim=-1
+            [
+                z_norm[:, :, (idxs + (2**i - 1)) % z.shape[-1]]
+                for i in range(self.feature_group_size_z)
+            ],
+            dim=-1,
         )
         emb_z = self.z_embed(z)
 
         emb_a = self.a_embed(a[:, :, None, None])
-        
+
         # Use the normalized Y for embedding
         emb_y = self.y_embed_in(y_norm[:, :, None, None])
 
@@ -121,21 +132,25 @@ class ProximalNanoTabICLv2(nn.Module):
         for block in self.col_blocks:
             emb = block.col_attn(emb, kv_max_idx=n_train)
 
-        emb = torch.cat([self.row_cls_tokens.expand(n_batch, n_rows, -1, -1), emb], dim=2)
+        emb = torch.cat(
+            [self.row_cls_tokens.expand(n_batch, n_rows, -1, -1), emb], dim=2
+        )
         for block in self.row_blocks[:-1]:
             emb = block.row_attn(emb)
         emb = self.row_blocks[-1].row_attn(emb, q_max_idx=self.row_cls_tokens.size(-2))
-        
+
         emb = self.row_ln(emb).flatten(-2, -1)
 
         # Use the normalized Y here as well
-        emb[:, :n_train] += self.y_embed_icl(y_norm[:, :, None]) + self.a_embed_icl(a[:, :, None])
-        
+        emb[:, :n_train] += self.y_embed_icl(y_norm[:, :, None]) + self.a_embed_icl(
+            a[:, :, None]
+        )
+
         for block in self.icl_blocks[:-1]:
             emb = block(emb, kv_max_idx=n_train)
         emb = self.icl_blocks[-1](emb[:, n_train:], emb[:, :n_train])
 
-        out = self.out_mlp(self.out_ln(emb)) 
+        out = self.out_mlp(self.out_ln(emb))
 
         # ─── 4. OUTPUT DENORMALIZATION ───────────────────────────────────────
         pred_mean_norm = out[..., 0:1]
@@ -145,7 +160,7 @@ class ProximalNanoTabICLv2(nn.Module):
 
         # ITE is a difference, so we scale by std, but DO NOT add the mean back
         pred_mean_raw = pred_mean_norm * y_std_expanded
-        
+
         # Variance scales by std^2. Therefore, log_var shifts by log(std^2) = 2 * log(std)
         pred_log_var_raw = pred_log_var_norm + 2 * torch.log(y_std_expanded)
 
@@ -175,7 +190,11 @@ class ProximalNanoTabICLv2(nn.Module):
         return_log_variance: If True, also returns the log variance of the predictions (tuple). Otherwise, only returns the mean.
         """
         batch_size = x.shape[0]
-        mode = "explicit_test" if (x_test is not None and w_test is not None and z_test is not None) else "full_sequence"
+        mode = (
+            "explicit_test"
+            if (x_test is not None and w_test is not None and z_test is not None)
+            else "full_sequence"
+        )
 
         if mode == "explicit_test":
             # Batch dimension check
@@ -183,20 +202,25 @@ class ProximalNanoTabICLv2(nn.Module):
                 tensor.shape[0] == batch_size
                 for tensor in [a_train, w, z, y_train, x_test, w_test, z_test]
             ):
-                raise ValueError("All inputs must have the same batch size (dimension 0).")
+                raise ValueError(
+                    "All inputs must have the same batch size (dimension 0)."
+                )
 
             # Train sequence length check
             n_train = x.shape[1]
             if not all(
-                tensor.shape[1] == n_train
-                for tensor in [a_train, w, z, y_train]
+                tensor.shape[1] == n_train for tensor in [a_train, w, z, y_train]
             ):
-                raise ValueError("All train inputs must have the same sequence length (dimension 1).")
+                raise ValueError(
+                    "All train inputs must have the same sequence length (dimension 1)."
+                )
 
             # Test sequence length check
             n_test = x_test.shape[1]
             if not all(tensor.shape[1] == n_test for tensor in [w_test, z_test]):
-                raise ValueError("All test inputs must have the same sequence length (dimension 1).")
+                raise ValueError(
+                    "All test inputs must have the same sequence length (dimension 1)."
+                )
 
             # Concatenate train and test along the sequence dimension (dim=1)
             x_full = torch.cat([x, x_test], dim=1)
@@ -204,26 +228,35 @@ class ProximalNanoTabICLv2(nn.Module):
             z_full = torch.cat([z, z_test], dim=1)
         else:
             if x_test is not None or w_test is not None or z_test is not None:
-                raise ValueError("Either provide all of x_test, w_test, z_test or none of them.")
+                raise ValueError(
+                    "Either provide all of x_test, w_test, z_test or none of them."
+                )
 
             # Batch dimension check
             if not all(
-                tensor.shape[0] == batch_size
-                for tensor in [a_train, w, z, y_train]
+                tensor.shape[0] == batch_size for tensor in [a_train, w, z, y_train]
             ):
-                raise ValueError("All inputs must have the same batch size (dimension 0).")
+                raise ValueError(
+                    "All inputs must have the same batch size (dimension 0)."
+                )
 
             # Length validation
             n_full = x.shape[1]
             if not all(tensor.shape[1] == n_full for tensor in [w, z]):
-                raise ValueError("x, w, and z must have the same sequence length (dimension 1) when test points are not explicitly provided.")
+                raise ValueError(
+                    "x, w, and z must have the same sequence length (dimension 1) when test points are not explicitly provided."
+                )
 
             n_train = a_train.shape[1]
             if y_train.shape[1] != n_train:
-                raise ValueError("a_train and y_train must have the same sequence length (dimension 1).")
+                raise ValueError(
+                    "a_train and y_train must have the same sequence length (dimension 1)."
+                )
 
             if n_full <= n_train:
-                raise ValueError("When providing full sequences, the length of x, w, z must be greater than the length of a_train and y_train to include test points.")
+                raise ValueError(
+                    "When providing full sequences, the length of x, w, z must be greater than the length of a_train and y_train to include test points."
+                )
 
             x_full = x
             w_full = w
@@ -245,6 +278,7 @@ class ProximalNanoTabICLv2(nn.Module):
             return mean, log_var
 
         return mean
+
 
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:

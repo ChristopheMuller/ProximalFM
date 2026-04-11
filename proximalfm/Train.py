@@ -228,28 +228,29 @@ class CATETrainer:
         x = batch["X"].transpose(0, 1)
         z = batch["Z"].transpose(0, 1)
         w = batch["W"].transpose(0, 1)
-        
+
         a = batch["A"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
         y = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
         target = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
-        
+
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-        
+
         return x, a, w, z, y, target, y_std
 
     def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
-
         out = self.model(x=x, a=a, w=w, z=z, y=y)
         pred_mean_raw = out[..., 0:1]
         pred_log_var_raw = out[..., 1:2]
 
         loss_mse_raw = F.mse_loss(pred_mean_raw, target)
-        
+
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
-        loss_mse_normalized = F.mse_loss(pred_mean_raw / y_std_expanded, target / y_std_expanded)
+        loss_mse_normalized = F.mse_loss(
+            pred_mean_raw / y_std_expanded, target / y_std_expanded
+        )
 
         loss_gnll = gaussian_nll_loss(pred_mean_raw, pred_log_var_raw, target)
-        
+
         loss = alpha * loss_mse_normalized + (1 - alpha) * loss_gnll
 
         return loss, loss_mse_raw, loss_gnll, pred_mean_raw, pred_log_var_raw
@@ -317,32 +318,34 @@ class CATETrainer:
             r2_episode = torch.where(
                 ss_tot_episode > 1e-8,
                 1.0 - (ss_res_episode / ss_tot_episode),
-                torch.zeros_like(ss_tot_episode)
+                torch.zeros_like(ss_tot_episode),
             )
 
             # ATE statistics per episode (each episode is fully contained in this batch)
             n_query = target.size(1)
             batch_size = target.size(0)
-            ate_true_episode = target.mean(dim=1)          # [batch_size, 1]
-            ate_pred_episode = pred_mean.mean(dim=1)       # [batch_size, 1]
+            ate_true_episode = target.mean(dim=1)  # [batch_size, 1]
+            ate_pred_episode = pred_mean.mean(dim=1)  # [batch_size, 1]
             ate_residuals = ate_pred_episode - ate_true_episode  # [batch_size, 1]
 
             # ── Benchmark-aligned metrics ────────────────────────────────────
             # Var(τ) per episode = SS_tot / n_query
-            var_tau_episode = ss_tot_episode / n_query           # [batch_size, 1]
+            var_tau_episode = ss_tot_episode / n_query  # [batch_size, 1]
             std_tau_episode = torch.sqrt(var_tau_episode.clamp(min=0))
 
             # R² decomposition: R²(shape) = R² + bias²/Var(τ)
             # ATE penalty per episode: bias²/Var(τ)
             # Identity (bench): cate_r2 = cate_r2_shape − cate_r2_ate_penalty
             cate_r2_ate_penalty = ate_residuals.pow(2) / (var_tau_episode + 1e-8)
-            cate_r2_shape = r2_episode + cate_r2_ate_penalty     # [batch_size, 1]
+            cate_r2_shape = r2_episode + cate_r2_ate_penalty  # [batch_size, 1]
 
             # CATE MAE per episode
-            cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True)       # [batch_size, 1]
+            cate_mae_episode = residuals.abs().mean(
+                dim=1, keepdim=True
+            )  # [batch_size, 1]
 
             # Normalised CATE RMSE per episode: sqrt(MSE_ep) / SD(τ)
-            mse_episode = ss_res_episode / n_query               # [batch_size, 1]
+            mse_episode = ss_res_episode / n_query  # [batch_size, 1]
             cate_rmse_norm_episode = torch.sqrt(mse_episode) / (std_tau_episode + 1e-8)
 
             # Normalised ATE error per episode: (pred_ate − true_ate) / SD(τ)
@@ -361,15 +364,15 @@ class CATETrainer:
                 "sum_sq_ate_true": ate_true_episode.pow(2).sum().item(),
                 "sum_sq_ate_err": ate_residuals.pow(2).sum().item(),
                 # R² decomposition
-                "sum_cate_r2_shape":       cate_r2_shape.sum().item(),
+                "sum_cate_r2_shape": cate_r2_shape.sum().item(),
                 "sum_cate_r2_ate_penalty": cate_r2_ate_penalty.sum().item(),
                 # CATE absolute
-                "sum_cate_mae":            cate_mae_episode.sum().item(),
-                "sum_cate_rmse_norm":      cate_rmse_norm_episode.sum().item(),
+                "sum_cate_mae": cate_mae_episode.sum().item(),
+                "sum_cate_rmse_norm": cate_rmse_norm_episode.sum().item(),
                 # Normalised ATE error (for NormBias / NormMAE / NormRMSE)
-                "sum_ate_error_norm":      ate_error_norm_episode.sum().item(),
-                "sum_abs_ate_error_norm":  ate_error_norm_episode.abs().sum().item(),
-                "sum_sq_ate_error_norm":   ate_error_norm_episode.pow(2).sum().item(),
+                "sum_ate_error_norm": ate_error_norm_episode.sum().item(),
+                "sum_abs_ate_error_norm": ate_error_norm_episode.abs().sum().item(),
+                "sum_sq_ate_error_norm": ate_error_norm_episode.pow(2).sum().item(),
             }
 
             if pred_var is not None:
@@ -444,18 +447,20 @@ class CATETrainer:
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
-                x, a, w, z, y, target, y_std = self._prepare_inputs(
-                    batch
-                )
+                x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 
                 # Ensure target has shape (B, N_query, 1) to match predictions
                 if target.dim() == 2:
                     target = target.unsqueeze(-1)
 
-                loss, loss_mse, loss_gnll, pred_mean_norm, pred_log_var_norm = (
-                    self._forward_and_loss(
-                        x, a, w, z, y, target, y_std, alpha_epoch_loss
-                    )
+                (
+                    loss,
+                    loss_mse,
+                    loss_gnll,
+                    pred_mean_norm,
+                    pred_log_var_norm,
+                ) = self._forward_and_loss(
+                    x, a, w, z, y, target, y_std, alpha_epoch_loss
                 )
 
                 total_grad_norm += self._optimization_step(loss)
@@ -526,7 +531,6 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def validate(self, epoch: int) -> dict:
-
         self.model.eval()
         # Existing accumulators
         total_variance = 0.0
@@ -547,13 +551,13 @@ class CATETrainer:
         total_sq_ate_true = 0.0
         total_sq_ate_err = 0.0
 
-        total_cate_r2_shape       = 0.0
+        total_cate_r2_shape = 0.0
         total_cate_r2_ate_penalty = 0.0
-        total_cate_mae            = 0.0
-        total_cate_rmse_norm      = 0.0
-        total_ate_error_norm      = 0.0   # signed (for NormBias)
-        total_abs_ate_error_norm  = 0.0   # absolute (for NormMAE)
-        total_sq_ate_error_norm   = 0.0   # squared (for NormRMSE)
+        total_cate_mae = 0.0
+        total_cate_rmse_norm = 0.0
+        total_ate_error_norm = 0.0  # signed (for NormBias)
+        total_abs_ate_error_norm = 0.0  # absolute (for NormMAE)
+        total_sq_ate_error_norm = 0.0  # squared (for NormRMSE)
 
         val_start = time.time()
 
@@ -564,9 +568,7 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, a, w, z, y, target, y_std = (
-                        self._prepare_inputs(batch)
-                    )
+                    x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
                     if target.dim() == 2:
                         target = target.unsqueeze(-1)
 
@@ -598,13 +600,13 @@ class CATETrainer:
                     total_sq_ate_err += metrics["sum_sq_ate_err"]
 
                     # ── Benchmark-aligned ─────────────────────────────────────
-                    total_cate_r2_shape       += metrics["sum_cate_r2_shape"]
+                    total_cate_r2_shape += metrics["sum_cate_r2_shape"]
                     total_cate_r2_ate_penalty += metrics["sum_cate_r2_ate_penalty"]
-                    total_cate_mae            += metrics["sum_cate_mae"]
-                    total_cate_rmse_norm      += metrics["sum_cate_rmse_norm"]
-                    total_ate_error_norm      += metrics["sum_ate_error_norm"]
-                    total_abs_ate_error_norm  += metrics["sum_abs_ate_error_norm"]
-                    total_sq_ate_error_norm   += metrics["sum_sq_ate_error_norm"]
+                    total_cate_mae += metrics["sum_cate_mae"]
+                    total_cate_rmse_norm += metrics["sum_cate_rmse_norm"]
+                    total_ate_error_norm += metrics["sum_ate_error_norm"]
+                    total_abs_ate_error_norm += metrics["sum_abs_ate_error_norm"]
+                    total_sq_ate_error_norm += metrics["sum_sq_ate_error_norm"]
 
         val_time = time.time() - val_start
         self.validation_times.append(val_time)
@@ -614,7 +616,6 @@ class CATETrainer:
         mse = sum_sq_err / denom
         rmse = np.sqrt(mse)
         mspe = sum_sq_pe / denom
-
 
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
@@ -635,15 +636,15 @@ class CATETrainer:
         # ── Benchmark-aligned derived metrics ─────────────────────────────────
         ep_denom = max(total_episodes, 1)
         # R² decomposition (mean over episodes)
-        cate_r2_shape_mean       = total_cate_r2_shape       / ep_denom
+        cate_r2_shape_mean = total_cate_r2_shape / ep_denom
         cate_r2_ate_penalty_mean = total_cate_r2_ate_penalty / ep_denom
         # CATE absolute (mean over episodes)
-        cate_mae_mean      = total_cate_mae       / ep_denom
+        cate_mae_mean = total_cate_mae / ep_denom
         cate_rmse_norm_mean = total_cate_rmse_norm / ep_denom
         # Normalised ATE error (mean over episodes)
-        ate_normbias  = total_ate_error_norm     / ep_denom
-        ate_normmae   = total_abs_ate_error_norm / ep_denom
-        ate_normrmse  = np.sqrt(total_sq_ate_error_norm / ep_denom)
+        ate_normbias = total_ate_error_norm / ep_denom
+        ate_normmae = total_abs_ate_error_norm / ep_denom
+        ate_normrmse = np.sqrt(total_sq_ate_error_norm / ep_denom)
 
         avg_variance = total_variance / denom
 
@@ -672,14 +673,13 @@ class CATETrainer:
             "cov50": cov50,
             "cov95": cov95,
             "cov99": cov99,
-
-            "cate_r2_shape_mean":       cate_r2_shape_mean,
+            "cate_r2_shape_mean": cate_r2_shape_mean,
             "cate_r2_ate_penalty_mean": cate_r2_ate_penalty_mean,
-            "cate_mae_mean":            cate_mae_mean,
-            "cate_rmse_norm_mean":      cate_rmse_norm_mean,
-            "ate_normbias":             ate_normbias,
-            "ate_normmae":              ate_normmae,
-            "ate_normrmse":             ate_normrmse,
+            "cate_mae_mean": cate_mae_mean,
+            "cate_rmse_norm_mean": cate_rmse_norm_mean,
+            "ate_normbias": ate_normbias,
+            "ate_normmae": ate_normmae,
+            "ate_normrmse": ate_normrmse,
         }
 
     # ------------------------------------------------------------------
@@ -696,7 +696,7 @@ class CATETrainer:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
-            "val_loss": val_rmse, # keep key for compatibility
+            "val_loss": val_rmse,  # keep key for compatibility
             "epoch_times": self.epoch_times,
         }
         name = f"model_epoch_{epoch}{('_' + tag) if tag else ''}.pth"
@@ -753,47 +753,71 @@ class CATETrainer:
             # ── ATE — mirrors bench_metrics ATE summary ───────────────────────
             # ATE R²: cross-episode, how well τ̂_mean tracks τ_mean in ranking.
             # Identical to bench "ATE R²".
-            self.writer.add_scalar("ATE/val_r2",       val_metrics["ate_r2"],    epoch)
+            self.writer.add_scalar("ATE/val_r2", val_metrics["ate_r2"], epoch)
             # Raw bias (global mean residual across all predictions).
             # Close to bench "Bias" (which is per-episode ATE error mean).
-            self.writer.add_scalar("ATE/val_bias",     val_metrics["bias"],      epoch)
+            self.writer.add_scalar("ATE/val_bias", val_metrics["bias"], epoch)
             # Scale-free ATE errors: error ÷ SD(τ), averaged over episodes.
             # Identical to bench "NormBias / NormMAE / NormRMSE".
-            self.writer.add_scalar("ATE/val_normbias", val_metrics["ate_normbias"], epoch)
-            self.writer.add_scalar("ATE/val_normmae",  val_metrics["ate_normmae"],  epoch)
-            self.writer.add_scalar("ATE/val_normrmse", val_metrics["ate_normrmse"], epoch)
+            self.writer.add_scalar(
+                "ATE/val_normbias", val_metrics["ate_normbias"], epoch
+            )
+            self.writer.add_scalar("ATE/val_normmae", val_metrics["ate_normmae"], epoch)
+            self.writer.add_scalar(
+                "ATE/val_normrmse", val_metrics["ate_normrmse"], epoch
+            )
 
             # ── CATE — mirrors bench_metrics CATE summary ─────────────────────
             # Standard R²: penalises both level shift and heterogeneity.
             # Identical to bench "Mean R²".
-            self.writer.add_scalar("CATE/val_r2",            val_metrics["cate_r2_mean"],          epoch)
+            self.writer.add_scalar("CATE/val_r2", val_metrics["cate_r2_mean"], epoch)
             # R²(shape): ATE bias removed — pure heterogeneity recovery.
             # Identical to bench "Mean R²(shape)".
-            self.writer.add_scalar("CATE/val_r2_shape",      val_metrics["cate_r2_shape_mean"],     epoch)
+            self.writer.add_scalar(
+                "CATE/val_r2_shape", val_metrics["cate_r2_shape_mean"], epoch
+            )
             # ATE penalty: bias²/Var(τ) — how much R² is lost due to ATE mis-estimation.
             # Identical to bench "Mean ATE penalty".
-            self.writer.add_scalar("CATE/val_r2_ate_penalty", val_metrics["cate_r2_ate_penalty_mean"], epoch)
+            self.writer.add_scalar(
+                "CATE/val_r2_ate_penalty",
+                val_metrics["cate_r2_ate_penalty_mean"],
+                epoch,
+            )
             # CATE RMSE (global pooled, close to bench "cate_rmse" mean).
-            self.writer.add_scalar("CATE/val_rmse",          val_metrics["rmse"],                   epoch)
+            self.writer.add_scalar("CATE/val_rmse", val_metrics["rmse"], epoch)
             # CATE MAE, mean over episodes.
             # Identical to bench "MAE".
-            self.writer.add_scalar("CATE/val_mae",           val_metrics["cate_mae_mean"],          epoch)
+            self.writer.add_scalar("CATE/val_mae", val_metrics["cate_mae_mean"], epoch)
             # Normalised CATE RMSE (÷ SD(τ)), mean over episodes.
             # Identical to bench "NormRMSE".
-            self.writer.add_scalar("CATE/val_normrmse",      val_metrics["cate_rmse_norm_mean"],    epoch)
+            self.writer.add_scalar(
+                "CATE/val_normrmse", val_metrics["cate_rmse_norm_mean"], epoch
+            )
 
             # ── Training diagnostics (not in benchmark) ───────────────────────
-            self.writer.add_scalar("Metrics/val_mspe",    val_metrics["mspe"],     epoch)
+            self.writer.add_scalar("Metrics/val_mspe", val_metrics["mspe"], epoch)
             if "variance" in val_metrics and val_metrics["variance"] > 0:
-                self.writer.add_scalar("Metrics/val_variance", val_metrics["variance"], epoch)
-            self.writer.add_scalar("Time/val_s",          val_metrics["time_s"],   epoch)
+                self.writer.add_scalar(
+                    "Metrics/val_variance", val_metrics["variance"], epoch
+                )
+            self.writer.add_scalar("Time/val_s", val_metrics["time_s"], epoch)
             if "cov50" in val_metrics and val_metrics["cov50"] > 0:
-                self.writer.add_scalar("Calibration/val_cov50", val_metrics["cov50"],  epoch)
-                self.writer.add_scalar("Calibration/val_cov95", val_metrics["cov95"],  epoch)
-                self.writer.add_scalar("Calibration/val_cov99", val_metrics["cov99"],  epoch)
-            self.writer.add_scalar("Bias-Variance/val_bias_sq",   val_metrics["bias_sq"],   epoch)
-            self.writer.add_scalar("Bias-Variance/val_error_var", val_metrics["error_var"], epoch)
-            self.writer.add_scalar("Bias-Variance/mse",           val_metrics["mse"],       epoch)
+                self.writer.add_scalar(
+                    "Calibration/val_cov50", val_metrics["cov50"], epoch
+                )
+                self.writer.add_scalar(
+                    "Calibration/val_cov95", val_metrics["cov95"], epoch
+                )
+                self.writer.add_scalar(
+                    "Calibration/val_cov99", val_metrics["cov99"], epoch
+                )
+            self.writer.add_scalar(
+                "Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch
+            )
+            self.writer.add_scalar(
+                "Bias-Variance/val_error_var", val_metrics["error_var"], epoch
+            )
+            self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
@@ -811,7 +835,6 @@ class CATETrainer:
         epoch = self.start_epoch
         last_val_rmse = float("inf")
         while epoch < self.train_cfg["epochs"]:
-
             if hasattr(self.train_loader.dataset, "set_reset_state") and reset_freq > 0:
                 self.train_loader.dataset.set_reset_state(epoch // reset_freq)
 
