@@ -535,7 +535,7 @@ def main() -> None:
             "ITE variance — CATE R² will be skipped for those episodes."
         )
 
-    batches = build_batches(data)
+    batches = build_batches(data)  # make N_BATCH dicts
 
     # ── Step 2: Baseline methods ──────────────────────────────────────────────
     method_cfgs: list[dict] = cfg.get("methods", [])
@@ -634,11 +634,7 @@ def main() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # macOS defaults to "spawn"; force "fork" so worker processes inherit the
-    # parent's memory without re-importing everything from scratch.
-    # On Linux "fork" is already the default.
-    # On Windows "spawn" is the only option — the benchmark still works, just
-    # slower to start each worker.
+
     if sys.platform != "win32":
         multiprocessing.set_start_method("spawn", force=True)
 

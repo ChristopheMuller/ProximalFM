@@ -13,7 +13,7 @@ data:
   # If generate is chosen and data.pt already exists, it is reused
   # (use run.force_regen: true to overwrite).
   source: generate
-  output_dir: results/first_test
+  output_dir: results/linear_cate_conf4_218
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
   n_train: 218    # context samples shown to each estimator
@@ -22,7 +22,7 @@ data:
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 10
+    confounding_strength: 4
     d_x: 5
     d_u: 2
     d_w: 3
@@ -36,9 +36,9 @@ data:
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 run:
-  seed:      1234
-  n_workers: 8      # parallel worker processes for baseline methods
-  device: mps       # cpu | cuda | mps  — only used for neural checkpoints
+  seed:      999999999    # needs to be large enough to be sure not to use same seeds as during the training!
+  n_workers: 8            # parallel worker processes for baseline methods
+  device: mps             # cpu | cuda | mps  — only used for neural checkpoints
   force_rerun: false
   # If force_rerun is false, any method whose prediction file already exists
   # is skipped.  Flip to true to recompute everything from scratch.
@@ -97,12 +97,6 @@ methods:
     use_W: true
     use_Z: true
 
-  - name: T-OLS(no-proxy)
-    cls:   T_Learner
-    base:  linear
-    use_W: false
-    use_Z: false
-
   # ── Proximal baselines ───────────────────────────────────────────────────
   - name: P2SLS
     cls:          P2SLS
@@ -132,11 +126,11 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       cate_very_small
-    checkpoint: checkpoints/very_small
+  - name:       cate_big
+    checkpoint: checkpoints/cate_big
 
-  # - name:       cate_mini
-  #   checkpoint: checkpoints/mini
+  - name:       ate_linear
+    checkpoint: checkpoints/ate_linear
 
-  # - name:       dim64
-  #   checkpoint: checkpoints/dim64_but_only_4_blocks
+  - name:       ate_small
+    checkpoint: checkpoints/ate_small
