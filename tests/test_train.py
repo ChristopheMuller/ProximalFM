@@ -213,18 +213,20 @@ def test_validate(mock_create_loaders, mock_writer, mock_config):
     mock_create_loaders.return_value = {"train": [], "val": [batch]}
     trainer = CATETrainer(mock_config)
 
-    mock_out = torch.randn(B, 2, 2)
-    trainer.model = MagicMock(return_value=mock_out)
+    mock_out_mean = torch.randn(B, 2, 1)
+    mock_out_var = torch.randn(B, 2, 1)
+    trainer.model = MagicMock()
+    trainer.model.estimate_CATE.return_value = (mock_out_mean, mock_out_var)
 
     val_metrics = trainer.validate(epoch=0)
 
     assert isinstance(val_metrics, dict)
-    assert "loss_gnll" in val_metrics
     assert "rmse" in val_metrics
+    assert "loss_gnll" not in val_metrics
     assert "variance" in val_metrics
-    assert "loss_total" in val_metrics
-    assert isinstance(val_metrics["loss_gnll"], float)
-    assert len(trainer.val_losses) == 1
+
+
+
     assert len(trainer.val_rmses) == 1
 
 @patch("proximalfm.Train.SummaryWriter")
@@ -233,7 +235,7 @@ def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path
     mock_create_loaders.return_value = {"train": [], "val": []}
     trainer = CATETrainer(mock_config)
 
-    trainer.save_checkpoint(epoch=1, val_loss=0.5)
+    trainer.save_checkpoint(epoch=1, val_rmse=0.5)
 
     save_dir = os.path.join(mock_config["training"]["save_dir"], mock_config["training"]["exp_name"])
     assert os.path.exists(os.path.join(save_dir, "model_epoch_1.pth"))
@@ -241,6 +243,6 @@ def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path
 
     # Test tracking of best val_loss
     assert trainer.best_val_loss == 0.5
-    trainer.save_checkpoint(epoch=2, val_loss=0.6)
+    trainer.save_checkpoint(epoch=2, val_rmse=0.6)
     # best model shouldn't be overridden
     assert trainer.best_val_loss == 0.5

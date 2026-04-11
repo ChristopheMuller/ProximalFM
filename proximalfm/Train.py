@@ -5,7 +5,6 @@ import os
 import random
 import time
 from datetime import datetime
-from typing import Tuple
 
 import numpy as np
 import torch
@@ -298,14 +297,14 @@ class CATETrainer:
         pred_mean: torch.Tensor,
         pred_log_var: torch.Tensor,
         target: torch.Tensor,
-        loss_gnll: torch.Tensor,
     ) -> dict:
         with torch.no_grad():
-            # Since the model handles normalization internally, 
-            # we work directly with raw scale predictions and targets.
-            
-            pred_std = torch.exp(0.5 * pred_log_var)
-            pred_var = pred_std.pow(2)
+            if pred_log_var is not None and pred_log_var.numel() > 0:
+                pred_std = torch.exp(0.5 * pred_log_var)
+                pred_var = pred_std.pow(2)
+            else:
+                pred_std = None
+                pred_var = None
 
             residuals = pred_mean - target
             abs_error = residuals.abs()
@@ -322,8 +321,8 @@ class CATETrainer:
             )
 
             # ATE statistics per episode (each episode is fully contained in this batch)
-            # target shape: [batch, query, 1] — dim=0 is batch, dim=1 is episode.
             n_query = target.size(1)
+            batch_size = target.size(0)
             ate_true_episode = target.mean(dim=1)          # [batch_size, 1]
             ate_pred_episode = pred_mean.mean(dim=1)       # [batch_size, 1]
             ate_residuals = ate_pred_episode - ate_true_episode  # [batch_size, 1]
@@ -334,12 +333,13 @@ class CATETrainer:
             std_tau_episode = torch.sqrt(var_tau_episode.clamp(min=0))
 
             # R² decomposition: R²(shape) = R² + bias²/Var(τ)
+            # ATE penalty per episode: bias²/Var(τ)
             # Identity (bench): cate_r2 = cate_r2_shape − cate_r2_ate_penalty
             cate_r2_ate_penalty = ate_residuals.pow(2) / (var_tau_episode + 1e-8)
             cate_r2_shape = r2_episode + cate_r2_ate_penalty     # [batch_size, 1]
 
             # CATE MAE per episode
-            cate_mae_episode = residuals.abs().mean(dim=0)       # [batch_size, 1]
+            cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True)       # [batch_size, 1]
 
             # Normalised CATE RMSE per episode: sqrt(MSE_ep) / SD(τ)
             mse_episode = ss_res_episode / n_query               # [batch_size, 1]
@@ -348,23 +348,15 @@ class CATETrainer:
             # Normalised ATE error per episode: (pred_ate − true_ate) / SD(τ)
             ate_error_norm_episode = ate_residuals / (std_tau_episode + 1e-8)
 
-            return {
+            metrics = {
                 "sum_sq_err": residuals.pow(2).sum().item(),
-                "sum_error": residuals.sum().item(),
                 "sum_sq_pe": percentage_errors.pow(2).sum().item(),
+                "sum_error": residuals.sum().item(),
                 "sum_target": target.sum().item(),
                 "sum_sq_target": target.pow(2).sum().item(),
-                "sum_gnll": loss_gnll.item() * target.numel(),
                 "num_samples": target.numel(),
-                "variance_mean": pred_var.mean().item(),
-                "variance_sum": pred_var.sum().item(),
-                "cov50": (abs_error <= 0.674 * pred_std).float().sum().item(),
-                "cov95": (abs_error <= 1.960 * pred_std).float().sum().item(),
-                "cov99": (abs_error <= 2.576 * pred_std).float().sum().item(),
-                # ── CATE R² (existing) ────────────────────────────────────────
                 "sum_cate_r2": r2_episode.sum().item(),
-                "num_episodes": target.size(1),
-                # ── ATE R² (existing) ─────────────────────────────────────────
+                "num_episodes": batch_size,
                 "sum_ate_true": ate_true_episode.sum().item(),
                 "sum_sq_ate_true": ate_true_episode.pow(2).sum().item(),
                 "sum_sq_ate_err": ate_residuals.pow(2).sum().item(),
@@ -379,6 +371,15 @@ class CATETrainer:
                 "sum_abs_ate_error_norm":  ate_error_norm_episode.abs().sum().item(),
                 "sum_sq_ate_error_norm":   ate_error_norm_episode.pow(2).sum().item(),
             }
+
+            if pred_var is not None:
+                metrics["variance_mean"] = pred_var.mean().item()
+                metrics["variance_sum"] = pred_var.sum().item()
+                metrics["cov50"] = (abs_error <= 0.674 * pred_std).float().sum().item()
+                metrics["cov95"] = (abs_error <= 1.960 * pred_std).float().sum().item()
+                metrics["cov99"] = (abs_error <= 2.576 * pred_std).float().sum().item()
+
+            return metrics
 
     def _load_checkpoint(self, checkpoint_path: str) -> None:
         """
@@ -467,17 +468,16 @@ class CATETrainer:
                     pred_mean_norm,
                     pred_log_var_norm,
                     target,
-                    loss_gnll,
                 )
 
                 sum_sq_err += metrics["sum_sq_err"]
                 sum_sq_pe += metrics["sum_sq_pe"]
-                total_gnll += metrics["sum_gnll"]
+                total_gnll += loss_gnll.item() * metrics["num_samples"]
                 total_samples += metrics["num_samples"]
-                total_variance += metrics["variance_mean"]
-                total_cov50 += metrics["cov50"]
-                total_cov95 += metrics["cov95"]
-                total_cov99 += metrics["cov99"]
+                total_variance += metrics.get("variance_mean", 0.0)
+                total_cov50 += metrics.get("cov50", 0.0)
+                total_cov95 += metrics.get("cov95", 0.0)
+                total_cov99 += metrics.get("cov99", 0.0)
 
                 total_cate_r2 += metrics["sum_cate_r2"]
                 total_episodes += metrics["num_episodes"]
@@ -526,15 +526,12 @@ class CATETrainer:
     # ------------------------------------------------------------------
 
     def validate(self, epoch: int) -> dict:
+
         self.model.eval()
         # Existing accumulators
-        total_loss_gnll = 0.0
-        total_loss_mse = 0.0
-        total_loss_total = 0.0
         total_variance = 0.0
         sum_sq_err = 0.0
         sum_sq_pe = 0.0
-        sum_gnll = 0.0
         total_samples = 0
         total_cov50 = 0
         total_cov95 = 0
@@ -560,8 +557,6 @@ class CATETrainer:
 
         val_start = time.time()
 
-        alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
-
         with torch.no_grad():
             with tqdm(
                 self.val_loader,
@@ -575,25 +570,14 @@ class CATETrainer:
                     if target.dim() == 2:
                         target = target.unsqueeze(-1)
 
-                    (
-                        loss_total,
-                        loss_mse,
-                        loss_gnll,
-                        pred_mean_norm,
-                        pred_log_var_norm,
-                    ) = self._forward_and_loss(
-                        x, a, w, z, y, target, y_std, alpha_epoch_loss
+                    pred_mean, pred_log_var = self.model.estimate_CATE(
+                        x=x, a_train=a, w=w, z=z, y_train=y, return_variance=True
                     )
 
-                    total_loss_gnll += loss_gnll.item()
-                    total_loss_mse += loss_mse.item()
-                    total_loss_total += loss_total.item()
-
                     metrics = self._compute_batch_metrics(
-                        pred_mean_norm,
-                        pred_log_var_norm,
+                        pred_mean,
+                        pred_log_var,
                         target,
-                        loss_gnll,
                     )
 
                     sum_sq_err += metrics["sum_sq_err"]
@@ -601,12 +585,11 @@ class CATETrainer:
                     sum_error += metrics["sum_error"]
                     sum_target += metrics["sum_target"]
                     sum_sq_target += metrics["sum_sq_target"]
-                    sum_gnll += metrics["sum_gnll"]
                     total_samples += metrics["num_samples"]
-                    total_variance += metrics["variance_sum"]
-                    total_cov50 += metrics["cov50"]
-                    total_cov95 += metrics["cov95"]
-                    total_cov99 += metrics["cov99"]
+                    total_variance += metrics.get("variance_sum", 0.0)
+                    total_cov50 += metrics.get("cov50", 0.0)
+                    total_cov95 += metrics.get("cov95", 0.0)
+                    total_cov99 += metrics.get("cov99", 0.0)
 
                     total_cate_r2 += metrics["sum_cate_r2"]
                     total_episodes += metrics["num_episodes"]
@@ -627,14 +610,11 @@ class CATETrainer:
         self.validation_times.append(val_time)
 
         denom = max(total_samples, 1)
-        num_batches = len(self.val_loader)
-        avg_loss_gnll = total_loss_gnll / num_batches
-        avg_loss_mse = total_loss_mse / num_batches
-        avg_loss_total = total_loss_total / num_batches
 
         mse = sum_sq_err / denom
         rmse = np.sqrt(mse)
         mspe = sum_sq_pe / denom
+
 
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
@@ -665,32 +645,25 @@ class CATETrainer:
         ate_normmae   = total_abs_ate_error_norm / ep_denom
         ate_normrmse  = np.sqrt(total_sq_ate_error_norm / ep_denom)
 
-        # Global metrics
-        gnll = sum_gnll / denom
         avg_variance = total_variance / denom
 
         cov95 = total_cov95 / denom
         cov50 = total_cov50 / denom
         cov99 = total_cov99 / denom
 
-        self.val_losses.append(gnll)
         self.val_rmses.append(rmse)
-        self.scheduler.step(gnll)
+        self.scheduler.step(rmse)
 
         logger.info(
             f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
         )
 
         return {
-            "loss_gnll": avg_loss_gnll,
-            "loss_mse": avg_loss_mse,
-            "loss_total": avg_loss_total,
             "rmse": rmse,
             "mse": mse,
             "mspe": mspe,
             "cate_r2_mean": cate_r2_mean,
             "ate_r2": ate_r2,
-            "gnll": gnll,
             "bias": ite_bias,
             "bias_sq": ite_bias_sq,
             "error_var": ite_error_var,
@@ -713,7 +686,7 @@ class CATETrainer:
     # Checkpointing
     # ------------------------------------------------------------------
 
-    def save_checkpoint(self, epoch: int, val_loss: float, tag: str = "") -> None:
+    def save_checkpoint(self, epoch: int, val_rmse: float, tag: str = "") -> None:
         path_dir = os.path.join(
             self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run")
         )
@@ -723,18 +696,18 @@ class CATETrainer:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
-            "val_loss": val_loss,
+            "val_loss": val_rmse, # keep key for compatibility
             "epoch_times": self.epoch_times,
         }
         name = f"model_epoch_{epoch}{('_' + tag) if tag else ''}.pth"
         path = os.path.join(path_dir, name)
         torch.save(checkpoint, path)
 
-        if val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
+        if val_rmse < self.best_val_loss:
+            self.best_val_loss = val_rmse
             best_path = os.path.join(path_dir, "best_model.pth")
             torch.save(checkpoint, best_path)
-            logger.info(f"  → New best model (val NLL: {val_loss:.4f})")
+            logger.info(f"  → New best model (val RMSE: {val_rmse:.4f})")
 
     # ------------------------------------------------------------------
     # TensorBoard logging
@@ -777,10 +750,6 @@ class CATETrainer:
 
         # Validation Metrics (if available)
         if val_metrics:
-            self.writer.add_scalar("Loss/val_total", val_metrics["loss_total"], epoch)
-            self.writer.add_scalar("Loss/val_mse", val_metrics["loss_mse"], epoch)
-            self.writer.add_scalar("Loss/val_gnll", val_metrics["loss_gnll"], epoch)
-
             # ── ATE — mirrors bench_metrics ATE summary ───────────────────────
             # ATE R²: cross-episode, how well τ̂_mean tracks τ_mean in ranking.
             # Identical to bench "ATE R²".
@@ -815,12 +784,13 @@ class CATETrainer:
 
             # ── Training diagnostics (not in benchmark) ───────────────────────
             self.writer.add_scalar("Metrics/val_mspe",    val_metrics["mspe"],     epoch)
-            self.writer.add_scalar("Metrics/val_gnll",    val_metrics["gnll"],     epoch)
-            self.writer.add_scalar("Metrics/val_variance", val_metrics["variance"], epoch)
+            if "variance" in val_metrics and val_metrics["variance"] > 0:
+                self.writer.add_scalar("Metrics/val_variance", val_metrics["variance"], epoch)
             self.writer.add_scalar("Time/val_s",          val_metrics["time_s"],   epoch)
-            self.writer.add_scalar("Calibration/val_cov50", val_metrics["cov50"],  epoch)
-            self.writer.add_scalar("Calibration/val_cov95", val_metrics["cov95"],  epoch)
-            self.writer.add_scalar("Calibration/val_cov99", val_metrics["cov99"],  epoch)
+            if "cov50" in val_metrics and val_metrics["cov50"] > 0:
+                self.writer.add_scalar("Calibration/val_cov50", val_metrics["cov50"],  epoch)
+                self.writer.add_scalar("Calibration/val_cov95", val_metrics["cov95"],  epoch)
+                self.writer.add_scalar("Calibration/val_cov99", val_metrics["cov99"],  epoch)
             self.writer.add_scalar("Bias-Variance/val_bias_sq",   val_metrics["bias_sq"],   epoch)
             self.writer.add_scalar("Bias-Variance/val_error_var", val_metrics["error_var"], epoch)
             self.writer.add_scalar("Bias-Variance/mse",           val_metrics["mse"],       epoch)
@@ -839,7 +809,7 @@ class CATETrainer:
         reset_freq = self.data_cfg.get("reset_freq_train", -1)
 
         epoch = self.start_epoch
-        last_val_nll = float("inf")
+        last_val_rmse = float("inf")
         while epoch < self.train_cfg["epochs"]:
 
             if hasattr(self.train_loader.dataset, "set_reset_state") and reset_freq > 0:
@@ -849,13 +819,13 @@ class CATETrainer:
             val_metrics = None
             if epoch % self.train_cfg.get("val_freq", 1) == 0:
                 val_metrics = self.validate(epoch)
-                last_val_nll = val_metrics["loss_gnll"]
+                last_val_rmse = val_metrics["rmse"]
 
             # Extract metrics for console logging
             train_nll = train_metrics["loss_gnll"]
             train_mse = train_metrics["loss_mse"]
             train_total = train_metrics["loss_total"]
-            val_gnll = val_metrics["loss_gnll"] if val_metrics else float("nan")
+            val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
@@ -865,12 +835,12 @@ class CATETrainer:
             self.log_metrics(epoch, train_metrics, val_metrics)
 
             if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
-                # Save using the last recorded validation NLL metric
-                self.save_checkpoint(epoch + 1, last_val_nll)
+                # Save using the last recorded validation RMSE metric
+                self.save_checkpoint(epoch + 1, last_val_rmse)
 
             if val_metrics:
-                if val_gnll < best_val_loss:
-                    best_val_loss = val_gnll
+                if val_rmse < best_val_loss:
+                    best_val_loss = val_rmse
                     early_stop_count = 0
                 else:
                     early_stop_count += 1
@@ -880,8 +850,8 @@ class CATETrainer:
             epoch += 1
 
         self.total_training_time = time.time() - training_start
-        # Final checkpoint uses the last recorded val_nll
-        self.save_checkpoint(epoch + 1, last_val_nll, tag="final")
+        # Final checkpoint uses the last recorded val_rmse
+        self.save_checkpoint(epoch + 1, last_val_rmse, tag="final")
         self.writer.close()
         logger.info("Training complete!")
 

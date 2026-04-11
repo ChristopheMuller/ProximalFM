@@ -240,8 +240,7 @@ class ProximalNanoTabICLv2(nn.Module):
         mean = pred_test[..., 0:1]
         if return_variance:
             log_var = pred_test[..., 1:2]
-            variance = torch.exp(log_var)
-            return mean, variance
+            return mean, log_var
 
         return mean
 
