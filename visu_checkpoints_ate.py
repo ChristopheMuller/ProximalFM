@@ -15,8 +15,10 @@ from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "test_cate_new_normalization"
-FILTER_REMOVE_EPOCHS = [10, 30, 50, 70, 90, 101]
+MODEL = "cate_big"
+device_str = "mps"
+FILTER_REMOVE_EPOCHS = []
+FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 440]
 
 def load_config() -> dict:
 
@@ -53,7 +55,6 @@ def main():
     # ---------------------------------------------------------
     # 1. Setup Device & Model
     # ---------------------------------------------------------
-    device_str = train_cfg.get("device", "cpu")
     if device_str == "cuda" and torch.cuda.is_available():
         device = torch.device(f"cuda:{train_cfg.get('gpu', 0)}")
     elif device_str == "mps" and torch.backends.mps.is_available():
@@ -87,7 +88,7 @@ def main():
     
     # Define how many points are used as context vs test
     n_train = int(config["data"]["samples_per_episode"] * 0.85)
-    n_test = 100
+    n_test = 200
     samples_per_episode = n_train + n_test
 
     prior_config = ProximalPriorConfig(
@@ -139,6 +140,8 @@ def main():
         raise FileNotFoundError(f"No checkpoints found in {path} matching pattern 'model_epoch_*.pth'")
 
     num_plots = len(checkpoints)
+    if FILTER_KEEP_EPOCHS:
+        checkpoints = [c for c in checkpoints if extract_epoch(c) in FILTER_KEEP_EPOCHS]
     selected_checkpoints = [c for c in checkpoints if extract_epoch(c) not in FILTER_REMOVE_EPOCHS]
 
     # ---------------------------------------------------------

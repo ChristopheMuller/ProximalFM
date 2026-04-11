@@ -16,8 +16,9 @@ from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "test_cate_new_normalization"
-FILTER_REMOVE_EPOCHS = [10, 30, 50, 70, 90, 101]
+MODEL = "cate_big"
+FILTER_REMOVE_EPOCHS = []
+FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 200, 250, 300, 350, 400, 440]
 
 def load_config() -> dict:
     full_config = {}
@@ -135,6 +136,8 @@ def main():
     if not checkpoints:
         raise FileNotFoundError(f"No checkpoints found in {path} matching pattern 'model_epoch_*.pth'")
 
+    if FILTER_KEEP_EPOCHS:
+        checkpoints = [c for c in checkpoints if extract_epoch(c) in FILTER_KEEP_EPOCHS]
     selected_checkpoints = [c for c in checkpoints if extract_epoch(c) not in FILTER_REMOVE_EPOCHS]
     num_plots = len(selected_checkpoints)
 
