@@ -401,7 +401,7 @@ def run_neural_model(
         feature_group_size_z=prior_cfg["d_z"],
     )
     model = ProximalNanoTabICLv2(config=model_config).to(device, dtype=dtype)
-    ckpt = torch.load(best_path, map_location=device, weights_only=True)
+    ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     console.print(f"    [green]✓[/] Loaded {name!r} (epoch {ckpt.get('epoch', '?')})")

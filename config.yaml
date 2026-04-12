@@ -1,13 +1,13 @@
 training:
   seed: 1234
-  epochs: 500
-  lr: 0.0004
-  warmup_steps: 1500
+  epochs: 1500
+  lr: 0.0003
+  warmup_steps: 1000
   warmup_epochs: 100
   weight_decay: 0.0002
   clip_grad: 1.5
-  early_stop: 15          # patience in epochs before early stopping
-  val_freq: 3
+  early_stop: 10          # patience in epochs before early stopping
+  val_freq: 4
   save_freq: 10           # save a checkpoint every N epochs
   save_dir: "checkpoints"
   log_dir: "runs/cate_focus"
@@ -15,17 +15,17 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "cate_big"
+  exp_name: "cate_small"
 
 model:
   dtype: float32
-  col_nhead: 8
-  icl_nhead: 8
-  row_nhead: 8
-  embed_dim: 64
-  icl_num_blocks: 16
-  row_num_blocks: 8
-  col_num_blocks: 8
+  col_nhead: 4
+  icl_nhead: 4
+  row_nhead: 4
+  embed_dim: 32
+  icl_num_blocks: 8
+  row_num_blocks: 4
+  col_num_blocks: 4
 
 data:
   batch_size: 16             # number of episodes per batch

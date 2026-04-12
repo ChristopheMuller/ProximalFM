@@ -13,7 +13,7 @@ data:
   # If generate is chosen and data.pt already exists, it is reused
   # (use run.force_regen: true to overwrite).
   source: generate
-  output_dir: results/linear_cate_conf4_218
+  output_dir: results/linear_cate_conf2_218
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
   n_train: 218    # context samples shown to each estimator
@@ -22,7 +22,7 @@ data:
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 4
+    confounding_strength: 2
     d_x: 5
     d_u: 2
     d_w: 3
@@ -77,17 +77,17 @@ methods:
     use_Z: true
     interactions: true
 
-  - name: S-RF
-    cls:   S_Learner
-    base:  rf
-    use_W: true
-    use_Z: true
+  # - name: S-RF
+  #   cls:   S_Learner
+  #   base:  rf
+  #   use_W: true
+  #   use_Z: true
 
-  - name: S-TabICL
-    cls:   S_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
+  # - name: S-TabICL
+  #   cls:   S_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS
@@ -96,17 +96,17 @@ methods:
     use_W: true
     use_Z: true
 
-  - name: T-RF
-    cls:   T_Learner
-    base:  rf
-    use_W: true
-    use_Z: true
+  # - name: T-RF
+  #   cls:   T_Learner
+  #   base:  rf
+  #   use_W: true
+  #   use_Z: true
 
-  - name: T-TabICL
-    cls:   T_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
+  # - name: T-TabICL
+  #   cls:   T_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
 
   # ── Proximal baselines ───────────────────────────────────────────────────
   - name: P2SLS
@@ -118,30 +118,30 @@ methods:
     interactions: true
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
-  - name: CausalFM
-    cls:  CausalFM
-    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
-    use_W: false
-    use_Z: false
+  # - name: CausalFM
+  #   cls:  CausalFM
+  #   checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+  #   use_W: false
+  #   use_Z: false
 
-  - name: DoPFN
-    cls:  DoPFN
-    use_W: true
-    use_Z: true
+  # - name: DoPFN
+  #   cls:  DoPFN
+  #   use_W: true
+  #   use_Z: true
   
-  - name: CausalPFN
-    cls:  CausalPFN
-    use_W: true
-    use_Z: true
+  # - name: CausalPFN
+  #   cls:  CausalPFN
+  #   use_W: true
+  #   use_Z: true
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
-models:
+models: 
   - name:       ProximalFM
     checkpoint: checkpoints/cate_big
 
-  # - name:       ate_linear
-  #   checkpoint: checkpoints/ate_linear
+  - name:       NewModel
+    checkpoint: checkpoints/cate_medium
 
   # - name:       ate_small
   #   checkpoint: checkpoints/ate_small

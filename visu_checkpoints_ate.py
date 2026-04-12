@@ -15,10 +15,10 @@ from proximalfm.Model import ProximalNanoTabICLv2
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_big"
+MODEL = "cate_medium"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 40, 50, 70, 100, 150, 250, 350, 440]
+FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 300, 400, 500, 600, 697]
 
 def load_config() -> dict:
 
@@ -155,7 +155,7 @@ def main():
 
     for idx, ckpt_path in enumerate(tqdm(selected_checkpoints, desc="Evaluating Checkpoints")):
         epoch = extract_epoch(ckpt_path)
-        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=True)
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
         
         chunk = 10
