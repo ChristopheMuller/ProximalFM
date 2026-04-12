@@ -619,15 +619,19 @@ def _make_base_model(name: str):
         RandomForestRegressor must not share random_state across instances
         or arms — returning a new object each call prevents accidental aliasing.
     """
-    if name == "linear":
-        return LinearRegression()
-    if name == "rf":
-        return RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42)
-    if name == "tabicl":
-        if not _TABICL_AVAILABLE:
-            raise ImportError("tabicl is not installed.")
-        return TabICLRegressor()
-    raise ValueError(f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'.")
+    if name == "tabicl" and not _TABICL_AVAILABLE:
+        raise ImportError("tabicl is not installed.")
+
+    factories: dict[str, Callable] = {
+        "linear": LinearRegression,
+        "rf": lambda: RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42),
+        "tabicl": TabICLRegressor if _TABICL_AVAILABLE else lambda: None,
+    }
+
+    if name not in factories:
+        raise ValueError(f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'.")
+
+    return factories[name]()
 
 
 def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
@@ -645,48 +649,38 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
     name = cfg["name"]
     cls = cfg["cls"]
 
-    if cls == "S_Learner":
-        method = S_Learner(
+    factories: dict[str, Callable[[], CATEEstimator]] = {
+        "S_Learner": lambda: S_Learner(
             base_model=_make_base_model(cfg.get("base", "linear")),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
             interactions=cfg.get("interactions", False),
-        )
-
-    elif cls == "T_Learner":
-        base_name = cfg.get("base", "linear")
-        method = T_Learner(
-            base_model_factory=lambda bn=base_name: _make_base_model(bn),
+        ),
+        "T_Learner": lambda: T_Learner(
+            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(bn),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
-        )
-
-    elif cls == "P2SLS":
-        method = P2SLS(interactions=cfg.get("interactions", False))
-
-    elif cls == "CausalFM":
-        method = CausalFM_Estimator(
+        ),
+        "P2SLS": lambda: P2SLS(interactions=cfg.get("interactions", False)),
+        "CausalFM": lambda: CausalFM_Estimator(
             checkpoint_path=cfg["checkpoint"],
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
-        )
-
-    elif cls == "DoPFN":
-        method = DoPFN_Estimator(
+        ),
+        "DoPFN": lambda: DoPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
-        )
-
-    elif cls == "CausalPFN":
-        method = CausalPFN_Estimator(
+        ),
+        "CausalPFN": lambda: CausalPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
-        )
+        ),
+    }
 
-    else:
+    if cls not in factories:
         raise ValueError(
             f"Unknown method class {cls!r}. "
-            "Valid choices: 'S_Learner', 'T_Learner', 'P2SLS', 'CausalFM', 'DoPFN', 'CausalPFN'."
+            f"Valid choices: {', '.join(map(repr, factories.keys()))}."
         )
 
-    return name, method
+    return name, factories[cls]()
