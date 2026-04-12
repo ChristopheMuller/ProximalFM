@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 from proximalfm.Structure import ModelConfig
-
+import torch.nn.functional as F
 
 class ProximalNanoTabICLv2(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -11,6 +11,8 @@ class ProximalNanoTabICLv2(nn.Module):
         self.feature_group_size_x = config.feature_group_size_x
         self.feature_group_size_w = config.feature_group_size_w
         self.feature_group_size_z = config.feature_group_size_z
+        
+        self.n_gmm = getattr(config, 'n_gmm_components', 1)
         icl_dim = config.embed_dim * config.n_cls_cols
 
         self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
@@ -58,7 +60,9 @@ class ProximalNanoTabICLv2(nn.Module):
         )
         self.row_ln = nn.LayerNorm(config.embed_dim)
         self.out_ln = nn.LayerNorm(icl_dim)
-        self.out_mlp = get_mlp(icl_dim, icl_dim * 2, 2)
+        
+        # Output size: 3 * K (logits, mean, log_var for each component)
+        self.out_mlp = get_mlp(icl_dim, icl_dim * 2, 3 * self.n_gmm)
 
     def forward(
         self,
@@ -74,7 +78,6 @@ class ProximalNanoTabICLv2(nn.Module):
         n_batch, n_train = y.shape
 
         # ─── 1. INTERNAL NORMALIZATION (Zero Data Leakage) ───────────────────
-        # Compute stats strictly from the context points (first n_train rows)
         y_mean = y.mean(dim=1, keepdim=True)
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
         y_norm = (y - y_mean) / y_std
@@ -121,8 +124,6 @@ class ProximalNanoTabICLv2(nn.Module):
         emb_z = self.z_embed(z)
 
         emb_a = self.a_embed(a[:, :, None, None])
-
-        # Use the normalized Y for embedding
         emb_y = self.y_embed_in(y_norm[:, :, None, None])
 
         emb = torch.concatenate([emb_x, emb_w, emb_z], dim=-2)
@@ -141,7 +142,6 @@ class ProximalNanoTabICLv2(nn.Module):
 
         emb = self.row_ln(emb).flatten(-2, -1)
 
-        # Use the normalized Y here as well
         emb[:, :n_train] += self.y_embed_icl(y_norm[:, :, None]) + self.a_embed_icl(
             a[:, :, None]
         )
@@ -153,18 +153,42 @@ class ProximalNanoTabICLv2(nn.Module):
         out = self.out_mlp(self.out_ln(emb))
 
         # ─── 4. OUTPUT DENORMALIZATION ───────────────────────────────────────
-        pred_mean_norm = out[..., 0:1]
-        pred_log_var_norm = out[..., 1:2]
-
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
+        
+        # Split outputs into logits, mean, log_var (each of size K)
+        # Shape of out is [batch, n_test, 3 * n_gmm]
+        logits = out[..., :self.n_gmm]
+        pred_mean_norm = out[..., self.n_gmm : 2 * self.n_gmm]
+        pred_log_var_norm = out[..., 2 * self.n_gmm :]
 
         # ITE is a difference, so we scale by std, but DO NOT add the mean back
         pred_mean_raw = pred_mean_norm * y_std_expanded
 
-        # Variance scales by std^2. Therefore, log_var shifts by log(std^2) = 2 * log(std)
+        # Variance scales by std^2 -> log_var shifts by 2*log(std)
         pred_log_var_raw = pred_log_var_norm + 2 * torch.log(y_std_expanded)
 
-        return torch.cat([pred_mean_raw, pred_log_var_raw], dim=-1)
+        # Return all components
+        return torch.cat([logits, pred_mean_raw, pred_log_var_raw], dim=-1)
+
+    def gmm_nll_loss(self, outputs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute negative log-likelihood for GMM using robust log-space math.
+        outputs: Tensor of shape [batch, n_test, 3 * K] (logits, mean, log_var)
+        target: target values
+        """
+        if target.dim() == 2:
+            target = target.unsqueeze(-1) # Ensure [batch, n_test, 1]
+
+        logits = outputs[..., :self.n_gmm]
+        mu = outputs[..., self.n_gmm : 2 * self.n_gmm]
+        log_var = outputs[..., 2 * self.n_gmm :]
+
+        log_pi = F.log_softmax(logits, dim=-1)
+        z_sq = ((target - mu) ** 2) * torch.exp(-log_var)
+        log_prob = -0.5 * z_sq - 0.5 * log_var
+        log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
+
+        return -log_mix.mean()
 
     def estimate_CATE(
         self,
@@ -179,106 +203,41 @@ class ProximalNanoTabICLv2(nn.Module):
         return_log_variance: bool = False,
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
-        Estimates the Conditional Average Treatment Effect (CATE) for a set of test points,
-        given a set of training context points.
-
-        Can be used in two modes:
-        1. Providing train points (x, w, z) and explicit test points (x_test, w_test, z_test).
-        2. Providing full sequences (x, w, z) where the first n points correspond to the
-           training labels (a_train, y_train), and the remaining points are treated as test points.
-
-        return_log_variance: If True, also returns the log variance of the predictions (tuple). Otherwise, only returns the mean.
+        Estimates the CATE.
+        If return_log_variance is True, returns (expected_mean, overall_log_variance).
+        Otherwise, returns just the expected mean.
         """
-        batch_size = x.shape[0]
-        mode = (
-            "explicit_test"
-            if (x_test is not None and w_test is not None and z_test is not None)
-            else "full_sequence"
-        )
+
+        mode = "explicit_test" if (x_test is not None and w_test is not None and z_test is not None) else "full_sequence"
 
         if mode == "explicit_test":
-            # Batch dimension check
-            if not all(
-                tensor.shape[0] == batch_size
-                for tensor in [a_train, w, z, y_train, x_test, w_test, z_test]
-            ):
-                raise ValueError(
-                    "All inputs must have the same batch size (dimension 0)."
-                )
-
-            # Train sequence length check
-            n_train = x.shape[1]
-            if not all(
-                tensor.shape[1] == n_train for tensor in [a_train, w, z, y_train]
-            ):
-                raise ValueError(
-                    "All train inputs must have the same sequence length (dimension 1)."
-                )
-
-            # Test sequence length check
-            n_test = x_test.shape[1]
-            if not all(tensor.shape[1] == n_test for tensor in [w_test, z_test]):
-                raise ValueError(
-                    "All test inputs must have the same sequence length (dimension 1)."
-                )
-
-            # Concatenate train and test along the sequence dimension (dim=1)
             x_full = torch.cat([x, x_test], dim=1)
             w_full = torch.cat([w, w_test], dim=1)
             z_full = torch.cat([z, z_test], dim=1)
         else:
-            if x_test is not None or w_test is not None or z_test is not None:
-                raise ValueError(
-                    "Either provide all of x_test, w_test, z_test or none of them."
-                )
+            x_full, w_full, z_full = x, w, z
 
-            # Batch dimension check
-            if not all(
-                tensor.shape[0] == batch_size for tensor in [a_train, w, z, y_train]
-            ):
-                raise ValueError(
-                    "All inputs must have the same batch size (dimension 0)."
-                )
-
-            # Length validation
-            n_full = x.shape[1]
-            if not all(tensor.shape[1] == n_full for tensor in [w, z]):
-                raise ValueError(
-                    "x, w, and z must have the same sequence length (dimension 1) when test points are not explicitly provided."
-                )
-
-            n_train = a_train.shape[1]
-            if y_train.shape[1] != n_train:
-                raise ValueError(
-                    "a_train and y_train must have the same sequence length (dimension 1)."
-                )
-
-            if n_full <= n_train:
-                raise ValueError(
-                    "When providing full sequences, the length of x, w, z must be greater than the length of a_train and y_train to include test points."
-                )
-
-            x_full = x
-            w_full = w
-            z_full = z
-
-        # Forward pass
-        # The forward method expects a_train and y_train to correspond to the context length
+        # Forward pass returns [batch, n_test, 3K]
         out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
 
-        # Extract predictions for the test sequence
-        # The model's forward pass returns predictions ONLY for the test (query) points:
-        # emb = self.icl_blocks[-1](emb[:, n_train:], emb[:, :n_train])
-        # So 'out' has shape [batch_size, n_test, 2]
-        pred_test = out
+        logits = out[..., :self.n_gmm]
+        means = out[..., self.n_gmm : 2 * self.n_gmm]
+        log_vars = out[..., 2 * self.n_gmm :]
 
-        mean = pred_test[..., 0:1]
+        pi = F.softmax(logits, dim=-1)
+        expected_mean = (pi * means).sum(dim=-1, keepdim=True)
+
         if return_log_variance:
-            log_var = pred_test[..., 1:2]
-            return mean, log_var
 
-        return mean
+            variances = torch.exp(log_vars)
+            expected_x_squared = (pi * (variances + means ** 2)).sum(dim=-1, keepdim=True)
+            
+            total_variance = torch.clamp(expected_x_squared - expected_mean ** 2, min=1e-8)
+            overall_log_variance = torch.log(total_variance)
+            
+            return expected_mean, overall_log_variance
 
+        return expected_mean
 
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:

@@ -57,20 +57,6 @@ def load_config(config_path: str = "config.yaml") -> dict:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
-
-def gaussian_nll_loss(
-    pred_mean: torch.Tensor,
-    pred_log_var: torch.Tensor,
-    target: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Gaussian negative log-likelihood loss.
-    L = 0.5 * (log_var + (target - mean)^2 / var)
-    """
-    log_var = pred_log_var.clamp(-10.0, 4.0)
-    return 0.5 * (log_var + (target - pred_mean).pow(2) / log_var.exp()).mean()
-
-
 # ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
@@ -239,21 +225,39 @@ class CATETrainer:
 
     def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
         out = self.model(x=x, a=a, w=w, z=z, y=y)
-        pred_mean_raw = out[..., 0:1]
-        pred_log_var_raw = out[..., 1:2]
+        
+        # 1. GMM NLL Loss
+        loss_gnll = self.model.gmm_nll_loss(out, target)
 
-        loss_mse_raw = F.mse_loss(pred_mean_raw, target)
+        # 2. Unpack for Expected Mean / Variance (for MSE and Metrics)
+        n_gmm = self.model.n_gmm
+        logits = out[..., :n_gmm]
+        means = out[..., n_gmm : 2 * n_gmm]
+        log_vars = out[..., 2 * n_gmm :]
+
+        pi = F.softmax(logits, dim=-1)
+        
+        # Expected Mean: sum(pi_k * mu_k)
+        expected_mean = (pi * means).sum(dim=-1, keepdim=True)
+        
+        # Overall Log Variance: sum(pi_k * (sigma_k^2 + mu_k^2)) - mu^2
+        variances = torch.exp(log_vars)
+        expected_x_squared = (pi * (variances + means ** 2)).sum(dim=-1, keepdim=True)
+        total_variance = torch.clamp(expected_x_squared - expected_mean ** 2, min=1e-8)
+        overall_log_variance = torch.log(total_variance)
+
+        # 3. MSE Computations on Expected Mean
+        loss_mse_raw = F.mse_loss(expected_mean, target)
 
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
         loss_mse_normalized = F.mse_loss(
-            pred_mean_raw / y_std_expanded, target / y_std_expanded
+            expected_mean / y_std_expanded, target / y_std_expanded
         )
 
-        loss_gnll = gaussian_nll_loss(pred_mean_raw, pred_log_var_raw, target)
-
+        # Mix Losses
         loss = alpha * loss_mse_normalized + (1 - alpha) * loss_gnll
 
-        return loss, loss_mse_raw, loss_gnll, pred_mean_raw, pred_log_var_raw
+        return loss, loss_mse_raw, loss_gnll, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
@@ -457,8 +461,8 @@ class CATETrainer:
                     loss,
                     loss_mse,
                     loss_gnll,
-                    pred_mean_norm,
-                    pred_log_var_norm,
+                    pred_mean,
+                    pred_log_var,
                 ) = self._forward_and_loss(
                     x, a, w, z, y, target, y_std, alpha_epoch_loss
                 )
@@ -470,8 +474,8 @@ class CATETrainer:
                 total_loss_gnll += loss_gnll.item()
 
                 metrics = self._compute_batch_metrics(
-                    pred_mean_norm,
-                    pred_log_var_norm,
+                    pred_mean,
+                    pred_log_var,
                     target,
                 )
 
@@ -555,9 +559,9 @@ class CATETrainer:
         total_cate_r2_ate_penalty = 0.0
         total_cate_mae = 0.0
         total_cate_rmse_norm = 0.0
-        total_ate_error_norm = 0.0  # signed (for NormBias)
-        total_abs_ate_error_norm = 0.0  # absolute (for NormMAE)
-        total_sq_ate_error_norm = 0.0  # squared (for NormRMSE)
+        total_ate_error_norm = 0.0
+        total_abs_ate_error_norm = 0.0
+        total_sq_ate_error_norm = 0.0
 
         val_start = time.time()
 
@@ -599,7 +603,6 @@ class CATETrainer:
                     total_sq_ate_true += metrics["sum_sq_ate_true"]
                     total_sq_ate_err += metrics["sum_sq_ate_err"]
 
-                    # ── Benchmark-aligned ─────────────────────────────────────
                     total_cate_r2_shape += metrics["sum_cate_r2_shape"]
                     total_cate_r2_ate_penalty += metrics["sum_cate_r2_ate_penalty"]
                     total_cate_mae += metrics["sum_cate_mae"]
@@ -633,15 +636,11 @@ class CATETrainer:
         else:
             ate_r2 = 0.0
 
-        # ── Benchmark-aligned derived metrics ─────────────────────────────────
         ep_denom = max(total_episodes, 1)
-        # R² decomposition (mean over episodes)
         cate_r2_shape_mean = total_cate_r2_shape / ep_denom
         cate_r2_ate_penalty_mean = total_cate_r2_ate_penalty / ep_denom
-        # CATE absolute (mean over episodes)
         cate_mae_mean = total_cate_mae / ep_denom
         cate_rmse_norm_mean = total_cate_rmse_norm / ep_denom
-        # Normalised ATE error (mean over episodes)
         ate_normbias = total_ate_error_norm / ep_denom
         ate_normmae = total_abs_ate_error_norm / ep_denom
         ate_normrmse = np.sqrt(total_sq_ate_error_norm / ep_denom)
@@ -696,7 +695,7 @@ class CATETrainer:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
-            "val_loss": val_rmse,  # keep key for compatibility
+            "val_loss": val_rmse,
             "epoch_times": self.epoch_times,
         }
         name = f"model_epoch_{epoch}{('_' + tag) if tag else ''}.pth"
