@@ -396,6 +396,7 @@ def run_neural_model(
         col_nhead=mcfg.get("col_nhead", 8),
         row_nhead=mcfg.get("row_nhead", 8),
         icl_nhead=mcfg.get("icl_nhead", 8),
+        n_gmm_components=mcfg.get("n_gmm_components", 1),
         feature_group_size_x=prior_cfg["d_x"],
         feature_group_size_w=prior_cfg["d_w"],
         feature_group_size_z=prior_cfg["d_z"],
