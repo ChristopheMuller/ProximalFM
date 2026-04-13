@@ -422,15 +422,18 @@ def run_neural_model(
     with torch.no_grad():
         for start in range(0, N_BATCH, chunk):
             end = min(start + chunk, N_BATCH)
-            out = model(
-                x=x_t[start:end],
-                a=a_t[start:end, :N_TRAIN, 0],
-                w=w_t[start:end],
-                z=z_t[start:end],
-                y=y_t[start:end, :N_TRAIN, 0],
-            )
-            # Model output shape: (batch, n_total, ...) — take test portion
-            preds[start:end] = out[:, :, 0].cpu().numpy()
+            preds_ = model.estimate_CATE(
+                x = x_t[start:end],
+                a_train = a_t[start:end, :N_TRAIN, 0],
+                w = w_t[start:end],
+                z = z_t[start:end],
+                y_train = y_t[start:end, :N_TRAIN, 0],
+                return_log_variance=False
+            ).cpu().numpy()[:,:]
+            if len(preds_.shape) == 3:
+                preds[start:end] = preds_[:,:,0]
+            else:
+                preds[start:end] = preds_
 
     np.savez(pred_file, preds=preds)
     console.print(f"    [green]✓[/] {name} → {pred_file}")
