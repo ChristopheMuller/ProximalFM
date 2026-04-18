@@ -227,7 +227,7 @@ class CATETrainer:
         out = self.model(x=x, a=a, w=w, z=z, y=y)
         
         # 1. GMM NLL Loss
-        loss_gnll = self.model.gmm_nll_loss(out, target)
+        loss_model = self.model.loss(out, target)
 
         # 2. Unpack for Expected Mean / Variance (for MSE and Metrics)
         n_gmm = self.model.n_gmm
@@ -255,9 +255,9 @@ class CATETrainer:
         )
 
         # Mix Losses
-        loss = alpha * loss_mse_normalized + (1 - alpha) * loss_gnll
+        loss = alpha * loss_mse_normalized + (1 - alpha) * loss_model
 
-        return loss, loss_mse_raw, loss_gnll, expected_mean, overall_log_variance
+        return loss, loss_mse_raw, loss_model, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
@@ -423,10 +423,10 @@ class CATETrainer:
         self.model.train()
         total_loss = 0.0
         total_loss_mse = 0.0
-        total_loss_gnll = 0.0
+        total_loss_model = 0.0
         sum_sq_err = 0.0
         sum_sq_pe = 0.0
-        total_gnll = 0.0
+        total_model = 0.0
         total_samples = 0
         total_variance = 0.0
         total_grad_norm = 0.0
@@ -460,7 +460,7 @@ class CATETrainer:
                 (
                     loss,
                     loss_mse,
-                    loss_gnll,
+                    loss_model,
                     pred_mean,
                     pred_log_var,
                 ) = self._forward_and_loss(
@@ -471,7 +471,7 @@ class CATETrainer:
 
                 total_loss += loss.item()
                 total_loss_mse += loss_mse.item()
-                total_loss_gnll += loss_gnll.item()
+                total_loss_model += loss_model.item()
 
                 metrics = self._compute_batch_metrics(
                     pred_mean,
@@ -481,7 +481,7 @@ class CATETrainer:
 
                 sum_sq_err += metrics["sum_sq_err"]
                 sum_sq_pe += metrics["sum_sq_pe"]
-                total_gnll += loss_gnll.item() * metrics["num_samples"]
+                total_model += loss_model.item() * metrics["num_samples"]
                 total_samples += metrics["num_samples"]
                 total_variance += metrics.get("variance_mean", 0.0)
                 total_cov50 += metrics.get("cov50", 0.0)
@@ -500,9 +500,9 @@ class CATETrainer:
         num_batches = len(self.train_loader)
         avg_loss = total_loss / num_batches
         avg_loss_mse = total_loss_mse / num_batches
-        avg_loss_gnll = total_loss_gnll / num_batches
+        avg_loss_model = total_loss_model / num_batches
         rmse = np.sqrt(sum_sq_err / max(total_samples, 1))
-        gnll = total_gnll / max(total_samples, 1)
+        model = total_model / max(total_samples, 1)
         avg_variance = total_variance / num_batches
         avg_grad_norm = total_grad_norm / num_batches
         cov50 = total_cov50 / max(total_samples, 1)
@@ -517,8 +517,8 @@ class CATETrainer:
         return {
             "loss_total": avg_loss,
             "loss_mse": avg_loss_mse,
-            "loss_gnll": avg_loss_gnll,
-            "gnll": gnll,
+            "loss_model": avg_loss_model,
+            "model": model,
             "rmse": rmse,
             "mspe": mspe,
             "variance": avg_variance,
@@ -844,14 +844,14 @@ class CATETrainer:
                 last_val_rmse = val_metrics["rmse"]
 
             # Extract metrics for console logging
-            train_nll = train_metrics["loss_gnll"]
+            train_model = train_metrics["loss_model"]
             train_mse = train_metrics["loss_mse"]
             train_total = train_metrics["loss_total"]
             val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
             logger.info(
                 f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
-                f"train_nll={train_nll:.4f}  train_rmse={train_mse:.4f}  "
+                f"train_model={train_model:.4f}  train_rmse={train_mse:.4f}  "
                 f"train_total={train_total:.4f}"
             )
             self.log_metrics(epoch, train_metrics, val_metrics)

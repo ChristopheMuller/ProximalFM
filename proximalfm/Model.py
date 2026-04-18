@@ -170,7 +170,7 @@ class ProximalNanoTabICLv2(nn.Module):
         # Return all components
         return torch.cat([logits, pred_mean_raw, pred_log_var_raw], dim=-1)
 
-    def gmm_nll_loss(self, outputs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    def loss(self, outputs: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
         Compute negative log-likelihood for GMM using robust log-space math.
         outputs: Tensor of shape [batch, n_test, 3 * K] (logits, mean, log_var)
