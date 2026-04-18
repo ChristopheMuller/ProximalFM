@@ -1,36 +1,21 @@
 # %%
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 # %% Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# Define what you want to make a table of here.
-# ─────────────────────────────────────────────────────────────────────────────
-
-# 1. Which experiment (path to the directory containing the CSVs)
-experiment_dir = Path("results/linear_cate_conf4_218/results/")
-
-# 2. Which methods to include (leave empty to include all)
-# Example: methods_to_include = ["Method A", "Method B", "Method C"]
+experiment_dir = Path("results/bnn_1st/results/")
 methods_to_include = [] 
 
-# 3. Which ATE metrics to include in the table
-ate_metrics_to_include = [
-    'NormBias', 'NormRMSE', 'NormRMedSE', 'ATE R²'
-]
+ate_metrics_to_include = ['NormBias', 'NormRMSE', 'NormRMedSE', 'ATE R²']
 ate_decimals = [4, 2, 2, 2]
 
-# 4. Which CATE metrics to include in the table
-cate_metrics_to_include = [
-    "NormRMSE", "NormRMedSE",
-    "Mean R²", "Median R²", 
-    "Mean R²(shape)"
-]
+cate_metrics_to_include = ["NormRMSE", "NormRMedSE", "Mean R²", "Median R²", "Mean R²(shape)"]
 cate_decimals = [2, 2, 2, 2, 2]
 
-# %% Load, Filter, and Generate LaTeX
+# %% Load and Filter
 # ─────────────────────────────────────────────────────────────────────────────
-
 ate_csv = experiment_dir / "ate_summary.csv"
 cate_csv = experiment_dir / "cate_summary.csv"
 
@@ -40,44 +25,104 @@ if not ate_csv.exists() or not cate_csv.exists():
 df_ate = pd.read_csv(ate_csv, index_col="method")
 df_cate = pd.read_csv(cate_csv, index_col="method")
 
-# Filter by methods if specified
 if methods_to_include:
-    # Keep only methods that actually exist in the dataframe
     valid_methods = [m for m in methods_to_include if m in df_ate.index]
     df_ate = df_ate.loc[valid_methods]
     df_cate = df_cate.loc[valid_methods]
 
-# Filter by metrics
-print(df_ate.columns)
 df_ate = df_ate[[m for m in ate_metrics_to_include if m in df_ate.columns]]
 df_cate = df_cate[[m for m in cate_metrics_to_include if m in df_cate.columns]]
 
-# Format column names for LaTeX (e.g., converting 'R²' to math mode '$R^2$')
 def format_columns_for_latex(cols):
     return [c.replace("R²", "$R^2$").replace("²", "$^2$") for c in cols]
 
 df_ate.columns = format_columns_for_latex(df_ate.columns)
 df_cate.columns = format_columns_for_latex(df_cate.columns)
 
-# Create format dictionaries mapping the LaTeX-formatted column names to format strings
-# This turns an integer like `2` into a format string like `"{:.2f}"`
-ate_format_dict = {col: f"{{:.{d}f}}" for col, d in zip(df_ate.columns, ate_decimals)}
-cate_format_dict = {col: f"{{:.{d}f}}" for col, d in zip(df_cate.columns, cate_decimals)}
+# %% Dynamic Top-3 Formatter Logic
+# ─────────────────────────────────────────────────────────────────────────────
+def create_top3_formatter(series, decimals):
+    """
+    Creates a formatting function that automatically bolds the best 3 scores.
+    Handles directions automatically: maximizes R^2, minimizes absolute Bias, minimizes others.
+    """
+    # Extract name (handles both normal columns and MultiIndex tuples)
+    c_name = series.name[-1] if isinstance(series.name, tuple) else series.name
+    
+    # 1. Determine the top 3 values based on metric type
+    if 'R^2' in c_name:
+        # Higher is better
+        top3_vals = series.nlargest(3).values
+    elif 'Bias' in c_name:
+        # Closer to zero is better (absolute minimum)
+        top3_vals = series.loc[series.abs().nsmallest(3).index].values
+    else:
+        # Lower is better (RMSE, MAE, etc.)
+        top3_vals = series.nsmallest(3).values
+        
+    fmt_str = f"{{:.{decimals}f}}"
+    
+    # 2. Return a formatting function to apply to each cell
+    def formatter(val):
+        if pd.isna(val):
+            return "-"
+        
+        v_str = fmt_str.format(val)
+        # Check if this specific value is in the top 3
+        if val in top3_vals:
+            return f"\\textbf{{{v_str}}}"
+        return v_str
+        
+    return formatter
 
-# Generate LaTeX using pandas styling
-latex_ate = df_ate.style.format(ate_format_dict).to_latex(
+# Build dictionary of formatters for each dataframe
+ate_formatters = {col: create_top3_formatter(df_ate[col], d) for col, d in zip(df_ate.columns, ate_decimals)}
+cate_formatters = {col: create_top3_formatter(df_cate[col], d) for col, d in zip(df_cate.columns, cate_decimals)}
+
+# Generate LaTeX with centered environments
+latex_ate = df_ate.style.format(ate_formatters).to_latex(
     caption="Average Treatment Effect (ATE) Results",
     label="tab:ate_results",
     hrules=True,
-)
+).replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
 
-latex_cate = df_cate.style.format(cate_format_dict).to_latex(
+latex_cate = df_cate.style.format(cate_formatters).to_latex(
     caption="Conditional Average Treatment Effect (CATE) Results",
     label="tab:cate_results",
     hrules=True,
-)
+).replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
 
+# %% Generate Combined Best Metrics Table
+# ─────────────────────────────────────────────────────────────────────────────
+ate_comb_cols = ["ATE $R^2$", "NormRMSE"]
+cate_comb_cols = ["Mean $R^2$", "Mean $R^2$(shape)", "NormRMSE"]
+
+df_ate_comb = df_ate[[c for c in ate_comb_cols if c in df_ate.columns]].copy()
+df_cate_comb = df_cate[[c for c in cate_comb_cols if c in df_cate.columns]].copy()
+
+# Rename to MultiIndex
+df_ate_comb.columns = pd.MultiIndex.from_tuples([("ATE", col.replace("ATE ", "").replace("Norm", "N")) for col in df_ate_comb.columns])
+df_cate_comb.columns = pd.MultiIndex.from_tuples([("CATE", col.replace("Mean ", "").replace("Norm", "N")) for col in df_cate_comb.columns])
+
+# Concatenate side-by-side
+df_combined = pd.concat([df_ate_comb, df_cate_comb], axis=1)
+
+# Create formatters for the combined table (defaulting to 2 decimals)
+combined_formatters = {col: create_top3_formatter(df_combined[col], 2) for col in df_combined.columns}
+
+# Generate LaTeX with Multi-column alignment and centering
+latex_combined = df_combined.style.format(combined_formatters).to_latex(
+    caption="Combined Top Performance Metrics for ATE and CATE",
+    label="tab:combined_results",
+    hrules=True,
+    multicol_align="c"
+).replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
+
+# %% Print Results
+# ─────────────────────────────────────────────────────────────────────────────
 print("%%% ATE TABLE %%%\n")
 print(latex_ate)
 print("\n%%% CATE TABLE %%%\n")
 print(latex_cate)
+print("\n%%% COMBINED TABLE %%%\n")
+print(latex_combined)
