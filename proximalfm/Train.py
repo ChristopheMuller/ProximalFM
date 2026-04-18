@@ -58,6 +58,7 @@ def load_config(config_path: str = "config.yaml") -> dict:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
 
+
 # ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
@@ -226,7 +227,7 @@ class CATETrainer:
 
     def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
         out = self.model(x=x, a=a, w=w, z=z, y=y)
-        
+
         # 1. GMM NLL Loss
         loss_model = self.model.loss(out, target)
 
@@ -237,14 +238,14 @@ class CATETrainer:
         log_vars = out[..., 2 * n_gmm :]
 
         pi = F.softmax(logits, dim=-1)
-        
+
         # Expected Mean: sum(pi_k * mu_k)
         expected_mean = (pi * means).sum(dim=-1, keepdim=True)
-        
+
         # Overall Log Variance: sum(pi_k * (sigma_k^2 + mu_k^2)) - mu^2
         variances = torch.exp(log_vars)
-        expected_x_squared = (pi * (variances + means ** 2)).sum(dim=-1, keepdim=True)
-        total_variance = torch.clamp(expected_x_squared - expected_mean ** 2, min=1e-8)
+        expected_x_squared = (pi * (variances + means**2)).sum(dim=-1, keepdim=True)
+        total_variance = torch.clamp(expected_x_squared - expected_mean**2, min=1e-8)
         overall_log_variance = torch.log(total_variance)
 
         # 3. MSE Computations on Expected Mean

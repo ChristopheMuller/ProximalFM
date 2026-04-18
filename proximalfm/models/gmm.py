@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from .registry import register_model
 from .base import BaseCATEModel
 
+
 @register_model("gmm")
 class ProximalGMM(BaseCATEModel):
     def __init__(self, config):
@@ -17,8 +18,8 @@ class ProximalGMM(BaseCATEModel):
         self.feature_group_size_x = config.feature_group_size_x
         self.feature_group_size_w = config.feature_group_size_w
         self.feature_group_size_z = config.feature_group_size_z
-        
-        self.n_gmm = getattr(config, 'n_gmm_components', 1)
+
+        self.n_gmm = getattr(config, "n_gmm_components", 1)
         icl_dim = config.embed_dim * config.n_cls_cols
 
         self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
@@ -66,7 +67,7 @@ class ProximalGMM(BaseCATEModel):
         )
         self.row_ln = nn.LayerNorm(config.embed_dim)
         self.out_ln = nn.LayerNorm(icl_dim)
-        
+
         # Output size: 3 * K (logits, mean, log_var for each component)
         self.out_mlp = get_mlp(icl_dim, icl_dim * 2, 3 * self.n_gmm)
 
@@ -160,10 +161,10 @@ class ProximalGMM(BaseCATEModel):
 
         # ─── 4. OUTPUT DENORMALIZATION ───────────────────────────────────────
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
-        
+
         # Split outputs into logits, mean, log_var (each of size K)
         # Shape of out is [batch, n_test, 3 * n_gmm]
-        logits = out[..., :self.n_gmm]
+        logits = out[..., : self.n_gmm]
         pred_mean_norm = out[..., self.n_gmm : 2 * self.n_gmm]
         pred_log_var_norm = out[..., 2 * self.n_gmm :]
 
@@ -183,9 +184,9 @@ class ProximalGMM(BaseCATEModel):
         target: target values
         """
         if target.dim() == 2:
-            target = target.unsqueeze(-1) # Ensure [batch, n_test, 1]
+            target = target.unsqueeze(-1)  # Ensure [batch, n_test, 1]
 
-        logits = outputs[..., :self.n_gmm]
+        logits = outputs[..., : self.n_gmm]
         mu = outputs[..., self.n_gmm : 2 * self.n_gmm]
         log_var = outputs[..., 2 * self.n_gmm :]
 
@@ -214,7 +215,11 @@ class ProximalGMM(BaseCATEModel):
         Otherwise, returns just the expected mean.
         """
 
-        mode = "explicit_test" if (x_test is not None and w_test is not None and z_test is not None) else "full_sequence"
+        mode = (
+            "explicit_test"
+            if (x_test is not None and w_test is not None and z_test is not None)
+            else "full_sequence"
+        )
 
         if mode == "explicit_test":
             x_full = torch.cat([x, x_test], dim=1)
@@ -226,7 +231,7 @@ class ProximalGMM(BaseCATEModel):
         # Forward pass returns [batch, n_test, 3K]
         out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
 
-        logits = out[..., :self.n_gmm]
+        logits = out[..., : self.n_gmm]
         means = out[..., self.n_gmm : 2 * self.n_gmm]
         log_vars = out[..., 2 * self.n_gmm :]
 
@@ -234,16 +239,20 @@ class ProximalGMM(BaseCATEModel):
         expected_mean = (pi * means).sum(dim=-1, keepdim=True)
 
         if return_log_variance:
-
             variances = torch.exp(log_vars)
-            expected_x_squared = (pi * (variances + means ** 2)).sum(dim=-1, keepdim=True)
-            
-            total_variance = torch.clamp(expected_x_squared - expected_mean ** 2, min=1e-8)
+            expected_x_squared = (pi * (variances + means**2)).sum(
+                dim=-1, keepdim=True
+            )
+
+            total_variance = torch.clamp(
+                expected_x_squared - expected_mean**2, min=1e-8
+            )
             overall_log_variance = torch.log(total_variance)
-            
+
             return expected_mean, overall_log_variance
 
         return expected_mean
+
 
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:
