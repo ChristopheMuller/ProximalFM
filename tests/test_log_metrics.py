@@ -60,7 +60,7 @@ def test_log_metrics_basic(trainer):
     train_metrics = {
         "loss_total": 0.5,
         "loss_mse": 0.4,
-        "loss_gnll": 0.1,
+        "loss_model": 0.1,
         "alpha": 0.8,
         "grad_norm": 0.01,
         "time_s": 10.0
@@ -72,7 +72,7 @@ def test_log_metrics_basic(trainer):
     # Assert train metrics are logged
     trainer.writer.add_scalar.assert_any_call("Loss/train_total", 0.5, epoch)
     trainer.writer.add_scalar.assert_any_call("Loss/train_mse", 0.4, epoch)
-    trainer.writer.add_scalar.assert_any_call("Loss/train_gnll", 0.1, epoch)
+    trainer.writer.add_scalar.assert_any_call("Loss/train_model", 0.1, epoch)
     trainer.writer.add_scalar.assert_any_call("Parameters/alpha", 0.8, epoch)
     trainer.writer.add_scalar.assert_any_call("Parameters/grad_norm", 0.01, epoch)
     trainer.writer.add_scalar.assert_any_call("Parameters/learning_rate", 0.001, epoch)
