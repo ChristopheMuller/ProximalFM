@@ -1,3 +1,7 @@
+import math
+import unittest.mock
+
+
 import pytest
 import torch
 import torch.nn as nn
@@ -271,5 +275,192 @@ def test_estimate_cate_full_sequence_mode():
         y_train=y_train,
         return_log_variance=True
     )
+    assert mean.shape == (batch_size, n_test, 1)
+    assert log_var.shape == (batch_size, n_test, 1)
+
+
+
+
+def test_estimate_cate_math_verification():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 1
+    n_train = 2
+    n_test = 1
+    n_gmm = config.n_gmm_components
+
+    x = torch.randn(batch_size, n_train, 4)
+    w = torch.randn(batch_size, n_train, 4)
+    z = torch.randn(batch_size, n_train, 4)
+    a = torch.randn(batch_size, n_train)
+    y = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    # Mock forward to return specific values
+    # logits = [0, 0] -> pi = [0.5, 0.5]
+    # means = [2.0, 4.0]
+    # log_vars = [log(1.0), log(1.0)] -> vars = [1.0, 1.0]
+
+    out_tensor = torch.zeros(batch_size, n_test, 3 * n_gmm)
+    # Logits
+    out_tensor[0, 0, 0] = 0.0
+    out_tensor[0, 0, 1] = 0.0
+    # Means
+    out_tensor[0, 0, 2] = 2.0
+    out_tensor[0, 0, 3] = 4.0
+    # Log vars
+    out_tensor[0, 0, 4] = 0.0 # log(1) = 0
+    out_tensor[0, 0, 5] = 0.0 # log(1) = 0
+
+    with unittest.mock.patch.object(model, 'forward', return_value=out_tensor):
+        mean, log_var = model.estimate_CATE(
+            x=x, a_train=a, w=w, z=z, y_train=y,
+            x_test=x_test, w_test=w_test, z_test=z_test,
+            return_log_variance=True
+        )
+
+        # Expected mean = 0.5 * 2.0 + 0.5 * 4.0 = 3.0
+        assert torch.allclose(mean, torch.tensor([[[3.0]]]))
+
+        # Expected x_squared = 0.5 * (1.0 + 4.0) + 0.5 * (1.0 + 16.0) = 0.5 * 5.0 + 0.5 * 17.0 = 2.5 + 8.5 = 11.0
+        # Expected var = 11.0 - 3.0**2 = 11.0 - 9.0 = 2.0
+        # Expected log_var = log(2.0) = 0.693147
+        expected_log_var = math.log(2.0)
+        assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
+
+def test_estimate_cate_variance_clamping():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=1,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 1
+    n_train = 2
+    n_test = 1
+    n_gmm = config.n_gmm_components
+
+    x = torch.randn(batch_size, n_train, 4)
+    w = torch.randn(batch_size, n_train, 4)
+    z = torch.randn(batch_size, n_train, 4)
+    a = torch.randn(batch_size, n_train)
+    y = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    out_tensor = torch.zeros(batch_size, n_test, 3 * n_gmm)
+    # Logits
+    out_tensor[0, 0, 0] = 0.0
+    # Means
+    out_tensor[0, 0, 1] = 2.0
+    # Log vars: extremely small, making calculated total_variance <= 0 without clamping
+    # Here variance = exp(-50) ~ 0
+    # Total variance formula: expected_x_squared - expected_mean**2
+    # = (variance + mean^2) - mean^2 = variance ~ 0
+    out_tensor[0, 0, 2] = -50.0
+
+    with unittest.mock.patch.object(model, 'forward', return_value=out_tensor):
+        mean, log_var = model.estimate_CATE(
+            x=x, a_train=a, w=w, z=z, y_train=y,
+            x_test=x_test, w_test=w_test, z_test=z_test,
+            return_log_variance=True
+        )
+
+        # Expected log_var = log(1e-8) = -18.42068
+        expected_log_var = math.log(1e-8)
+        assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
+
+def test_estimate_cate_partial_test_inputs():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+    n_full = n_train + n_test
+
+    x_full = torch.randn(batch_size, n_full, 4)
+    w_full = torch.randn(batch_size, n_full, 4)
+    z_full = torch.randn(batch_size, n_full, 4)
+    a_train = torch.randn(batch_size, n_train)
+    y_train = torch.randn(batch_size, n_train)
+
+    # Provide x_test and w_test, but not z_test
+    # The mode should fallback to full_sequence, and the explicit_test cat should not be triggered
+    # However, since x_full, w_full, z_full are already of full size, the model should process them
+    # and return predictions for the last n_test elements
+
+    mean = model.estimate_CATE(
+        x=x_full,
+        a_train=a_train,
+        w=w_full,
+        z=z_full,
+        y_train=y_train,
+        x_test=torch.randn(batch_size, n_test, 4), # Partial explicit test inputs
+        w_test=torch.randn(batch_size, n_test, 4), # Partial explicit test inputs
+        # z_test=None
+    )
+
+    assert mean.shape == (batch_size, n_test, 1)
+
+def test_estimate_cate_multiple_gmm_components():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=5,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalNanoTabICLv2(config)
+
+    batch_size = 2
+    n_train = 5
+    n_test = 3
+
+    x = torch.randn(batch_size, n_train, 4)
+    w = torch.randn(batch_size, n_train, 4)
+    z = torch.randn(batch_size, n_train, 4)
+    a = torch.randn(batch_size, n_train)
+    y = torch.randn(batch_size, n_train)
+
+    x_test = torch.randn(batch_size, n_test, 4)
+    w_test = torch.randn(batch_size, n_test, 4)
+    z_test = torch.randn(batch_size, n_test, 4)
+
+    mean, log_var = model.estimate_CATE(
+        x=x, a_train=a, w=w, z=z, y_train=y,
+        x_test=x_test, w_test=w_test, z_test=z_test,
+        return_log_variance=True
+    )
+
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
