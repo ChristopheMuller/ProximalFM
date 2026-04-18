@@ -9,7 +9,6 @@ from proximalfm.Train import (
     set_seed,
     format_time,
     load_config,
-    gaussian_nll_loss,
     CATETrainer,
 )
 
@@ -38,23 +37,6 @@ def test_load_config(tmp_path):
 
     loaded = load_config(str(file_path))
     assert loaded == config_data
-
-def test_gaussian_nll_loss():
-    # Simple deterministic test
-    pred_mean = torch.tensor([0.0])
-    pred_log_var = torch.tensor([0.0]) # var = 1.0
-    target = torch.tensor([1.0])
-
-    # log_var=0, var=1. L = 0.5 * (0 + (1-0)^2 / 1) = 0.5 * (0 + 1) = 0.5
-    loss = gaussian_nll_loss(pred_mean, pred_log_var, target)
-    assert torch.allclose(loss, torch.tensor(0.5))
-
-    # Test clamp behavior
-    pred_log_var_extreme = torch.tensor([-20.0])
-    loss_clamped = gaussian_nll_loss(pred_mean, pred_log_var_extreme, target)
-    # L = 0.5 * (-10 + 1 / exp(-10))
-    expected = 0.5 * (-10.0 + 1.0 / np.exp(-10.0))
-    assert torch.allclose(loss_clamped, torch.tensor(expected, dtype=torch.float32), rtol=1e-4)
 
 @pytest.fixture
 def mock_config(tmp_path):

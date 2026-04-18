@@ -80,3 +80,4 @@ class ModelConfig:
     feature_group_size_z: int = 2
     n_cls_cols: int = 4
     n_cls_rows: int = 128
+    n_gmm_components: int = 1
