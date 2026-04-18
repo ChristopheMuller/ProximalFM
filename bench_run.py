@@ -86,7 +86,7 @@ from bench_metrics import (
 try:
     from proximalfm.Structure import ProximalPriorConfig, ModelConfig
     from proximalfm.PriorDataLoader import create_causal_data_loaders
-    from proximalfm.Model import ProximalNanoTabICLv2
+    from proximalfm.models.gmm import ProximalGMM
 
     _PROXFM_AVAILABLE = True
 except ImportError:
@@ -356,7 +356,7 @@ def run_neural_model(
     preds_dir: Path,
     force: bool,
 ) -> tuple[str, np.ndarray] | None:
-    """Load a ProximalNanoTabICLv2 checkpoint and run inference.
+    """Load a ProximalGMM checkpoint and run inference.
 
     Returns:
         (name, preds) or None if skipped / failed.
@@ -401,7 +401,7 @@ def run_neural_model(
         feature_group_size_w=prior_cfg["d_w"],
         feature_group_size_z=prior_cfg["d_z"],
     )
-    model = ProximalNanoTabICLv2(config=model_config).to(device, dtype=dtype)
+    model = ProximalGMM(config=model_config).to(device, dtype=dtype)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()

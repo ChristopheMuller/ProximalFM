@@ -86,24 +86,28 @@ def mock_config(tmp_path):
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
-@patch("proximalfm.Train.ProximalNanoTabICLv2")
-def test_cate_trainer_init(mock_model_cls, mock_create_loaders, mock_writer, mock_config):
+@patch("proximalfm.Train.build_model")
+def test_cate_trainer_init(mock_build_model, mock_create_loaders, mock_writer, mock_config):
     mock_model_inst = MagicMock()
-    # Need to simulate parameters for the optimizer
     mock_model_inst.parameters.return_value = [torch.nn.Parameter(torch.tensor([1.0]))]
-    mock_model_cls.return_value = mock_model_inst
-
+    
+    mock_build_model.return_value = mock_model_inst
     mock_create_loaders.return_value = {"train": ["train_batch"], "val": ["val_batch"]}
 
     trainer = CATETrainer(mock_config)
 
     assert trainer.device == torch.device("cpu")
-    mock_model_cls.assert_called_once()
-    assert mock_model_cls.call_args[1]["config"].__class__.__name__ == "ModelConfig"
+    
+    mock_build_model.assert_called_once()
+    
+    passed_args = mock_build_model.call_args[0]
+    assert len(passed_args) > 0, "build_model was called without positional arguments."
+    assert passed_args[0].__class__.__name__ == "ModelConfig"
+
     mock_create_loaders.assert_called_once()
     assert trainer.train_loader == ["train_batch"]
     assert trainer.val_loader == ["val_batch"]
-    assert trainer.single_eval_pos == 8 # 10 * 0.8
+    assert trainer.single_eval_pos == 8
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")

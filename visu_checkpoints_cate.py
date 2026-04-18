@@ -12,7 +12,7 @@ import torch
 import yaml
 from tqdm import tqdm
 
-from proximalfm.Model import ProximalNanoTabICLv2
+from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
@@ -76,7 +76,7 @@ def main():
         feature_group_size_w=prior_cfg["d_w"],
         feature_group_size_z=prior_cfg["d_z"],
     )
-    model = ProximalNanoTabICLv2(
+    model = ProximalGMM(
         config=config_model
     ).to(device, dtype=dtype)
     model.eval()

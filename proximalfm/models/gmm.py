@@ -1,3 +1,4 @@
+# models/gmm.py
 import typing
 import math
 import torch
@@ -5,8 +6,13 @@ import torch.nn as nn
 from proximalfm.Structure import ModelConfig
 import torch.nn.functional as F
 
-class ProximalNanoTabICLv2(nn.Module):
-    def __init__(self, config: ModelConfig):
+# CHANGE THIS LINE
+from .registry import register_model
+from .base import BaseCATEModel
+
+@register_model("gmm")
+class ProximalGMM(BaseCATEModel):
+    def __init__(self, config):
         super().__init__()
         self.feature_group_size_x = config.feature_group_size_x
         self.feature_group_size_w = config.feature_group_size_w

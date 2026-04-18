@@ -68,6 +68,7 @@ class ProximalEpisode:
 
 @dataclass
 class ModelConfig:
+    type: str = "gmm"
     embed_dim: int = 64
     col_num_blocks: int = 3
     row_num_blocks: int = 3

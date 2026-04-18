@@ -15,7 +15,8 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from proximalfm.Model import ProximalNanoTabICLv2
+from proximalfm.models.gmm import ProximalGMM
+from proximalfm.models import build_model
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
@@ -106,7 +107,7 @@ class CATETrainer:
         if "dtype" in model_kwargs:
             del model_kwargs["dtype"]
 
-        self.model = ProximalNanoTabICLv2(config=ModelConfig(**model_kwargs))
+        self.model = build_model(ModelConfig(**model_kwargs))
         self.model.to(self.device, dtype=self.dtype)
         self.n_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
@@ -721,14 +722,7 @@ class CATETrainer:
         # Losses
         self.writer.add_scalar("Loss/train_total", train_metrics["loss_total"], epoch)
         self.writer.add_scalar("Loss/train_mse", train_metrics["loss_mse"], epoch)
-        self.writer.add_scalar("Loss/train_gnll", train_metrics["loss_gnll"], epoch)
-
-        # Metrics
-        # self.writer.add_scalar("Metrics/train_rmse", train_metrics["rmse"], epoch)
-        # self.writer.add_scalar("Metrics/train_gnll", train_metrics["gnll"], epoch)
-        # self.writer.add_scalar(
-        #     "Metrics/train_variance", train_metrics["variance"], epoch
-        # )
+        self.writer.add_scalar("Loss/train_model", train_metrics["loss_model"], epoch)
 
         # Parameters / Optimization
         self.writer.add_scalar("Parameters/alpha", train_metrics["alpha"], epoch)

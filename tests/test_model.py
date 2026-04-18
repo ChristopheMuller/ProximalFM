@@ -6,8 +6,8 @@ import pytest
 import torch
 import torch.nn as nn
 from proximalfm.Structure import ModelConfig
-from proximalfm.Model import (
-    ProximalNanoTabICLv2,
+from proximalfm.models.gmm import (
+    ProximalGMM,
     ClassEmbedding,
     get_mlp,
     InducedTransformerBlock,
@@ -125,7 +125,7 @@ def test_proximal_nanotab_icl_v2():
         n_cls_rows=16,
         n_gmm_components=2
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     n_batch = 2
     n_rows = 20
@@ -169,7 +169,7 @@ def test_proximal_nanotab_icl_v2_zero_blocks():
         feature_group_size_z=1,
         n_gmm_components=2
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
     x = torch.randn(3, 10, 5)
     w = torch.randn(3, 10, 4)
     z = torch.randn(3, 10, 6)
@@ -191,7 +191,7 @@ def test_estimate_cate_success():
         row_num_blocks=1,
         icl_num_blocks=1,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 2
     n_train = 5
@@ -243,7 +243,7 @@ def test_estimate_cate_full_sequence_mode():
         feature_group_size_z=2,
         embed_dim=16,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 2
     n_train = 5
@@ -292,7 +292,7 @@ def test_estimate_cate_math_verification():
         row_num_blocks=1,
         icl_num_blocks=1,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 1
     n_train = 2
@@ -352,7 +352,7 @@ def test_estimate_cate_variance_clamping():
         row_num_blocks=1,
         icl_num_blocks=1,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 1
     n_train = 2
@@ -398,7 +398,7 @@ def test_estimate_cate_partial_test_inputs():
         feature_group_size_z=2,
         embed_dim=16,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 2
     n_train = 5
@@ -440,7 +440,7 @@ def test_estimate_cate_multiple_gmm_components():
         row_num_blocks=1,
         icl_num_blocks=1,
     )
-    model = ProximalNanoTabICLv2(config)
+    model = ProximalGMM(config)
 
     batch_size = 2
     n_train = 5
