@@ -50,7 +50,6 @@ import multiprocessing
 import os
 import sys
 import time
-import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -60,9 +59,7 @@ import torch
 import yaml
 
 from rich.console import Console
-from rich.live import Live
 from rich.padding import Padding
-from rich.panel import Panel
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -72,10 +69,12 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.rule import Rule
-from rich.table import Table
 
-from bench_methods import build_method
-from bench_metrics import (
+# Ensure project root is in sys.path so 'proximalfm' and 'benchmarks' are resolvable.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from benchmarks.bench_methods import build_method
+from benchmarks.bench_metrics import (
     compute_all_metrics,
     build_summary_tables,
     make_ate_rich_table,
@@ -480,10 +479,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="CATE benchmark — generate data, run methods, evaluate."
     )
+    default_config = Path(__file__).resolve().parent / "bench_config.yaml"
     parser.add_argument(
         "--config",
-        default="bench_config.yaml",
-        help="Path to the YAML config file (default: bench_config.yaml).",
+        default=str(default_config),
+        help=f"Path to the YAML config file (default: {default_config.name}).",
     )
     parser.add_argument(
         "--force",
