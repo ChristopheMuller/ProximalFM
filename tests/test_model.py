@@ -465,3 +465,182 @@ def test_estimate_cate_multiple_gmm_components():
 
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
+
+
+
+def test_gmm_loss_math_verification():
+    import torch.nn.functional as F
+
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalGMM(config)
+
+    batch_size = 2
+    n_test = 3
+    n_gmm = config.n_gmm_components
+
+    # Create dummy outputs and targets
+    outputs = torch.randn(batch_size, n_test, 3 * n_gmm)
+    target = torch.randn(batch_size, n_test, 1)
+
+    # Compute loss using the model's loss function
+    loss = model.loss(outputs, target)
+
+    # Recompute loss manually to verify
+    logits = outputs[..., : n_gmm]
+    mu = outputs[..., n_gmm : 2 * n_gmm]
+    log_var = outputs[..., 2 * n_gmm :]
+
+    log_pi = F.log_softmax(logits, dim=-1)
+    z_sq = ((target - mu) ** 2) * torch.exp(-log_var)
+    log_prob = -0.5 * z_sq - 0.5 * log_var
+    log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
+    expected_loss = -log_mix.mean()
+
+    assert torch.allclose(loss, expected_loss)
+    assert loss.dim() == 0  # Should be a scalar
+
+def test_gmm_loss_target_shape_handling():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalGMM(config)
+
+    batch_size = 2
+    n_test = 3
+    n_gmm = config.n_gmm_components
+
+    outputs = torch.randn(batch_size, n_test, 3 * n_gmm)
+    target_3d = torch.randn(batch_size, n_test, 1)
+    target_2d = target_3d.squeeze(-1)  # shape [batch, n_test]
+
+    loss_3d = model.loss(outputs, target_3d)
+    loss_2d = model.loss(outputs, target_2d)
+
+    assert torch.allclose(loss_3d, loss_2d)
+
+def test_gmm_loss_single_component_equivalence():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=1,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalGMM(config)
+
+    batch_size = 2
+    n_test = 3
+    n_gmm = config.n_gmm_components
+
+    outputs = torch.randn(batch_size, n_test, 3 * n_gmm)
+    target = torch.randn(batch_size, n_test, 1)
+
+    loss = model.loss(outputs, target)
+
+    # Standard Gaussian NLL manually
+    mu = outputs[..., n_gmm : 2 * n_gmm]
+    log_var = outputs[..., 2 * n_gmm :]
+    var = torch.exp(log_var)
+
+    gnll = torch.nn.GaussianNLLLoss(full=False, eps=0.0, reduction='mean')
+    expected_gnll = gnll(mu, target, var)
+
+    # Note: Our GMM loss might have a different constant factor.
+    # Let's verify manually:
+    # GMM Loss logic for 1 component:
+    # log_pi = 0 (since log_softmax of a single value is 0)
+    # log_prob = -0.5 * ((target - mu) ** 2) / exp(log_var) - 0.5 * log_var
+    # GMM loss = -log_prob.mean()
+    # GaussianNLLLoss(full=False): 0.5 * (log(max(var, eps)) + (target - mu)**2 / max(var, eps)).mean()
+    # Thus, they should be exactly equal
+
+    assert torch.allclose(loss, expected_gnll, atol=1e-6)
+
+def test_gmm_loss_numerical_stability():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalGMM(config)
+
+    batch_size = 2
+    n_test = 3
+    n_gmm = config.n_gmm_components
+
+    # Create outputs with extreme values
+    outputs = torch.zeros(batch_size, n_test, 3 * n_gmm)
+
+    # Extreme logits
+    outputs[..., 0] = 1000.0  # Large logit
+    outputs[..., 1] = -1000.0 # Small logit
+
+    # Extreme means
+    outputs[..., 2] = 1e6
+    outputs[..., 3] = -1e6
+
+    # Extreme log variances
+    outputs[..., 4] = 50.0  # Large positive log variance (var -> inf)
+    outputs[..., 5] = -50.0 # Large negative log variance (var -> 0)
+
+    target = torch.ones(batch_size, n_test, 1)
+
+    loss = model.loss(outputs, target)
+
+    # The loss should be a valid number, not NaN or Inf
+    assert not torch.isnan(loss).any()
+    assert not torch.isinf(loss).any()
+
+def test_gmm_loss_gradient_flow():
+    config = ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+    model = ProximalGMM(config)
+
+    batch_size = 2
+    n_test = 3
+    n_gmm = config.n_gmm_components
+
+    outputs = torch.randn(batch_size, n_test, 3 * n_gmm, requires_grad=True)
+    target = torch.randn(batch_size, n_test, 1)
+
+    loss = model.loss(outputs, target)
+    loss.backward()
+
+    # Gradients should be populated and valid
+    assert outputs.grad is not None
+    assert not torch.isnan(outputs.grad).any()
+    assert not torch.isinf(outputs.grad).any()
+    # At least some gradients should be non-zero
+    assert torch.abs(outputs.grad).sum() > 0
