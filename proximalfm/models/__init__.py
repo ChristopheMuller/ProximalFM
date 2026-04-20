@@ -2,7 +2,7 @@
 from ..Structure import ModelConfig
 
 from .registry import MODEL_REGISTRY
-from . import gmm
+from . import gmm, quantile
 
 
 def build_model(model_config: ModelConfig):
