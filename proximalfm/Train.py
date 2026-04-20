@@ -292,8 +292,8 @@ class CATETrainer:
     ) -> dict:
         with torch.no_grad():
             if pred_log_var is not None and pred_log_var.numel() > 0:
-                pred_std = torch.exp(0.5 * pred_log_var)
-                pred_var = pred_std.pow(2)
+                pred_var = torch.exp(pred_log_var)
+                pred_std = torch.sqrt(pred_var)
             else:
                 pred_std = None
                 pred_var = None
@@ -303,9 +303,10 @@ class CATETrainer:
             percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
-            ss_res_episode = residuals.pow(2).sum(dim=1)
+            ss_res_episode = (residuals * residuals).sum(dim=1)
             target_mean_episode = target.mean(dim=1, keepdim=True)
-            ss_tot_episode = (target - target_mean_episode).pow(2).sum(dim=1)
+            ss_tot_diff = target - target_mean_episode
+            ss_tot_episode = (ss_tot_diff * ss_tot_diff).sum(dim=1)
             r2_episode = torch.where(
                 ss_tot_episode > 1e-8,
                 1.0 - (ss_res_episode / ss_tot_episode),
@@ -327,7 +328,7 @@ class CATETrainer:
             # R² decomposition: R²(shape) = R² + bias²/Var(τ)
             # ATE penalty per episode: bias²/Var(τ)
             # Identity (bench): cate_r2 = cate_r2_shape − cate_r2_ate_penalty
-            cate_r2_ate_penalty = ate_residuals.pow(2) / (var_tau_episode + 1e-8)
+            cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8)
             cate_r2_shape = r2_episode + cate_r2_ate_penalty  # [batch_size, 1]
 
             # CATE MAE per episode
@@ -343,17 +344,17 @@ class CATETrainer:
             ate_error_norm_episode = ate_residuals / (std_tau_episode + 1e-8)
 
             metrics = {
-                "sum_sq_err": residuals.pow(2).sum().item(),
-                "sum_sq_pe": percentage_errors.pow(2).sum().item(),
+                "sum_sq_err": (residuals * residuals).sum().item(),
+                "sum_sq_pe": (percentage_errors * percentage_errors).sum().item(),
                 "sum_error": residuals.sum().item(),
                 "sum_target": target.sum().item(),
-                "sum_sq_target": target.pow(2).sum().item(),
+                "sum_sq_target": (target * target).sum().item(),
                 "num_samples": target.numel(),
                 "sum_cate_r2": r2_episode.sum().item(),
                 "num_episodes": batch_size,
                 "sum_ate_true": ate_true_episode.sum().item(),
-                "sum_sq_ate_true": ate_true_episode.pow(2).sum().item(),
-                "sum_sq_ate_err": ate_residuals.pow(2).sum().item(),
+                "sum_sq_ate_true": (ate_true_episode * ate_true_episode).sum().item(),
+                "sum_sq_ate_err": (ate_residuals * ate_residuals).sum().item(),
                 # R² decomposition
                 "sum_cate_r2_shape": cate_r2_shape.sum().item(),
                 "sum_cate_r2_ate_penalty": cate_r2_ate_penalty.sum().item(),
@@ -363,7 +364,7 @@ class CATETrainer:
                 # Normalised ATE error (for NormBias / NormMAE / NormRMSE)
                 "sum_ate_error_norm": ate_error_norm_episode.sum().item(),
                 "sum_abs_ate_error_norm": ate_error_norm_episode.abs().sum().item(),
-                "sum_sq_ate_error_norm": ate_error_norm_episode.pow(2).sum().item(),
+                "sum_sq_ate_error_norm": (ate_error_norm_episode * ate_error_norm_episode).sum().item(),
             }
 
             if pred_var is not None:
@@ -612,7 +613,7 @@ class CATETrainer:
 
         # Bias-Variance Decomposition
         ite_bias = sum_error / denom
-        ite_bias_sq = ite_bias**2
+        ite_bias_sq = ite_bias * ite_bias
         ite_error_var = mse - ite_bias_sq
 
         # CATE R2 Mean (per episode)
@@ -620,7 +621,7 @@ class CATETrainer:
 
         # ATE R2 (across episodes)
         episodes_denom = max(total_episodes, 1)
-        ss_tot_ate = total_sq_ate_true - (total_ate_true**2) / episodes_denom
+        ss_tot_ate = total_sq_ate_true - (total_ate_true * total_ate_true) / episodes_denom
         if ss_tot_ate > 1e-8:
             ate_r2 = 1.0 - (total_sq_ate_err / ss_tot_ate)
         else:

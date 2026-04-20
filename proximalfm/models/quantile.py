@@ -239,7 +239,7 @@ class ProximalQuantile(BaseCATEModel):
                 q_high = out[..., idx_high : idx_high + 1]
 
                 sigma = (q_high - q_low) / 2.56
-                variance = torch.clamp(sigma**2, min=1e-8)
+                variance = torch.clamp(sigma * sigma, min=1e-8)
                 overall_log_variance = torch.log(variance)
             else:
                 overall_log_variance = torch.zeros_like(expected_mean) - 10.0
