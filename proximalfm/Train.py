@@ -141,10 +141,14 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
+        context_size = self.data_cfg.get("context_size", 200)
+        test_size = self.data_cfg.get("test_size", 56)
+        samples_per_episode = context_size + test_size
+
         loaders = create_causal_data_loaders(
             prior_config=self.prior_config,
             batch_size=self.data_cfg.get("batch_size", 32),
-            samples_per_episode=self.data_cfg.get("samples_per_episode", 128),
+            samples_per_episode=samples_per_episode,
             train_episodes=self.data_cfg.get("train_episodes", 400),
             val_episodes=self.data_cfg.get("val_episodes", 400),
             num_workers=self.data_cfg.get("num_workers", 4),
@@ -153,8 +157,7 @@ class CATETrainer:
         self.train_loader = loaders["train"]
         self.val_loader = loaders["val"]
 
-        n = self.data_cfg.get("samples_per_episode", 128)
-        self.single_eval_pos = int(n * self.data_cfg.get("context_fraction", 0.8))
+        self.single_eval_pos = context_size
 
         # ------------------------------------------------------------------
         # Logging + bookkeeping

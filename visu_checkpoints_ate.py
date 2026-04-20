@@ -87,7 +87,7 @@ def main():
     k_datasets = 100 # Number of test datasets (episodes)
     
     # Define how many points are used as context vs test
-    n_train = int(config["data"]["samples_per_episode"] * 0.85)
+    n_train = config["data"].get("context_size", 200)
     n_test = 500
     samples_per_episode = n_train + n_test
 
