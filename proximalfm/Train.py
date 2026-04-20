@@ -411,6 +411,9 @@ class CATETrainer:
         if "epoch" in checkpoint:
             self.start_epoch = checkpoint["epoch"]
 
+        if "global_step" in checkpoint:
+            self.global_step = checkpoint["global_step"]
+
         if "val_loss" in checkpoint:
             self.best_val_loss = checkpoint["val_loss"]
 
@@ -693,6 +696,7 @@ class CATETrainer:
         os.makedirs(path_dir, exist_ok=True)
         checkpoint = {
             "epoch": epoch,
+            "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
