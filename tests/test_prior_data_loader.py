@@ -127,12 +127,13 @@ def test_dataset_getitem(base_config: ProximalPriorConfig) -> None:
     assert torch.allclose(item["ITE"], item["Y1"] - item["Y0"])
 
     # Verify deterministic output based on seed_offset + idx
-    dataset2 = ProximalDataset(base_config, num_episodes=10, samples_per_episode=samples)
+    dataset2 = ProximalDataset(
+        base_config, num_episodes=10, samples_per_episode=samples
+    )
     item_same = dataset2[2]
 
     for key in item:
         assert torch.allclose(item[key], item_same[key])
-
 
 
 def test_create_data_loaders_basic(base_config: ProximalPriorConfig) -> None:
@@ -198,7 +199,9 @@ def test_create_data_loaders_seed_offsets(base_config: ProximalPriorConfig) -> N
 
 
 @unittest.mock.patch("torch.cuda.is_available")
-def test_create_data_loaders_pin_memory_cuda_available(mock_is_available, base_config: ProximalPriorConfig) -> None:
+def test_create_data_loaders_pin_memory_cuda_available(
+    mock_is_available, base_config: ProximalPriorConfig
+) -> None:
     mock_is_available.return_value = True
 
     loaders = create_causal_data_loaders(
@@ -211,7 +214,9 @@ def test_create_data_loaders_pin_memory_cuda_available(mock_is_available, base_c
 
 
 @unittest.mock.patch("torch.cuda.is_available")
-def test_create_data_loaders_pin_memory_cuda_unavailable(mock_is_available, base_config: ProximalPriorConfig) -> None:
+def test_create_data_loaders_pin_memory_cuda_unavailable(
+    mock_is_available, base_config: ProximalPriorConfig
+) -> None:
     mock_is_available.return_value = False
 
     loaders = create_causal_data_loaders(
@@ -223,7 +228,9 @@ def test_create_data_loaders_pin_memory_cuda_unavailable(mock_is_available, base
     assert loaders["val"].pin_memory is False
 
 
-def test_create_data_loaders_persistent_workers(base_config: ProximalPriorConfig) -> None:
+def test_create_data_loaders_persistent_workers(
+    base_config: ProximalPriorConfig,
+) -> None:
     # Test with workers > 0
     loaders_with_workers = create_causal_data_loaders(
         prior_config=base_config,
@@ -239,7 +246,6 @@ def test_create_data_loaders_persistent_workers(base_config: ProximalPriorConfig
     )
     assert loaders_no_workers["train"].persistent_workers is False
     assert loaders_no_workers["val"].persistent_workers is False
-
 
 
 @unittest.mock.patch("torch.initial_seed")
@@ -288,10 +294,10 @@ def test_multiprocessing_different_data(base_config: ProximalPriorConfig) -> Non
 
     all_x = []
     for batch in train_loader:
-        # batch["X"] is (samples, batch_size, d_x) due to custom_collate
-        assert batch["X"].shape == (10, batch_size, base_config.d_x)
+        # batch["X"] is (batch_size, samples, d_x) due to custom_collate
+        assert batch["X"].shape == (batch_size, 10, base_config.d_x)
         all_x.append(batch["X"])
 
     # Total episodes processed
-    total_episodes = sum(x.shape[1] for x in all_x)
+    total_episodes = sum(x.shape[0] for x in all_x)
     assert total_episodes == train_eps

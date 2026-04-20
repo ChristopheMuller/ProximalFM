@@ -12,6 +12,7 @@ from proximalfm.Train import (
     CATETrainer,
 )
 
+
 def test_set_seed():
     # Calling set_seed should not raise any exceptions and should be reproducible
     set_seed(42)
@@ -20,14 +21,17 @@ def test_set_seed():
     val2 = torch.rand(1).item()
     assert val1 == val2
 
+
 def test_format_time():
     assert format_time(30.5) == "30.50s"
     assert format_time(150.25) == "2m 30.25s"
     assert format_time(3665.12) == "1h 1m 5.12s"
 
+
 def test_load_config_not_found():
     with pytest.raises(FileNotFoundError):
         load_config("non_existent_config.yaml")
+
 
 def test_load_config(tmp_path):
     config_data = {"test": 123}
@@ -37,6 +41,7 @@ def test_load_config(tmp_path):
 
     loaded = load_config(str(file_path))
     assert loaded == config_data
+
 
 @pytest.fixture
 def mock_config(tmp_path):
@@ -81,25 +86,28 @@ def mock_config(tmp_path):
             "col_nhead": 2,
             "row_nhead": 2,
             "icl_nhead": 2,
-        }
+        },
     }
+
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
 @patch("proximalfm.Train.build_model")
-def test_cate_trainer_init(mock_build_model, mock_create_loaders, mock_writer, mock_config):
+def test_cate_trainer_init(
+    mock_build_model, mock_create_loaders, mock_writer, mock_config
+):
     mock_model_inst = MagicMock()
     mock_model_inst.parameters.return_value = [torch.nn.Parameter(torch.tensor([1.0]))]
-    
+
     mock_build_model.return_value = mock_model_inst
     mock_create_loaders.return_value = {"train": ["train_batch"], "val": ["val_batch"]}
 
     trainer = CATETrainer(mock_config)
 
     assert trainer.device == torch.device("cpu")
-    
+
     mock_build_model.assert_called_once()
-    
+
     passed_args = mock_build_model.call_args[0]
     assert len(passed_args) > 0, "build_model was called without positional arguments."
     assert passed_args[0].__class__.__name__ == "ModelConfig"
@@ -109,6 +117,7 @@ def test_cate_trainer_init(mock_build_model, mock_create_loaders, mock_writer, m
     assert trainer.val_loader == ["val_batch"]
     assert trainer.single_eval_pos == 8
 
+
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
 def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
@@ -116,14 +125,14 @@ def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
     trainer = CATETrainer(mock_config)
 
     N, B, D = 10, 2, 2
-    # Create dummy DataLoader output (N, B, D)
+    # Create dummy DataLoader output (B, N, D)
     batch = {
-        "X": torch.randn(N, B, D),
-        "Z": torch.randn(N, B, D),
-        "W": torch.randn(N, B, D),
-        "A": torch.randn(N, B, 1),
-        "Y": torch.randn(N, B, 1),
-        "ITE": torch.randn(N, B, 1),
+        "X": torch.randn(B, N, D),
+        "Z": torch.randn(B, N, D),
+        "W": torch.randn(B, N, D),
+        "A": torch.randn(B, N, 1),
+        "Y": torch.randn(B, N, 1),
+        "ITE": torch.randn(B, N, 1),
     }
 
     x, a, w, z, y_norm, target_norm, y_std = trainer._prepare_inputs(batch)
@@ -145,17 +154,18 @@ def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
 
     assert y_std.gt(0).all()
 
+
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
 def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     N, B, D = 10, 2, 2
     batch = {
-        "X": torch.randn(N, B, D),
-        "Z": torch.randn(N, B, D),
-        "W": torch.randn(N, B, D),
-        "A": torch.randn(N, B, 1),
-        "Y": torch.randn(N, B, 1),
-        "ITE": torch.randn(N, B, 1),
+        "X": torch.randn(B, N, D),
+        "Z": torch.randn(B, N, D),
+        "W": torch.randn(B, N, D),
+        "A": torch.randn(B, N, 1),
+        "Y": torch.randn(B, N, 1),
+        "ITE": torch.randn(B, N, 1),
     }
 
     mock_create_loaders.return_value = {"train": [batch], "val": []}
@@ -183,17 +193,18 @@ def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     assert "time_s" in train_metrics
     assert len(trainer.train_losses) == 1
 
+
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
 def test_validate(mock_create_loaders, mock_writer, mock_config):
     N, B, D = 10, 2, 2
     batch = {
-        "X": torch.randn(N, B, D),
-        "Z": torch.randn(N, B, D),
-        "W": torch.randn(N, B, D),
-        "A": torch.randn(N, B, 1),
-        "Y": torch.randn(N, B, 1),
-        "ITE": torch.randn(N, B, 1),
+        "X": torch.randn(B, N, D),
+        "Z": torch.randn(B, N, D),
+        "W": torch.randn(B, N, D),
+        "A": torch.randn(B, N, 1),
+        "Y": torch.randn(B, N, 1),
+        "ITE": torch.randn(B, N, 1),
     }
 
     mock_create_loaders.return_value = {"train": [], "val": [batch]}
@@ -211,9 +222,8 @@ def test_validate(mock_create_loaders, mock_writer, mock_config):
     assert "loss_gnll" not in val_metrics
     assert "variance" in val_metrics
 
-
-
     assert len(trainer.val_rmses) == 1
+
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
@@ -223,7 +233,9 @@ def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path
 
     trainer.save_checkpoint(epoch=1, val_rmse=0.5)
 
-    save_dir = os.path.join(mock_config["training"]["save_dir"], mock_config["training"]["exp_name"])
+    save_dir = os.path.join(
+        mock_config["training"]["save_dir"], mock_config["training"]["exp_name"]
+    )
     assert os.path.exists(os.path.join(save_dir, "model_epoch_1.pth"))
     assert os.path.exists(os.path.join(save_dir, "best_model.pth"))
 

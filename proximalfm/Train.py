@@ -212,13 +212,13 @@ class CATETrainer:
         }
 
     def _prepare_inputs(self, batch: dict):
-        x = batch["X"].transpose(0, 1)
-        z = batch["Z"].transpose(0, 1)
-        w = batch["W"].transpose(0, 1)
+        x = batch["X"]
+        z = batch["Z"]
+        w = batch["W"]
 
-        a = batch["A"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
-        y = batch["Y"][: self.single_eval_pos].transpose(0, 1).squeeze(-1)
-        target = batch["ITE"][self.single_eval_pos :].transpose(0, 1)
+        a = batch["A"][:, : self.single_eval_pos].squeeze(-1)
+        y = batch["Y"][:, : self.single_eval_pos].squeeze(-1)
+        target = batch["ITE"][:, self.single_eval_pos :]
 
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
 
@@ -448,7 +448,7 @@ class CATETrainer:
 
         with tqdm(
             self.train_loader,
-            desc=f"Epoch {epoch+1}/{self.train_cfg['epochs']} [Train]",
+            desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Train]",
         ) as pbar:
             for batch in pbar:
                 batch = self._move_batch(batch)
@@ -513,7 +513,7 @@ class CATETrainer:
         mspe = sum_sq_pe / max(total_samples, 1)
 
         self.train_losses.append(avg_loss)
-        logger.info(f"Epoch {epoch+1} train done in {format_time(epoch_time)}")
+        logger.info(f"Epoch {epoch + 1} train done in {format_time(epoch_time)}")
 
         return {
             "loss_total": avg_loss,
@@ -569,7 +569,7 @@ class CATETrainer:
         with torch.no_grad():
             with tqdm(
                 self.val_loader,
-                desc=f"Epoch {epoch+1}/{self.train_cfg['epochs']} [Val]",
+                desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Val]",
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
@@ -656,7 +656,7 @@ class CATETrainer:
         self.scheduler.step(rmse)
 
         logger.info(
-            f"Epoch {epoch+1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
+            f"Epoch {epoch + 1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
         )
 
         return {
@@ -844,7 +844,7 @@ class CATETrainer:
             val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
             logger.info(
-                f"Epoch {epoch+1}/{self.train_cfg['epochs']}  "
+                f"Epoch {epoch + 1}/{self.train_cfg['epochs']}  "
                 f"train_model={train_model:.4f}  train_rmse={train_mse:.4f}  "
                 f"train_total={train_total:.4f}"
             )
@@ -861,7 +861,7 @@ class CATETrainer:
                 else:
                     early_stop_count += 1
                     if early_stop_count >= self.train_cfg["early_stop"]:
-                        logger.info(f"Early stopping after {epoch+1} epochs.")
+                        logger.info(f"Early stopping after {epoch + 1} epochs.")
                         break
             epoch += 1
 

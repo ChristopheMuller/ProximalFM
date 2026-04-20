@@ -98,11 +98,11 @@ class ProximalDataset(Dataset):
 
 def custom_collate(batch):
     """
-    Custom collate function that stacks episodes along dimension 1 instead of 0.
-    Returns tensors of shape (N, B, D) where N is samples_per_episode and B is batch_size.
+    Custom collate function that stacks episodes along dimension 0.
+    Returns tensors of shape (B, N, D) where B is batch_size and N is samples_per_episode.
     """
     elem = batch[0]
-    return {key: torch.stack([d[key] for d in batch], dim=1) for key in elem.keys()}
+    return {key: torch.stack([d[key] for d in batch], dim=0) for key in elem.keys()}
 
 
 def create_causal_data_loaders(
