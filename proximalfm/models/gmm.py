@@ -190,7 +190,8 @@ class ProximalGMM(BaseCATEModel):
         log_var = outputs[..., 2 * self.n_gmm :]
 
         log_pi = F.log_softmax(logits, dim=-1)
-        z_sq = ((target - mu) ** 2) * torch.exp(-log_var)
+        z_diff = target - mu
+        z_sq = (z_diff * z_diff) * torch.exp(-log_var)
         log_prob = -0.5 * z_sq - 0.5 * log_var
         log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
 
@@ -239,12 +240,12 @@ class ProximalGMM(BaseCATEModel):
 
         if return_log_variance:
             variances = torch.exp(log_vars)
-            expected_x_squared = (pi * (variances + means**2)).sum(
+            expected_x_squared = (pi * (variances + means * means)).sum(
                 dim=-1, keepdim=True
             )
 
             total_variance = torch.clamp(
-                expected_x_squared - expected_mean**2, min=1e-8
+                expected_x_squared - expected_mean * expected_mean, min=1e-8
             )
             overall_log_variance = torch.log(total_variance)
 
