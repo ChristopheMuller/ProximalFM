@@ -15,7 +15,6 @@ import yaml
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from proximalfm.models.gmm import ProximalGMM
 from proximalfm.models import build_model
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
