@@ -226,38 +226,21 @@ class CATETrainer:
 
     def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
         out = self.model(x=x, a=a, w=w, z=z, y=y)
-
-        # 1. GMM NLL Loss
         loss_model = self.model.loss(out, target)
 
-        # 2. Unpack for Expected Mean / Variance (for MSE and Metrics)
-        n_gmm = self.model.n_gmm
-        logits = out[..., :n_gmm]
-        means = out[..., n_gmm : 2 * n_gmm]
-        log_vars = out[..., 2 * n_gmm :]
+        # Let the model handle its own extraction logic instead of hardcoding GMM math
+        expected_mean, overall_log_variance = self.model.estimate_CATE(
+            x=x, a_train=a, w=w, z=z, y_train=y, return_log_variance=True
+        )
 
-        pi = F.softmax(logits, dim=-1)
-
-        # Expected Mean: sum(pi_k * mu_k)
-        expected_mean = (pi * means).sum(dim=-1, keepdim=True)
-
-        # Overall Log Variance: sum(pi_k * (sigma_k^2 + mu_k^2)) - mu^2
-        variances = torch.exp(log_vars)
-        expected_x_squared = (pi * (variances + means**2)).sum(dim=-1, keepdim=True)
-        total_variance = torch.clamp(expected_x_squared - expected_mean**2, min=1e-8)
-        overall_log_variance = torch.log(total_variance)
-
-        # 3. MSE Computations on Expected Mean
         loss_mse_raw = F.mse_loss(expected_mean, target)
-
+        
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
         loss_mse_normalized = F.mse_loss(
             expected_mean / y_std_expanded, target / y_std_expanded
         )
 
-        # Mix Losses
         loss = alpha * loss_mse_normalized + (1 - alpha) * loss_model
-
         return loss, loss_mse_raw, loss_model, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:

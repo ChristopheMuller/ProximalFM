@@ -161,19 +161,33 @@ def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     mock_create_loaders.return_value = {"train": [batch], "val": []}
     trainer = CATETrainer(mock_config)
 
-    # Mock model forward to return (B, N_query, 2)
+    # 1. Create a dummy parameter to anchor the computational graph
+    dummy_param = torch.nn.Parameter(torch.randn(1))
+    
+    # 2. Mock model outputs
     # N_query = N - single_eval_pos = 10 - 8 = 2
-    mock_out = torch.randn(B, 2, 2, requires_grad=True)
-    trainer.model = MagicMock(return_value=mock_out)
-    # Give the model parameters so optimizer can step
-    trainer.model.parameters.return_value = [mock_out]
+    mock_out = torch.randn(B, 2, 3)  # Matches shape for 3 quantiles (or GMM outputs)
+    
+    # We add `dummy_param * 0.0` to force these tensors into the autograd graph
+    # so `loss.backward()` successfully computes gradients for dummy_param
+    mock_mean = torch.randn(B, 2, 1) + dummy_param * 0.0
+    mock_log_var = torch.randn(B, 2, 1) + dummy_param * 0.0
+    mock_loss = dummy_param * 0.1  # Scalar loss linked to the parameter
 
-    # Mock backwards and optimizer step manually to ensure they are called
-    # Or just let torch handle it, but wait, mock_out is a leaf variable here.
-    # We should let the real model be used, but since we want to avoid heavy compute:
-    # Let's mock the loss backward
+    # 3. Setup the MagicMock for the model
+    trainer.model = MagicMock()
+    trainer.model.return_value = mock_out
+    trainer.model.loss.return_value = mock_loss
+    trainer.model.estimate_CATE.return_value = (mock_mean, mock_log_var)
+    
+    # 4. Mock parameter iterations for optimizer and grad clipping
+    trainer.model.parameters.return_value = [dummy_param]
+    trainer.model.named_parameters.return_value = [("dummy_layer", dummy_param)]
 
+    # Run the epoch
     train_metrics = trainer.train_epoch(epoch=0)
+    
+    # Assertions
     assert isinstance(train_metrics, dict)
     assert "loss_total" in train_metrics
     assert "rmse" in train_metrics
@@ -182,6 +196,10 @@ def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     assert "alpha" in train_metrics
     assert "time_s" in train_metrics
     assert len(trainer.train_losses) == 1
+    
+    # Verify our new agnostic methods were actually called
+    trainer.model.loss.assert_called_once()
+    trainer.model.estimate_CATE.assert_called_once()
 
 @patch("proximalfm.Train.SummaryWriter")
 @patch("proximalfm.Train.create_causal_data_loaders")
