@@ -78,7 +78,7 @@ class ModelConfig:
     row_nhead: int = 8
     icl_nhead: int = 8
     feature_group_size_x: int = 2
-    feature_group_size_w: int = 4
+    feature_group_size_w: int = 2
     feature_group_size_z: int = 2
     n_cls_cols: int = 4
     n_cls_rows: int = 128

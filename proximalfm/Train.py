@@ -293,8 +293,8 @@ class CATETrainer:
     ) -> dict:
         with torch.no_grad():
             if pred_log_var is not None and pred_log_var.numel() > 0:
-                pred_std = torch.exp(0.5 * pred_log_var)
-                pred_var = pred_std.pow(2)
+                pred_var = torch.exp(pred_log_var)
+                pred_std = torch.sqrt(pred_var)
             else:
                 pred_std = None
                 pred_var = None
@@ -304,9 +304,10 @@ class CATETrainer:
             percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
-            ss_res_episode = residuals.pow(2).sum(dim=1)
+            ss_res_episode = (residuals * residuals).sum(dim=1)
             target_mean_episode = target.mean(dim=1, keepdim=True)
-            ss_tot_episode = (target - target_mean_episode).pow(2).sum(dim=1)
+            ss_tot_diff = target - target_mean_episode
+            ss_tot_episode = (ss_tot_diff * ss_tot_diff).sum(dim=1)
             r2_episode = torch.where(
                 ss_tot_episode > 1e-8,
                 1.0 - (ss_res_episode / ss_tot_episode),
@@ -328,7 +329,7 @@ class CATETrainer:
             # R² decomposition: R²(shape) = R² + bias²/Var(τ)
             # ATE penalty per episode: bias²/Var(τ)
             # Identity (bench): cate_r2 = cate_r2_shape − cate_r2_ate_penalty
-            cate_r2_ate_penalty = ate_residuals.pow(2) / (var_tau_episode + 1e-8)
+            cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8)
             cate_r2_shape = r2_episode + cate_r2_ate_penalty  # [batch_size, 1]
 
             # CATE MAE per episode

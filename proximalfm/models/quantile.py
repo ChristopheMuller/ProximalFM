@@ -108,33 +108,18 @@ class ProximalQuantile(BaseCATEModel):
 
         # 2. EMBEDDING
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
-        x = torch.stack(
-            [
-                x_norm[:, :, (idxs + (2**i - 1)) % n_cols]
-                for i in range(self.feature_group_size_x)
-            ],
-            dim=-1,
-        )
+        idx_matrix_x = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_x, device=x.device) - 1)) % n_cols
+        x = x_norm[:, :, idx_matrix_x]
         emb_x = self.x_embed(x)
 
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
-        w = torch.stack(
-            [
-                w_norm[:, :, (idxs + (2**i - 1)) % w.shape[-1]]
-                for i in range(self.feature_group_size_w)
-            ],
-            dim=-1,
-        )
+        idx_matrix_w = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_w, device=w.device) - 1)) % w.shape[-1]
+        w = w_norm[:, :, idx_matrix_w]
         emb_w = self.w_embed(w)
 
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
-        z = torch.stack(
-            [
-                z_norm[:, :, (idxs + (2**i - 1)) % z.shape[-1]]
-                for i in range(self.feature_group_size_z)
-            ],
-            dim=-1,
-        )
+        idx_matrix_z = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_z, device=z.device) - 1)) % z.shape[-1]
+        z = z_norm[:, :, idx_matrix_z]
         emb_z = self.z_embed(z)
 
         emb_a = self.a_embed(a[:, :, None, None])
@@ -239,7 +224,7 @@ class ProximalQuantile(BaseCATEModel):
                 q_high = out[..., idx_high : idx_high + 1]
 
                 sigma = (q_high - q_low) / 2.56
-                variance = torch.clamp(sigma**2, min=1e-8)
+                variance = torch.clamp(sigma * sigma, min=1e-8)
                 overall_log_variance = torch.log(variance)
             else:
                 overall_log_variance = torch.zeros_like(expected_mean) - 10.0
