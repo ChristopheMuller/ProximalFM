@@ -10,23 +10,26 @@ training:
   val_freq: 4
   save_freq: 10           # save a checkpoint every N epochs
   save_dir: "checkpoints"
-  log_dir: "runs/test"
+  log_dir: "runs/fungible"
   device: "mps"           # "cuda" | "mps" | "cpu"
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "test"
+  exp_name: "fungible"
 
 model:
   type: "gmm"
   dtype: float32
-  col_nhead: 4
-  icl_nhead: 4
-  row_nhead: 4
-  embed_dim: 32
-  icl_num_blocks: 8
-  row_num_blocks: 4
-  col_num_blocks: 4
+  col_nhead: 2
+  icl_nhead: 2
+  row_nhead: 2
+  embed_dim: 8
+  icl_num_blocks: 6
+  row_num_blocks: 2
+  col_num_blocks: 2
+  feature_group_size_x: 2
+  feature_group_size_w: 2
+  feature_group_size_z: 2
 
 data:
   batch_size: 16             # number of episodes per batch
@@ -38,13 +41,13 @@ data:
   num_workers: 4            # DataLoader worker processes (0 = main process only)
 
 prior:
-  type : "cate_linear"
-  d_x            : 5
-  d_u            : 2
-  d_z            : 3
-  d_w            : 3
+  type : "fungible_small"
+  d_x            : 1
+  d_u            : 1
+  d_z            : 1
+  d_w            : 1
   noise_scale_w  : 1
   noise_scale_z  : 1
   noise_scale_x  : 1
-  temperature    : 2
+  temperature    : 1
   confounding_strength: 1
