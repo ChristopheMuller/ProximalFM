@@ -15,10 +15,10 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_medium"
+MODEL = "fungible"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 300, 400, 500, 600, 697]
+FILTER_KEEP_EPOCHS = [1, 20, 50, 100, 200, 300, 400, 421]
 
 def load_config() -> dict:
 
@@ -97,6 +97,11 @@ def main():
         d_z=prior_cfg["d_z"],
         d_w=prior_cfg["d_w"],
         d_u=prior_cfg["d_u"],
+        noise_scale_w=prior_cfg["noise_scale_w"],
+        noise_scale_z=prior_cfg["noise_scale_z"],
+        noise_scale_x=prior_cfg["noise_scale_x"],
+        temperature=prior_cfg.get("temperature", 1),
+        confounding_strength=prior_cfg.get("confounding_strength", 1),
         dtype=dtype,
     )
 
@@ -114,18 +119,18 @@ def main():
     batch = next(iter(loaders["val"]))
     batch = {k: v.to(device) for k, v in batch.items()}
 
-    x = batch["X"].transpose(0, 1)  # (B, N_total, d_x)
-    z = batch["Z"].transpose(0, 1)  # (B, N_total, d_z)
-    w = batch["W"].transpose(0, 1)  # (B, N_total, d_w)
+    x = batch["X"]
+    z = batch["Z"]
+    w = batch["W"]
     
     # A and Y transposed to (B, N_total, 1)
-    a_full = batch["A"].transpose(0, 1)  
-    y_full = batch["Y"].transpose(0, 1)  
+    a_full = batch["A"]
+    y_full = batch["Y"]
 
     # True ITE shape from loader is (N_total, B, 1). 
     # We slice out the test portion, transpose to (B, n_test), and calculate the ATE per episode.
-    true_ite_test = batch["ITE"][n_train:, :, 0].cpu().numpy().T
-    true_ate = true_ite_test.mean(axis=1) # shape (B,)
+    true_ite_test = batch["ITE"][:, n_train:, 0].cpu().numpy().T
+    true_ate = true_ite_test.mean(axis=0) # shape (B,)
 
     # ---------------------------------------------------------
     # 3. Find and sort checkpoints
@@ -169,9 +174,9 @@ def main():
                 w_chunk = w[start:end, :, :]
                 a_chunk = a_full[start:end, :n_train, 0]
                 y_chunk = y_full[start:end, :n_train, 0]
-                out = model(x=x_chunk, a=a_chunk, w=w_chunk, z=z_chunk, y=y_chunk)
-                pred_cate = out[:, :, 0].cpu().numpy()  # (B, chunk)
-                pred_ate_chunk = pred_cate.mean(axis=1)  # (B,)
+                out = model.estimate_CATE(x_chunk, a_chunk, w_chunk, z_chunk, y_chunk)
+                pred_cate = out[:, :, 0].cpu().numpy()
+                pred_ate_chunk = pred_cate.mean(axis=1)
                 pred_ates[start:end] = pred_ate_chunk
 
         # Plotting

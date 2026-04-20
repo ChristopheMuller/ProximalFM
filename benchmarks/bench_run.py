@@ -147,13 +147,13 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     batch = next(iter(loaders["val"]))
 
     data = {
-        "X": batch["X"].transpose(0, 1).cpu(),
-        "Z": batch["Z"].transpose(0, 1).cpu(),
-        "W": batch["W"].transpose(0, 1).cpu(),
-        "A": batch["A"].transpose(0, 1).cpu(),
-        "Y": batch["Y"].transpose(0, 1).cpu(),
+        "X": batch["X"].cpu(),
+        "Z": batch["Z"].cpu(),
+        "W": batch["W"].cpu(),
+        "A": batch["A"].cpu(),
+        "Y": batch["Y"].cpu(),
         # true_ITEs: (n_batch, n_test) — test-set ground truth
-        "true_ITEs": batch["ITE"][n_train:, :, 0].transpose(0, 1).cpu().numpy(),
+        "true_ITEs": batch["ITE"][:, n_train:, 0].cpu().numpy(),
         "N_TRAIN": n_train,
         "N_TEST": n_test,
         "N_BATCH": n_batch,
@@ -300,7 +300,6 @@ def run_method_parallel(
             f"    [yellow]⚠[/] {method_cfg['name']}: "
             f"{n_errors}/{n_batch} batches failed (NaN filled)."
         )
-
     return preds
 
 
@@ -434,7 +433,6 @@ def run_neural_model(
                 preds[start:end] = preds_[:,:,0]
             else:
                 preds[start:end] = preds_
-
     np.savez(pred_file, preds=preds)
     console.print(f"    [green]✓[/] {name} → {pred_file}")
     return name, preds
