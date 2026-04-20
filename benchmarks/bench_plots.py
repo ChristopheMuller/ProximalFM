@@ -79,12 +79,13 @@ def plot_ate_vs_cate_r2(results_dir: Path):
     plt.axvline(1, color='green', linestyle=':', alpha=0.5, zorder=0)
 
     # Plot each method
-    for method, row in df.iterrows():
+    for row in df.itertuples():
+        method = row.Index
         style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
         
         plt.scatter(
-            row["ATE_R2"], 
-            row["CATE_R2"],
+            row.ATE_R2,
+            row.CATE_R2,
             color=style.get("color"),
             marker=style.get("marker"),
             s=style.get("s", 120),  # default size 120
@@ -135,12 +136,13 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
     # Plot each method
-    for method, row in df.iterrows():
+    for row in df.itertuples():
+        method = row.Index
         style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
         
         plt.scatter(
-            row["ATE_NormRMSE"], 
-            row["CATE_NormRMSE"],
+            row.ATE_NormRMSE,
+            row.CATE_NormRMSE,
             color=style.get("color"),
             marker=style.get("marker"),
             s=style.get("s", 120),  # default size 120
