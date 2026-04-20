@@ -20,12 +20,6 @@ class ProximalQuantile(BaseCATEModel):
         self.quantiles = getattr(config, "quantiles", [0.1, 0.5, 0.9])
         self.n_quantiles = len(self.quantiles)
 
-        if 0.5 not in self.quantiles:
-            raise ValueError(
-                "Quantile list must include 0.5 (median) for expected mean estimation."
-            )
-        self.median_idx = self.quantiles.index(0.5)
-
         icl_dim = config.embed_dim * config.n_cls_cols
 
         self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
@@ -191,10 +185,11 @@ class ProximalQuantile(BaseCATEModel):
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
         return_log_variance: bool = False,
-    ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, typing.Optional[torch.Tensor]]]:
         """
         Estimates the CATE using the median (0.5 quantile).
-        If return_log_variance is True, approximates variance using the interquantile range.
+        If 0.5 is not in quantiles, uses interpolation or closest value.
+        If return_log_variance is True, computes variance.
         """
         mode = (
             "explicit_test"
@@ -212,23 +207,66 @@ class ProximalQuantile(BaseCATEModel):
         # Forward pass returns [batch, n_test, n_quantiles]
         out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
 
-        # The point estimate for CATE is the median
-        expected_mean = out[..., self.median_idx : self.median_idx + 1]
+        # 1. Estimate expected mean (median 0.5)
+        if 0.5 in self.quantiles:
+            idx = self.quantiles.index(0.5)
+            expected_mean = out[..., idx : idx + 1]
+        else:
+            below = [(i, q) for i, q in enumerate(self.quantiles) if q < 0.5]
+            above = [(i, q) for i, q in enumerate(self.quantiles) if q > 0.5]
 
-        if return_log_variance:
-            if 0.1 in self.quantiles and 0.9 in self.quantiles:
-                idx_low = self.quantiles.index(0.1)
-                idx_high = self.quantiles.index(0.9)
+            if below and above:
+                idx_below, q_below = max(below, key=lambda x: x[1])
+                idx_above, q_above = min(above, key=lambda x: x[1])
 
-                q_low = out[..., idx_low : idx_low + 1]
-                q_high = out[..., idx_high : idx_high + 1]
+                w_above = (0.5 - q_below) / (q_above - q_below)
+                w_below = (q_above - 0.5) / (q_above - q_below)
 
-                sigma = (q_high - q_low) / 2.56
-                variance = torch.clamp(sigma * sigma, min=1e-8)
-                overall_log_variance = torch.log(variance)
+                out_below = out[..., idx_below : idx_below + 1]
+                out_above = out[..., idx_above : idx_above + 1]
+
+                expected_mean = out_below * w_below + out_above * w_above
+            elif below:
+                idx_closest, _ = max(below, key=lambda x: x[1])
+                expected_mean = out[..., idx_closest : idx_closest + 1]
             else:
-                overall_log_variance = torch.zeros_like(expected_mean) - 10.0
+                idx_closest, _ = min(above, key=lambda x: x[1])
+                expected_mean = out[..., idx_closest : idx_closest + 1]
 
-            return expected_mean, overall_log_variance
+        if not return_log_variance:
+            return expected_mean
 
-        return expected_mean
+        # 2. Estimate variance
+        if self.n_quantiles > 5:
+            weights = []
+            for i in range(self.n_quantiles):
+                if i == 0:
+                    w_i = (self.quantiles[0] + self.quantiles[1]) / 2.0
+                elif i == self.n_quantiles - 1:
+                    w_i = 1.0 - (self.quantiles[-2] + self.quantiles[-1]) / 2.0
+                else:
+                    w_i = (self.quantiles[i+1] - self.quantiles[i-1]) / 2.0
+                weights.append(w_i)
+
+            weights_tensor = torch.tensor(
+                weights, dtype=out.dtype, device=out.device
+            )
+
+            mu = (out * weights_tensor).sum(dim=-1, keepdim=True)
+            var = ((out - mu) ** 2 * weights_tensor).sum(dim=-1, keepdim=True)
+            var = torch.clamp(var, min=1e-8)
+            overall_log_variance = torch.log(var)
+        elif 0.1 in self.quantiles and 0.9 in self.quantiles:
+            idx_low = self.quantiles.index(0.1)
+            idx_high = self.quantiles.index(0.9)
+
+            q_low = out[..., idx_low : idx_low + 1]
+            q_high = out[..., idx_high : idx_high + 1]
+
+            sigma = (q_high - q_low) / 2.56
+            variance = torch.clamp(sigma**2, min=1e-8)
+            overall_log_variance = torch.log(variance)
+        else:
+            overall_log_variance = None
+
+        return expected_mean, overall_log_variance
