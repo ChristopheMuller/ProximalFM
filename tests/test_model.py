@@ -6,8 +6,9 @@ import pytest
 import torch
 import torch.nn as nn
 from proximalfm.Structure import ModelConfig
-from proximalfm.models.gmm import (
-    ProximalGMM,
+from proximalfm.models.gmm import ProximalGMM
+
+from proximalfm.models.base import (
     ClassEmbedding,
     get_mlp,
     InducedTransformerBlock,
