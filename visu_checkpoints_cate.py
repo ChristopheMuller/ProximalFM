@@ -16,7 +16,7 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_medium"
+MODEL = "fungible"
 FILTER_REMOVE_EPOCHS = []
 FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 300, 400, 500, 600, 697]
 
@@ -95,6 +95,11 @@ def main():
         d_z=prior_cfg["d_z"],
         d_w=prior_cfg["d_w"],
         d_u=prior_cfg["d_u"],
+        noise_scale_w=prior_cfg["noise_scale_w"],
+        noise_scale_z=prior_cfg["noise_scale_z"],
+        noise_scale_x=prior_cfg["noise_scale_x"],
+        temperature=prior_cfg.get("temperature", 1),
+        confounding_strength=prior_cfg.get("confounding_strength", 1),
         dtype=dtype,
     )
 
@@ -112,17 +117,17 @@ def main():
     batch = next(iter(loaders["val"]))
     batch = {k: v.to(device) for k, v in batch.items()}
 
-    x = batch["X"].transpose(0, 1)  # (1, N_total, d_x)
-    z = batch["Z"].transpose(0, 1)  # (1, N_total, d_z)
-    w = batch["W"].transpose(0, 1)  # (1, N_total, d_w)
+    x = batch["X"]
+    z = batch["Z"]
+    w = batch["W"]
     
     # A and Y transposed to (1, N_total, 1)
-    a_full = batch["A"].transpose(0, 1)  
-    y_full = batch["Y"].transpose(0, 1)  
+    a_full = batch["A"]
+    y_full = batch["Y"]
 
     # True ITE for the k test points: shape (k_test_points,)
     # Original shape before transpose is (seq_len, batch_size, 1)
-    true_ite = batch["ITE"][n_train:, 0, 0].cpu().numpy()
+    true_ite = batch["ITE"][0, n_train:, 0].cpu().numpy()
 
     # ---------------------------------------------------------
     # 3. Find and sort checkpoints
@@ -161,11 +166,11 @@ def main():
             y_train = y_full[:, :n_train, 0] # (1, n_train)
             
             # Forward pass
-            out = model(x=x, a=a_train, w=w, z=z, y=y_train)
-            
+            mean, var = model.estimate_CATE(x=x, z=z, w=w, a_train=a_train, y_train=y_train, return_log_variance=True)
+
             # Extract query predictions. `out` has shape (1, k_test_points, 2)
-            pred_mean = out[0, :, 0].cpu().numpy()      
-            pred_log_var = out[0, :, 1].cpu().numpy()   
+            pred_mean = mean[0, :, 0].cpu().numpy()      
+            pred_log_var = var[0, :, 0].cpu().numpy()   
             
             # Standard deviation for error bars
             pred_std = np.exp(0.5 * pred_log_var)
