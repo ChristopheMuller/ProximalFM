@@ -51,7 +51,8 @@ All training and model parameters are defined in `config.yaml`.
 | | `*_num_blocks` | Number of blocks for col, row, and icl components (e.g. `col_num_blocks`). |
 | | `*_nhead` | Number of attention heads for col, row, and icl components (e.g. `col_nhead`). |
 | **data** | `batch_size` | Number of episodes per batch. |
-| | `samples_per_episode` | Observations per context window. |
+| | `context_size` | Number of observations used as context. |
+| | `test_size` | Number of observations used as query targets. |
 | **prior** | `d_x`, `d_z`, `d_w` | Dimensionality of covariates and proxies. |
 | | `d_u` | Dimensionality of unobserved confounders (internal to prior). |
 

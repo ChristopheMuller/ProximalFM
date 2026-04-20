@@ -59,12 +59,12 @@ def mock_config(tmp_path):
         },
         "data": {
             "batch_size": 2,
-            "samples_per_episode": 10,
+            "context_size": 8,
+            "test_size": 2,
             "train_episodes": 4,
             "reset_freq_train": 1,
             "val_episodes": 2,
             "num_workers": 0,
-            "context_fraction": 0.8,
         },
         "prior": {
             "d_x": 2,

@@ -84,7 +84,7 @@ def main():
     # ---------------------------------------------------------
     # 2. Generate exactly 1 episode with K test points
     # ---------------------------------------------------------
-    n_train = int(config["data"].get("samples_per_episode", 256) * 0.85)
+    n_train = config["data"].get("context_size", 200)
     k_test_points = 150
     samples_per_episode = n_train + k_test_points
     batch_size = 1

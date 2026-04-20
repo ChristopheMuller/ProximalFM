@@ -30,8 +30,8 @@ model:
 
 data:
   batch_size: 16             # number of episodes per batch
-  samples_per_episode: 256  # rows (observations) per episode / context window
-  context_fraction: 0.85    # fraction of rows used as context; rest are query targets
+  context_size: 200       # number of rows used as context
+  test_size: 56             # number of rows used as query targets
   train_episodes: 100       # episodes constituting one training epoch
   reset_freq_train: 1       # frequency (in episodes) to replace episodes in the training set with new ones (0 = never replace)
   val_episodes: 500         # episodes for validation
