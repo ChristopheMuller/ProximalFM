@@ -225,16 +225,10 @@ class ProximalQuantile(BaseCATEModel):
                 out_below = out[..., idx_below : idx_below + 1]
                 out_above = out[..., idx_above : idx_above + 1]
 
-<<<<<<< improve-estimate-cate-quantile-1397867496565876092
                 expected_mean = out_below * w_below + out_above * w_above
             elif below:
                 idx_closest, _ = max(below, key=lambda x: x[1])
                 expected_mean = out[..., idx_closest : idx_closest + 1]
-=======
-                sigma = (q_high - q_low) / 2.56
-                variance = torch.clamp(sigma * sigma, min=1e-8)
-                overall_log_variance = torch.log(variance)
->>>>>>> main
             else:
                 idx_closest, _ = min(above, key=lambda x: x[1])
                 expected_mean = out[..., idx_closest : idx_closest + 1]
