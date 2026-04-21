@@ -13,25 +13,25 @@ data:
   # If generate is chosen and data.pt already exists, it is reused
   # (use run.force_regen: true to overwrite).
   source: generate
-  output_dir: results/linear_cate_conf2_218
+  output_dir: results/fungible
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 218    # context samples shown to each estimator
-  n_test:  100     # query samples for evaluation  (n_test > 1 enables CATE R²)
-  n_batch: 300    # number of independent datasets (episodes)
+  n_train: 3000    # context samples shown to each estimator
+  n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
+  n_batch: 10    # number of independent datasets (episodes)
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 2
-    d_x: 5
-    d_u: 2
-    d_w: 3
-    d_z: 3
+    confounding_strength: 4
+    d_x: 2
+    d_u: 1
+    d_w: 2
+    d_z: 2
     noise_scale_w: 1
     noise_scale_x: 1
     noise_scale_z: 1
     temperature: 2
-    type: cate_linear
+    type: bnn
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -117,6 +117,20 @@ methods:
     cls:          P2SLS
     interactions: true
 
+
+  - name: KernelPV
+    cls: NMMR
+    model_type: KernelPV
+    lam1: 0.01
+    lam2: 0.01
+    split_ratio: 0.5
+
+  - name: PMMR
+    cls: NMMR
+    model_type: PMMR
+    lam1: 0.01
+
+
   # ── Tabular Causal Models ─────────────────────────────────────────────────
   # - name: CausalFM
   #   cls:  CausalFM
@@ -136,12 +150,12 @@ methods:
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
-models: 
-  - name:       ProximalFM
-    checkpoint: checkpoints/cate_big
+models: []
+  # - name:       fungible_model
+  #   checkpoint: checkpoints/fungible
 
-  - name:       NewModel
-    checkpoint: checkpoints/cate_medium
+  # - name:       NewModel
+  #   checkpoint: checkpoints/cate_medium
 
   # - name:       ate_small
   #   checkpoint: checkpoints/ate_small

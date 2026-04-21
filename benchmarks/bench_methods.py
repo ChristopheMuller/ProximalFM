@@ -99,6 +99,19 @@ except ImportError:
     _CAUSALPFN_AVAILABLE = False
 
 
+# --- NMMR Setup ---
+nmmr_path = os.path.abspath("NMMR")
+if nmmr_path not in sys.path:
+    sys.path.append(nmmr_path)
+try:
+    from NMMR.src.data.ate.data_class import PVTrainDataSet
+    from NMMR.src.models.PMMR.model import PMMRModel
+    from NMMR.src.models.kernelPV.model import KernelPVModel
+    _NMMR_AVAILABLE = True
+except ImportError:
+    _NMMR_AVAILABLE = False
+
+
 from contextlib import contextmanager
 
 
@@ -437,6 +450,53 @@ class P2SLS(CATEEstimator):
         return y1 - y0
 
 
+class NMMR_Estimator(CATEEstimator):
+    """Wrapper for NMMR models (PMMR, KernelPV, etc.)"""
+
+    def __init__(self, model_type: str, **kwargs):
+        if not _NMMR_AVAILABLE:
+            raise ImportError(
+                "NMMR is not installed or cannot be found. "
+                "Ensure the 'NMMR' directory is in your project root."
+            )
+        self.model_type = model_type
+
+        # Extract only the kwargs meant for NMMR (ignore framework keys)
+        safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["name", "cls", "model_type", "use_W", "use_Z"]}
+
+        if model_type == "PMMR":
+            self.model = PMMRModel(**safe_kwargs)
+        elif model_type == "KernelPV":
+            self.model = KernelPVModel(**safe_kwargs)
+        else:
+            raise ValueError(f"Unknown NMMR model type: {model_type}")
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("NMMR methods require both W and Z proxies.")
+
+        train_data = PVTrainDataSet(
+            treatment=np.asarray(A).reshape(-1, 1),
+            treatment_proxy=np.asarray(Z),
+            outcome_proxy=np.asarray(W),
+            outcome=np.asarray(Y),
+            backdoor=np.asarray(X)
+        )
+
+        self.model.fit(train_data, data_name="bench")
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        n = X.shape[0]
+
+        t0 = np.zeros((n,1))
+        t1 = np.ones((n,1))
+
+        predsY0 = self.model.predict(treatment=t0)
+        predsY1 = self.model.predict(treatment=t1)
+
+        return (predsY1 - predsY0).squeeze()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Foundation Model Wrappers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -674,6 +734,10 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "CausalPFN": lambda: CausalPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+        ),
+        "NMMR": lambda: NMMR_Estimator(
+            model_type=cfg.get("model_type", "PMMR"),
+            **{k: v for k, v in cfg.items() if k != "model_type"}
         ),
     }
 
