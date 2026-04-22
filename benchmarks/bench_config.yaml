@@ -13,7 +13,7 @@ data:
   # If generate is chosen and data.pt already exists, it is reused
   # (use run.force_regen: true to overwrite).
   source: generate
-  output_dir: results/fungible
+  output_dir: results/test
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
   n_train: 3000    # context samples shown to each estimator
@@ -22,16 +22,16 @@ data:
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 4
-    d_x: 2
-    d_u: 1
-    d_w: 2
-    d_z: 2
+    confounding_strength: 1
+    d_u: 2
+    d_w: 3
+    d_x: 5
+    d_z: 3
     noise_scale_w: 1
     noise_scale_x: 1
     noise_scale_z: 1
     temperature: 2
-    type: bnn
+    type: cate_linear
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -77,11 +77,11 @@ methods:
     use_Z: true
     interactions: true
 
-  # - name: S-RF
-  #   cls:   S_Learner
-  #   base:  rf
-  #   use_W: true
-  #   use_Z: true
+  - name: S-RF
+    cls:   S_Learner
+    base:  rf
+    use_W: true
+    use_Z: true
 
   # - name: S-TabICL
   #   cls:   S_Learner
@@ -96,17 +96,39 @@ methods:
     use_W: true
     use_Z: true
 
-  # - name: T-RF
-  #   cls:   T_Learner
-  #   base:  rf
-  #   use_W: true
-  #   use_Z: true
+  - name: T-RF
+    cls:   T_Learner
+    base:  rf
+    use_W: true
+    use_Z: true
 
   # - name: T-TabICL
   #   cls:   T_Learner
   #   base:  tabicl
   #   use_W: true
   #   use_Z: true
+
+  # ── X-Learner baselines ──────────────────────────────────────────────────
+  - name: X-OLS
+    cls:   X_Learner
+    base:  linear
+    use_W: true
+    use_Z: true
+    interactions: false
+
+  - name: X-OLS+AX
+    cls:   X_Learner
+    base:  linear
+    use_W: true
+    use_Z: true
+    interactions: true
+
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: true
+    use_Z: true
+    interactions: false
 
   # ── Proximal baselines ───────────────────────────────────────────────────
   - name: P2SLS

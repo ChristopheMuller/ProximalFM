@@ -31,7 +31,7 @@ import warnings
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 import numpy as np
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.ensemble import RandomForestRegressor
 
 try:
@@ -309,6 +309,81 @@ class T_Learner(CATEEstimator):
         feat = self.fb.build(X, W=W, Z=Z)
         return self.model1.predict(feat) - self.model0.predict(feat)
 
+
+class X_Learner(CATEEstimator):
+    """X-Learner: crosses information between treatment arms.
+
+    Stage 1: Fit separate models per treatment arm: f₀(x) and f₁(x).
+    Stage 2: Impute pseudo-effects using the opposite arm's model:
+             D¹ = Y¹ - f₀(X¹)
+             D⁰ = f₁(X⁰) - Y⁰
+    Stage 3: Fit models to predict D¹ and D⁰: τ₁(x) and τ₀(x).
+    Stage 4: Combine using a propensity score g(x) = P(A=1|X):
+             τ̂(x) = g(x)τ₀(x) + (1 - g(x))τ₁(x)
+
+    Args:
+        base_model_factory : zero-argument callable returning a fresh sklearn 
+                             estimator for the base outcomes and CATE models.
+        use_W, use_Z       : whether to include proxy variables as features.
+    """
+
+    def __init__(
+        self,
+        base_model_factory: Callable,
+        use_W: bool = True,
+        use_Z: bool = True,
+    ):
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z)
+        
+        # Stage 1 models (base response)
+        self.model0 = base_model_factory()
+        self.model1 = base_model_factory()
+        
+        # Stage 2 models (CATE estimators)
+        self.tau0 = base_model_factory()
+        self.tau1 = base_model_factory()
+        
+        # Propensity score model for Stage 3 weighting
+        # We use a standard Logistic Regression here, but this could be abstracted
+        self.prop_model = LogisticRegression(max_iter=1000)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+        mask0 = A == 0
+        mask1 = A == 1
+
+        if not (mask0.any() and mask1.any()):
+            raise ValueError("X_Learner requires samples from both treatment arms.")
+
+        # --- Stage 1: Fit base models ---
+        self.model0.fit(feat[mask0], Y[mask0])
+        self.model1.fit(feat[mask1], Y[mask1])
+
+        # --- Stage 2: Impute pseudo-effects ---
+        # For controls, predict counterfactual under treatment
+        D0 = self.model1.predict(feat[mask0]) - Y[mask0]
+        
+        # For treated, predict counterfactual under control
+        D1 = Y[mask1] - self.model0.predict(feat[mask1])
+
+        # --- Stage 3: Fit CATE models on imputed effects ---
+        self.tau0.fit(feat[mask0], D0)
+        self.tau1.fit(feat[mask1], D1)
+
+        # --- Fit propensity score model for the weighting ---
+        self.prop_model.fit(feat, A)
+        
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+        
+        pred_tau0 = self.tau0.predict(feat)
+        pred_tau1 = self.tau1.predict(feat)
+        
+        g = self.prop_model.predict_proba(feat)[:, 1]
+        
+        return g * pred_tau0 + (1 - g) * pred_tau1
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Proximal 2SLS
@@ -717,6 +792,11 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             interactions=cfg.get("interactions", False),
         ),
         "T_Learner": lambda: T_Learner(
+            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(bn),
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        ),
+        "X_Learner": lambda: X_Learner(
             base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(bn),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
