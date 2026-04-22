@@ -711,6 +711,9 @@ class CATETrainer:
         # Consolidate all logs into a single dictionary
         logs = {}
         
+        # Add epoch as a metric so you can use it as an X-axis in the UI
+        logs["epoch"] = epoch
+        
         if epoch == 0:
             logs["Parameters/total_count"] = self.n_params
 
@@ -757,8 +760,8 @@ class CATETrainer:
             logs["Bias-Variance/val_error_var"] = val_metrics["error_var"]
             logs["Bias-Variance/mse"] = val_metrics["mse"]
 
-        # Log everything at once using wandb
-        wandb.log(logs, step=epoch)
+        # Log using global_step instead of epoch to prevent timeline clashes
+        wandb.log(logs, step=self.global_step)
 
     # ------------------------------------------------------------------
     # Main training loop
