@@ -24,19 +24,22 @@ The model is built on top of the **[NanoTabICLv2](https://github.com/soda-inria/
 
 ## Installation & Setup
 
-This project uses [uv](https://github.com/astral-sh/uv) for dependency management and execution.
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management and execution. It also relies on several Git submodules for baseline comparisons and utilities.
 
 ### Prerequisites
 - Python >= 3.13
 - `uv` installed on your system
 
 ### Installation
-Clone the repository and sync dependencies:
+Because this repository contains submodules (`NMMR`, `DoPFN`, `CausalFM`) relevant for benchmarking, you must use the `--recurse-submodules` flag when cloning:
+
 ```bash
-git clone https://github.com/ChristopheMuller/ProximalFM.git
+git clone --recurse-submodules [https://github.com/ChristopheMuller/ProximalFM.git](https://github.com/ChristopheMuller/ProximalFM.git)
 cd ProximalFM
 uv sync
 ```
+
+*(Note: If you already cloned the repository without this flag, you can fetch the submodules by running `git submodule update --init --recursive` inside the project folder).*
 
 ## Configuration
 
@@ -85,5 +88,9 @@ uv run python -m pytest tests/
   - `Prior.py`: Synthetic data generator for proximal causal structures.
   - `PriorDataLoader.py`: PyTorch DataLoader for on-the-fly episode generation.
   - `Train.py`: Main entry point for training.
+- `benchmarks/`: Configuration files and scripts for running external baselines.
+- `NMMR/` (Submodule): Forked implementation of Neural Marginalization for Moment Restriction.
+- `DoPFN/` (Submodule): Forked implementation of Do-calculus Prior-Data Fitted Networks.
+- `CausalFM/` (Submodule): Foundation model utilities.
 - `tests/`: Unit and integration tests.
 - `config.yaml`: Centralized configuration.
