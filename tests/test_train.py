@@ -90,11 +90,15 @@ def mock_config(tmp_path):
     }
 
 
-@patch("proximalfm.Train.SummaryWriter")
+# ---------------------------------------------------------------------------
+# Note: Replaced SummaryWriter patch with wandb patch
+# ---------------------------------------------------------------------------
+
+@patch("proximalfm.Train.wandb")
 @patch("proximalfm.Train.create_causal_data_loaders")
 @patch("proximalfm.Train.build_model")
 def test_cate_trainer_init(
-    mock_build_model, mock_create_loaders, mock_writer, mock_config
+    mock_build_model, mock_create_loaders, mock_wandb, mock_config
 ):
     mock_model_inst = MagicMock()
     mock_model_inst.parameters.return_value = [torch.nn.Parameter(torch.tensor([1.0]))]
@@ -107,6 +111,7 @@ def test_cate_trainer_init(
     assert trainer.device == torch.device("cpu")
 
     mock_build_model.assert_called_once()
+    mock_wandb.init.assert_called_once()  # Ensure W&B was initialized
 
     passed_args = mock_build_model.call_args[0]
     assert len(passed_args) > 0, "build_model was called without positional arguments."
@@ -118,9 +123,9 @@ def test_cate_trainer_init(
     assert trainer.single_eval_pos == 8
 
 
-@patch("proximalfm.Train.SummaryWriter")
+@patch("proximalfm.Train.wandb")
 @patch("proximalfm.Train.create_causal_data_loaders")
-def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
+def test_prepare_inputs(mock_create_loaders, mock_wandb, mock_config):
     mock_create_loaders.return_value = {"train": [], "val": []}
     trainer = CATETrainer(mock_config)
 
@@ -155,9 +160,9 @@ def test_prepare_inputs(mock_create_loaders, mock_writer, mock_config):
     assert y_std.gt(0).all()
 
 
-@patch("proximalfm.Train.SummaryWriter")
+@patch("proximalfm.Train.wandb")
 @patch("proximalfm.Train.create_causal_data_loaders")
-def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
+def test_train_epoch(mock_create_loaders, mock_wandb, mock_config):
     N, B, D = 10, 2, 2
     batch = {
         "X": torch.randn(B, N, D),
@@ -212,9 +217,9 @@ def test_train_epoch(mock_create_loaders, mock_writer, mock_config):
     trainer.model.estimate_CATE.assert_called_once()
 
 
-@patch("proximalfm.Train.SummaryWriter")
+@patch("proximalfm.Train.wandb")
 @patch("proximalfm.Train.create_causal_data_loaders")
-def test_validate(mock_create_loaders, mock_writer, mock_config):
+def test_validate(mock_create_loaders, mock_wandb, mock_config):
     N, B, D = 10, 2, 2
     batch = {
         "X": torch.randn(B, N, D),
@@ -243,9 +248,9 @@ def test_validate(mock_create_loaders, mock_writer, mock_config):
     assert len(trainer.val_rmses) == 1
 
 
-@patch("proximalfm.Train.SummaryWriter")
+@patch("proximalfm.Train.wandb")
 @patch("proximalfm.Train.create_causal_data_loaders")
-def test_save_checkpoint(mock_create_loaders, mock_writer, mock_config, tmp_path):
+def test_save_checkpoint(mock_create_loaders, mock_wandb, mock_config, tmp_path):
     mock_create_loaders.return_value = {"train": [], "val": []}
     trainer = CATETrainer(mock_config)
 

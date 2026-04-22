@@ -1,6 +1,6 @@
 import sys
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Define modules to mock globally for the environment
 MOCK_MODULES = [
@@ -8,7 +8,7 @@ MOCK_MODULES = [
     "torch.nn",
     "torch.nn.functional",
     "torch.optim",
-    "torch.utils.tensorboard",
+    "wandb",
     "yaml",
     "tqdm",
     "numpy",
@@ -50,12 +50,16 @@ def trainer():
 
     # Instantiate without calling __init__
     instance = CATETrainer.__new__(CATETrainer)
-    instance.writer = MagicMock()
+    
+    # We no longer need instance.writer
+    instance.global_step = 150 # Required for wandb.log step parameter
+    instance.n_params = 10000  # Required for epoch 0 logging
     instance.optimizer = MagicMock()
     instance.optimizer.param_groups = [{"lr": 0.001}]
     return instance
 
-def test_log_metrics_basic(trainer):
+@patch("proximalfm.Train.wandb")
+def test_log_metrics_basic(mock_wandb, trainer):
     """Test log_metrics correctly handles train metrics without validation data."""
     train_metrics = {
         "loss_total": 0.5,
@@ -69,17 +73,29 @@ def test_log_metrics_basic(trainer):
 
     trainer.log_metrics(epoch, train_metrics, val_metrics=None)
 
-    # Assert train metrics are logged
-    trainer.writer.add_scalar.assert_any_call("Loss/train_total", 0.5, epoch)
-    trainer.writer.add_scalar.assert_any_call("Loss/train_mse", 0.4, epoch)
-    trainer.writer.add_scalar.assert_any_call("Loss/train_model", 0.1, epoch)
-    trainer.writer.add_scalar.assert_any_call("Parameters/alpha", 0.8, epoch)
-    trainer.writer.add_scalar.assert_any_call("Parameters/grad_norm", 0.01, epoch)
-    trainer.writer.add_scalar.assert_any_call("Parameters/learning_rate", 0.001, epoch)
-    trainer.writer.add_scalar.assert_any_call("Time/train_s", 10.0, epoch)
+    # Assert wandb.log was called
+    mock_wandb.log.assert_called_once()
+    
+    # Extract the dictionary and keyword arguments passed to wandb.log
+    args, kwargs = mock_wandb.log.call_args
+    logs = args[0]
+
+    # Assert step was passed correctly to avoid the timeline collision bug
+    assert kwargs.get("step") == trainer.global_step
+
+    # Assert train metrics are in the dictionary
+    assert logs["epoch"] == 5
+    assert logs["Loss/train_total"] == 0.5
+    assert logs["Loss/train_mse"] == 0.4
+    assert logs["Loss/train_model"] == 0.1
+    assert logs["Parameters/alpha"] == 0.8
+    assert logs["Parameters/grad_norm"] == 0.01
+    assert logs["Parameters/learning_rate"] == 0.001
+    assert logs["Time/train_s"] == 10.0
 
     # Assert no validation metrics are logged
-    for call in trainer.writer.add_scalar.call_args_list:
-        metric_name = call[0][0]
+    for metric_name in logs.keys():
         assert not metric_name.startswith("Loss/val")
         assert not metric_name.startswith("Metrics/val")
+        assert not metric_name.startswith("ATE/")
+        assert not metric_name.startswith("CATE/")
