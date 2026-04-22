@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import yaml
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 from tqdm import tqdm
 
 from proximalfm.models import build_model
@@ -132,7 +132,7 @@ class CATETrainer:
         self.start_epoch = 0
 
         # ------------------------------------------------------------------
-        # Load Checkpoint (if requested)
+        # Load Checkpoint
         # ------------------------------------------------------------------
         start_checkpoint = self.train_cfg.get("start_checkpoint")
         if start_checkpoint:
@@ -160,18 +160,22 @@ class CATETrainer:
         self.single_eval_pos = context_size
 
         # ------------------------------------------------------------------
-        # Logging + bookkeeping
+        # Logging + bookkeeping (WandB Setup)
         # ------------------------------------------------------------------
-        base_log_dir = self.train_cfg.get("log_dir", "runs")
+        exp_name = self.train_cfg.get("exp_name", "test_exp")
         run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+        
+        # Initialize wandb
+        wandb.init(
+            project="proximal-fm",          # Change this to your preferred W&B project name
+            name=f"{exp_name}_{run_name}",
+            config=self.config,            # Automatically track all hyperparameters
+            dir=self.train_cfg.get("log_dir", "runs")
+        )
+        
+        # Optional: Have wandb automatically track gradients/weights
+        wandb.watch(self.model, log="all", log_freq=32)
 
-        exp_name = self.train_cfg.get("exp_name", "cate_run")
-        full_log_dir = os.path.join(base_log_dir, f"{exp_name}_{run_name}")
-
-        os.makedirs(full_log_dir, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=full_log_dir)
-
-        logger.info(f"TensorBoard logging to: {full_log_dir}")
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
         self.val_rmses: list[float] = []
@@ -181,24 +185,22 @@ class CATETrainer:
         self.total_training_time = 0.0
 
         # ------------------------------------------------------------------
-        # Checkpoint
+        # Checkpoint directories
         # ------------------------------------------------------------------
         path_dir = os.path.join(
-            self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run")
+            self.train_cfg.get("save_dir", "checkpoints"), 
+            self.train_cfg.get("exp_name", "test_exp")
         )
         os.makedirs(path_dir, exist_ok=True)
-        train_config_save_path = os.path.join(path_dir, "train_config.yaml")
-        with open(train_config_save_path, "w") as f:
+        # Saving local YAMLs as backup, though W&B stores them too
+        with open(os.path.join(path_dir, "train_config.yaml"), "w") as f:
             yaml.dump(self.train_cfg, f)
-        model_config_save_path = os.path.join(path_dir, "model_config.yaml")
-        with open(model_config_save_path, "w") as f:
+        with open(os.path.join(path_dir, "model_config.yaml"), "w") as f:
             yaml.dump(self.model_cfg, f)
-        prior_config_save_path = os.path.join(path_dir, "prior_config.yaml")
-        with open(prior_config_save_path, "w") as f:
+        with open(os.path.join(path_dir, "prior_config.yaml"), "w") as f:
             yaml.dump(self.prior_cfg, f)
-        data_config_save_path = os.path.join(path_dir, "data_config.yaml")
-        with open(data_config_save_path, "w") as f:
-            yaml.dump(config.get("data", {}), f)
+        with open(os.path.join(path_dir, "data_config.yaml"), "w") as f:
+            yaml.dump(self.data_cfg, f)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -251,13 +253,13 @@ class CATETrainer:
         loss.backward()
 
         if self.global_step % 32 == 0:
+            grad_logs = {}
             for name, param in self.model.named_parameters():
                 if param.grad is not None:
-                    # Note: we still use .item() for logging layer norms since it's infrequent
                     layer_norm = param.grad.detach().norm(2).item()
-                    self.writer.add_scalar(
-                        f"GradNorm_Layers/{name}", layer_norm, self.global_step
-                    )
+                    grad_logs[f"GradNorm_Layers/{name}"] = layer_norm
+            wandb.log(grad_logs, step=self.global_step)
+
         if self.train_cfg.get("clip_grad", 0.0) > 0:
             grad_norm = nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.train_cfg["clip_grad"]
@@ -317,31 +319,21 @@ class CATETrainer:
             # ATE statistics per episode (each episode is fully contained in this batch)
             n_query = target.size(1)
             batch_size = target.size(0)
-            ate_true_episode = target.mean(dim=1)  # [batch_size, 1]
-            ate_pred_episode = pred_mean.mean(dim=1)  # [batch_size, 1]
-            ate_residuals = ate_pred_episode - ate_true_episode  # [batch_size, 1]
+            ate_true_episode = target.mean(dim=1)  
+            ate_pred_episode = pred_mean.mean(dim=1)  
+            ate_residuals = ate_pred_episode - ate_true_episode  
 
-            # ── Benchmark-aligned metrics ────────────────────────────────────
-            # Var(τ) per episode = SS_tot / n_query
-            var_tau_episode = ss_tot_episode / n_query  # [batch_size, 1]
+            var_tau_episode = ss_tot_episode / n_query  
             std_tau_episode = torch.sqrt(var_tau_episode.clamp(min=0))
 
-            # R² decomposition: R²(shape) = R² + bias²/Var(τ)
-            # ATE penalty per episode: bias²/Var(τ)
-            # Identity (bench): cate_r2 = cate_r2_shape − cate_r2_ate_penalty
             cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8)
-            cate_r2_shape = r2_episode + cate_r2_ate_penalty  # [batch_size, 1]
+            cate_r2_shape = r2_episode + cate_r2_ate_penalty  
 
-            # CATE MAE per episode
-            cate_mae_episode = residuals.abs().mean(
-                dim=1, keepdim=True
-            )  # [batch_size, 1]
+            cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True) 
 
-            # Normalised CATE RMSE per episode: sqrt(MSE_ep) / SD(τ)
-            mse_episode = ss_res_episode / n_query  # [batch_size, 1]
+            mse_episode = ss_res_episode / n_query  
             cate_rmse_norm_episode = torch.sqrt(mse_episode) / (std_tau_episode + 1e-8)
 
-            # Normalised ATE error per episode: (pred_ate − true_ate) / SD(τ)
             ate_error_norm_episode = ate_residuals / (std_tau_episode + 1e-8)
 
             metrics = {
@@ -356,13 +348,10 @@ class CATETrainer:
                 "sum_ate_true": ate_true_episode.sum(),
                 "sum_sq_ate_true": ate_true_episode.pow(2).sum(),
                 "sum_sq_ate_err": ate_residuals.pow(2).sum(),
-                # R² decomposition
                 "sum_cate_r2_shape": cate_r2_shape.sum(),
                 "sum_cate_r2_ate_penalty": cate_r2_ate_penalty.sum(),
-                # CATE absolute
                 "sum_cate_mae": cate_mae_episode.sum(),
                 "sum_cate_rmse_norm": cate_rmse_norm_episode.sum(),
-                # Normalised ATE error (for NormBias / NormMAE / NormRMSE)
                 "sum_ate_error_norm": ate_error_norm_episode.sum(),
                 "sum_abs_ate_error_norm": ate_error_norm_episode.abs().sum(),
                 "sum_sq_ate_error_norm": ate_error_norm_episode.pow(2).sum(),
@@ -532,7 +521,7 @@ class CATETrainer:
 
     def validate(self, epoch: int) -> dict:
         self.model.eval()
-        # Existing accumulators
+
         total_variance = torch.zeros(1, device=self.device)
         sum_sq_err = torch.zeros(1, device=self.device)
         sum_sq_pe = torch.zeros(1, device=self.device)
@@ -688,7 +677,8 @@ class CATETrainer:
 
     def save_checkpoint(self, epoch: int, val_rmse: float, tag: str = "") -> None:
         path_dir = os.path.join(
-            self.train_cfg["save_dir"], self.train_cfg.get("exp_name", "cate_run")
+            self.train_cfg.get("save_dir", "checkpoints"), 
+            self.train_cfg.get("exp_name", "test_exp")
         )
         os.makedirs(path_dir, exist_ok=True)
         checkpoint = {
@@ -711,107 +701,64 @@ class CATETrainer:
             logger.info(f"  → New best model (val RMSE: {val_rmse:.4f})")
 
     # ------------------------------------------------------------------
-    # TensorBoard logging
+    # WandB logging
     # ------------------------------------------------------------------
 
     def log_metrics(
         self, epoch: int, train_metrics: dict, val_metrics: dict | None = None
     ) -> None:
+        
+        # Consolidate all logs into a single dictionary
+        logs = {}
+        
         if epoch == 0:
-            self.writer.add_scalar("Parameters/total_count", self.n_params, epoch)
+            logs["Parameters/total_count"] = self.n_params
 
         # Losses
-        self.writer.add_scalar("Loss/train_total", train_metrics["loss_total"], epoch)
-        self.writer.add_scalar("Loss/train_mse", train_metrics["loss_mse"], epoch)
-        self.writer.add_scalar("Loss/train_model", train_metrics["loss_model"], epoch)
+        logs["Loss/train_total"] = train_metrics["loss_total"]
+        logs["Loss/train_mse"] = train_metrics["loss_mse"]
+        logs["Loss/train_model"] = train_metrics["loss_model"]
 
         # Parameters / Optimization
-        self.writer.add_scalar("Parameters/alpha", train_metrics["alpha"], epoch)
-        self.writer.add_scalar(
-            "Parameters/grad_norm", train_metrics["grad_norm"], epoch
-        )
-        self.writer.add_scalar(
-            "Parameters/learning_rate", self.optimizer.param_groups[0]["lr"], epoch
-        )
+        logs["Parameters/alpha"] = train_metrics["alpha"]
+        logs["Parameters/grad_norm"] = train_metrics["grad_norm"]
+        logs["Parameters/learning_rate"] = self.optimizer.param_groups[0]["lr"]
 
         # Timing
-        self.writer.add_scalar("Time/train_s", train_metrics["time_s"], epoch)
+        logs["Time/train_s"] = train_metrics["time_s"]
 
-        # Calibration
-        # self.writer.add_scalar("Calibration/train_cov50", train_metrics["cov50"], epoch)
-        # self.writer.add_scalar("Calibration/train_cov95", train_metrics["cov95"], epoch)
-        # self.writer.add_scalar("Calibration/train_cov99", train_metrics["cov99"], epoch)
-
-        # Validation Metrics (if available)
+        # Validation Metrics
         if val_metrics:
-            # ── ATE — mirrors bench_metrics ATE summary ───────────────────────
-            # ATE R²: cross-episode, how well τ̂_mean tracks τ_mean in ranking.
-            # Identical to bench "ATE R²".
-            self.writer.add_scalar("ATE/val_r2", val_metrics["ate_r2"], epoch)
-            # Raw bias (global mean residual across all predictions).
-            # Close to bench "Bias" (which is per-episode ATE error mean).
-            self.writer.add_scalar("ATE/val_bias", val_metrics["bias"], epoch)
-            # Scale-free ATE errors: error ÷ SD(τ), averaged over episodes.
-            # Identical to bench "NormBias / NormMAE / NormRMSE".
-            self.writer.add_scalar(
-                "ATE/val_normbias", val_metrics["ate_normbias"], epoch
-            )
-            self.writer.add_scalar("ATE/val_normmae", val_metrics["ate_normmae"], epoch)
-            self.writer.add_scalar(
-                "ATE/val_normrmse", val_metrics["ate_normrmse"], epoch
-            )
+            logs["ATE/val_r2"] = val_metrics["ate_r2"]
+            logs["ATE/val_bias"] = val_metrics["bias"]
+            logs["ATE/val_normbias"] = val_metrics["ate_normbias"]
+            logs["ATE/val_normmae"] = val_metrics["ate_normmae"]
+            logs["ATE/val_normrmse"] = val_metrics["ate_normrmse"]
 
-            # ── CATE — mirrors bench_metrics CATE summary ─────────────────────
-            # Standard R²: penalises both level shift and heterogeneity.
-            # Identical to bench "Mean R²".
-            self.writer.add_scalar("CATE/val_r2", val_metrics["cate_r2_mean"], epoch)
-            # R²(shape): ATE bias removed — pure heterogeneity recovery.
-            # Identical to bench "Mean R²(shape)".
-            self.writer.add_scalar(
-                "CATE/val_r2_shape", val_metrics["cate_r2_shape_mean"], epoch
-            )
-            # ATE penalty: bias²/Var(τ) — how much R² is lost due to ATE mis-estimation.
-            # Identical to bench "Mean ATE penalty".
-            self.writer.add_scalar(
-                "CATE/val_r2_ate_penalty",
-                val_metrics["cate_r2_ate_penalty_mean"],
-                epoch,
-            )
-            # CATE RMSE (global pooled, close to bench "cate_rmse" mean).
-            self.writer.add_scalar("CATE/val_rmse", val_metrics["rmse"], epoch)
-            # CATE MAE, mean over episodes.
-            # Identical to bench "MAE".
-            self.writer.add_scalar("CATE/val_mae", val_metrics["cate_mae_mean"], epoch)
-            # Normalised CATE RMSE (÷ SD(τ)), mean over episodes.
-            # Identical to bench "NormRMSE".
-            self.writer.add_scalar(
-                "CATE/val_normrmse", val_metrics["cate_rmse_norm_mean"], epoch
-            )
+            logs["CATE/val_r2"] = val_metrics["cate_r2_mean"]
+            logs["CATE/val_r2_shape"] = val_metrics["cate_r2_shape_mean"]
+            logs["CATE/val_r2_ate_penalty"] = val_metrics["cate_r2_ate_penalty_mean"]
+            logs["CATE/val_rmse"] = val_metrics["rmse"]
+            logs["CATE/val_mae"] = val_metrics["cate_mae_mean"]
+            logs["CATE/val_normrmse"] = val_metrics["cate_rmse_norm_mean"]
 
-            # ── Training diagnostics (not in benchmark) ───────────────────────
-            self.writer.add_scalar("Metrics/val_mspe", val_metrics["mspe"], epoch)
+            logs["Metrics/val_mspe"] = val_metrics["mspe"]
             if "variance" in val_metrics and val_metrics["variance"] > 0:
-                self.writer.add_scalar(
-                    "Metrics/val_variance", val_metrics["variance"], epoch
-                )
-            self.writer.add_scalar("Time/val_s", val_metrics["time_s"], epoch)
+                logs["Metrics/val_variance"] = val_metrics["variance"]
+            
+            logs["Time/val_s"] = val_metrics["time_s"]
+            
             if "cov50" in val_metrics and val_metrics["cov50"] > 0:
-                self.writer.add_scalar(
-                    "Calibration/val_cov50", val_metrics["cov50"], epoch
-                )
-                self.writer.add_scalar(
-                    "Calibration/val_cov95", val_metrics["cov95"], epoch
-                )
-                self.writer.add_scalar(
-                    "Calibration/val_cov99", val_metrics["cov99"], epoch
-                )
-            self.writer.add_scalar(
-                "Bias-Variance/val_bias_sq", val_metrics["bias_sq"], epoch
-            )
-            self.writer.add_scalar(
-                "Bias-Variance/val_error_var", val_metrics["error_var"], epoch
-            )
-            self.writer.add_scalar("Bias-Variance/mse", val_metrics["mse"], epoch)
+                logs["Calibration/val_cov50"] = val_metrics["cov50"]
+                logs["Calibration/val_cov95"] = val_metrics["cov95"]
+                logs["Calibration/val_cov99"] = val_metrics["cov99"]
+                
+            logs["Bias-Variance/val_bias_sq"] = val_metrics["bias_sq"]
+            logs["Bias-Variance/val_error_var"] = val_metrics["error_var"]
+            logs["Bias-Variance/mse"] = val_metrics["mse"]
+
+        # Log everything at once using wandb
+        wandb.log(logs, step=epoch)
 
     # ------------------------------------------------------------------
     # Main training loop
@@ -819,7 +766,7 @@ class CATETrainer:
 
     def train(self) -> None:
         training_start = time.time()
-        os.makedirs(self.train_cfg["save_dir"], exist_ok=True)
+        os.makedirs(self.train_cfg.get("save_dir", "checkpoints"), exist_ok=True)
 
         early_stop_count = 0
         best_val_loss = getattr(self, "best_val_loss", float("inf"))
@@ -861,7 +808,7 @@ class CATETrainer:
                     early_stop_count = 0
                 else:
                     early_stop_count += 1
-                    if early_stop_count >= self.train_cfg["early_stop"]:
+                    if early_stop_count >= self.train_cfg.get("early_stop", 1e9):
                         logger.info(f"Early stopping after {epoch + 1} epochs.")
                         break
             epoch += 1
@@ -869,7 +816,9 @@ class CATETrainer:
         self.total_training_time = time.time() - training_start
         # Final checkpoint uses the last recorded val_rmse
         self.save_checkpoint(epoch + 1, last_val_rmse, tag="final")
-        self.writer.close()
+        
+        # Close WandB properly at the end of the run
+        wandb.finish()
         logger.info("Training complete!")
 
 
@@ -903,7 +852,8 @@ def main() -> None:
             logger.info(
                 f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}"
             )
-
+        # Ensure WandB shuts down correctly if an exception kills the script early
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
