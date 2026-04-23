@@ -15,10 +15,10 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "fungible"
+MODEL = "cate_linear"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 20, 50, 100, 200, 300, 400, 421]
+FILTER_KEEP_EPOCHS = [1,10,30,50,100,150,200,250,300]
 
 def load_config() -> dict:
 
@@ -65,16 +65,21 @@ def main():
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
     config_model = ModelConfig(
-        embed_dim=model_cfg.get("embed_dim", 64),
-        col_num_blocks=model_cfg.get("col_num_blocks", 3), 
-        row_num_blocks=model_cfg.get("row_num_blocks", 3),
-        icl_num_blocks=model_cfg.get("icl_num_blocks", 12),
-        col_nhead=model_cfg.get("col_nhead", 8),
-        row_nhead=model_cfg.get("row_nhead", 8),
-        icl_nhead=model_cfg.get("icl_nhead", 8),
-        feature_group_size_x=prior_cfg["d_x"],
-        feature_group_size_w=prior_cfg["d_w"],
-        feature_group_size_z=prior_cfg["d_z"],
+        type = model_cfg.get("type", "gmm"),
+        quantiles = model_cfg.get("quantiles", [0.1, 0.5, 0.9]),
+        embed_dim = model_cfg.get("embed_dim", 64),
+        col_num_blocks = model_cfg.get("col_num_blocks", 3),
+        row_num_blocks = model_cfg.get("row_num_blocks", 3),
+        icl_num_blocks = model_cfg.get("icl_num_blocks", 12),
+        col_nhead = model_cfg.get("col_nhead", 8),
+        row_nhead = model_cfg.get("row_nhead", 8),
+        icl_nhead = model_cfg.get("icl_nhead", 8),
+        feature_group_size_x = prior_cfg.get("d_x", 5),
+        feature_group_size_w = prior_cfg.get("d_w", 4),
+        feature_group_size_z = prior_cfg.get("d_z", 4),
+        n_cls_cols = model_cfg.get("n_cls_cols", 4),
+        n_cls_rows = model_cfg.get("n_cls_rows", 128),
+        n_gmm_components = model_cfg.get("n_gmm_components", 1), 
     )
     model = ProximalGMM(
         config=config_model
