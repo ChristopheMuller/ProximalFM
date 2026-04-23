@@ -16,7 +16,7 @@ data:
   output_dir: results/test
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 3000    # context samples shown to each estimator
+  n_train: 1000    # context samples shown to each estimator
   n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
   n_batch: 10    # number of independent datasets (episodes)
 
@@ -139,36 +139,58 @@ methods:
     cls:          P2SLS
     interactions: true
 
-
-  - name: KernelPV
-    cls: NMMR
+  - name: KernelPV-ATE
+    cls: NMMRWrappers
     model_type: KernelPV
+    estimate_cate: false
     lam1: 0.01
     lam2: 0.01
     split_ratio: 0.5
 
-  - name: PMMR
-    cls: NMMR
+  - name: KernelPV-CATE
+    cls: NMMRWrappers
+    model_type: KernelPV
+    estimate_cate: true
+    lam1: 0.01
+    lam2: 0.01
+    split_ratio: 0.5
+
+  - name: PMMR-ATE
+    cls: NMMRWrappers
     model_type: PMMR
+    estimate_cate: false
     lam1: 0.01
 
+  - name: PMMR-CATE
+    cls: NMMRWrappers
+    model_type: PMMR
+    estimate_cate: true
+    lam1: 0.01
+
+  - name: NMMR-U
+    cls: NMMR
+    loss_name: U_statistic
+
+  - name: NMMR-V
+    cls: NMMR
+    loss_name: V_statistic
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
-  # - name: CausalFM
-  #   cls:  CausalFM
-  #   checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
 
-  # - name: DoPFN
-  #   cls:  DoPFN
-  #   use_W: true
-  #   use_Z: true
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: true
+    use_Z: true
   
-  # - name: CausalPFN
-  #   cls:  CausalPFN
-  #   use_W: true
-  #   use_Z: true
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: true
+    use_Z: true
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 

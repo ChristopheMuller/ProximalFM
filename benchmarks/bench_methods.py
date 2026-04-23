@@ -500,7 +500,7 @@ class P2SLS(CATEEstimator):
         return y1 - y0
 
 
-class NMMR_Estimator(CATEEstimator):
+class NMMR_Wrappers(CATEEstimator):
 
     def __init__(self, model_type: str, estimate_cate: bool, **kwargs):
         # 1. Isolate the environment
@@ -567,6 +567,41 @@ class NMMR_Estimator(CATEEstimator):
         predsY1 = self.model.predict(treatment=t1)
 
         return (predsY1 - predsY0).squeeze()
+
+# Inside bench_methods.py
+
+class NMMR_Estimator(CATEEstimator):
+    def __init__(self, **kwargs):
+        # Local import to prevent global path collisions 
+        import sys
+        from pathlib import Path
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        nmmr_path = str(PROJECT_ROOT / "NMMR")
+        
+        if nmmr_path not in sys.path:
+            sys.path.insert(0, nmmr_path)
+            
+        from src.models.NMMR.NMMR_wrapper import NMMRCATEEstimator
+        
+        train_params = {
+            "network_width": kwargs.get("network_width", 64),
+            "network_depth": kwargs.get("network_depth", 3),
+            "n_epochs": kwargs.get("n_epochs", 100),
+            "batch_size": kwargs.get("batch_size", 256),
+            "learning_rate": kwargs.get("learning_rate", 1e-3),
+            "loss_name": kwargs.get("loss_name", "U_statistic"),
+        }
+        
+        self.model = NMMRCATEEstimator(train_params=train_params)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("NMMR requires W and Z proxies.")
+        self.model.fit(X, A, Y, W, Z)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        return self.model.predict(X)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Foundation Model Wrappers
@@ -824,10 +859,13 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
-        "NMMR": lambda: NMMR_Estimator(
+        "NMMRWrappers": lambda: NMMR_Wrappers(
             model_type=cfg.get("model_type", "PMMR"),
             estimate_cate=cfg.get("estimate_cate", True),
             **{k: v for k, v in cfg.items() if k not in ["model_type", "estimate_cate"]}
+        ),
+        "NMMR": lambda: NMMR_Estimator(
+            **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}
         ),
     }
     if cls not in factories:
