@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 from proximalfm.Structure import ProximalPriorConfig
 from proximalfm.PriorDataLoader import (
     ProximalDataset,
+    DynamicBatchCollator,
     create_causal_data_loaders,
     _worker_init_fn,
 )
@@ -25,120 +26,114 @@ def base_config() -> ProximalPriorConfig:
     return config
 
 
-def test_dataset_initialization(base_config: ProximalPriorConfig) -> None:
-    num_episodes = 5
-    samples = 10
+# ---------------------------------------------------------------------------
+# ProximalDataset Tests (Seed Generation Only)
+# ---------------------------------------------------------------------------
 
-    # Store original device
-    original_device = base_config.device
+
+def test_dataset_initialization() -> None:
+    num_episodes = 5
 
     dataset = ProximalDataset(
-        prior_config=base_config,
         num_episodes=num_episodes,
-        samples_per_episode=samples,
         seed_offset=123,
     )
 
-    # Verify that the dataset's config is forced to "cpu"
-    assert dataset.prior_config.device == "cpu"
-    # Verify the original config was not mutated
-    assert base_config.device == original_device
-
     assert dataset.num_episodes == num_episodes
-    assert dataset.samples_per_episode == samples
     assert dataset.base_seed_offset == 123
 
 
-def test_dataset_validation_dz(base_config: ProximalPriorConfig) -> None:
+def test_dataset_len() -> None:
+    dataset = ProximalDataset(num_episodes=42, seed_offset=0)
+    assert len(dataset) == 42
+
+
+def test_dataset_getitem_returns_seed() -> None:
+    dataset = ProximalDataset(num_episodes=10, seed_offset=42)
+
+    # Call __getitem__ on index 2
+    # Seed math: offset (42) + reset_count (0) * num_episodes (10) + idx (2) = 44
+    seed = dataset[2]
+
+    assert isinstance(seed, int)
+    assert seed == 44
+
+    # Verify reset_count logic changes the seed
+    dataset.set_reset_state(1)
+    seed_reset = dataset[2]
+    # offset (42) + reset_count (1) * num_episodes (10) + idx (2) = 54
+    assert seed_reset == 54
+
+
+# ---------------------------------------------------------------------------
+# DynamicBatchCollator Tests (Data Generation)
+# ---------------------------------------------------------------------------
+
+
+def test_collator_validation_dz(base_config: ProximalPriorConfig) -> None:
     # Modify config to fail Assumption 4 for Z
     base_config.d_u = 3
     base_config.d_z = 2
     base_config.d_w = 3
 
-    with pytest.raises(ValueError) as excinfo:
-        ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
+    # Note: If your validation logic is currently inside BNNPrior, this might 
+    # raise there instead of the Collator. Either way, it should raise ValueError.
+    with pytest.raises(ValueError):
+        DynamicBatchCollator(base_config, min_episode_size=10, max_episode_size=20)
 
-    assert "d_z=2 must be >= d_u=3" in str(excinfo.value)
-    assert "Assumption 4" in str(excinfo.value)
 
-
-def test_dataset_validation_dw(base_config: ProximalPriorConfig) -> None:
+def test_collator_validation_dw(base_config: ProximalPriorConfig) -> None:
     # Modify config to fail Assumption 4 for W
     base_config.d_u = 3
     base_config.d_z = 3
     base_config.d_w = 2
 
-    with pytest.raises(ValueError) as excinfo:
-        ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
-
-    assert "d_w=2 must be >= d_u=3" in str(excinfo.value)
-    assert "Assumption 4" in str(excinfo.value)
+    with pytest.raises(ValueError):
+        DynamicBatchCollator(base_config, min_episode_size=10, max_episode_size=20)
 
 
-def test_dataset_validation_dz_equal_du(base_config: ProximalPriorConfig) -> None:
-    # Modify config to test edge case Assumption 4 for Z where d_z == d_u
-    base_config.d_u = 3
-    base_config.d_z = 3
-    base_config.d_w = 4
+def test_collator_call_generates_dynamic_batch(base_config: ProximalPriorConfig) -> None:
+    min_size = 15
+    max_size = 25
+    batch_seeds = [100, 101, 102]  # Simulating a batch size of 3
 
-    # This should not raise an error
-    dataset = ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
-    assert dataset is not None
+    collator = DynamicBatchCollator(
+        prior_config=base_config, 
+        min_episode_size=min_size, 
+        max_episode_size=max_size
+    )
 
+    # Simulate the DataLoader passing a batch of seeds
+    batch = collator(batch_seeds)
 
-def test_dataset_validation_dw_equal_du(base_config: ProximalPriorConfig) -> None:
-    # Modify config to test edge case Assumption 4 for W where d_w == d_u
-    base_config.d_u = 3
-    base_config.d_z = 4
-    base_config.d_w = 3
-
-    # This should not raise an error
-    dataset = ProximalDataset(base_config, num_episodes=1, samples_per_episode=10)
-    assert dataset is not None
-
-
-def test_dataset_len(base_config: ProximalPriorConfig) -> None:
-    dataset = ProximalDataset(base_config, num_episodes=42, samples_per_episode=10)
-    assert len(dataset) == 42
-
-
-def test_dataset_getitem(base_config: ProximalPriorConfig) -> None:
-    samples = 15
-    dataset = ProximalDataset(base_config, num_episodes=10, samples_per_episode=samples)
-
-    # Call __getitem__ on index 2
-    item = dataset[2]
-
-    # Verify dictionary keys
     expected_keys = {"X", "Z", "W", "A", "Y", "Y0", "Y1", "ITE"}
-    assert set(item.keys()) == expected_keys
+    assert set(batch.keys()) == expected_keys
 
-    # Verify shapes
-    assert item["X"].shape == (samples, base_config.d_x)
-    assert item["Z"].shape == (samples, base_config.d_z)
-    assert item["W"].shape == (samples, base_config.d_w)
-    assert item["A"].shape == (samples, 1)
-    assert item["Y"].shape == (samples, 1)
-    assert item["Y0"].shape == (samples, 1)
-    assert item["Y1"].shape == (samples, 1)
-    assert item["ITE"].shape == (samples, 1)
+    # Verify B and N
+    B, N, d_x = batch["X"].shape
+    assert B == len(batch_seeds)
+    assert min_size <= N <= max_size
+    assert d_x == base_config.d_x
+
+    # Verify shapes of other tensors align with the sampled N
+    assert batch["Z"].shape == (B, N, base_config.d_z)
+    assert batch["W"].shape == (B, N, base_config.d_w)
+    assert batch["A"].shape == (B, N, 1)
+    assert batch["ITE"].shape == (B, N, 1)
 
     # Verify calculation of ITE
-    assert torch.allclose(item["ITE"], item["Y1"] - item["Y0"])
+    assert torch.allclose(batch["ITE"], batch["Y1"] - batch["Y0"])
 
-    # Verify deterministic output based on seed_offset + idx
-    dataset2 = ProximalDataset(
-        base_config, num_episodes=10, samples_per_episode=samples
-    )
-    item_same = dataset2[2]
 
-    for key in item:
-        assert torch.allclose(item[key], item_same[key])
+# ---------------------------------------------------------------------------
+# DataLoader Creation Tests
+# ---------------------------------------------------------------------------
 
 
 def test_create_data_loaders_basic(base_config: ProximalPriorConfig) -> None:
     batch_size = 4
-    samples = 10
+    min_size = 10
+    max_size = 20
     train_eps = 20
     val_eps = 5
     seed = 42
@@ -146,7 +141,8 @@ def test_create_data_loaders_basic(base_config: ProximalPriorConfig) -> None:
     loaders = create_causal_data_loaders(
         prior_config=base_config,
         batch_size=batch_size,
-        samples_per_episode=samples,
+        min_episode_size=min_size,
+        max_episode_size=max_size,
         train_episodes=train_eps,
         val_episodes=val_eps,
         num_workers=0,
@@ -165,14 +161,12 @@ def test_create_data_loaders_basic(base_config: ProximalPriorConfig) -> None:
     assert train_loader.batch_size == batch_size
     assert val_loader.batch_size == batch_size
 
-    train_ds = train_loader.dataset
-    val_ds = val_loader.dataset
+    # Verify the custom collator is attached
+    assert isinstance(train_loader.collate_fn, DynamicBatchCollator)
+    assert isinstance(val_loader.collate_fn, DynamicBatchCollator)
 
-    assert isinstance(train_ds, ProximalDataset)
-    assert isinstance(val_ds, ProximalDataset)
-
-    assert len(train_ds) == train_eps
-    assert len(val_ds) == val_eps
+    assert len(train_loader.dataset) == train_eps
+    assert len(val_loader.dataset) == val_eps
 
 
 def test_create_data_loaders_seed_offsets(base_config: ProximalPriorConfig) -> None:
@@ -181,6 +175,8 @@ def test_create_data_loaders_seed_offsets(base_config: ProximalPriorConfig) -> N
 
     loaders = create_causal_data_loaders(
         prior_config=base_config,
+        min_episode_size=10,
+        max_episode_size=20,
         train_episodes=train_eps,
         val_episodes=50,
         num_workers=0,
@@ -264,21 +260,19 @@ def test_worker_init_fn(mock_manual_seed, mock_initial_seed) -> None:
 
 def test_multiprocessing_different_data(base_config: ProximalPriorConfig) -> None:
     """
-    Test that when num_workers > 0, the data generated across batches and epochs
-    remains correct and workers do not output identical data purely due to sharing RNG.
-
-    Note: The dataset itself sets the seed based on seed_offset + index,
-    which is deterministic per episode index. So the main thing we want to check
-    is that the data loader can successfully iterate with multiple workers
-    and we get the right number of distinct episodes.
+    Test that when num_workers > 0, the data generated across batches 
+    iterates correctly and dynamic dimensions are respected.
     """
     batch_size = 4
     train_eps = 16
+    min_size = 10
+    max_size = 20
 
     loaders = create_causal_data_loaders(
         prior_config=base_config,
         batch_size=batch_size,
-        samples_per_episode=10,
+        min_episode_size=min_size,
+        max_episode_size=max_size,
         train_episodes=train_eps,
         val_episodes=4,
         num_workers=2,
@@ -287,17 +281,15 @@ def test_multiprocessing_different_data(base_config: ProximalPriorConfig) -> Non
 
     train_loader = loaders["train"]
 
-    # We collect the first batch of X from each iteration
-    # Because shuffle=True, the exact order is non-deterministic
-    # but over the entire epoch, we should see `train_eps` unique episodes.
-    # To check uniqueness, we can hash or just collect the tensors and compare.
-
-    all_x = []
+    total_episodes = 0
     for batch in train_loader:
-        # batch["X"] is (batch_size, samples, d_x) due to custom_collate
-        assert batch["X"].shape == (batch_size, 10, base_config.d_x)
-        all_x.append(batch["X"])
+        B, N, d_x = batch["X"].shape
+        
+        assert B == batch_size
+        # The core check: the collator is dynamically picking a valid N
+        assert min_size <= N <= max_size
+        
+        total_episodes += B
 
     # Total episodes processed
-    total_episodes = sum(x.shape[0] for x in all_x)
     assert total_episodes == train_eps

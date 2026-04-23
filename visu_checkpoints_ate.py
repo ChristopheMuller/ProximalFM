@@ -15,7 +15,7 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_linear"
+MODEL = "cate_linear__3gmm_medium"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
 FILTER_KEEP_EPOCHS = [1,10,30,50,100,150,200,250,300]
@@ -74,9 +74,9 @@ def main():
         col_nhead = model_cfg.get("col_nhead", 8),
         row_nhead = model_cfg.get("row_nhead", 8),
         icl_nhead = model_cfg.get("icl_nhead", 8),
-        feature_group_size_x = prior_cfg.get("d_x", 5),
-        feature_group_size_w = prior_cfg.get("d_w", 4),
-        feature_group_size_z = prior_cfg.get("d_z", 4),
+        feature_group_size_x = model_cfg.get("feature_group_size_x", 5),
+        feature_group_size_w = model_cfg.get("feature_group_size_w", 4),
+        feature_group_size_z = model_cfg.get("feature_group_size_z", 4),
         n_cls_cols = model_cfg.get("n_cls_cols", 4),
         n_cls_rows = model_cfg.get("n_cls_rows", 128),
         n_gmm_components = model_cfg.get("n_gmm_components", 1), 
@@ -92,7 +92,7 @@ def main():
     k_datasets = 100 # Number of test datasets (episodes)
     
     # Define how many points are used as context vs test
-    n_train = config["data"].get("context_size", 200)
+    n_train = config["data"].get("min_context_size", 200)
     n_test = 500
     samples_per_episode = n_train + n_test
 
@@ -113,7 +113,8 @@ def main():
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
         batch_size=k_datasets,       
-        samples_per_episode=samples_per_episode,
+        min_episode_size=samples_per_episode,
+        max_episode_size=samples_per_episode,
         train_episodes=1,            
         val_episodes=k_datasets,     
         num_workers=1,

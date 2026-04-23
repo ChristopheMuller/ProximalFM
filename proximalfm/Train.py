@@ -231,10 +231,6 @@ class CATETrainer:
         # Model
         # ------------------------------------------------------------------
         model_kwargs = self.model_cfg.copy()
-        # Ensure feature sizes match prior config
-        model_kwargs["feature_group_size_x"] = self.prior_config.d_x
-        model_kwargs["feature_group_size_w"] = self.prior_config.d_w
-        model_kwargs["feature_group_size_z"] = self.prior_config.d_z
 
         # Remove keys that are not part of ModelConfig
         if "dtype" in model_kwargs:
@@ -576,14 +572,7 @@ class CATETrainer:
             desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Train]",
         ) as pbar:
             for batch in pbar:
-                print(
-                    batch["X"].shape,
-                    batch["A"].shape,
-                    batch["W"].shape,
-                    batch["Z"].shape,
-                    batch["Y"].shape,
-                    batch["ITE"].shape,
-                )
+                
                 batch = self._move_batch(batch)
                 x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 

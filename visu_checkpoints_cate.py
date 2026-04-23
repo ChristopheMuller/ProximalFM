@@ -74,9 +74,9 @@ def main():
         col_nhead=model_cfg.get("col_nhead", 8),
         row_nhead=model_cfg.get("row_nhead", 8),
         icl_nhead=model_cfg.get("icl_nhead", 8),
-        feature_group_size_x=prior_cfg["d_x"],
-        feature_group_size_w=prior_cfg["d_w"],
-        feature_group_size_z=prior_cfg["d_z"],
+        feature_group_size_x=model_cfg.get("feature_group_size_x", 5),
+        feature_group_size_w=model_cfg.get("feature_group_size_w", 4),
+        feature_group_size_z=model_cfg.get("feature_group_size_z", 4),
         n_gmm_components=model_cfg.get("n_gmm_components", 1),
     )
     model = ProximalGMM(
@@ -109,7 +109,8 @@ def main():
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
         batch_size=batch_size,       
-        samples_per_episode=samples_per_episode,
+        min_episode_size=samples_per_episode,
+        max_episode_size=samples_per_episode,
         train_episodes=1,            
         val_episodes=1,     
         num_workers=1,

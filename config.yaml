@@ -28,6 +28,11 @@ model:
   icl_num_blocks: 4
   row_num_blocks: 4
   col_num_blocks: 4
+  feature_group_size_x: 3
+  feature_group_size_w: 2
+  feature_group_size_z: 2
+  n_cls_cols: 4
+  n_cls_rows: 64
 
 data:
   batch_size: 16             # number of episodes per batch

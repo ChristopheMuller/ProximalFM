@@ -138,7 +138,8 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
         batch_size=n_batch,
-        samples_per_episode=n_train + n_test,
+        min_episode_size=n_train + n_test,
+        max_episode_size=n_train + n_test,
         train_episodes=1,
         val_episodes=n_batch,
         num_workers=0,
@@ -405,9 +406,9 @@ def run_neural_model(
         row_nhead=mcfg.get("row_nhead", 8),
         icl_nhead=mcfg.get("icl_nhead", 8),
         n_gmm_components=mcfg.get("n_gmm_components", 1),
-        feature_group_size_x=prior_cfg["d_x"],
-        feature_group_size_w=prior_cfg["d_w"],
-        feature_group_size_z=prior_cfg["d_z"],
+        feature_group_size_x=mcfg.get("feature_group_size_x", 5),
+        feature_group_size_w=mcfg.get("feature_group_size_w", 4),
+        feature_group_size_z=mcfg.get("feature_group_size_z", 4),
     )
     model = ProximalGMM(config=model_config).to(device, dtype=dtype)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)

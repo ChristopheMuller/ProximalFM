@@ -120,7 +120,6 @@ def test_cate_trainer_init(
     mock_create_loaders.assert_called_once()
     assert trainer.train_loader == ["train_batch"]
     assert trainer.val_loader == ["val_batch"]
-    assert trainer.single_eval_pos == 8
 
 
 @patch("proximalfm.Train.wandb")
