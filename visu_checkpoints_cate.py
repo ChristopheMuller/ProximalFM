@@ -16,9 +16,9 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "fungible"
+MODEL = "cate_linear__3gmm_medium"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 20, 30, 50, 70, 100, 150, 300, 400, 500, 600, 697]
+FILTER_KEEP_EPOCHS = None
 
 def load_config() -> dict:
     full_config = {}
@@ -65,6 +65,8 @@ def main():
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
     config_model = ModelConfig(
+        type=model_cfg.get("type", "gmm"),
+        quantiles=model_cfg.get("quantiles", [0.1, 0.5, 0.9]),
         embed_dim=model_cfg.get("embed_dim", 64),
         col_num_blocks=model_cfg.get("col_num_blocks", 3), 
         row_num_blocks=model_cfg.get("row_num_blocks", 3),
@@ -75,6 +77,7 @@ def main():
         feature_group_size_x=prior_cfg["d_x"],
         feature_group_size_w=prior_cfg["d_w"],
         feature_group_size_z=prior_cfg["d_z"],
+        n_gmm_components=model_cfg.get("n_gmm_components", 1),
     )
     model = ProximalGMM(
         config=config_model
