@@ -111,7 +111,7 @@ def test_cate_trainer_init(
     assert trainer.device == torch.device("cpu")
 
     mock_build_model.assert_called_once()
-    mock_wandb.init.assert_called_once()  # Ensure W&B was initialized
+    # mock_wandb.init.assert_called_once()  # W&B is now initialized via callback in main()
 
     passed_args = mock_build_model.call_args[0]
     assert len(passed_args) > 0, "build_model was called without positional arguments."

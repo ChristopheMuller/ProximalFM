@@ -59,12 +59,145 @@ def load_config(config_path: str = "config.yaml") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
+
+
+class Callback:
+    def on_init_end(self, trainer: "CATETrainer") -> None:
+        pass
+
+    def on_train_start(self, trainer: "CATETrainer") -> None:
+        pass
+
+    def on_train_end(
+        self, trainer: "CATETrainer", exception: Exception | None = None
+    ) -> None:
+        pass
+
+    def on_epoch_end(
+        self,
+        trainer: "CATETrainer",
+        epoch: int,
+        train_metrics: dict,
+        val_metrics: dict | None = None,
+    ) -> None:
+        pass
+
+    def on_step_end(self, trainer: "CATETrainer", step: int, logs: dict) -> None:
+        pass
+
+    def on_log_info(self, message: str) -> None:
+        pass
+
+    def on_log_error(self, message: str) -> None:
+        pass
+
+
+class LoggerCallback(Callback):
+    def __init__(self, config: dict):
+        self.config = config
+        self.train_cfg = config.get("training", {})
+        self.n_params = 0
+
+    def on_init_end(self, trainer: "CATETrainer") -> None:
+        self.n_params = trainer.n_params
+        exp_name = self.train_cfg.get("exp_name", "test_exp")
+        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+        wandb.init(
+            project="proximal-fm",
+            name=f"{exp_name}_{run_name}",
+            config=self.config,
+            dir=self.train_cfg.get("log_dir", "runs"),
+        )
+        wandb.watch(trainer.model, log="all", log_freq=32)
+
+    def on_train_end(
+        self, trainer: "CATETrainer", exception: Exception | None = None
+    ) -> None:
+        wandb.finish()
+
+    def on_epoch_end(
+        self,
+        trainer: "CATETrainer",
+        epoch: int,
+        train_metrics: dict,
+        val_metrics: dict | None = None,
+    ) -> None:
+        logs = {}
+        logs["epoch"] = epoch
+
+        if epoch == 0:
+            logs["Parameters/total_count"] = self.n_params
+
+        # Losses
+        logs["Loss/train_total"] = train_metrics.get("loss_total")
+        logs["Loss/train_mse"] = train_metrics.get("loss_mse")
+        logs["Loss/train_model"] = train_metrics.get("loss_model")
+
+        # Parameters / Optimization
+        logs["Parameters/alpha"] = train_metrics.get("alpha")
+        logs["Parameters/grad_norm"] = train_metrics.get("grad_norm")
+        if hasattr(trainer, "optimizer") and trainer.optimizer.param_groups:
+            logs["Parameters/learning_rate"] = trainer.optimizer.param_groups[0]["lr"]
+
+        # Timing
+        logs["Time/train_s"] = train_metrics.get("time_s")
+
+        # Validation Metrics
+        if val_metrics:
+            logs["ATE/val_r2"] = val_metrics.get("ate_r2")
+            logs["ATE/val_bias"] = val_metrics.get("bias")
+            logs["ATE/val_normbias"] = val_metrics.get("ate_normbias")
+            logs["ATE/val_normmae"] = val_metrics.get("ate_normmae")
+            logs["ATE/val_normrmse"] = val_metrics.get("ate_normrmse")
+
+            logs["CATE/val_r2"] = val_metrics.get("cate_r2_mean")
+            logs["CATE/val_r2_shape"] = val_metrics.get("cate_r2_shape_mean")
+            logs["CATE/val_r2_ate_penalty"] = val_metrics.get(
+                "cate_r2_ate_penalty_mean"
+            )
+            logs["CATE/val_rmse"] = val_metrics.get("rmse")
+            logs["CATE/val_mae"] = val_metrics.get("cate_mae_mean")
+            logs["CATE/val_normrmse"] = val_metrics.get("cate_rmse_norm_mean")
+
+            logs["Metrics/val_mspe"] = val_metrics.get("mspe")
+            if "variance" in val_metrics and val_metrics["variance"] > 0:
+                logs["Metrics/val_variance"] = val_metrics["variance"]
+
+            logs["Time/val_s"] = val_metrics.get("time_s")
+
+            if "cov50" in val_metrics and val_metrics["cov50"] > 0:
+                logs["Calibration/val_cov50"] = val_metrics.get("cov50")
+                logs["Calibration/val_cov95"] = val_metrics.get("cov95")
+                logs["Calibration/val_cov99"] = val_metrics.get("cov99")
+
+            logs["Bias-Variance/val_bias_sq"] = val_metrics.get("bias_sq")
+            logs["Bias-Variance/val_error_var"] = val_metrics.get("error_var")
+            logs["Bias-Variance/mse"] = val_metrics.get("mse")
+
+        wandb.log(logs, step=trainer.global_step)
+
+    def on_step_end(self, trainer: "CATETrainer", step: int, logs: dict) -> None:
+        if logs:
+            wandb.log(logs, step=step)
+
+    def on_log_info(self, message: str) -> None:
+        logger.info(message)
+
+    def on_log_error(self, message: str) -> None:
+        logger.error(message)
+
+
+# ---------------------------------------------------------------------------
 # Trainer
 # ---------------------------------------------------------------------------
 
 
 class CATETrainer:
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, callbacks: list["Callback"] | None = None) -> None:
+        self.callbacks = callbacks or []
         self.config = config
         self.train_cfg = config.get("training", {})
         self.data_cfg = config.get("data", {})
@@ -81,7 +214,7 @@ class CATETrainer:
             self.device = torch.device("mps")
         else:
             self.device = torch.device("cpu")
-        logger.info(f"Using device: {self.device}")
+        self._log_info(f"Using device: {self.device}")
 
         # Determine dtype
         dtype_str = self.model_cfg.get("dtype", "float32")
@@ -112,7 +245,7 @@ class CATETrainer:
         self.n_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
         )
-        logger.info(f"Model parameters: {self.n_params:,}")
+        self._log_info(f"Model parameters: {self.n_params:,}")
 
         # ------------------------------------------------------------------
         # Optimiser + scheduler
@@ -160,22 +293,8 @@ class CATETrainer:
         self.single_eval_pos = context_size
 
         # ------------------------------------------------------------------
-        # Logging + bookkeeping (WandB Setup)
+        # Bookkeeping
         # ------------------------------------------------------------------
-        exp_name = self.train_cfg.get("exp_name", "test_exp")
-        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-
-        # Initialize wandb
-        wandb.init(
-            project="proximal-fm",  # Change this to your preferred W&B project name
-            name=f"{exp_name}_{run_name}",
-            config=self.config,  # Automatically track all hyperparameters
-            dir=self.train_cfg.get("log_dir", "runs"),
-        )
-
-        # Optional: Have wandb automatically track gradients/weights
-        wandb.watch(self.model, log="all", log_freq=32)
-
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
         self.val_rmses: list[float] = []
@@ -183,6 +302,17 @@ class CATETrainer:
         self.epoch_times: list[float] = []
         self.validation_times: list[float] = []
         self.total_training_time = 0.0
+
+        for cb in self.callbacks:
+            cb.on_init_end(self)
+
+    def _log_info(self, message: str) -> None:
+        for cb in self.callbacks:
+            cb.on_log_info(message)
+
+    def _log_error(self, message: str) -> None:
+        for cb in self.callbacks:
+            cb.on_log_error(message)
 
         # ------------------------------------------------------------------
         # Checkpoint directories
@@ -258,7 +388,8 @@ class CATETrainer:
                 if param.grad is not None:
                     layer_norm = param.grad.detach().norm(2).item()
                     grad_logs[f"GradNorm_Layers/{name}"] = layer_norm
-            wandb.log(grad_logs, step=self.global_step)
+            for cb in self.callbacks:
+                cb.on_step_end(self, self.global_step, grad_logs)
 
         if self.train_cfg.get("clip_grad", 0.0) > 0:
             grad_norm = nn.utils.clip_grad_norm_(
@@ -376,7 +507,7 @@ class CATETrainer:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Start checkpoint not found: {checkpoint_path}")
 
-        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+        self._log_info(f"Loading checkpoint from: {checkpoint_path}")
         checkpoint = torch.load(
             checkpoint_path, map_location=self.device, weights_only=False
         )
@@ -396,7 +527,7 @@ class CATETrainer:
         if "val_loss" in checkpoint:
             self.best_val_loss = checkpoint["val_loss"]
 
-        logger.info(f"Resumed training from epoch {self.start_epoch}")
+        self._log_info(f"Resumed training from epoch {self.start_epoch}")
 
     # ------------------------------------------------------------------
     # Train epoch
@@ -499,7 +630,7 @@ class CATETrainer:
         mspe = (sum_sq_pe / max(total_samples, 1)).item()
 
         self.train_losses.append(avg_loss)
-        logger.info(f"Epoch {epoch + 1} train done in {format_time(epoch_time)}")
+        self._log_info(f"Epoch {epoch + 1} train done in {format_time(epoch_time)}")
 
         return {
             "loss_total": avg_loss,
@@ -646,7 +777,7 @@ class CATETrainer:
         self.val_rmses.append(rmse)
         self.scheduler.step(rmse)
 
-        logger.info(
+        self._log_info(
             f"Epoch {epoch + 1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
         )
 
@@ -700,69 +831,7 @@ class CATETrainer:
             self.best_val_loss = val_rmse
             best_path = os.path.join(path_dir, "best_model.pth")
             torch.save(checkpoint, best_path)
-            logger.info(f"  → New best model (val RMSE: {val_rmse:.4f})")
-
-    # ------------------------------------------------------------------
-    # WandB logging
-    # ------------------------------------------------------------------
-
-    def log_metrics(
-        self, epoch: int, train_metrics: dict, val_metrics: dict | None = None
-    ) -> None:
-        # Consolidate all logs into a single dictionary
-        logs = {}
-
-        # Add epoch as a metric so you can use it as an X-axis in the UI
-        logs["epoch"] = epoch
-
-        if epoch == 0:
-            logs["Parameters/total_count"] = self.n_params
-
-        # Losses
-        logs["Loss/train_total"] = train_metrics["loss_total"]
-        logs["Loss/train_mse"] = train_metrics["loss_mse"]
-        logs["Loss/train_model"] = train_metrics["loss_model"]
-
-        # Parameters / Optimization
-        logs["Parameters/alpha"] = train_metrics["alpha"]
-        logs["Parameters/grad_norm"] = train_metrics["grad_norm"]
-        logs["Parameters/learning_rate"] = self.optimizer.param_groups[0]["lr"]
-
-        # Timing
-        logs["Time/train_s"] = train_metrics["time_s"]
-
-        # Validation Metrics
-        if val_metrics:
-            logs["ATE/val_r2"] = val_metrics["ate_r2"]
-            logs["ATE/val_bias"] = val_metrics["bias"]
-            logs["ATE/val_normbias"] = val_metrics["ate_normbias"]
-            logs["ATE/val_normmae"] = val_metrics["ate_normmae"]
-            logs["ATE/val_normrmse"] = val_metrics["ate_normrmse"]
-
-            logs["CATE/val_r2"] = val_metrics["cate_r2_mean"]
-            logs["CATE/val_r2_shape"] = val_metrics["cate_r2_shape_mean"]
-            logs["CATE/val_r2_ate_penalty"] = val_metrics["cate_r2_ate_penalty_mean"]
-            logs["CATE/val_rmse"] = val_metrics["rmse"]
-            logs["CATE/val_mae"] = val_metrics["cate_mae_mean"]
-            logs["CATE/val_normrmse"] = val_metrics["cate_rmse_norm_mean"]
-
-            logs["Metrics/val_mspe"] = val_metrics["mspe"]
-            if "variance" in val_metrics and val_metrics["variance"] > 0:
-                logs["Metrics/val_variance"] = val_metrics["variance"]
-
-            logs["Time/val_s"] = val_metrics["time_s"]
-
-            if "cov50" in val_metrics and val_metrics["cov50"] > 0:
-                logs["Calibration/val_cov50"] = val_metrics["cov50"]
-                logs["Calibration/val_cov95"] = val_metrics["cov95"]
-                logs["Calibration/val_cov99"] = val_metrics["cov99"]
-
-            logs["Bias-Variance/val_bias_sq"] = val_metrics["bias_sq"]
-            logs["Bias-Variance/val_error_var"] = val_metrics["error_var"]
-            logs["Bias-Variance/mse"] = val_metrics["mse"]
-
-        # Log using global_step instead of epoch to prevent timeline clashes
-        wandb.log(logs, step=self.global_step)
+            self._log_info(f"  → New best model (val RMSE: {val_rmse:.4f})")
 
     # ------------------------------------------------------------------
     # Main training loop
@@ -795,12 +864,13 @@ class CATETrainer:
             train_total = train_metrics["loss_total"]
             val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
-            logger.info(
+            self._log_info(
                 f"Epoch {epoch + 1}/{self.train_cfg['epochs']}  "
                 f"train_model={train_model:.4f}  train_rmse={train_mse:.4f}  "
                 f"train_total={train_total:.4f}"
             )
-            self.log_metrics(epoch, train_metrics, val_metrics)
+            for cb in self.callbacks:
+                cb.on_epoch_end(self, epoch, train_metrics, val_metrics)
 
             if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
                 # Save using the last recorded validation RMSE metric
@@ -813,7 +883,7 @@ class CATETrainer:
                 else:
                     early_stop_count += 1
                     if early_stop_count >= self.train_cfg.get("early_stop", 1e9):
-                        logger.info(f"Early stopping after {epoch + 1} epochs.")
+                        self._log_info(f"Early stopping after {epoch + 1} epochs.")
                         break
             epoch += 1
 
@@ -821,9 +891,7 @@ class CATETrainer:
         # Final checkpoint uses the last recorded val_rmse
         self.save_checkpoint(epoch + 1, last_val_rmse, tag="final")
 
-        # Close WandB properly at the end of the run
-        wandb.finish()
-        logger.info("Training complete!")
+        self._log_info("Training complete!")
 
 
 # ---------------------------------------------------------------------------
@@ -835,29 +903,40 @@ def main() -> None:
     config = load_config()
     set_seed(config["training"]["seed"])
 
-    logger.info(f"Training config: {config['training']}")
-    trainer = CATETrainer(config)
+    logger_cb = LoggerCallback(config)
+    callbacks = [logger_cb]
+
+    def log_info(message: str) -> None:
+        for cb in callbacks:
+            cb.on_log_info(message)
+
+    def log_error(message: str) -> None:
+        for cb in callbacks:
+            cb.on_log_error(message)
+
+    log_info(f"Training config: {config['training']}")
+    trainer = CATETrainer(config, callbacks=callbacks)
 
     try:
         trainer.train()
     except KeyboardInterrupt:
-        logger.info("Training interrupted by user.")
+        log_info("Training interrupted by user.")
     except Exception as e:
-        logger.error(f"Error during training: {e}")
+        log_error(f"Error during training: {e}")
         raise
     finally:
         t = trainer.total_training_time
-        logger.info(f"Total training time:        {format_time(t)}")
+        log_info(f"Total training time:        {format_time(t)}")
         if trainer.epoch_times:
-            logger.info(
+            log_info(
                 f"Mean epoch time:            {format_time(np.mean(trainer.epoch_times))}"
             )
         if trainer.validation_times:
-            logger.info(
+            log_info(
                 f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}"
             )
-        # Ensure WandB shuts down correctly if an exception kills the script early
-        wandb.finish()
+        for cb in callbacks:
+            cb.on_train_end(trainer)
 
 
 if __name__ == "__main__":
