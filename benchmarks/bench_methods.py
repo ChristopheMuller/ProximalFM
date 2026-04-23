@@ -44,20 +44,8 @@ import sys
 import os
 import torch
 
-# --- CausalFM Setup ---
-## assumes you did: "git clone https://github.com/yccm/CausalFM-toolkit.git CausalFM" beforehand
-toolkit_path = os.path.abspath("CausalFM")
-if toolkit_path not in sys.path:
-    sys.path.append(toolkit_path)
-try:
-    import causalfm
-    from causalfm.models import StandardCATEModel
-    _CAUSALFM_AVAILABLE = True
-except ImportError:
-    _CAUSALFM_AVAILABLE = False
 
 # --- DoPFN Setup ---
-## assumes you did: "git clone https://github.com/yccm/DoPFN.git DoPFN" beforehand
 dopfn_path = os.path.abspath("DoPFN")
 if dopfn_path not in sys.path:
     sys.path.append(dopfn_path)
@@ -97,19 +85,6 @@ try:
     _CAUSALPFN_AVAILABLE = True
 except ImportError:
     _CAUSALPFN_AVAILABLE = False
-
-
-# --- NMMR Setup ---
-nmmr_path = os.path.abspath("NMMR")
-if nmmr_path not in sys.path:
-    sys.path.append(nmmr_path)
-try:
-    from NMMR.src.data.ate.data_class import PVTrainDataSet
-    from NMMR.src.models.PMMR.model import PMMRModel
-    from NMMR.src.models.kernelPV.model import KernelPVModel
-    _NMMR_AVAILABLE = True
-except ImportError:
-    _NMMR_AVAILABLE = False
 
 
 from contextlib import contextmanager
@@ -526,15 +501,29 @@ class P2SLS(CATEEstimator):
 
 
 class NMMR_Estimator(CATEEstimator):
-    """Wrapper for NMMR models (PMMR, KernelPV, etc.)"""
 
-    def __init__(self, model_type: str, **kwargs):
-        if not _NMMR_AVAILABLE:
-            raise ImportError(
-                "NMMR is not installed or cannot be found. "
-                "Ensure the 'NMMR' directory is in your project root."
-            )
+    def __init__(self, model_type: str, estimate_cate: bool, **kwargs):
+        # 1. Isolate the environment
+        import sys
+        from pathlib import Path
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        nmmr_path = str(PROJECT_ROOT / "NMMR")
+        
+        if nmmr_path not in sys.path:
+            sys.path.insert(0, nmmr_path)
+            
+        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
+        for k in keys: del sys.modules[k]
+        
+        # 2. Import locally
+        from src.data.ate.data_class import PVTrainDataSet
+        from src.models.PMMR.model import PMMRModel
+        from src.models.kernelPV.model import KernelPVModel
+            
         self.model_type = model_type
+        self.estimate_cate = estimate_cate
+
+        self._PVTrainDataSet = PVTrainDataSet
 
         # Extract only the kwargs meant for NMMR (ignore framework keys)
         safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["name", "cls", "model_type", "use_W", "use_Z"]}
@@ -550,7 +539,7 @@ class NMMR_Estimator(CATEEstimator):
         if W is None or Z is None:
             raise ValueError("NMMR methods require both W and Z proxies.")
 
-        train_data = PVTrainDataSet(
+        train_data = self._PVTrainDataSet(
             treatment=np.asarray(A).reshape(-1, 1),
             treatment_proxy=np.asarray(Z),
             outcome_proxy=np.asarray(W),
@@ -564,8 +553,15 @@ class NMMR_Estimator(CATEEstimator):
     def predict(self, X, *, W=None, Z=None):
         n = X.shape[0]
 
-        t0 = np.zeros((n,1))
-        t1 = np.ones((n,1))
+        t0 = np.zeros((n, 1))
+        t1 = np.ones((n, 1))
+
+        if self.estimate_cate:
+
+            predsY0 = self.model.predict(treatment=t0, backdoor=np.asarray(X))
+            predsY1 = self.model.predict(treatment=t1, backdoor=np.asarray(X))
+
+            return (predsY1 - predsY0).squeeze()
 
         predsY0 = self.model.predict(treatment=t0)
         predsY1 = self.model.predict(treatment=t1)
@@ -593,12 +589,25 @@ class CausalFM_Estimator(CATEEstimator):
         use_W: bool = True,
         use_Z: bool = True,
     ):
-        if not _CAUSALFM_AVAILABLE:
-            raise ImportError(
-                "causalfm is not installed or cannot be found. "
-                "Ensure it is installed or your sys.path is configured correctly."
-            )
 
+        import sys
+        from pathlib import Path
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        causalfm_path = str(PROJECT_ROOT / "CausalFM")
+        
+        if causalfm_path not in sys.path:
+            sys.path.insert(0, causalfm_path)
+            
+        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
+        for k in keys: del sys.modules[k]
+        
+        try:
+            import causalfm
+            from causalfm.models import StandardCATEModel
+        except ImportError as e:
+            raise ImportError(f"CausalFM import failed: {e}")
+
+        
         torch.set_num_threads(1)
 
         if checkpoint_path not in _CAUSALFM_CACHE:
@@ -817,10 +826,10 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         ),
         "NMMR": lambda: NMMR_Estimator(
             model_type=cfg.get("model_type", "PMMR"),
-            **{k: v for k, v in cfg.items() if k != "model_type"}
+            estimate_cate=cfg.get("estimate_cate", True),
+            **{k: v for k, v in cfg.items() if k not in ["model_type", "estimate_cate"]}
         ),
     }
-
     if cls not in factories:
         raise ValueError(
             f"Unknown method class {cls!r}. "
