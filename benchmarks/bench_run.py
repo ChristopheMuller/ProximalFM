@@ -221,7 +221,7 @@ def build_batches(data: dict) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _worker(args: tuple) -> tuple[int, np.ndarray | None, str | None]:
+def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
     """Worker function: fit one method on one batch and return predictions.
 
     Receives plain numpy arrays + a config dict.
@@ -229,16 +229,18 @@ def _worker(args: tuple) -> tuple[int, np.ndarray | None, str | None]:
     objects, which behaves differently across fork/spawn start methods).
 
     Returns:
-        (batch_index, predictions, error_message_or_None)
+        (batch_index, predictions, elapsed_time, error_message_or_None)
     """
     b, method_cfg, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, X_q, W_q, Z_q = args
     try:
+        t0 = time.perf_counter()
         _, method = build_method(method_cfg)
         method.fit(X_ctx, A_ctx, Y_ctx, W=W_ctx, Z=Z_ctx)
         preds = method.predict(X_q, W=W_q, Z=Z_q)
-        return b, preds.astype(np.float32), None
+        t1 = time.perf_counter()
+        return b, preds.astype(np.float32), t1 - t0, None
     except Exception as exc:
-        return b, None, str(exc)
+        return b, None, 0.0, str(exc)
 
 
 def run_method_parallel(
@@ -247,7 +249,7 @@ def run_method_parallel(
     n_test: int,
     n_workers: int,
     progress: Progress,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Fit + predict one method across all batches using a process pool.
 
     Args:
@@ -258,10 +260,12 @@ def run_method_parallel(
         progress   : Rich Progress instance (must already be started).
 
     Returns:
-        preds array of shape (n_batch, n_test).  NaN where a batch failed.
+        (preds, times) arrays of shape (n_batch, n_test) and (n_batch,).
+        preds contains NaN where a batch failed.
     """
     n_batch = len(batches)
     preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
+    times = np.zeros(n_batch, dtype=np.float32)
     n_errors = 0
 
     task = progress.add_task(
@@ -288,9 +292,10 @@ def run_method_parallel(
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
         futures = {pool.submit(_worker, args): args[0] for args in args_list}
         for future in as_completed(futures):
-            b_idx, result, err = future.result()
+            b_idx, result, elapsed, err = future.result()
             if result is not None:
                 preds[b_idx] = result
+                times[b_idx] = elapsed
             else:
                 n_errors += 1
             progress.advance(task)
@@ -300,7 +305,7 @@ def run_method_parallel(
             f"    [yellow]⚠[/] {method_cfg['name']}: "
             f"{n_errors}/{n_batch} batches failed (NaN filled)."
         )
-    return preds
+    return preds, times
 
 
 def run_method_sequential(
@@ -308,10 +313,11 @@ def run_method_sequential(
     batches: list[dict],
     n_test: int,
     progress: Progress,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """Single-process fallback — useful for debugging."""
     n_batch = len(batches)
     preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
+    times = np.zeros(n_batch, dtype=np.float32)
 
     task = progress.add_task(
         f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]",
@@ -331,14 +337,15 @@ def run_method_sequential(
             b_dict["W_q"],
             b_dict["Z_q"],
         )
-        b_idx, result, err = _worker(args)
+        b_idx, result, elapsed, err = _worker(args)
         if result is not None:
             preds[b_idx] = result
+            times[b_idx] = elapsed
         if err:
             console.print(f"    [red]✗[/] batch {b_idx}: {err}")
         progress.advance(task)
 
-    return preds
+    return preds, times
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -353,11 +360,11 @@ def run_neural_model(
     device_str: str,
     preds_dir: Path,
     force: bool,
-) -> tuple[str, np.ndarray] | None:
+) -> tuple[str, np.ndarray, np.ndarray] | None:
     """Load a ProximalGMM checkpoint and run inference.
 
     Returns:
-        (name, preds) or None if skipped / failed.
+        (name, preds, times) or None if skipped / failed.
     """
     if not _PROXFM_AVAILABLE:
         console.print(
@@ -371,7 +378,10 @@ def run_neural_model(
 
     if pred_file.exists() and not force:
         console.print(f"    [dim]Skip {name!r} — predictions already saved.[/]")
-        return name, np.load(pred_file)["preds"]
+        loaded = np.load(pred_file)
+        preds = loaded["preds"]
+        times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
+        return name, preds, times
 
     config_path = ckpt_dir / "model_config.yaml"
     best_path = ckpt_dir / "best_model.pth"
@@ -416,11 +426,13 @@ def run_neural_model(
     y_t = data["Y"].to(device, dtype=dtype)
 
     preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
+    times = np.zeros(N_BATCH, dtype=np.float32)
     chunk = 10
 
     with torch.no_grad():
         for start in range(0, N_BATCH, chunk):
             end = min(start + chunk, N_BATCH)
+            t0 = time.perf_counter()
             preds_ = (
                 model.estimate_CATE(
                     x=x_t[start:end],
@@ -433,13 +445,19 @@ def run_neural_model(
                 .cpu()
                 .numpy()[:, :]
             )
+            t1 = time.perf_counter()
+
+            chunk_size = end - start
+            avg_time = (t1 - t0) / chunk_size
+            times[start:end] = avg_time
+
             if len(preds_.shape) == 3:
                 preds[start:end] = preds_[:, :, 0]
             else:
                 preds[start:end] = preds_
-    np.savez(pred_file, preds=preds)
+    np.savez(pred_file, preds=preds, times=times)
     console.print(f"    [green]✓[/] {name} → {pred_file}")
-    return name, preds
+    return name, preds, times
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -448,7 +466,7 @@ def run_neural_model(
 
 
 def print_partial_results(
-    accumulated: dict[str, np.ndarray],
+    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
     true_ites: np.ndarray,
 ) -> None:
     """Print a quick ATE summary for all methods completed so far.
@@ -461,16 +479,18 @@ def print_partial_results(
         return
 
     frames = [
-        compute_all_metrics(preds, true_ites, name)
-        for name, preds in accumulated.items()
+        compute_all_metrics(preds, true_ites, times, name)
+        for name, (preds, times) in accumulated.items()
     ]
     all_df = pd.concat(frames, ignore_index=True)
     ate_df, _ = build_summary_tables(all_df)
 
+    if "Time (s)" in ate_df.columns:
+        ate_df["Time (s)"] = ate_df["Time (s)"].round(2)
+
     console.print(
         Padding(make_ate_rich_table(ate_df, title="ATE — results so far"), (1, 4))
     )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
@@ -552,7 +572,7 @@ def main() -> None:
         console.print(Rule(f"[bold]Step 2  Methods ({len(method_cfgs)})[/]"))
         console.print()
 
-    accumulated: dict[str, np.ndarray] = {}
+    accumulated: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     # Progress bars rendered via Rich; one task per method
     progress = Progress(
@@ -572,23 +592,27 @@ def main() -> None:
             pred_file = preds_dir / f"{name}_preds.npz"
 
             if pred_file.exists() and not force:
-                preds = np.load(pred_file)["preds"]
+                loaded = np.load(pred_file)
+                preds = loaded["preds"]
+                times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
                 console.print(f"  [dim]↩  {name:<28} loaded from cache[/]")
-                accumulated[name] = preds
+                accumulated[name] = (preds, times)
                 continue
 
             t0 = time.perf_counter()
             if args.no_parallel:
-                preds = run_method_sequential(mcfg, batches, N_TEST, progress)
+                preds, times = run_method_sequential(mcfg, batches, N_TEST, progress)
             else:
-                preds = run_method_parallel(mcfg, batches, N_TEST, n_workers, progress)
+                preds, times = run_method_parallel(
+                    mcfg, batches, N_TEST, n_workers, progress
+                )
 
             elapsed = time.perf_counter() - t0
 
             # Incremental save
-            np.savez(pred_file, preds=preds)
+            np.savez(pred_file, preds=preds, times=times)
             console.print(f"  [green]✓[/] {name:<28} saved  [dim]({elapsed:.1f}s)[/]")
-            accumulated[name] = preds
+            accumulated[name] = (preds, times)
 
             # Show partial results after each method completes
             print_partial_results(accumulated, true_ITEs)
@@ -603,8 +627,8 @@ def main() -> None:
         for mcfg in model_cfgs:
             result = run_neural_model(mcfg, data, prior_cfg, device, preds_dir, force)
             if result is not None:
-                name, preds = result
-                accumulated[name] = preds
+                name, preds, times = result
+                accumulated[name] = (preds, times)
 
     # ── Step 4: Final evaluation ──────────────────────────────────────────────
     console.print(Rule("[bold]Step 4  Evaluation[/]"))
@@ -616,8 +640,8 @@ def main() -> None:
 
     all_results = pd.concat(
         [
-            compute_all_metrics(preds, true_ITEs, name)
-            for name, preds in accumulated.items()
+            compute_all_metrics(preds, true_ITEs, times, name)
+            for name, (preds, times) in accumulated.items()
         ],
         ignore_index=True,
     )
