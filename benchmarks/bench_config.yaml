@@ -5,20 +5,20 @@
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
   source: generate
-  output_dir: results/test
+  output_dir: results/cate_linear_1
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 500    # context samples shown to each estimator
+  n_train: 200    # context samples shown to each estimator
   n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
-  n_batch: 10    # number of independent datasets (episodes)
+  n_batch: 50    # number of independent datasets (episodes)
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
     confounding_strength: 1
-    d_u: 2
-    d_w: 3
+    d_u: 3
+    d_w: 4
     d_x: 5
-    d_z: 3
+    d_z: 4
     noise_scale_w: 1
     noise_scale_x: 1
     noise_scale_z: 1
@@ -29,7 +29,7 @@ data:
 # ── Execution ─────────────────────────────────────────────────────────────────
 run:
   seed:      999999999    # needs to be large enough to be sure not to use same seeds as during the training!
-  n_workers: 8
+  n_workers: 6
   device: mps
   force_rerun: false
 
@@ -171,9 +171,9 @@ methods:
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
-models: []
-  # - name:       fungible_model
-  #   checkpoint: checkpoints/fungible
+models:
+  - name:       ProximalFM
+    checkpoint: checkpoints/cate_linear__3gmm_medium
 
   # - name:       NewModel
   #   checkpoint: checkpoints/cate_medium
