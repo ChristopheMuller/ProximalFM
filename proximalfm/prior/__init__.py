@@ -4,4 +4,10 @@ from .ConfoundingLinearPrior import ConfoundingLinearPrior
 from .CATELinearPrior import CATELinearPrior
 from .FungibleSmall import FungibleSmall
 
-__all__ = ["BNNPrior", "LinearPrior", "ConfoundingLinearPrior", "CATELinearPrior", "FungibleSmall"]
+__all__ = [
+    "BNNPrior",
+    "LinearPrior",
+    "ConfoundingLinearPrior",
+    "CATELinearPrior",
+    "FungibleSmall",
+]

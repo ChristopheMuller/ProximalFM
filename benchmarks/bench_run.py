@@ -421,16 +421,20 @@ def run_neural_model(
     with torch.no_grad():
         for start in range(0, N_BATCH, chunk):
             end = min(start + chunk, N_BATCH)
-            preds_ = model.estimate_CATE(
-                x = x_t[start:end],
-                a_train = a_t[start:end, :N_TRAIN, 0],
-                w = w_t[start:end],
-                z = z_t[start:end],
-                y_train = y_t[start:end, :N_TRAIN, 0],
-                return_log_variance=False
-            ).cpu().numpy()[:,:]
+            preds_ = (
+                model.estimate_CATE(
+                    x=x_t[start:end],
+                    a_train=a_t[start:end, :N_TRAIN, 0],
+                    w=w_t[start:end],
+                    z=z_t[start:end],
+                    y_train=y_t[start:end, :N_TRAIN, 0],
+                    return_log_variance=False,
+                )
+                .cpu()
+                .numpy()[:, :]
+            )
             if len(preds_.shape) == 3:
-                preds[start:end] = preds_[:,:,0]
+                preds[start:end] = preds_[:, :, 0]
             else:
                 preds[start:end] = preds_
     np.savez(pred_file, preds=preds)
@@ -636,7 +640,6 @@ def main() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-
     if sys.platform != "win32":
         multiprocessing.set_start_method("spawn", force=True)
 

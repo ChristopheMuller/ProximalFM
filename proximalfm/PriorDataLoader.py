@@ -6,7 +6,13 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .Structure import ProximalPriorConfig
-from .prior import BNNPrior, ConfoundingLinearPrior, LinearPrior, CATELinearPrior, FungibleSmall
+from .prior import (
+    BNNPrior,
+    ConfoundingLinearPrior,
+    LinearPrior,
+    CATELinearPrior,
+    FungibleSmall,
+)
 
 
 class ProximalDataset(Dataset):

@@ -36,6 +36,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 try:
     from tabicl import TabICLRegressor
+
     _TABICL_AVAILABLE = True
 except ImportError:
     _TABICL_AVAILABLE = False
@@ -51,6 +52,7 @@ if dopfn_path not in sys.path:
     sys.path.append(dopfn_path)
 try:
     from DoPFN.scripts.transformer_prediction_interface.base import DoPFNRegressor
+
     _DOPFN_AVAILABLE = True
 except ImportError:
     _DOPFN_AVAILABLE = False
@@ -82,6 +84,7 @@ try:
 
     # Alias the import so it doesn't collide with the CATEEstimator base class!
     from causalpfn import CATEEstimator as CausalPFN_Model
+
     _CAUSALPFN_AVAILABLE = True
 except ImportError:
     _CAUSALPFN_AVAILABLE = False
@@ -297,7 +300,7 @@ class X_Learner(CATEEstimator):
              τ̂(x) = g(x)τ₀(x) + (1 - g(x))τ₁(x)
 
     Args:
-        base_model_factory : zero-argument callable returning a fresh sklearn 
+        base_model_factory : zero-argument callable returning a fresh sklearn
                              estimator for the base outcomes and CATE models.
         use_W, use_Z       : whether to include proxy variables as features.
     """
@@ -309,15 +312,15 @@ class X_Learner(CATEEstimator):
         use_Z: bool = True,
     ):
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z)
-        
+
         # Stage 1 models (base response)
         self.model0 = base_model_factory()
         self.model1 = base_model_factory()
-        
+
         # Stage 2 models (CATE estimators)
         self.tau0 = base_model_factory()
         self.tau1 = base_model_factory()
-        
+
         # Propensity score model for Stage 3 weighting
         # We use a standard Logistic Regression here, but this could be abstracted
         self.prop_model = LogisticRegression(max_iter=1000)
@@ -337,7 +340,7 @@ class X_Learner(CATEEstimator):
         # --- Stage 2: Impute pseudo-effects ---
         # For controls, predict counterfactual under treatment
         D0 = self.model1.predict(feat[mask0]) - Y[mask0]
-        
+
         # For treated, predict counterfactual under control
         D1 = Y[mask1] - self.model0.predict(feat[mask1])
 
@@ -347,18 +350,19 @@ class X_Learner(CATEEstimator):
 
         # --- Fit propensity score model for the weighting ---
         self.prop_model.fit(feat, A)
-        
+
         return self
 
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
-        
+
         pred_tau0 = self.tau0.predict(feat)
         pred_tau1 = self.tau1.predict(feat)
-        
+
         g = self.prop_model.predict_proba(feat)[:, 1]
-        
+
         return g * pred_tau0 + (1 - g) * pred_tau1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Proximal 2SLS
@@ -501,32 +505,37 @@ class P2SLS(CATEEstimator):
 
 
 class NMMR_Wrappers(CATEEstimator):
-
     def __init__(self, model_type: str, estimate_cate: bool, **kwargs):
         # 1. Isolate the environment
         import sys
         from pathlib import Path
+
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
         nmmr_path = str(PROJECT_ROOT / "NMMR")
-        
+
         if nmmr_path not in sys.path:
             sys.path.insert(0, nmmr_path)
-            
-        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
-        for k in keys: del sys.modules[k]
-        
+
+        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
+        for k in keys:
+            del sys.modules[k]
+
         # 2. Import locally
         from src.data.ate.data_class import PVTrainDataSet
         from src.models.PMMR.model import PMMRModel
         from src.models.kernelPV.model import KernelPVModel
-            
+
         self.model_type = model_type
         self.estimate_cate = estimate_cate
 
         self._PVTrainDataSet = PVTrainDataSet
 
         # Extract only the kwargs meant for NMMR (ignore framework keys)
-        safe_kwargs = {k: v for k, v in kwargs.items() if k not in ["name", "cls", "model_type", "use_W", "use_Z"]}
+        safe_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ["name", "cls", "model_type", "use_W", "use_Z"]
+        }
 
         if model_type == "PMMR":
             self.model = PMMRModel(**safe_kwargs)
@@ -544,7 +553,7 @@ class NMMR_Wrappers(CATEEstimator):
             treatment_proxy=np.asarray(Z),
             outcome_proxy=np.asarray(W),
             outcome=np.asarray(Y),
-            backdoor=np.asarray(X)
+            backdoor=np.asarray(X),
         )
 
         self.model.fit(train_data, data_name="bench")
@@ -557,7 +566,6 @@ class NMMR_Wrappers(CATEEstimator):
         t1 = np.ones((n, 1))
 
         if self.estimate_cate:
-
             predsY0 = self.model.predict(treatment=t0, backdoor=np.asarray(X))
             predsY1 = self.model.predict(treatment=t1, backdoor=np.asarray(X))
 
@@ -568,21 +576,24 @@ class NMMR_Wrappers(CATEEstimator):
 
         return (predsY1 - predsY0).squeeze()
 
+
 # Inside bench_methods.py
+
 
 class NMMR_Estimator(CATEEstimator):
     def __init__(self, **kwargs):
-        # Local import to prevent global path collisions 
+        # Local import to prevent global path collisions
         import sys
         from pathlib import Path
+
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
         nmmr_path = str(PROJECT_ROOT / "NMMR")
-        
+
         if nmmr_path not in sys.path:
             sys.path.insert(0, nmmr_path)
-            
+
         from src.models.NMMR.NMMR_wrapper import NMMRCATEEstimator
-        
+
         train_params = {
             "network_width": kwargs.get("network_width", 64),
             "network_depth": kwargs.get("network_depth", 3),
@@ -591,7 +602,7 @@ class NMMR_Estimator(CATEEstimator):
             "learning_rate": kwargs.get("learning_rate", 1e-3),
             "loss_name": kwargs.get("loss_name", "U_statistic"),
         }
-        
+
         self.model = NMMRCATEEstimator(train_params=train_params)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
@@ -602,36 +613,39 @@ class NMMR_Estimator(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         return self.model.predict(X)
-    
+
+
 class DFPV_Estimator(CATEEstimator):
     """Wrapper for the Deep Feature Proxy Variable (DFPV) Model."""
-    
+
     def __init__(self, **kwargs):
         import sys
         from pathlib import Path
+
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        
+
         # 1. Isolate the environment for DFPV (Assuming it shares the NMMR repo structure)
-        dfpv_repo_path = str(PROJECT_ROOT / "NMMR") 
-        
+        dfpv_repo_path = str(PROJECT_ROOT / "NMMR")
+
         if dfpv_repo_path not in sys.path:
             sys.path.insert(0, dfpv_repo_path)
-            
+
         # 2. Purge the 'src' cache to prevent module collisions
-        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
-        for k in keys: 
+        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
+        for k in keys:
             del sys.modules[k]
-            
+
         # 3. Import classes directly in __init__ after environment is prepped
         from src.data.ate.data_class import PVTrainDataSet
-        from src.models.DFPV.model import DFPVModel 
-        
-        import torch # Make sure torch is imported here
+        from src.models.DFPV.model import DFPVModel
+
+        import torch  # Make sure torch is imported here
+
         torch.set_num_threads(1)
 
         self._PVTrainDataSet = PVTrainDataSet
         self._DFPVModel = DFPVModel
-            
+
         self.lam1 = kwargs.get("lam1", 0.1)
         self.lam2 = kwargs.get("lam2", 0.1)
         self.feat_dim = kwargs.get("feat_dim", 16)
@@ -639,31 +653,32 @@ class DFPV_Estimator(CATEEstimator):
         self.split_ratio = kwargs.get("split_ratio", 0.5)
         self.add_stage1_intercept = kwargs.get("add_stage1_intercept", True)
         self.add_stage2_intercept = kwargs.get("add_stage2_intercept", True)
-        
+
         self.model = None
 
     def _build_mlp(self, in_dim, out_dim):
         """Constructs a simple MLP for the DFPV feature extractors."""
         import torch.nn as nn
+
         return nn.Sequential(
             nn.Linear(in_dim, self.hidden_dim),
             nn.ReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.ReLU(),
-            nn.Linear(self.hidden_dim, out_dim)
+            nn.Linear(self.hidden_dim, out_dim),
         )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("DFPV requires both W and Z proxies.")
-        
+
         n = X.shape[0]
-        
+
         # Split data into Stage 1 and Stage 2
         indices = np.random.permutation(n)
         split_idx = int(n * self.split_ratio)
         idx1, idx2 = indices[:split_idx], indices[split_idx:]
-        
+
         A_2d = np.asarray(A).reshape(-1, 1)
         Y_2d = np.asarray(Y).reshape(-1, 1)
         X_2d = np.asarray(X)
@@ -676,17 +691,17 @@ class DFPV_Estimator(CATEEstimator):
             treatment_proxy=Z_2d[idx1],
             outcome_proxy=W_2d[idx1],
             outcome=Y_2d[idx1],
-            backdoor=X_2d[idx1]
+            backdoor=X_2d[idx1],
         )
-        
+
         train2 = self._PVTrainDataSet(
             treatment=A_2d[idx2],
             treatment_proxy=Z_2d[idx2],
             outcome_proxy=W_2d[idx2],
             outcome=Y_2d[idx2],
-            backdoor=X_2d[idx2]
+            backdoor=X_2d[idx2],
         )
-        
+
         dim_A = A_2d.shape[1]
         dim_X = X_2d.shape[1]
         dim_W = W_2d.shape[1]
@@ -701,25 +716,26 @@ class DFPV_Estimator(CATEEstimator):
             backdoor_1st_net=self._build_mlp(dim_X, self.feat_dim),
             backdoor_2nd_net=self._build_mlp(dim_X, self.feat_dim),
             add_stage1_intercept=self.add_stage1_intercept,
-            add_stage2_intercept=self.add_stage2_intercept
+            add_stage2_intercept=self.add_stage2_intercept,
         )
-        
+
         self.model.fit(train1, train2, self.lam1, self.lam2)
         return self
 
     def predict(self, X, *, W=None, Z=None):
         if self.model is None:
             raise RuntimeError("Must call fit() before predict().")
-            
+
         n = X.shape[0]
-        
+
         A1 = np.ones((n, 1))
         A0 = np.zeros((n, 1))
-        
+
         y1 = self.model.predict(A1)
         y0 = self.model.predict(A0)
-        
+
         return (y1 - y0).squeeze()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Foundation Model Wrappers
@@ -742,25 +758,25 @@ class CausalFM_Estimator(CATEEstimator):
         use_W: bool = True,
         use_Z: bool = True,
     ):
-
         import sys
         from pathlib import Path
+
         PROJECT_ROOT = Path(__file__).resolve().parent.parent
         causalfm_path = str(PROJECT_ROOT / "CausalFM")
-        
+
         if causalfm_path not in sys.path:
             sys.path.insert(0, causalfm_path)
-            
-        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
-        for k in keys: del sys.modules[k]
-        
+
+        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
+        for k in keys:
+            del sys.modules[k]
+
         try:
             import causalfm
             from causalfm.models import StandardCATEModel
         except ImportError as e:
             raise ImportError(f"CausalFM import failed: {e}")
 
-        
         torch.set_num_threads(1)
 
         if checkpoint_path not in _CAUSALFM_CACHE:
@@ -831,7 +847,6 @@ class DoPFN_Estimator(CATEEstimator):
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
-        
         feat = self.fb.build(X, A=A, W=W, Z=Z)
 
         with silent():
@@ -873,10 +888,12 @@ class CausalPFN_Estimator(CATEEstimator):
         if "default" not in _CAUSALPFN_CACHE:
             with silent():
                 # verbose=False might help silence it further natively
-                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(device="cpu", verbose=False)
+                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
+                    device="cpu", verbose=False
+                )
 
         self.model = _CAUSALPFN_CACHE["default"]
-        
+
         # We don't build A into the features because CausalPFN takes it explicitly
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
@@ -894,7 +911,7 @@ class CausalPFN_Estimator(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
-        
+
         # Enforce C-contiguous float32 for inference
         X_test = np.ascontiguousarray(feat, dtype=np.float32)
 
@@ -921,12 +938,16 @@ def _make_base_model(name: str):
 
     factories: dict[str, Callable] = {
         "linear": LinearRegression,
-        "rf": lambda: RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42),
+        "rf": lambda: RandomForestRegressor(
+            n_estimators=100, max_depth=5, random_state=42
+        ),
         "tabicl": TabICLRegressor if _TABICL_AVAILABLE else lambda: None,
     }
 
     if name not in factories:
-        raise ValueError(f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'.")
+        raise ValueError(
+            f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'."
+        )
 
     return factories[name]()
 
@@ -954,12 +975,16 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             interactions=cfg.get("interactions", False),
         ),
         "T_Learner": lambda: T_Learner(
-            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(bn),
+            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(
+                bn
+            ),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
         "X_Learner": lambda: X_Learner(
-            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(bn),
+            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(
+                bn
+            ),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
@@ -980,7 +1005,9 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "NMMRWrappers": lambda: NMMR_Wrappers(
             model_type=cfg.get("model_type", "PMMR"),
             estimate_cate=cfg.get("estimate_cate", True),
-            **{k: v for k, v in cfg.items() if k not in ["model_type", "estimate_cate"]}
+            **{
+                k: v for k, v in cfg.items() if k not in ["model_type", "estimate_cate"]
+            },
         ),
         "NMMR": lambda: NMMR_Estimator(
             **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}

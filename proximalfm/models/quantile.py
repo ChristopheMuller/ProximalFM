@@ -102,17 +102,26 @@ class ProximalQuantile(BaseCATEModel):
 
         # 2. EMBEDDING
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
-        idx_matrix_x = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_x, device=x.device) - 1)) % n_cols
+        idx_matrix_x = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_x, device=x.device) - 1)
+        ) % n_cols
         x = x_norm[:, :, idx_matrix_x]
         emb_x = self.x_embed(x)
 
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
-        idx_matrix_w = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_w, device=w.device) - 1)) % w.shape[-1]
+        idx_matrix_w = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_w, device=w.device) - 1)
+        ) % w.shape[-1]
         w = w_norm[:, :, idx_matrix_w]
         emb_w = self.w_embed(w)
 
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
-        idx_matrix_z = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_z, device=z.device) - 1)) % z.shape[-1]
+        idx_matrix_z = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_z, device=z.device) - 1)
+        ) % z.shape[-1]
         z = z_norm[:, :, idx_matrix_z]
         emb_z = self.z_embed(z)
 
@@ -245,12 +254,10 @@ class ProximalQuantile(BaseCATEModel):
                 elif i == self.n_quantiles - 1:
                     w_i = 1.0 - (self.quantiles[-2] + self.quantiles[-1]) / 2.0
                 else:
-                    w_i = (self.quantiles[i+1] - self.quantiles[i-1]) / 2.0
+                    w_i = (self.quantiles[i + 1] - self.quantiles[i - 1]) / 2.0
                 weights.append(w_i)
 
-            weights_tensor = torch.tensor(
-                weights, dtype=out.dtype, device=out.device
-            )
+            weights_tensor = torch.tensor(weights, dtype=out.dtype, device=out.device)
 
             mu = (out * weights_tensor).sum(dim=-1, keepdim=True)
             var = ((out - mu) ** 2 * weights_tensor).sum(dim=-1, keepdim=True)

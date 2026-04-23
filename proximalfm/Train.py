@@ -164,15 +164,15 @@ class CATETrainer:
         # ------------------------------------------------------------------
         exp_name = self.train_cfg.get("exp_name", "test_exp")
         run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        
+
         # Initialize wandb
         wandb.init(
-            project="proximal-fm",          # Change this to your preferred W&B project name
+            project="proximal-fm",  # Change this to your preferred W&B project name
             name=f"{exp_name}_{run_name}",
-            config=self.config,            # Automatically track all hyperparameters
-            dir=self.train_cfg.get("log_dir", "runs")
+            config=self.config,  # Automatically track all hyperparameters
+            dir=self.train_cfg.get("log_dir", "runs"),
         )
-        
+
         # Optional: Have wandb automatically track gradients/weights
         wandb.watch(self.model, log="all", log_freq=32)
 
@@ -188,8 +188,8 @@ class CATETrainer:
         # Checkpoint directories
         # ------------------------------------------------------------------
         path_dir = os.path.join(
-            self.train_cfg.get("save_dir", "checkpoints"), 
-            self.train_cfg.get("exp_name", "test_exp")
+            self.train_cfg.get("save_dir", "checkpoints"),
+            self.train_cfg.get("exp_name", "test_exp"),
         )
         os.makedirs(path_dir, exist_ok=True)
         # Saving local YAMLs as backup, though W&B stores them too
@@ -239,7 +239,7 @@ class CATETrainer:
         )
 
         loss_mse_raw = F.mse_loss(expected_mean, target)
-        
+
         y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
         loss_mse_normalized = F.mse_loss(
             expected_mean / y_std_expanded, target / y_std_expanded
@@ -319,19 +319,21 @@ class CATETrainer:
             # ATE statistics per episode (each episode is fully contained in this batch)
             n_query = target.size(1)
             batch_size = target.size(0)
-            ate_true_episode = target.mean(dim=1)  
-            ate_pred_episode = pred_mean.mean(dim=1)  
-            ate_residuals = ate_pred_episode - ate_true_episode  
+            ate_true_episode = target.mean(dim=1)
+            ate_pred_episode = pred_mean.mean(dim=1)
+            ate_residuals = ate_pred_episode - ate_true_episode
 
-            var_tau_episode = ss_tot_episode / n_query  
+            var_tau_episode = ss_tot_episode / n_query
             std_tau_episode = torch.sqrt(var_tau_episode.clamp(min=0))
 
-            cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8)
-            cate_r2_shape = r2_episode + cate_r2_ate_penalty  
+            cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (
+                var_tau_episode + 1e-8
+            )
+            cate_r2_shape = r2_episode + cate_r2_ate_penalty
 
-            cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True) 
+            cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True)
 
-            mse_episode = ss_res_episode / n_query  
+            mse_episode = ss_res_episode / n_query
             cate_rmse_norm_episode = torch.sqrt(mse_episode) / (std_tau_episode + 1e-8)
 
             ate_error_norm_episode = ate_residuals / (std_tau_episode + 1e-8)
@@ -677,8 +679,8 @@ class CATETrainer:
 
     def save_checkpoint(self, epoch: int, val_rmse: float, tag: str = "") -> None:
         path_dir = os.path.join(
-            self.train_cfg.get("save_dir", "checkpoints"), 
-            self.train_cfg.get("exp_name", "test_exp")
+            self.train_cfg.get("save_dir", "checkpoints"),
+            self.train_cfg.get("exp_name", "test_exp"),
         )
         os.makedirs(path_dir, exist_ok=True)
         checkpoint = {
@@ -707,13 +709,12 @@ class CATETrainer:
     def log_metrics(
         self, epoch: int, train_metrics: dict, val_metrics: dict | None = None
     ) -> None:
-        
         # Consolidate all logs into a single dictionary
         logs = {}
-        
+
         # Add epoch as a metric so you can use it as an X-axis in the UI
         logs["epoch"] = epoch
-        
+
         if epoch == 0:
             logs["Parameters/total_count"] = self.n_params
 
@@ -748,14 +749,14 @@ class CATETrainer:
             logs["Metrics/val_mspe"] = val_metrics["mspe"]
             if "variance" in val_metrics and val_metrics["variance"] > 0:
                 logs["Metrics/val_variance"] = val_metrics["variance"]
-            
+
             logs["Time/val_s"] = val_metrics["time_s"]
-            
+
             if "cov50" in val_metrics and val_metrics["cov50"] > 0:
                 logs["Calibration/val_cov50"] = val_metrics["cov50"]
                 logs["Calibration/val_cov95"] = val_metrics["cov95"]
                 logs["Calibration/val_cov99"] = val_metrics["cov99"]
-                
+
             logs["Bias-Variance/val_bias_sq"] = val_metrics["bias_sq"]
             logs["Bias-Variance/val_error_var"] = val_metrics["error_var"]
             logs["Bias-Variance/mse"] = val_metrics["mse"]
@@ -819,7 +820,7 @@ class CATETrainer:
         self.total_training_time = time.time() - training_start
         # Final checkpoint uses the last recorded val_rmse
         self.save_checkpoint(epoch + 1, last_val_rmse, tag="final")
-        
+
         # Close WandB properly at the end of the run
         wandb.finish()
         logger.info("Training complete!")
@@ -857,6 +858,7 @@ def main() -> None:
             )
         # Ensure WandB shuts down correctly if an exception kills the script early
         wandb.finish()
+
 
 if __name__ == "__main__":
     main()

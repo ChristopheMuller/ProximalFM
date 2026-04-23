@@ -9,7 +9,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-
 class BaseCATEModel(nn.Module, ABC):
     @abstractmethod
     def forward(self, x, a, w, z, y):
@@ -18,6 +17,7 @@ class BaseCATEModel(nn.Module, ABC):
     @abstractmethod
     def estimate_CATE(self, x, a_train, w, z, y_train, **kwargs):
         pass
+
 
 class ClassEmbedding(nn.Embedding):
     def reset_parameters(self) -> None:

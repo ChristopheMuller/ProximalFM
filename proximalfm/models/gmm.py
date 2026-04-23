@@ -100,17 +100,26 @@ class ProximalGMM(BaseCATEModel):
 
         # ─── 2. EMBEDDING ────────────────────────────────────────────────────
         idxs = torch.arange(n_cols, dtype=torch.long, device=x.device)
-        idx_matrix_x = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_x, device=x.device) - 1)) % n_cols
+        idx_matrix_x = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_x, device=x.device) - 1)
+        ) % n_cols
         x = x_norm[:, :, idx_matrix_x]
         emb_x = self.x_embed(x)
 
         idxs = torch.arange(w.shape[-1], dtype=torch.long, device=w.device)
-        idx_matrix_w = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_w, device=w.device) - 1)) % w.shape[-1]
+        idx_matrix_w = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_w, device=w.device) - 1)
+        ) % w.shape[-1]
         w = w_norm[:, :, idx_matrix_w]
         emb_w = self.w_embed(w)
 
         idxs = torch.arange(z.shape[-1], dtype=torch.long, device=z.device)
-        idx_matrix_z = (idxs.unsqueeze(1) + (2**torch.arange(self.feature_group_size_z, device=z.device) - 1)) % z.shape[-1]
+        idx_matrix_z = (
+            idxs.unsqueeze(1)
+            + (2 ** torch.arange(self.feature_group_size_z, device=z.device) - 1)
+        ) % z.shape[-1]
         z = z_norm[:, :, idx_matrix_z]
         emb_z = self.z_embed(z)
 
