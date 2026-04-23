@@ -108,6 +108,7 @@ class EpisodeMetrics:
     homogeneous: bool  # True when Var(τ) < threshold
     ite_var: float  # actual variance (useful for debugging)
     n_test: int
+    time: float  # execution time
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,6 +121,7 @@ def compute_episode_metrics(
     episode: int,
     pred: np.ndarray,
     true_ite: np.ndarray,
+    time: float,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> EpisodeMetrics:
     """Compute all metrics for one (method, episode) pair.
@@ -206,6 +208,7 @@ def compute_episode_metrics(
         homogeneous=homogeneous,
         ite_var=ite_var,
         n_test=len(true_ite),
+        time=time,
     )
 
 
@@ -217,6 +220,7 @@ def compute_episode_metrics(
 def compute_all_metrics(
     preds: np.ndarray,
     true_ites: np.ndarray,
+    times: np.ndarray,
     method: str,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> pd.DataFrame:
@@ -225,6 +229,7 @@ def compute_all_metrics(
     Args:
         preds      : shape (n_batch, n_test).
         true_ites  : shape (n_batch, n_test).
+        times      : shape (n_batch,). Execution time per episode.
         method     : display name.
 
     Returns:
@@ -233,7 +238,7 @@ def compute_all_metrics(
     rows = [
         asdict(
             compute_episode_metrics(
-                method, b, preds[b], true_ites[b], ite_var_threshold
+                method, b, preds[b], true_ites[b], times[b], ite_var_threshold
             )
         )
         for b in range(len(preds))
@@ -284,6 +289,8 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
             "NormRMedSE": round(np.sqrt(np.median(e_norm**2)), 4),
             # ── Cross-episode R² ─────────────────────────────────────────────
             "ATE R²": ate_r2,
+            # ── Time ─────────────────────────────────────────────────────────
+            "Time (s)": round(df["time"].mean(), 4),
         }
     )
 
@@ -313,9 +320,7 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
 
     mean_mae_n = round(mae_n_vals.mean(), 4) if len(mae_n_vals) > 0 else float("nan")
     mean_rmse_n = round(rmse_n_vals.mean(), 4) if len(rmse_n_vals) > 0 else float("nan")
-    mean_medae_n = (
-        round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan")
-    )
+    mean_medae_n = (round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan"))
     mean_rmedse_n = (
         round(rmedse_n_vals.mean(), 4) if len(rmedse_n_vals) > 0 else float("nan")
     )
@@ -323,8 +328,12 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
     if n_valid == 0:
         return pd.Series(
             {
+                "MAE": mean_mae,
+                "MedAE": mean_medae,
                 "RMSE": mean_rmse,
                 "RMedSE": mean_rmedse,
+                "NormMAE": float("nan"),
+                "NormMedAE": float("nan"),
                 "NormRMSE": float("nan"),
                 "NormRMedSE": float("nan"),
                 "Mean R²": float("nan"),
@@ -332,6 +341,7 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
                 "Mean R²(shape)": float("nan"),
                 "Mean ATE penalty": float("nan"),
                 "Episodes used": 0,
+                "Time (s)": round(df["time"].mean(), 4),
                 "⚠ note": "All episodes homogeneous — R² not defined",
             }
         )
@@ -343,8 +353,12 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
     return pd.Series(
         {
             # ── Absolute ─────────────────────────────────────────────────────
+            "MAE": mean_mae,
+            "MedAE": mean_medae,
             "RMSE": mean_rmse,
             "RMedSE": mean_rmedse,
+            "NormMAE": mean_mae_n,
+            "NormMedAE": mean_medae_n,
             "NormRMSE": mean_rmse_n,
             "NormRMedSE": mean_rmedse_n,
             # ── Standard R² ──────────────────────────────────────────────────
@@ -357,6 +371,8 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
             "Mean ATE penalty": round(r2pen_vals.mean(), 4),
             # ── Coverage ─────────────────────────────────────────────────────
             "Episodes used": n_valid,
+            # ── Time ─────────────────────────────────────────────────────────
+            "Time (s)": round(df["time"].mean(), 4),
             "⚠ note": (
                 "" if frac_used > 0.9 else f"Only {frac_used:.0%} of episodes used"
             ),
@@ -411,6 +427,11 @@ def _get_column_styles(series: pd.Series, col_name: str) -> dict:
                 styles[k] = "yellow"
             else:
                 styles[k] = "red"
+        return styles
+
+    if "Time" in col_name:
+        for k, v in series.items():
+            styles[k] = ""
         return styles
 
     # 2. Penalty Metric: Lower is better (Fixed absolute thresholds)
