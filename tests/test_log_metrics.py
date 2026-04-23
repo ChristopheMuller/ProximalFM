@@ -1,3 +1,4 @@
+from proximalfm.Train import LoggerCallback
 import sys
 import pytest
 from unittest.mock import MagicMock, patch
@@ -71,7 +72,15 @@ def test_log_metrics_basic(mock_wandb, trainer):
     }
     epoch = 5
 
-    trainer.log_metrics(epoch, train_metrics, val_metrics=None)
+
+
+    trainer.model = MagicMock()
+    trainer.global_step = 10
+    logger_cb = LoggerCallback({})
+    logger_cb.on_init_end(trainer)
+    logger_cb.on_epoch_end(trainer, epoch, train_metrics, val_metrics=None)
+
+
 
     # Assert wandb.log was called
     mock_wandb.log.assert_called_once()
