@@ -274,14 +274,15 @@ class CATETrainer:
         # ------------------------------------------------------------------
         # Data
         # ------------------------------------------------------------------
-        context_size = self.data_cfg.get("context_size", 200)
         test_size = self.data_cfg.get("test_size", 56)
-        samples_per_episode = context_size + test_size
+        min_context_size = self.data_cfg.get("min_context_size", 500)
+        max_context_size = self.data_cfg.get("max_context_size", 1500)
 
         loaders = create_causal_data_loaders(
             prior_config=self.prior_config,
             batch_size=self.data_cfg.get("batch_size", 32),
-            samples_per_episode=samples_per_episode,
+            min_episode_size=min_context_size + test_size,
+            max_episode_size=max_context_size + test_size,
             train_episodes=self.data_cfg.get("train_episodes", 400),
             val_episodes=self.data_cfg.get("val_episodes", 400),
             num_workers=self.data_cfg.get("num_workers", 4),
@@ -290,7 +291,7 @@ class CATETrainer:
         self.train_loader = loaders["train"]
         self.val_loader = loaders["val"]
 
-        self.single_eval_pos = context_size
+        self.test_size = test_size
 
         # ------------------------------------------------------------------
         # Bookkeeping
@@ -351,9 +352,12 @@ class CATETrainer:
         z = batch["Z"]
         w = batch["W"]
 
-        a = batch["A"][:, : self.single_eval_pos].squeeze(-1)
-        y = batch["Y"][:, : self.single_eval_pos].squeeze(-1)
-        target = batch["ITE"][:, self.single_eval_pos :]
+        split_idx = x.shape[1] - self.test_size
+
+        a = batch["A"][:, :split_idx].squeeze(-1)
+        y = batch["Y"][:, :split_idx].squeeze(-1)
+
+        target = batch["ITE"][:, split_idx:]
 
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
 
@@ -435,7 +439,6 @@ class CATETrainer:
             residuals = pred_mean - target
             abs_error = residuals.abs()
 
-
             percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
@@ -443,7 +446,7 @@ class CATETrainer:
             target_mean_episode = target.mean(dim=1, keepdim=True)
             ss_tot_diff = target - target_mean_episode
             ss_tot_episode = (ss_tot_diff * ss_tot_diff).sum(dim=1)
-            
+
             # Identify heterogeneous episodes (where R^2 is well-defined)
             valid_mask = ss_tot_episode > 1e-8
             num_valid_cate_episodes = valid_mask.sum()
@@ -468,12 +471,12 @@ class CATETrainer:
             cate_r2_ate_penalty = torch.where(
                 valid_mask,
                 (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8),
-                torch.zeros_like(var_tau_episode)
+                torch.zeros_like(var_tau_episode),
             )
             cate_r2_shape = torch.where(
                 valid_mask,
                 r2_episode + cate_r2_ate_penalty,
-                torch.zeros_like(r2_episode)
+                torch.zeros_like(r2_episode),
             )
 
             cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True)
@@ -563,12 +566,6 @@ class CATETrainer:
         total_cov95 = torch.zeros(1, device=self.device)
         total_cov99 = torch.zeros(1, device=self.device)
 
-        total_cate_r2 = torch.zeros(1, device=self.device)
-        total_episodes = 0
-        total_ate_true = torch.zeros(1, device=self.device)
-        total_sq_ate_true = torch.zeros(1, device=self.device)
-        total_sq_ate_err = torch.zeros(1, device=self.device)
-
         epoch_start = time.time()
 
         # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
@@ -579,6 +576,14 @@ class CATETrainer:
             desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Train]",
         ) as pbar:
             for batch in pbar:
+                print(
+                    batch["X"].shape,
+                    batch["A"].shape,
+                    batch["W"].shape,
+                    batch["Z"].shape,
+                    batch["Y"].shape,
+                    batch["ITE"].shape,
+                )
                 batch = self._move_batch(batch)
                 x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 
@@ -620,12 +625,6 @@ class CATETrainer:
                     total_cov95 += metrics["cov95"]
                 if "cov99" in metrics:
                     total_cov99 += metrics["cov99"]
-
-                total_cate_r2 += metrics["sum_cate_r2"]
-                total_episodes += metrics["num_episodes"]
-                total_ate_true += metrics["sum_ate_true"]
-                total_sq_ate_true += metrics["sum_sq_ate_true"]
-                total_sq_ate_err += metrics["sum_sq_ate_err"]
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -737,7 +736,7 @@ class CATETrainer:
 
                     total_cate_r2 += metrics["sum_cate_r2"]
                     total_episodes += metrics["num_episodes"]
-                    total_valid_cate_episodes += metrics["num_valid_cate_episodes"]                 
+                    total_valid_cate_episodes += metrics["num_valid_cate_episodes"]
                     total_ate_true += metrics["sum_ate_true"]
                     total_sq_ate_true += metrics["sum_sq_ate_true"]
                     total_sq_ate_err += metrics["sum_sq_ate_err"]

@@ -17,44 +17,50 @@ from .prior import (
 
 class ProximalDataset(Dataset):
     """
-    A PyTorch Dataset that generates proximal causal episodes on-the-fly.
+    A lightweight Dataset that only computes and returns the deterministic
+    seed for each episode. The actual generation happens in the collator.
+    """
 
-    Each item is one full episode (a synthetic observational dataset) with
-    N = samples_per_episode rows. The variable groups X, Z, W are returned
-    as separate tensors so that the transformer can apply distinct type
-    embeddings to each.
+    def __init__(
+        self,
+        num_episodes: int,
+        seed_offset: int = 0,
+    ) -> None:
+        self.num_episodes = num_episodes
+        self.base_seed_offset = seed_offset
+        self._shared_reset_count = torch.tensor([0], dtype=torch.long)
+        self._shared_reset_count.share_memory_()
 
-    Args:
-        prior_config: Configuration for the ProximalPrior. A deep copy is
-            made internally so the caller's config is never mutated.
-        num_episodes: Number of episodes that constitute one epoch.
-        samples_per_episode: Number of rows (observations) per episode.
-        seed_offset: Added to the episode index to form the episode seed,
-            allowing non-overlapping train/val splits.
+    def set_reset_state(self, reset_count: int) -> None:
+        self._shared_reset_count[0] = reset_count
+
+    def __len__(self) -> int:
+        return self.num_episodes
+
+    def __getitem__(self, idx: int) -> int:
+        # Just return the mathematical seed for this specific episode
+        reset_count = self._shared_reset_count.item()
+        return self.base_seed_offset + (reset_count * self.num_episodes) + idx
+
+
+class DynamicBatchCollator:
+    """
+    Collator that takes a batch of episode seeds, samples a single uniform
+    episode size (N) for the whole batch, and generates the tensors.
     """
 
     def __init__(
         self,
         prior_config: ProximalPriorConfig,
-        num_episodes: int,
-        samples_per_episode: int,
-        seed_offset: int = 0,
-    ) -> None:
+        min_episode_size: int,
+        max_episode_size: int,
+    ):
         self.prior_config = copy.deepcopy(prior_config)
         self.prior_config.device = "cpu"
+        self.min_episode_size = min_episode_size
+        self.max_episode_size = max_episode_size
 
-        # Validate dimensional completeness requirement up front
-        if self.prior_config.d_z < self.prior_config.d_u:
-            raise ValueError(
-                f"d_z={self.prior_config.d_z} must be >= d_u={self.prior_config.d_u} "
-                "for the completeness condition (Assumption 4) to hold."
-            )
-        if self.prior_config.d_w < self.prior_config.d_u:
-            raise ValueError(
-                f"d_w={self.prior_config.d_w} must be >= d_u={self.prior_config.d_u} "
-                "for the completeness condition (Assumption 4) to hold."
-            )
-
+        # Instantiate the prior once per worker
         if self.prior_config.type == "linear":
             self.prior = LinearPrior(config=self.prior_config)
         elif self.prior_config.type == "linear_confounding":
@@ -65,104 +71,81 @@ class ProximalDataset(Dataset):
             self.prior = FungibleSmall(config=self.prior_config)
         else:
             self.prior = BNNPrior(config=self.prior_config)
-        self.num_episodes = num_episodes
-        self.samples_per_episode = samples_per_episode
-        self.base_seed_offset = seed_offset
-        self._shared_reset_count = torch.tensor([0], dtype=torch.long)
-        self._shared_reset_count.share_memory_()
 
-    def set_reset_state(self, reset_count: int) -> None:
-        """
-        Updates the internal reset generation.
-        Persistent workers will read this shared tensor on the fly.
-        """
-        self._shared_reset_count[0] = reset_count
+    def __call__(self, batch_seeds: list[int]) -> dict[str, torch.Tensor]:
+        # 1. Deterministically sample ONE size for the entire batch
+        # We use the first seed in the batch to ensure reproducibility
+        g = torch.Generator(device="cpu")
+        g.manual_seed(batch_seeds[0])
 
-    def __len__(self) -> int:
-        return self.num_episodes
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        reset_count = self._shared_reset_count.item()
-        episode_seed = self.base_seed_offset + (reset_count * self.num_episodes) + idx
-
-        episode = self.prior.generate_episode(
-            batch_size=self.samples_per_episode,
-            episode_seed=episode_seed,
+        batch_n = int(
+            torch.randint(
+                low=self.min_episode_size,
+                high=self.max_episode_size + 1,
+                size=(1,),
+                generator=g,
+            ).item()
         )
 
-        ITE = episode.Y1 - episode.Y0  # (N,)
+        # 2. Generate all episodes for this batch using the fixed size
+        episodes_data = []
+        for seed in batch_seeds:
+            ep = self.prior.generate_episode(
+                batch_size=batch_n,
+                episode_seed=seed,
+            )
+            ITE = ep.Y1 - ep.Y0
 
+            episodes_data.append(
+                {
+                    "X": ep.X,
+                    "Z": ep.Z,
+                    "W": ep.W,
+                    "A": ep.A.unsqueeze(-1),
+                    "Y": ep.Y.unsqueeze(-1),
+                    "Y0": ep.Y0.unsqueeze(-1),
+                    "Y1": ep.Y1.unsqueeze(-1),
+                    "ITE": ITE.unsqueeze(-1),
+                }
+            )
+
+        # 3. Stack cleanly (no padding required because sizes match!)
         return {
-            "X": episode.X,  # (N, d_x)
-            "Z": episode.Z,  # (N, d_z)
-            "W": episode.W,  # (N, d_w)
-            "A": episode.A.unsqueeze(-1),  # (N, 1)
-            "Y": episode.Y.unsqueeze(-1),  # (N, 1)
-            "Y0": episode.Y0.unsqueeze(-1),  # (N, 1)
-            "Y1": episode.Y1.unsqueeze(-1),  # (N, 1)
-            "ITE": ITE.unsqueeze(-1),  # (N, 1)  — training target
+            key: torch.stack([d[key] for d in episodes_data], dim=0)
+            for key in episodes_data[0].keys()
         }
-
-
-def custom_collate(batch):
-    """
-    Custom collate function that stacks episodes along dimension 0.
-    Returns tensors of shape (B, N, D) where B is batch_size and N is samples_per_episode.
-    """
-    elem = batch[0]
-    return {key: torch.stack([d[key] for d in batch], dim=0) for key in elem.keys()}
 
 
 def create_causal_data_loaders(
     prior_config: ProximalPriorConfig,
     batch_size: int = 16,
-    samples_per_episode: int = 1000,
+    min_episode_size: int = 500,
+    max_episode_size: int = 1500,
     train_episodes: int = 10_000,
     val_episodes: int = 1_000,
     num_workers: int = 4,
     seed: int = 42,
 ) -> dict[str, DataLoader]:
-    """
-    Create train and validation DataLoaders for ProximalFM.
-
-    Train and validation seeds are non-overlapping by construction:
-        train episodes use seeds  [seed,              seed + train_episodes)
-        val   episodes use seeds  [seed + train_episodes, seed + train_episodes + val_episodes)
-
-    Args:
-        prior_config: Config forwarded to ProximalDataset (deep-copied internally).
-        batch_size: Number of episodes per batch fed to the transformer.
-        samples_per_episode: Rows per episode (N in the paper).
-        train_episodes: Episodes per training epoch.
-        val_episodes: Episodes for validation.
-        num_workers: DataLoader worker processes. Set to 0 for debugging.
-        seed: Base seed controlling both episode generation and shuffle order.
-
-    Returns:
-        Dict with keys "train" and "val", each a DataLoader.
-    """
+    # Datasets are now ultra-lightweight (just math)
     train_dataset = ProximalDataset(
-        prior_config=prior_config,
         num_episodes=train_episodes,
-        samples_per_episode=samples_per_episode,
         seed_offset=seed,
     )
-
-    # Shift seed offset so validation episodes are entirely disjoint from training
     val_dataset = ProximalDataset(
-        prior_config=prior_config,
         num_episodes=val_episodes,
-        samples_per_episode=samples_per_episode,
         seed_offset=seed + train_episodes,
     )
 
-    # Reproducible shuffle: pin the DataLoader's internal RNG to `seed`
     train_generator = torch.Generator()
     train_generator.manual_seed(seed)
-
-    # pin_memory accelerates CPU→GPU transfer via page-locked memory;
-    # only beneficial when a CUDA device is actually available
     use_pin_memory = torch.cuda.is_available()
+
+    # The collator handles generation and ensures N is consistent per batch
+    collator = DynamicBatchCollator(
+        prior_config=prior_config,
+        min_episode_size=min_episode_size,
+        max_episode_size=max_episode_size,
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -171,10 +154,9 @@ def create_causal_data_loaders(
         num_workers=num_workers,
         pin_memory=use_pin_memory,
         generator=train_generator,
-        # Each worker needs a unique seed to avoid generating identical episodes
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
-        collate_fn=custom_collate,
+        collate_fn=collator,
     )
 
     val_loader = DataLoader(
@@ -185,18 +167,12 @@ def create_causal_data_loaders(
         pin_memory=use_pin_memory,
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
-        collate_fn=custom_collate,
+        collate_fn=collator,
     )
 
     return {"train": train_loader, "val": val_loader}
 
 
 def _worker_init_fn(worker_id: int) -> None:
-    """
-    Give each DataLoader worker a distinct random seed.
-
-    Without this, all workers share the same RNG state at fork time and
-    would generate identical episodes when num_workers > 1.
-    """
     worker_seed = torch.initial_seed() % (2**32)
     torch.manual_seed(worker_seed + worker_id)
