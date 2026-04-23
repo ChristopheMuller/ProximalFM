@@ -485,10 +485,12 @@ def print_partial_results(
     all_df = pd.concat(frames, ignore_index=True)
     ate_df, _ = build_summary_tables(all_df)
 
+    if "Time (s)" in ate_df.columns:
+        ate_df["Time (s)"] = ate_df["Time (s)"].round(2)
+
     console.print(
         Padding(make_ate_rich_table(ate_df, title="ATE — results so far"), (1, 4))
     )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Main
