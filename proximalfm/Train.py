@@ -303,14 +303,6 @@ class CATETrainer:
         for cb in self.callbacks:
             cb.on_init_end(self)
 
-    def _log_info(self, message: str) -> None:
-        for cb in self.callbacks:
-            cb.on_log_info(message)
-
-    def _log_error(self, message: str) -> None:
-        for cb in self.callbacks:
-            cb.on_log_error(message)
-
         # ------------------------------------------------------------------
         # Checkpoint directories
         # ------------------------------------------------------------------
@@ -328,6 +320,15 @@ class CATETrainer:
             yaml.dump(self.prior_cfg, f)
         with open(os.path.join(path_dir, "data_config.yaml"), "w") as f:
             yaml.dump(self.data_cfg, f)
+
+
+    def _log_info(self, message: str) -> None:
+        for cb in self.callbacks:
+            cb.on_log_info(message)
+
+    def _log_error(self, message: str) -> None:
+        for cb in self.callbacks:
+            cb.on_log_error(message)
 
     # ------------------------------------------------------------------
     # Helpers
