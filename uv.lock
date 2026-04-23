@@ -192,6 +192,24 @@ wheels = [
 ]
 
 [[package]]
+name = "causalchamber"
+version = "0.2.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pillow" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "termcolor" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/de/369dfb72eef3835a7137b2fa5d0b9301699a4e01da15a2d375aac306ce90/causalchamber-0.2.8.tar.gz", hash = "sha256:8ae94d5fac8a4782067f7748da08089059b6e57754abb6b664389277d51fe47e", size = 61403, upload-time = "2026-04-20T13:52:30.527Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f8/af/4bafc805921cf66c5934b96270609a2f381fce79e630d799f3c43e5a130e/causalchamber-0.2.8-py3-none-any.whl", hash = "sha256:fec4e30a6d45df8eca5ccdff54599fc8031b26bd2f2ead0dfee729f8bb60df6f", size = 83252, upload-time = "2026-04-20T13:52:28.773Z" },
+]
+
+[[package]]
 name = "causalpfn"
 version = "0.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -2011,6 +2029,7 @@ dependencies = [
     { name = "backrefs" },
     { name = "black" },
     { name = "botorch" },
+    { name = "causalchamber" },
     { name = "causalpfn" },
     { name = "certifi" },
     { name = "cfgv" },
@@ -2155,6 +2174,7 @@ requires-dist = [
     { name = "backrefs", specifier = "==5.8" },
     { name = "black", specifier = "==23.11.0" },
     { name = "botorch", specifier = "==0.8.1" },
+    { name = "causalchamber", specifier = ">=0.2.8" },
     { name = "causalpfn", specifier = ">=0.1.4" },
     { name = "certifi", specifier = "==2025.4.26" },
     { name = "cfgv", specifier = "==3.4.0" },
