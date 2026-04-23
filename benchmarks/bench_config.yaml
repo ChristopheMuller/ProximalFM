@@ -1,22 +1,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # bench_config.yaml — Single source of truth for the entire benchmark.
-#
-# WHY a single config file?
-#   Reproducibility: one file captures every experimental choice.
-#   You can commit it to git alongside your results and know exactly
-#   what produced them.  Changing one flag here propagates everywhere.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  # "generate" creates new data from the prior; "load" reuses a saved file.
-  # If generate is chosen and data.pt already exists, it is reused
-  # (use run.force_regen: true to overwrite).
   source: generate
   output_dir: results/test
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 1000    # context samples shown to each estimator
+  n_train: 500    # context samples shown to each estimator
   n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
   n_batch: 10    # number of independent datasets (episodes)
 
@@ -37,30 +29,12 @@ data:
 # ── Execution ─────────────────────────────────────────────────────────────────
 run:
   seed:      999999999    # needs to be large enough to be sure not to use same seeds as during the training!
-  n_workers: 8            # parallel worker processes for baseline methods
-  device: mps             # cpu | cuda | mps  — only used for neural checkpoints
+  n_workers: 8
+  device: mps
   force_rerun: false
-  # If force_rerun is false, any method whose prediction file already exists
-  # is skipped.  Flip to true to recompute everything from scratch.
 
 
 # ── Methods ───────────────────────────────────────────────────────────────────
-# Each entry configures one CATE estimator instance.
-#
-# Required keys
-#   name : display label (must be filesystem-safe, used as filename stem)
-#   cls  : class from bench_methods.py — S_Learner | T_Learner | P2SLS
-#
-# Optional keys (depend on cls)
-#   base        : "linear" | "rf" | "tabicl"   (S/T-Learner only)
-#   use_W       : include outcome proxy W       (S/T-Learner, default true)
-#   use_Z       : include treatment proxy Z     (S/T-Learner, default true)
-#   interactions: A×X interaction terms in stage 2 (P2SLS only, default false)
-#
-# WHY configure instances rather than subclasses?
-#   A method "S-OLS without proxies" and "S-OLS with proxies" differ only
-#   in use_W/use_Z.  Encoding that as two config entries is far less code
-#   than two new subclasses, and the comparison is immediately legible here.
 methods:
 
   # ── S-Learner baselines ──────────────────────────────────────────────────
@@ -139,7 +113,7 @@ methods:
     cls:          P2SLS
     interactions: true
 
-  - name: KernelPV-ATE
+  - name: KPV-ATE
     cls: NMMRWrappers
     model_type: KernelPV
     estimate_cate: false
@@ -147,7 +121,7 @@ methods:
     lam2: 0.01
     split_ratio: 0.5
 
-  - name: KernelPV-CATE
+  - name: KPV-CATE
     cls: NMMRWrappers
     model_type: KernelPV
     estimate_cate: true
@@ -174,6 +148,9 @@ methods:
   - name: NMMR-V
     cls: NMMR
     loss_name: V_statistic
+
+  # - name: DFPV-ATE
+  #   cls: DFPV
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
   - name: CausalFM

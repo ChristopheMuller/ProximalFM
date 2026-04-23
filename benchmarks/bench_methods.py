@@ -602,6 +602,124 @@ class NMMR_Estimator(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         return self.model.predict(X)
+    
+class DFPV_Estimator(CATEEstimator):
+    """Wrapper for the Deep Feature Proxy Variable (DFPV) Model."""
+    
+    def __init__(self, **kwargs):
+        import sys
+        from pathlib import Path
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        
+        # 1. Isolate the environment for DFPV (Assuming it shares the NMMR repo structure)
+        dfpv_repo_path = str(PROJECT_ROOT / "NMMR") 
+        
+        if dfpv_repo_path not in sys.path:
+            sys.path.insert(0, dfpv_repo_path)
+            
+        # 2. Purge the 'src' cache to prevent module collisions
+        keys = [k for k in sys.modules if k == 'src' or k.startswith('src.')]
+        for k in keys: 
+            del sys.modules[k]
+            
+        # 3. Import classes directly in __init__ after environment is prepped
+        from src.data.ate.data_class import PVTrainDataSet
+        from src.models.DFPV.model import DFPVModel 
+        
+        import torch # Make sure torch is imported here
+        torch.set_num_threads(1)
+
+        self._PVTrainDataSet = PVTrainDataSet
+        self._DFPVModel = DFPVModel
+            
+        self.lam1 = kwargs.get("lam1", 0.1)
+        self.lam2 = kwargs.get("lam2", 0.1)
+        self.feat_dim = kwargs.get("feat_dim", 16)
+        self.hidden_dim = kwargs.get("hidden_dim", 32)
+        self.split_ratio = kwargs.get("split_ratio", 0.5)
+        self.add_stage1_intercept = kwargs.get("add_stage1_intercept", True)
+        self.add_stage2_intercept = kwargs.get("add_stage2_intercept", True)
+        
+        self.model = None
+
+    def _build_mlp(self, in_dim, out_dim):
+        """Constructs a simple MLP for the DFPV feature extractors."""
+        import torch.nn as nn
+        return nn.Sequential(
+            nn.Linear(in_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.hidden_dim, out_dim)
+        )
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("DFPV requires both W and Z proxies.")
+        
+        n = X.shape[0]
+        
+        # Split data into Stage 1 and Stage 2
+        indices = np.random.permutation(n)
+        split_idx = int(n * self.split_ratio)
+        idx1, idx2 = indices[:split_idx], indices[split_idx:]
+        
+        A_2d = np.asarray(A).reshape(-1, 1)
+        Y_2d = np.asarray(Y).reshape(-1, 1)
+        X_2d = np.asarray(X)
+        W_2d = np.asarray(W)
+        Z_2d = np.asarray(Z)
+
+        # Use the class loaded in __init__
+        train1 = self._PVTrainDataSet(
+            treatment=A_2d[idx1],
+            treatment_proxy=Z_2d[idx1],
+            outcome_proxy=W_2d[idx1],
+            outcome=Y_2d[idx1],
+            backdoor=X_2d[idx1]
+        )
+        
+        train2 = self._PVTrainDataSet(
+            treatment=A_2d[idx2],
+            treatment_proxy=Z_2d[idx2],
+            outcome_proxy=W_2d[idx2],
+            outcome=Y_2d[idx2],
+            backdoor=X_2d[idx2]
+        )
+        
+        dim_A = A_2d.shape[1]
+        dim_X = X_2d.shape[1]
+        dim_W = W_2d.shape[1]
+        dim_Z = Z_2d.shape[1]
+
+        # Instantiate the DFPV model using the class loaded in __init__
+        self.model = self._DFPVModel(
+            treatment_1st_net=self._build_mlp(dim_A, self.feat_dim),
+            treatment_2nd_net=self._build_mlp(dim_A, self.feat_dim),
+            treatment_proxy_net=self._build_mlp(dim_Z, self.feat_dim),
+            outcome_proxy_net=self._build_mlp(dim_W, self.feat_dim),
+            backdoor_1st_net=self._build_mlp(dim_X, self.feat_dim),
+            backdoor_2nd_net=self._build_mlp(dim_X, self.feat_dim),
+            add_stage1_intercept=self.add_stage1_intercept,
+            add_stage2_intercept=self.add_stage2_intercept
+        )
+        
+        self.model.fit(train1, train2, self.lam1, self.lam2)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        if self.model is None:
+            raise RuntimeError("Must call fit() before predict().")
+            
+        n = X.shape[0]
+        
+        A1 = np.ones((n, 1))
+        A0 = np.zeros((n, 1))
+        
+        y1 = self.model.predict(A1)
+        y0 = self.model.predict(A0)
+        
+        return (y1 - y0).squeeze()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Foundation Model Wrappers
@@ -865,6 +983,9 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             **{k: v for k, v in cfg.items() if k not in ["model_type", "estimate_cate"]}
         ),
         "NMMR": lambda: NMMR_Estimator(
+            **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}
+        ),
+        "DFPV": lambda: DFPV_Estimator(
             **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}
         ),
     }
