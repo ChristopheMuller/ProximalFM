@@ -434,6 +434,8 @@ class CATETrainer:
 
             residuals = pred_mean - target
             abs_error = residuals.abs()
+
+
             percentage_errors = residuals / (target + 1e-8)
 
             # CATE R2 per episode
@@ -441,13 +443,18 @@ class CATETrainer:
             target_mean_episode = target.mean(dim=1, keepdim=True)
             ss_tot_diff = target - target_mean_episode
             ss_tot_episode = (ss_tot_diff * ss_tot_diff).sum(dim=1)
+            
+            # Identify heterogeneous episodes (where R^2 is well-defined)
+            valid_mask = ss_tot_episode > 1e-8
+            num_valid_cate_episodes = valid_mask.sum()
+
             r2_episode = torch.where(
-                ss_tot_episode > 1e-8,
+                valid_mask,
                 1.0 - (ss_res_episode / ss_tot_episode),
                 torch.zeros_like(ss_tot_episode),
             )
 
-            # ATE statistics per episode (each episode is fully contained in this batch)
+            # ATE statistics per episode
             n_query = target.size(1)
             batch_size = target.size(0)
             ate_true_episode = target.mean(dim=1)
@@ -457,10 +464,17 @@ class CATETrainer:
             var_tau_episode = ss_tot_episode / n_query
             std_tau_episode = torch.sqrt(var_tau_episode.clamp(min=0))
 
-            cate_r2_ate_penalty = (ate_residuals * ate_residuals) / (
-                var_tau_episode + 1e-8
+            # Mask out the penalty calculation to prevent explosion
+            cate_r2_ate_penalty = torch.where(
+                valid_mask,
+                (ate_residuals * ate_residuals) / (var_tau_episode + 1e-8),
+                torch.zeros_like(var_tau_episode)
             )
-            cate_r2_shape = r2_episode + cate_r2_ate_penalty
+            cate_r2_shape = torch.where(
+                valid_mask,
+                r2_episode + cate_r2_ate_penalty,
+                torch.zeros_like(r2_episode)
+            )
 
             cate_mae_episode = residuals.abs().mean(dim=1, keepdim=True)
 
@@ -483,6 +497,7 @@ class CATETrainer:
                 "sum_sq_ate_err": ate_residuals.pow(2).sum(),
                 "sum_cate_r2_shape": cate_r2_shape.sum(),
                 "sum_cate_r2_ate_penalty": cate_r2_ate_penalty.sum(),
+                "num_valid_cate_episodes": num_valid_cate_episodes,
                 "sum_cate_mae": cate_mae_episode.sum(),
                 "sum_cate_rmse_norm": cate_rmse_norm_episode.sum(),
                 "sum_ate_error_norm": ate_error_norm_episode.sum(),
@@ -669,6 +684,7 @@ class CATETrainer:
 
         total_cate_r2 = torch.zeros(1, device=self.device)
         total_episodes = 0
+        total_valid_cate_episodes = torch.zeros(1, device=self.device)
         total_ate_true = torch.zeros(1, device=self.device)
         total_sq_ate_true = torch.zeros(1, device=self.device)
         total_sq_ate_err = torch.zeros(1, device=self.device)
@@ -721,6 +737,7 @@ class CATETrainer:
 
                     total_cate_r2 += metrics["sum_cate_r2"]
                     total_episodes += metrics["num_episodes"]
+                    total_valid_cate_episodes += metrics["num_valid_cate_episodes"]                 
                     total_ate_true += metrics["sum_ate_true"]
                     total_sq_ate_true += metrics["sum_sq_ate_true"]
                     total_sq_ate_err += metrics["sum_sq_ate_err"]
@@ -748,7 +765,10 @@ class CATETrainer:
         ite_error_var = mse - ite_bias_sq
 
         # CATE R2 Mean (per episode)
-        cate_r2_mean = (total_cate_r2 / max(total_episodes, 1)).item()
+        valid_denom = max(total_valid_cate_episodes.item(), 1)
+        cate_r2_mean = (total_cate_r2 / valid_denom).item()
+        cate_r2_shape_mean = (total_cate_r2_shape / valid_denom).item()
+        cate_r2_ate_penalty_mean = (total_cate_r2_ate_penalty / valid_denom).item()
 
         # ATE R2 (across episodes)
         episodes_denom = max(total_episodes, 1)
@@ -760,8 +780,6 @@ class CATETrainer:
             ate_r2 = 0.0
 
         ep_denom = max(total_episodes, 1)
-        cate_r2_shape_mean = (total_cate_r2_shape / ep_denom).item()
-        cate_r2_ate_penalty_mean = (total_cate_r2_ate_penalty / ep_denom).item()
         cate_mae_mean = (total_cate_mae / ep_denom).item()
         cate_rmse_norm_mean = (total_cate_rmse_norm / ep_denom).item()
         ate_normbias = (total_ate_error_norm / ep_denom).item()
