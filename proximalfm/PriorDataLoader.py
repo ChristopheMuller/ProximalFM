@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, Dataset
 from .Structure import ProximalPriorConfig
 from .prior import (
     BNNPrior,
+    BNNPriorComplete,
     ConfoundingLinearPrior,
     LinearPrior,
     CATELinearPrior,
@@ -69,6 +70,8 @@ class DynamicBatchCollator:
             self.prior = CATELinearPrior(config=self.prior_config)
         elif self.prior_config.type == "fungible_small":
             self.prior = FungibleSmall(config=self.prior_config)
+        elif self.prior_config.type == "bnn_complete":
+            self.prior = BNNPriorComplete(config=self.prior_config)
         else:
             self.prior = BNNPrior(config=self.prior_config)
 

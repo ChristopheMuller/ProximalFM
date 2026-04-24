@@ -11,7 +11,9 @@ Activation = Callable[[Tensor], Tensor]
 
 @dataclass
 class NetworkSpec:
-    num_layers: int = 3
+    num_layers: int = 3 # for prior with fixed depth
+    min_layers: int = 2 # for prior with variable depth
+    max_layers: int = 4 # for prior with variable depth
     hidden_size: int = 32
     activation: Activation = torch.tanh
     weight_scale: float = 0.75

@@ -1,4 +1,5 @@
 from .BNNPrior import BNNPrior
+from .BNNPriorComplete import BNNPriorComplete
 from .LinearPrior import LinearPrior
 from .ConfoundingLinearPrior import ConfoundingLinearPrior
 from .CATELinearPrior import CATELinearPrior
@@ -10,4 +11,5 @@ __all__ = [
     "ConfoundingLinearPrior",
     "CATELinearPrior",
     "FungibleSmall",
+    "BNNPriorComplete",
 ]
