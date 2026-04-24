@@ -907,16 +907,19 @@ def main() -> None:
         log_error(f"Error during training: {e}")
         raise
     finally:
-        t = trainer.total_training_time
+        t = getattr(trainer, "total_training_time", 0.0)
         log_info(f"Total training time:        {format_time(t)}")
-        if trainer.epoch_times:
+        
+        epoch_times = getattr(trainer, "epoch_times", [])
+        if epoch_times:
             log_info(
-                f"Mean epoch time:            {format_time(np.mean(trainer.epoch_times))}"
+                f"Mean epoch time:            {format_time(np.mean(epoch_times))}"
             )
-        if trainer.validation_times:
-            log_info(
-                f"Mean validation time:       {format_time(np.mean(trainer.validation_times))}"
-            )
+        
+        validation_times = getattr(trainer, "validation_times", [])
+        if validation_times:
+            log_info(f"Mean validation time:       {format_time(np.mean(validation_times))}")
+        
         for cb in callbacks:
             cb.on_train_end(trainer)
 
