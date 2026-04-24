@@ -383,15 +383,6 @@ class CATETrainer:
         self.optimizer.zero_grad()
         loss.backward()
 
-        if self.global_step % 32 == 0:
-            grad_logs = {}
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    layer_norm = param.grad.detach().norm(2).item()
-                    grad_logs[f"GradNorm_Layers/{name}"] = layer_norm
-            for cb in self.callbacks:
-                cb.on_step_end(self, self.global_step, grad_logs)
-
         if self.train_cfg.get("clip_grad", 0.0) > 0:
             grad_norm = nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.train_cfg["clip_grad"]
