@@ -356,6 +356,9 @@ class CATETrainer:
 
         target = batch["ITE"][:, split_idx:]
 
+        if target.dim() == 2:
+            target = target.unsqueeze(-1)
+
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
 
         return x, a, w, z, y, target, y_std
@@ -556,10 +559,6 @@ class CATETrainer:
                 batch = self._move_batch(batch)
                 x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 
-                # Ensure target has shape (B, N_query, 1) to match predictions
-                if target.dim() == 2:
-                    target = target.unsqueeze(-1)
-
                 (
                     loss,
                     loss_mse,
@@ -675,8 +674,6 @@ class CATETrainer:
                 for batch in pbar:
                     batch = self._move_batch(batch)
                     x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
-                    if target.dim() == 2:
-                        target = target.unsqueeze(-1)
 
                     pred_mean, pred_log_var = self.model.estimate_CATE(
                         x=x, a_train=a, w=w, z=z, y_train=y, return_log_variance=True
