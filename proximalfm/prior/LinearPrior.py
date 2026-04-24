@@ -117,6 +117,7 @@ class LinearPrior:
 
         return inputs @ weight + bias
 
+    @torch.no_grad()
     def generate_episode(
         self,
         batch_size: int,
