@@ -198,6 +198,7 @@ class ProximalGMM(BaseCATEModel):
         w: torch.Tensor,
         z: torch.Tensor,
         y_train: torch.Tensor,
+        out: typing.Optional[torch.Tensor] = None,
         x_test: typing.Optional[torch.Tensor] = None,
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
@@ -209,21 +210,22 @@ class ProximalGMM(BaseCATEModel):
         Otherwise, returns just the expected mean.
         """
 
-        mode = (
-            "explicit_test"
-            if (x_test is not None and w_test is not None and z_test is not None)
-            else "full_sequence"
-        )
+        if out is None:
+            mode = (
+                "explicit_test"
+                if (x_test is not None and w_test is not None and z_test is not None)
+                else "full_sequence"
+            )
 
-        if mode == "explicit_test":
-            x_full = torch.cat([x, x_test], dim=1)
-            w_full = torch.cat([w, w_test], dim=1)
-            z_full = torch.cat([z, z_test], dim=1)
-        else:
-            x_full, w_full, z_full = x, w, z
+            if mode == "explicit_test":
+                x_full = torch.cat([x, x_test], dim=1)
+                w_full = torch.cat([w, w_test], dim=1)
+                z_full = torch.cat([z, z_test], dim=1)
+            else:
+                x_full, w_full, z_full = x, w, z
 
-        # Forward pass returns [batch, n_test, 3K]
-        out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
+            # Forward pass returns [batch, n_test, 3K]
+            out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
 
         logits = out[..., : self.n_gmm]
         means = out[..., self.n_gmm : 2 * self.n_gmm]

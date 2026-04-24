@@ -190,6 +190,7 @@ class ProximalQuantile(BaseCATEModel):
         w: torch.Tensor,
         z: torch.Tensor,
         y_train: torch.Tensor,
+        out: typing.Optional[torch.Tensor] = None,
         x_test: typing.Optional[torch.Tensor] = None,
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
@@ -200,21 +201,22 @@ class ProximalQuantile(BaseCATEModel):
         If 0.5 is not in quantiles, uses interpolation or closest value.
         If return_log_variance is True, computes variance.
         """
-        mode = (
-            "explicit_test"
-            if (x_test is not None and w_test is not None and z_test is not None)
-            else "full_sequence"
-        )
+        if out is None:
+            mode = (
+                "explicit_test"
+                if (x_test is not None and w_test is not None and z_test is not None)
+                else "full_sequence"
+            )
 
-        if mode == "explicit_test":
-            x_full = torch.cat([x, x_test], dim=1)
-            w_full = torch.cat([w, w_test], dim=1)
-            z_full = torch.cat([z, z_test], dim=1)
-        else:
-            x_full, w_full, z_full = x, w, z
+            if mode == "explicit_test":
+                x_full = torch.cat([x, x_test], dim=1)
+                w_full = torch.cat([w, w_test], dim=1)
+                z_full = torch.cat([z, z_test], dim=1)
+            else:
+                x_full, w_full, z_full = x, w, z
 
-        # Forward pass returns [batch, n_test, n_quantiles]
-        out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
+            # Forward pass returns [batch, n_test, n_quantiles]
+            out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
 
         # 1. Estimate expected mean (median 0.5)
         if 0.5 in self.quantiles:

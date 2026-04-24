@@ -15,7 +15,7 @@ class BaseCATEModel(nn.Module, ABC):
         pass
 
     @abstractmethod
-    def estimate_CATE(self, x, a_train, w, z, y_train, **kwargs):
+    def estimate_CATE(self, x, a_train, w, z, y_train, out=None, **kwargs):
         pass
 
 
