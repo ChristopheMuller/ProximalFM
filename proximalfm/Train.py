@@ -782,7 +782,8 @@ class CATETrainer:
         cov99 = (total_cov99 / denom).item()
 
         self.val_rmses.append(rmse)
-        self.scheduler.step(rmse)
+        if self.global_step >= self.warmup_steps:
+            self.scheduler.step(rmse)
 
         self._log_info(
             f"Epoch {epoch + 1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
