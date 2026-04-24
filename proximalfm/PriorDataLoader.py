@@ -55,7 +55,7 @@ class DynamicBatchCollator:
         min_episode_size: int,
         max_episode_size: int,
     ):
-        self.prior_config = copy.deepcopy(prior_config)
+        self.prior_config = prior_config
         self.prior_config.device = "cpu"
         self.min_episode_size = min_episode_size
         self.max_episode_size = max_episode_size
