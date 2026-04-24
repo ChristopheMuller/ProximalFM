@@ -829,7 +829,6 @@ class CATETrainer:
         os.makedirs(self.train_cfg.get("save_dir", "checkpoints"), exist_ok=True)
 
         early_stop_count = 0
-        best_val_loss = getattr(self, "best_val_loss", float("inf"))
 
         reset_freq = self.data_cfg.get("reset_freq_train", -1)
 
@@ -859,23 +858,22 @@ class CATETrainer:
             for cb in self.callbacks:
                 cb.on_epoch_end(self, epoch, train_metrics, val_metrics)
 
-            if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
-                # Save using the last recorded validation RMSE metric
-                self.save_checkpoint(epoch + 1, last_val_rmse)
-
             if val_metrics:
-                if val_rmse < best_val_loss:
-                    best_val_loss = val_rmse
+                if val_rmse < self.best_val_loss:
                     early_stop_count = 0
+                    self.save_checkpoint(epoch + 1, val_rmse, tag="best")
                 else:
                     early_stop_count += 1
                     if early_stop_count >= self.train_cfg.get("early_stop", 1e9):
                         self._log_info(f"Early stopping after {epoch + 1} epochs.")
                         break
+
+            if (epoch + 1) % self.train_cfg.get("save_freq", 10) == 0 or epoch == 0:
+                self.save_checkpoint(epoch + 1, last_val_rmse)
+
             epoch += 1
 
         self.total_training_time = time.time() - training_start
-        # Final checkpoint uses the last recorded val_rmse
         self.save_checkpoint(epoch + 1, last_val_rmse, tag="final")
 
         self._log_info("Training complete!")
