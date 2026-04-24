@@ -382,24 +382,12 @@ class CATETrainer:
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
         loss.backward()
-
-        if self.train_cfg.get("clip_grad", 0.0) > 0:
-            grad_norm = nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.train_cfg["clip_grad"]
-            )
-        else:
-            parameters = [p for p in self.model.parameters() if p.grad is not None]
-            if len(parameters) == 0:
-                grad_norm = torch.zeros(1, device=self.device)
-            else:
-                device = parameters[0].grad.device
-                grad_norm = torch.norm(
-                    torch.stack(
-                        [torch.norm(p.grad.detach(), 2).to(device) for p in parameters]
-                    ),
-                    2,
-                )
-
+        
+        clip_value = self.train_cfg.get("clip_grad", 0.0)
+        max_norm = clip_value if clip_value > 0 else float("inf")
+        
+        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
+        
         if self.global_step < self.warmup_steps:
             lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
             for param_group in self.optimizer.param_groups:
