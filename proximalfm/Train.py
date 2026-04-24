@@ -369,7 +369,7 @@ class CATETrainer:
 
         # Let the model handle its own extraction logic instead of hardcoding GMM math
         expected_mean, overall_log_variance = self.model.estimate_CATE(
-            x=x, a_train=a, w=w, z=z, y_train=y, return_log_variance=True
+            x=x, a_train=a, w=w, z=z, y_train=y, out=out, return_log_variance=True
         )
 
         loss_mse_raw = F.mse_loss(expected_mean, target)
