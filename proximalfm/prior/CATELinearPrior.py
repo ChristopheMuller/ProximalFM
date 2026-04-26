@@ -223,22 +223,36 @@ class CATELinearPrior:
         """
         Converts a generated ProximalEpisode into a pandas DataFrame.
         """
-        columns = {}
-        X_np = episode.X.cpu().numpy()
-        columns.update({f"x_{i}": X_np[:, i] for i in range(X_np.shape[-1])})
-        Z_np = episode.Z.cpu().numpy()
-        columns.update({f"z_{i}": Z_np[:, i] for i in range(Z_np.shape[-1])})
-        W_np = episode.W.cpu().numpy()
-        columns.update({f"w_{i}": W_np[:, i] for i in range(W_np.shape[-1])})
+        import numpy as np
+
+        data_parts = [
+            episode.X.cpu().numpy(),
+            episode.Z.cpu().numpy(),
+            episode.W.cpu().numpy(),
+        ]
+        cols = (
+            [f"x_{i}" for i in range(episode.X.shape[-1])]
+            + [f"z_{i}" for i in range(episode.Z.shape[-1])]
+            + [f"w_{i}" for i in range(episode.W.shape[-1])]
+        )
+
         if include_latents:
-            U_np = episode.U.cpu().numpy()
-            columns.update({f"u_{i}": U_np[:, i] for i in range(U_np.shape[-1])})
-        columns["treatment"] = episode.A.cpu().numpy()
-        columns["outcome"] = episode.Y.cpu().numpy()
-        columns["y0"] = episode.Y0.cpu().numpy()
-        columns["y1"] = episode.Y1.cpu().numpy()
-        columns["propensity"] = episode.propensity.cpu().numpy()
-        return pd.DataFrame(columns)
+            data_parts.append(episode.U.cpu().numpy())
+            cols.extend([f"u_{i}" for i in range(episode.U.shape[-1])])
+
+        # Add 1D tensors, reshaped to (N, 1) for concatenation
+        data_parts.extend(
+            [
+                episode.A.cpu().numpy()[:, None],
+                episode.Y.cpu().numpy()[:, None],
+                episode.Y0.cpu().numpy()[:, None],
+                episode.Y1.cpu().numpy()[:, None],
+                episode.propensity.cpu().numpy()[:, None],
+            ]
+        )
+        cols.extend(["treatment", "outcome", "y0", "y1", "propensity"])
+
+        return pd.DataFrame(np.concatenate(data_parts, axis=1), columns=cols)
 
     def _sample_regime(self, generator: Generator) -> str:
         """
