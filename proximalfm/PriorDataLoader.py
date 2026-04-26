@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -173,7 +172,7 @@ def create_causal_data_loaders(
         collate_fn=collator,
     )
     # TODO: fix persistent worker race condition before publication
-    
+
     return {"train": train_loader, "val": val_loader}
 
 
