@@ -6,16 +6,17 @@ training:
   warmup_epochs: 100
   weight_decay: 0.0002
   clip_grad: 1.5
-  early_stop: 10          # patience in epochs before early stopping
+  early_stop: 30          # patience in epochs before early stopping
   val_freq: 4
   save_freq: 10           # save a checkpoint every N epochs
   save_dir: "checkpoints"
-  log_dir: "runs/test"
+  start_checkpoint: null
+  log_dir: "runs/bnn_complete"
   device: "mps"           # "cuda" | "mps" | "cpu"
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "test"
+  exp_name: "bnn_complete"
 
 model:
   type: "gmm"
@@ -24,10 +25,10 @@ model:
   col_nhead: 2
   icl_nhead: 2
   row_nhead: 2
-  embed_dim: 32
-  icl_num_blocks: 4
-  row_num_blocks: 4
-  col_num_blocks: 4
+  embed_dim: 64
+  icl_num_blocks: 8
+  row_num_blocks: 8
+  col_num_blocks: 8
   feature_group_size_x: 3
   feature_group_size_w: 2
   feature_group_size_z: 2
@@ -36,16 +37,16 @@ model:
 
 data:
   batch_size: 16             # number of episodes per batch
-  min_context_size: 200
-  max_context_size: 200       # maximum number of rows used as context
-  test_size: 56             # number of rows used as query targets
+  min_context_size: 256
+  max_context_size: 256       # maximum number of rows used as context
+  test_size: 64             # number of rows used as query targets
   train_episodes: 1000       # episodes constituting one training epoch
   reset_freq_train: 1       # frequency (in episodes) to replace episodes in the training set with new ones (0 = never replace)
   val_episodes: 500         # episodes for validation
   num_workers: 4            # DataLoader worker processes (0 = main process only)
 
 prior:
-  type : "cate_linear"
+  type : "bnn_complete"
   d_x            : 5
   d_u            : 3
   d_z            : 4
@@ -55,8 +56,9 @@ prior:
   noise_scale_x  : 1
   temperature    : 2
   confounding_strength: 1
+
 val_prior:
-  type : "cate_linear"
+  type : "bnn_complete"
   d_x            : 5
   d_u            : 3
   d_z            : 4

@@ -24,10 +24,10 @@ class NetworkSpec:
 class ProximalPriorConfig:
     type: str = "nonlinear"
 
-    d_u: int = 4
-    d_x: int = 8
-    d_z: int = 6
-    d_w: int = 6
+    d_u: int = 3
+    d_x: int = 5
+    d_z: int = 4
+    d_w: int = 4
 
     x_spec: NetworkSpec = field(default_factory=NetworkSpec)
     z_spec: NetworkSpec = field(default_factory=NetworkSpec)

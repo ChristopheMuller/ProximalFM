@@ -5,10 +5,10 @@
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
   source: generate
-  output_dir: results/cate_linear_1
+  output_dir: results/test
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 200    # context samples shown to each estimator
+  n_train: 256    # context samples shown to each estimator
   n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
   n_batch: 50    # number of independent datasets (episodes)
 
@@ -23,7 +23,7 @@ data:
     noise_scale_x: 1
     noise_scale_z: 1
     temperature: 2
-    type: cate_linear
+    type: bnn_complete
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -172,11 +172,11 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       ProximalFM
-    checkpoint: checkpoints/cate_linear__3gmm_medium
+  # - name:       ProximalFM_small
+  #   checkpoint: checkpoints/bnn__small
 
-  # - name:       NewModel
-  #   checkpoint: checkpoints/cate_medium
+  - name:       ProximalFM
+    checkpoint: checkpoints/bnn__medium
 
   # - name:       ate_small
   #   checkpoint: checkpoints/ate_small
