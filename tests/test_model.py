@@ -17,6 +17,7 @@ from proximalfm.models.base import (
     QASSMax,
 )
 
+
 def test_get_mlp():
     mlp = get_mlp(10, 20, 5)
     assert isinstance(mlp, nn.Sequential)
@@ -29,13 +30,15 @@ def test_get_mlp():
     out = mlp(x)
     assert out.shape == (2, 5)
 
+
 def test_class_embedding():
     embed = ClassEmbedding(10, 32)
-    embed.reset_parameters() # test reset
+    embed.reset_parameters()  # test reset
 
     y = torch.randint(0, 10, (5, 4, 1)).float()
     out = embed(y)
     assert out.shape == (5, 4, 32)
+
 
 def test_rope():
     rope = Rope(head_dim=16, theta=10000.0)
@@ -50,6 +53,7 @@ def test_rope():
     out_long = rope(x_long)
     assert out_long.shape == (2, 4, 20, 16)
 
+
 def test_qassmax():
     qassmax = QASSMax(num_heads=4, head_dim=16, n_hidden=32)
     q = torch.randn(2, 4, 10, 16)
@@ -60,23 +64,25 @@ def test_qassmax():
     out_zero = qassmax(q, n=0)
     assert out_zero.shape == (2, 4, 10, 16)
 
+
 def test_transformer_block():
     block = TransformerBlock(embed_dim=64, num_heads=4, use_rope=True, ssmax=True)
     q = torch.randn(2, 10, 64)
     kv = torch.randn(2, 10, 64)
 
-    out1 = block(q) # self attention
+    out1 = block(q)  # self attention
     assert out1.shape == (2, 10, 64)
 
-    out2 = block(q, kv) # cross attention
+    out2 = block(q, kv)  # cross attention
     assert out2.shape == (2, 10, 64)
 
     # with max indices
     out3 = block(q, kv, q_max_idx=5, kv_max_idx=8)
     assert out3.shape == (2, 5, 64)
 
+
 def test_table_attn_base():
-    block = TransformerBlock(embed_dim=64, num_heads=4) # Inherits from TableAttnBase
+    block = TransformerBlock(embed_dim=64, num_heads=4)  # Inherits from TableAttnBase
 
     # table shape: (batch_size, n_rows, n_cols, embed_dim)
     q = torch.randn(2, 5, 6, 64)
@@ -94,6 +100,7 @@ def test_table_attn_base():
     out_col_kv = block.col_attn(q, kv)
     assert out_col_kv.shape == (2, 5, 6, 64)
 
+
 def test_induced_transformer_block():
     block = InducedTransformerBlock(embed_dim=64, num_heads=4, n_inducing=8, ssmax=True)
 
@@ -110,6 +117,7 @@ def test_induced_transformer_block():
     out_row = block.row_attn(q_table)
     assert out_row.shape == (2, 5, 6, 64)
 
+
 def test_proximal_nanotab_icl_v2():
     config = ModelConfig(
         embed_dim=32,
@@ -124,7 +132,7 @@ def test_proximal_nanotab_icl_v2():
         feature_group_size_z=2,
         n_cls_cols=4,
         n_cls_rows=16,
-        n_gmm_components=2
+        n_gmm_components=2,
     )
     model = ProximalGMM(config)
 
@@ -158,17 +166,18 @@ def test_proximal_nanotab_icl_v2():
     assert out_const.shape == (n_batch, n_rows - n_train, 6)
     assert not torch.isnan(out_const).any()
 
+
 def test_proximal_nanotab_icl_v2_zero_blocks():
     # Test boundary case with minimal blocks
     config = ModelConfig(
         embed_dim=16,
         col_num_blocks=0,
-        row_num_blocks=1, # Must be >=1 as row_blocks[-1] is accessed
-        icl_num_blocks=1, # Must be >=1 as icl_blocks[-1] is accessed
+        row_num_blocks=1,  # Must be >=1 as row_blocks[-1] is accessed
+        icl_num_blocks=1,  # Must be >=1 as icl_blocks[-1] is accessed
         feature_group_size_x=1,
         feature_group_size_w=1,
         feature_group_size_z=1,
-        n_gmm_components=2
+        n_gmm_components=2,
     )
     model = ProximalGMM(config)
     x = torch.randn(3, 10, 5)
@@ -179,6 +188,7 @@ def test_proximal_nanotab_icl_v2_zero_blocks():
 
     out = model(x, a, w, z, y)
     assert out.shape == (3, 2, 6)
+
 
 def test_estimate_cate_success():
     config = ModelConfig(
@@ -218,7 +228,7 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_log_variance=False
+        return_log_variance=False,
     )
     assert mean.shape == (batch_size, n_test, 1)
 
@@ -232,10 +242,11 @@ def test_estimate_cate_success():
         x_test=x_test,
         w_test=w_test,
         z_test=z_test,
-        return_log_variance=True
+        return_log_variance=True,
     )
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
+
 
 def test_estimate_cate_full_sequence_mode():
     config = ModelConfig(
@@ -263,7 +274,7 @@ def test_estimate_cate_full_sequence_mode():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_log_variance=False
+        return_log_variance=False,
     )
     assert mean.shape == (batch_size, n_test, 1)
 
@@ -274,12 +285,10 @@ def test_estimate_cate_full_sequence_mode():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        return_log_variance=True
+        return_log_variance=True,
     )
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
-
-
 
 
 def test_estimate_cate_math_verification():
@@ -323,14 +332,20 @@ def test_estimate_cate_math_verification():
     out_tensor[0, 0, 2] = 2.0
     out_tensor[0, 0, 3] = 4.0
     # Log vars
-    out_tensor[0, 0, 4] = 0.0 # log(1) = 0
-    out_tensor[0, 0, 5] = 0.0 # log(1) = 0
+    out_tensor[0, 0, 4] = 0.0  # log(1) = 0
+    out_tensor[0, 0, 5] = 0.0  # log(1) = 0
 
-    with unittest.mock.patch.object(model, 'forward', return_value=out_tensor):
+    with unittest.mock.patch.object(model, "forward", return_value=out_tensor):
         mean, log_var = model.estimate_CATE(
-            x=x, a_train=a, w=w, z=z, y_train=y,
-            x_test=x_test, w_test=w_test, z_test=z_test,
-            return_log_variance=True
+            x=x,
+            a_train=a,
+            w=w,
+            z=z,
+            y_train=y,
+            x_test=x_test,
+            w_test=w_test,
+            z_test=z_test,
+            return_log_variance=True,
         )
 
         # Expected mean = 0.5 * 2.0 + 0.5 * 4.0 = 3.0
@@ -341,6 +356,7 @@ def test_estimate_cate_math_verification():
         # Expected log_var = log(2.0) = 0.693147
         expected_log_var = math.log(2.0)
         assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
+
 
 def test_estimate_cate_partial_test_inputs():
     config = ModelConfig(
@@ -373,12 +389,13 @@ def test_estimate_cate_partial_test_inputs():
         w=w_full,
         z=z_full,
         y_train=y_train,
-        x_test=torch.randn(batch_size, n_test, 4), # Partial explicit test inputs
-        w_test=torch.randn(batch_size, n_test, 4), # Partial explicit test inputs
+        x_test=torch.randn(batch_size, n_test, 4),  # Partial explicit test inputs
+        w_test=torch.randn(batch_size, n_test, 4),  # Partial explicit test inputs
         # z_test=None
     )
 
     assert mean.shape == (batch_size, n_test, 1)
+
 
 def test_estimate_cate_multiple_gmm_components():
     config = ModelConfig(
@@ -408,14 +425,19 @@ def test_estimate_cate_multiple_gmm_components():
     z_test = torch.randn(batch_size, n_test, 4)
 
     mean, log_var = model.estimate_CATE(
-        x=x, a_train=a, w=w, z=z, y_train=y,
-        x_test=x_test, w_test=w_test, z_test=z_test,
-        return_log_variance=True
+        x=x,
+        a_train=a,
+        w=w,
+        z=z,
+        y_train=y,
+        x_test=x_test,
+        w_test=w_test,
+        z_test=z_test,
+        return_log_variance=True,
     )
 
     assert mean.shape == (batch_size, n_test, 1)
     assert log_var.shape == (batch_size, n_test, 1)
-
 
 
 def test_gmm_loss_math_verification():
@@ -445,7 +467,7 @@ def test_gmm_loss_math_verification():
     loss = model.loss(outputs, target)
 
     # Recompute loss manually to verify
-    logits = outputs[..., : n_gmm]
+    logits = outputs[..., :n_gmm]
     mu = outputs[..., n_gmm : 2 * n_gmm]
     log_var = outputs[..., 2 * n_gmm :]
 
@@ -457,6 +479,7 @@ def test_gmm_loss_math_verification():
 
     assert torch.allclose(loss, expected_loss)
     assert loss.dim() == 0  # Should be a scalar
+
 
 def test_gmm_loss_target_shape_handling():
     config = ModelConfig(
@@ -483,6 +506,7 @@ def test_gmm_loss_target_shape_handling():
     loss_2d = model.loss(outputs, target_2d)
 
     assert torch.allclose(loss_3d, loss_2d)
+
 
 def test_gmm_loss_single_component_equivalence():
     config = ModelConfig(
@@ -511,13 +535,14 @@ def test_gmm_loss_single_component_equivalence():
     log_var = outputs[..., 2 * n_gmm :]
     var = torch.exp(log_var)
 
-    gnll = torch.nn.GaussianNLLLoss(full=False, eps=0.0, reduction='mean')
+    gnll = torch.nn.GaussianNLLLoss(full=False, eps=0.0, reduction="mean")
     expected_gnll = gnll(mu, target, var)
 
     # they should differ by a constant log(2*pi) term:
     expected_gnll += 0.5 * math.log(2 * math.pi)
 
     assert torch.allclose(loss, expected_gnll, atol=1e-6)
+
 
 def test_gmm_loss_numerical_stability():
     config = ModelConfig(
@@ -541,7 +566,7 @@ def test_gmm_loss_numerical_stability():
 
     # Extreme logits
     outputs[..., 0] = 1000.0  # Large logit
-    outputs[..., 1] = -1000.0 # Small logit
+    outputs[..., 1] = -1000.0  # Small logit
 
     # Extreme means
     outputs[..., 2] = 1e6
@@ -549,7 +574,7 @@ def test_gmm_loss_numerical_stability():
 
     # Extreme log variances
     outputs[..., 4] = 50.0  # Large positive log variance (var -> inf)
-    outputs[..., 5] = -50.0 # Large negative log variance (var -> 0)
+    outputs[..., 5] = -50.0  # Large negative log variance (var -> 0)
 
     target = torch.ones(batch_size, n_test, 1)
 
@@ -558,6 +583,7 @@ def test_gmm_loss_numerical_stability():
     # The loss should be a valid number, not NaN or Inf
     assert not torch.isnan(loss).any()
     assert not torch.isinf(loss).any()
+
 
 def test_gmm_loss_gradient_flow():
     config = ModelConfig(
@@ -588,3 +614,165 @@ def test_gmm_loss_gradient_flow():
     assert not torch.isinf(outputs.grad).any()
     # At least some gradients should be non-zero
     assert torch.abs(outputs.grad).sum() > 0
+
+
+def get_dummy_config():
+    return ModelConfig(
+        feature_group_size_x=2,
+        feature_group_size_w=2,
+        feature_group_size_z=2,
+        embed_dim=16,
+        n_gmm_components=2,
+        col_num_blocks=1,
+        row_num_blocks=1,
+        icl_num_blocks=1,
+    )
+
+
+def test_gmm_normalize_inputs():
+    model = ProximalGMM(get_dummy_config())
+    batch_size, n_rows = 2, 5
+    x = torch.randn(batch_size, n_rows, 4)
+    w = torch.randn(batch_size, n_rows, 4)
+    z = torch.randn(batch_size, n_rows, 4)
+    y = torch.randn(batch_size, n_rows) * 10 + 5  # Mean 5, std 10
+
+    x_norm, w_norm, z_norm, y_norm, y_std = model._normalize_inputs(x, w, z, y)
+
+    assert x_norm.shape == x.shape
+    assert w_norm.shape == w.shape
+    assert z_norm.shape == z.shape
+    assert y_norm.shape == y.shape
+    assert y_std.shape == (batch_size, 1)
+
+
+def test_gmm_circular_group_features():
+    model = ProximalGMM(get_dummy_config())
+    batch_size, n_rows, n_features = 2, 3, 4
+    tensor = torch.randn(batch_size, n_rows, n_features)
+
+    group_size = 2
+    grouped = model._circular_group_features(tensor, group_size)
+
+    assert grouped.shape == (batch_size, n_rows, n_features, group_size)
+
+
+def test_gmm_embed_inputs():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_rows = 2, 5
+    n_train = 3
+
+    x_norm = torch.randn(batch_size, n_rows, 4)
+    w_norm = torch.randn(batch_size, n_rows, 4)
+    z_norm = torch.randn(batch_size, n_rows, 4)
+    a = torch.randn(batch_size, n_train)
+    y_norm = torch.randn(batch_size, n_train)
+
+    emb = model._embed_inputs(x_norm, a, w_norm, z_norm, y_norm)
+
+    expected_n_tokens = 4 + 4 + 4  # Since n_features for x,w,z is 4
+    assert emb.shape == (batch_size, n_rows, expected_n_tokens, config.embed_dim)
+
+
+def test_gmm_run_col_attention():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_rows, n_tokens, embed_dim = 2, 5, 12, config.embed_dim
+    n_train = 3
+
+    emb = torch.randn(batch_size, n_rows, n_tokens, embed_dim)
+    emb_out = model._run_col_attention(emb, n_train)
+
+    assert emb_out.shape == emb.shape
+
+
+def test_gmm_run_row_attention():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_rows, n_tokens, embed_dim = 2, 5, 12, config.embed_dim
+
+    emb = torch.randn(batch_size, n_rows, n_tokens, embed_dim)
+    row_repr = model._run_row_attention(emb)
+
+    expected_cls_cols = model.row_cls_tokens.size(-2)
+    assert row_repr.shape == (batch_size, n_rows, expected_cls_cols * embed_dim)
+
+
+def test_gmm_add_icl_context():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_rows = 2, 5
+    n_train = 3
+
+    expected_cls_cols = model.row_cls_tokens.size(-2)
+    icl_dim = expected_cls_cols * config.embed_dim
+
+    row_repr = torch.randn(batch_size, n_rows, icl_dim)
+    a = torch.randn(batch_size, n_train)
+    y_norm = torch.randn(batch_size, n_train)
+
+    row_repr_out = model._add_icl_context(row_repr, a, y_norm)
+
+    assert row_repr_out.shape == row_repr.shape
+    # Check that training rows are modified, and test rows are NOT modified
+    assert not torch.allclose(row_repr[:, :n_train], row_repr_out[:, :n_train])
+    assert torch.allclose(row_repr[:, n_train:], row_repr_out[:, n_train:])
+
+
+def test_gmm_run_icl_attention():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_rows = 2, 5
+    n_train = 3
+    n_test = n_rows - n_train
+
+    expected_cls_cols = model.row_cls_tokens.size(-2)
+    icl_dim = expected_cls_cols * config.embed_dim
+
+    row_repr = torch.randn(batch_size, n_rows, icl_dim)
+
+    test_repr = model._run_icl_attention(row_repr, n_train)
+
+    assert test_repr.shape == (batch_size, n_test, icl_dim)
+
+
+def test_gmm_decode_gmm():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_test = 2, 2
+
+    expected_cls_cols = model.row_cls_tokens.size(-2)
+    icl_dim = expected_cls_cols * config.embed_dim
+
+    test_repr = torch.randn(batch_size, n_test, icl_dim)
+
+    out = model._decode_gmm(test_repr)
+
+    assert out.shape == (batch_size, n_test, 3 * config.n_gmm_components)
+
+
+def test_gmm_denormalize_outputs():
+    config = get_dummy_config()
+    model = ProximalGMM(config)
+    batch_size, n_test = 2, 2
+    n_gmm = config.n_gmm_components
+
+    out_norm = torch.randn(batch_size, n_test, 3 * n_gmm)
+    y_std = torch.rand(batch_size, 1) + 0.1  # Ensure positive std
+
+    out = model._denormalize_outputs(out_norm, y_std)
+
+    assert out.shape == out_norm.shape
+
+    # Check denormalization logic explicitly
+    # Logits shouldn't change
+    assert torch.allclose(out[..., :n_gmm], out_norm[..., :n_gmm])
+
+    # Means should be scaled
+    expected_means = out_norm[..., n_gmm : 2 * n_gmm] * y_std.unsqueeze(-1)
+    assert torch.allclose(out[..., n_gmm : 2 * n_gmm], expected_means)
+
+    # Log vars should be scaled correctly: log(var * std^2) = log(var) + 2*log(std)
+    expected_log_vars = out_norm[..., 2 * n_gmm :] + 2 * torch.log(y_std.unsqueeze(-1))
+    assert torch.allclose(out[..., 2 * n_gmm :], expected_log_vars)
