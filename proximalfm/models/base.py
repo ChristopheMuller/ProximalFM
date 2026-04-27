@@ -108,6 +108,14 @@ class TransformerBlock(nn.MultiheadAttention, TableAttnBase):
         self.ln_attn = nn.LayerNorm(embed_dim)
         self.ln_mlp = nn.LayerNorm(embed_dim)
 
+        nn.init.zeros_(self.out_proj.weight)
+        if self.out_proj.bias is not None:
+            nn.init.zeros_(self.out_proj.bias)
+
+        nn.init.zeros_(self.mlp[-1].weight)
+        if self.mlp[-1].bias is not None:
+            nn.init.zeros_(self.mlp[-1].bias)
+
     def forward(
         self,
         q,
