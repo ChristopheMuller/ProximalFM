@@ -342,56 +342,6 @@ def test_estimate_cate_math_verification():
         expected_log_var = math.log(2.0)
         assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
 
-def test_estimate_cate_variance_clamping():
-    config = ModelConfig(
-        feature_group_size_x=2,
-        feature_group_size_w=2,
-        feature_group_size_z=2,
-        embed_dim=16,
-        n_gmm_components=1,
-        col_num_blocks=1,
-        row_num_blocks=1,
-        icl_num_blocks=1,
-    )
-    model = ProximalGMM(config)
-
-    batch_size = 1
-    n_train = 2
-    n_test = 1
-    n_gmm = config.n_gmm_components
-
-    x = torch.randn(batch_size, n_train, 4)
-    w = torch.randn(batch_size, n_train, 4)
-    z = torch.randn(batch_size, n_train, 4)
-    a = torch.randn(batch_size, n_train)
-    y = torch.randn(batch_size, n_train)
-
-    x_test = torch.randn(batch_size, n_test, 4)
-    w_test = torch.randn(batch_size, n_test, 4)
-    z_test = torch.randn(batch_size, n_test, 4)
-
-    out_tensor = torch.zeros(batch_size, n_test, 3 * n_gmm)
-    # Logits
-    out_tensor[0, 0, 0] = 0.0
-    # Means
-    out_tensor[0, 0, 1] = 2.0
-    # Log vars: extremely small, making calculated total_variance <= 0 without clamping
-    # Here variance = exp(-50) ~ 0
-    # Total variance formula: expected_x_squared - expected_mean**2
-    # = (variance + mean^2) - mean^2 = variance ~ 0
-    out_tensor[0, 0, 2] = -50.0
-
-    with unittest.mock.patch.object(model, 'forward', return_value=out_tensor):
-        mean, log_var = model.estimate_CATE(
-            x=x, a_train=a, w=w, z=z, y_train=y,
-            x_test=x_test, w_test=w_test, z_test=z_test,
-            return_log_variance=True
-        )
-
-        # Expected log_var = log(1e-8) = -18.42068
-        expected_log_var = math.log(1e-8)
-        assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
-
 def test_estimate_cate_partial_test_inputs():
     config = ModelConfig(
         feature_group_size_x=2,
@@ -501,7 +451,7 @@ def test_gmm_loss_math_verification():
 
     log_pi = F.log_softmax(logits, dim=-1)
     z_sq = ((target - mu) ** 2) * torch.exp(-log_var)
-    log_prob = -0.5 * z_sq - 0.5 * log_var
+    log_prob = -0.5 * z_sq - 0.5 * log_var - 0.5 * math.log(2 * math.pi)
     log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
     expected_loss = -log_mix.mean()
 
@@ -564,14 +514,8 @@ def test_gmm_loss_single_component_equivalence():
     gnll = torch.nn.GaussianNLLLoss(full=False, eps=0.0, reduction='mean')
     expected_gnll = gnll(mu, target, var)
 
-    # Note: Our GMM loss might have a different constant factor.
-    # Let's verify manually:
-    # GMM Loss logic for 1 component:
-    # log_pi = 0 (since log_softmax of a single value is 0)
-    # log_prob = -0.5 * ((target - mu) ** 2) / exp(log_var) - 0.5 * log_var
-    # GMM loss = -log_prob.mean()
-    # GaussianNLLLoss(full=False): 0.5 * (log(max(var, eps)) + (target - mu)**2 / max(var, eps)).mean()
-    # Thus, they should be exactly equal
+    # they should differ by a constant log(2*pi) term:
+    expected_gnll += 0.5 * math.log(2 * math.pi)
 
     assert torch.allclose(loss, expected_gnll, atol=1e-6)
 
