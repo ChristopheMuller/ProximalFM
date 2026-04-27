@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
+
 # CHANGE THIS LINE
 from .registry import register_model
 from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp
@@ -176,16 +178,20 @@ class ProximalGMM(BaseCATEModel):
         target: target values
         """
         if target.dim() == 2:
-            target = target.unsqueeze(-1)  # Ensure [batch, n_test, 1]
+            target = target.unsqueeze(-1)
 
         logits = outputs[..., : self.n_gmm]
         mu = outputs[..., self.n_gmm : 2 * self.n_gmm]
         log_var = outputs[..., 2 * self.n_gmm :]
 
+        log_var = log_var.clamp(min=-12.0, max=8.0)
         log_pi = F.log_softmax(logits, dim=-1)
-        z_diff = target - mu
-        z_sq = (z_diff * z_diff) * torch.exp(-log_var)
-        log_prob = -0.5 * z_sq - 0.5 * log_var
+
+        z_sq = (target - mu).pow(2) * torch.exp(-log_var)
+
+        # Proper Gaussian log density.
+        log_prob = -0.5 * (z_sq + log_var + math.log(2.0 * math.pi))
+
         log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
 
         return -log_mix.mean()
@@ -229,6 +235,7 @@ class ProximalGMM(BaseCATEModel):
         logits = out[..., : self.n_gmm]
         means = out[..., self.n_gmm : 2 * self.n_gmm]
         log_vars = out[..., 2 * self.n_gmm :]
+        log_vars = log_vars.clamp(min=-12.0, max=8.0)
 
         pi = F.softmax(logits, dim=-1)
         expected_mean = (pi * means).sum(dim=-1, keepdim=True)
