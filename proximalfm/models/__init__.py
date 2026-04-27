@@ -3,6 +3,7 @@ from ..Structure import ModelConfig
 
 from .registry import MODEL_REGISTRY
 from . import gmm as gmm
+from . import cate_decomposition as cate_decomposition
 from . import quantile as quantile
 
 

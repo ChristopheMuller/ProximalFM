@@ -364,28 +364,31 @@ class CATETrainer:
         y = batch["Y"][:, :split_idx].squeeze(-1)
 
         target = batch["ITE"][:, split_idx:]
+        target_context = batch["ITE"][:, split_idx:]
 
-        if target.dim() == 2:
-            target = target.unsqueeze(-1)
+        if target.dim() == 3:
+            target = target.squeeze(-1)
+
+        if target_context.dim() == 3:
+            target_context = target_context.squeeze(-1)
 
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
 
-        return x, a, w, z, y, target, y_std
+        return x, a, w, z, y, target, y_std, target_context
 
-    def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
-        out = self.model(x=x, a=a, w=w, z=z, y=y)
-        loss_model = self.model.loss(out, target)
+    def _forward_and_loss(self, x, a, w, z, y, target, y_std, target_context, alpha):
+        pred_ate, pred_delta = self.model(x=x, a=a, w=w, z=z, y=y)
+        out = (pred_ate, pred_delta)
 
-        # Let the model handle its own extraction logic instead of hardcoding GMM math
-        expected_mean, overall_log_variance = self.model.estimate_CATE(
-            x=x, a_train=a, w=w, z=z, y_train=y, out=out, return_log_variance=True
-        )
+        loss_model = self.model.loss(out, target_query=target, target_context=target_context)
+
+        expected_mean = pred_ate + pred_delta
+        overall_log_variance = None  # GMM is gone for now
 
         loss_mse_raw = F.mse_loss(expected_mean, target)
 
-        y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
         loss_mse_normalized = F.mse_loss(
-            expected_mean / y_std_expanded, target / y_std_expanded
+            expected_mean / y_std, target / y_std
         )
 
         loss = alpha * loss_mse_normalized + (1 - alpha) * loss_model
@@ -566,7 +569,7 @@ class CATETrainer:
             for batch in pbar:
                 
                 batch = self._move_batch(batch)
-                x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
+                x, a, w, z, y, target, y_std, target_context = self._prepare_inputs(batch)
 
                 (
                     loss,
@@ -575,7 +578,7 @@ class CATETrainer:
                     pred_mean,
                     pred_log_var,
                 ) = self._forward_and_loss(
-                    x, a, w, z, y, target, y_std, alpha_epoch_loss
+                    x, a, w, z, y, target, y_std, target_context, alpha_epoch_loss
                 )
 
                 total_grad_norm += self._optimization_step(loss)
@@ -682,7 +685,7 @@ class CATETrainer:
             ) as pbar:
                 for batch in pbar:
                     batch = self._move_batch(batch)
-                    x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
+                    x, a, w, z, y, target, y_std, target_context = self._prepare_inputs(batch)
 
                     pred_mean, pred_log_var = self.model.estimate_CATE(
                         x=x, a_train=a, w=w, z=z, y_train=y, return_log_variance=True
