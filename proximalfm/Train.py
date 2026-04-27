@@ -202,6 +202,7 @@ class CATETrainer:
         self.train_cfg = config.get("training", {})
         self.data_cfg = config.get("data", {})
         self.prior_cfg = config.get("prior", {})
+        self.val_prior_cfg = config.get("val_prior", None)
         self.model_cfg = config.get("model", {})
 
         # ------------------------------------------------------------------
@@ -226,6 +227,13 @@ class CATETrainer:
         prior_kwargs = self.prior_cfg.copy()
         prior_kwargs["dtype"] = self.dtype
         self.prior_config = ProximalPriorConfig(**prior_kwargs)
+
+        if self.val_prior_cfg:
+            val_prior_kwargs = self.val_prior_cfg.copy()
+            val_prior_kwargs["dtype"] = self.dtype
+            self.val_prior_config = ProximalPriorConfig(**val_prior_kwargs)
+        else:
+            self.val_prior_config = None
 
         # ------------------------------------------------------------------
         # Model
@@ -276,6 +284,7 @@ class CATETrainer:
 
         loaders = create_causal_data_loaders(
             prior_config=self.prior_config,
+            val_prior_config=self.val_prior_config,
             batch_size=self.data_cfg.get("batch_size", 32),
             min_episode_size=min_context_size + test_size,
             max_episode_size=max_context_size + test_size,

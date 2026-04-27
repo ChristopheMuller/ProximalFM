@@ -55,3 +55,14 @@ prior:
   noise_scale_x  : 1
   temperature    : 2
   confounding_strength: 1
+val_prior:
+  type : "cate_linear"
+  d_x            : 5
+  d_u            : 3
+  d_z            : 4
+  d_w            : 4
+  noise_scale_w  : 1
+  noise_scale_z  : 1
+  noise_scale_x  : 1
+  temperature    : 2
+  confounding_strength: 1
