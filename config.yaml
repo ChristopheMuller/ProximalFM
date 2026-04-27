@@ -16,7 +16,7 @@ training:
   gpu: 0                  # GPU index (only used when device == "cuda")
   zw_mask_prob: 0.0       # probability of masking Z and W type tokens jointly
   x_mask_prob: 0.0        # probability of masking X type tokens
-  exp_name: "bnn_complete"
+  exp_name: "bnn_complete__distriEmbed"
 
 model:
   type: "gmm"
@@ -34,6 +34,10 @@ model:
   feature_group_size_z: 2
   n_cls_cols: 4
   n_cls_rows: 64
+  use_distribution_aware_embedding: true
+  dist_embed_num_blocks: 2
+  dist_embed_n_inducing: 16
+  dist_embed_nhead: 2
 
 data:
   batch_size: 16             # number of episodes per batch
@@ -47,10 +51,10 @@ data:
 
 prior:
   type : "bnn_complete"
-  d_x            : 5
-  d_u            : 3
-  d_z            : 4
-  d_w            : 4
+  d_x            : 3
+  d_u            : 2
+  d_z            : 2
+  d_w            : 2
   noise_scale_w  : 1
   noise_scale_z  : 1
   noise_scale_x  : 1
@@ -59,10 +63,10 @@ prior:
 
 val_prior:
   type : "bnn_complete"
-  d_x            : 5
-  d_u            : 3
-  d_z            : 4
-  d_w            : 4
+  d_x            : 3
+  d_u            : 2
+  d_z            : 2
+  d_w            : 2
   noise_scale_w  : 1
   noise_scale_z  : 1
   noise_scale_x  : 1

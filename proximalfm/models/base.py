@@ -217,3 +217,32 @@ class QASSMax(
             * (1 + torch.tanh(self.query_mlp(q)))
             * q
         )
+
+class DistributionAwareEmbedder(nn.Module):
+    def __init__(self, group_size, embed_dim, num_heads, num_blocks, n_inducing):
+        super().__init__()
+        self.in_proj = nn.Linear(group_size, embed_dim)
+        self.blocks = nn.ModuleList(
+            [
+                InducedTransformerBlock(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    n_inducing=n_inducing,
+                    ssmax=True,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.out_ln = nn.LayerNorm(embed_dim)
+
+    def forward(self, grouped: torch.Tensor, n_train: int) -> torch.Tensor:
+        """
+        grouped: [batch, n_rows, n_tokens, group_size]
+        output:  [batch, n_rows, n_tokens, embed_dim]
+        """
+        emb = self.in_proj(grouped)
+
+        for block in self.blocks:
+            emb = block.col_attn(emb, kv_max_idx=n_train)
+
+        return self.out_ln(emb)

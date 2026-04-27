@@ -9,7 +9,7 @@ from contextlib import nullcontext
 import math
 
 from .registry import register_model
-from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp
+from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp, DistributionAwareEmbedder
 
 
 @register_model("gmm")
@@ -23,10 +23,41 @@ class ProximalGMM(BaseCATEModel):
         self.n_gmm = getattr(config, "n_gmm_components", 1)
         icl_dim = config.embed_dim * config.n_cls_cols
 
-        self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
-        self.w_embed = nn.Linear(config.feature_group_size_w, config.embed_dim)
-        self.z_embed = nn.Linear(config.feature_group_size_z, config.embed_dim)
+        self.use_distribution_aware_embedding = getattr(
+            config, "use_distribution_aware_embedding", False
+        )
 
+        dist_embed_num_blocks = getattr(config, "dist_embed_num_blocks", 1)
+        dist_embed_n_inducing = getattr(config, "dist_embed_n_inducing", 16)
+        dist_embed_nhead = getattr(config, "dist_embed_nhead", config.col_nhead)
+
+        if self.use_distribution_aware_embedding:
+            self.x_embed = DistributionAwareEmbedder(
+                group_size=config.feature_group_size_x,
+                embed_dim=config.embed_dim,
+                num_heads=dist_embed_nhead,
+                num_blocks=dist_embed_num_blocks,
+                n_inducing=dist_embed_n_inducing,
+            )
+            self.w_embed = DistributionAwareEmbedder(
+                group_size=config.feature_group_size_w,
+                embed_dim=config.embed_dim,
+                num_heads=dist_embed_nhead,
+                num_blocks=dist_embed_num_blocks,
+                n_inducing=dist_embed_n_inducing,
+            )
+            self.z_embed = DistributionAwareEmbedder(
+                group_size=config.feature_group_size_z,
+                embed_dim=config.embed_dim,
+                num_heads=dist_embed_nhead,
+                num_blocks=dist_embed_num_blocks,
+                n_inducing=dist_embed_n_inducing,
+            )
+        else:
+            self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
+            self.w_embed = nn.Linear(config.feature_group_size_w, config.embed_dim)
+            self.z_embed = nn.Linear(config.feature_group_size_z, config.embed_dim)
+        
         self.a_embed = nn.Linear(1, config.embed_dim)
         self.a_embed_icl = nn.Linear(1, icl_dim)
 
@@ -178,6 +209,7 @@ class ProximalGMM(BaseCATEModel):
         x_norm: torch.Tensor,
         w_norm: torch.Tensor,
         z_norm: torch.Tensor,
+        n_train: int,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Embed X, W, Z separately, without injecting y/a context.
@@ -191,9 +223,14 @@ class ProximalGMM(BaseCATEModel):
         w_grouped = self._circular_group_features(w_norm, self.feature_group_size_w)
         z_grouped = self._circular_group_features(z_norm, self.feature_group_size_z)
 
-        emb_x = self.x_embed(x_grouped)
-        emb_w = self.w_embed(w_grouped)
-        emb_z = self.z_embed(z_grouped)
+        if self.use_distribution_aware_embedding:
+            emb_x = self.x_embed(x_grouped, n_train)
+            emb_w = self.w_embed(w_grouped, n_train)
+            emb_z = self.z_embed(z_grouped, n_train)
+        else:
+            emb_x = self.x_embed(x_grouped)
+            emb_w = self.w_embed(w_grouped)
+            emb_z = self.z_embed(z_grouped)
 
         return emb_x, emb_w, emb_z
 
@@ -217,6 +254,7 @@ class ProximalGMM(BaseCATEModel):
             x_norm=x_norm,
             w_norm=w_norm,
             z_norm=z_norm,
+            n_train=n_train,
         )
 
         emb_a = self.a_embed(a[:, :, None, None])
@@ -464,7 +502,7 @@ class ProximalGMM(BaseCATEModel):
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
         return_log_variance: bool = False,
-        use_cache: bool = True,
+        use_cache: bool = False,
         cache: typing.Optional[dict[str, typing.Any]] = None,
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
@@ -495,6 +533,12 @@ class ProximalGMM(BaseCATEModel):
                 Optional precomputed representation cache. If provided, it is
                 reused. If None and use_cache=True, a cache is built internally.
         """
+
+        if self.use_distribution_aware_embedding:
+            if use_cache:
+                raise ValueError(
+                    "Representation cache is not currently supported when use_distribution_aware_embedding is True."
+                )
 
         explicit_test_flags = [
             x_test is not None,

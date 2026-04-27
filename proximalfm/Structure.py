@@ -85,3 +85,7 @@ class ModelConfig:
     n_cls_cols: int = 4
     n_cls_rows: int = 64
     n_gmm_components: int = 1
+    use_distribution_aware_embedding: bool = True
+    dist_embed_num_blocks: int = 2
+    dist_embed_n_inducing: int = 16
+    dist_embed_nhead: int = 2
