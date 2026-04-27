@@ -120,6 +120,7 @@ class DynamicBatchCollator:
 
 def create_causal_data_loaders(
     prior_config: ProximalPriorConfig,
+    val_prior_config: ProximalPriorConfig | None = None,
     batch_size: int = 16,
     min_episode_size: int = 500,
     max_episode_size: int = 1500,
@@ -143,8 +144,15 @@ def create_causal_data_loaders(
     use_pin_memory = torch.cuda.is_available()
 
     # The collator handles generation and ensures N is consistent per batch
-    collator = DynamicBatchCollator(
+    train_collator = DynamicBatchCollator(
         prior_config=prior_config,
+        min_episode_size=min_episode_size,
+        max_episode_size=max_episode_size,
+    )
+
+    val_prior_config = val_prior_config if val_prior_config is not None else prior_config
+    val_collator = DynamicBatchCollator(
+        prior_config=val_prior_config,
         min_episode_size=min_episode_size,
         max_episode_size=max_episode_size,
     )
@@ -158,7 +166,7 @@ def create_causal_data_loaders(
         generator=train_generator,
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
-        collate_fn=collator,
+        collate_fn=train_collator,
     )
 
     val_loader = DataLoader(
@@ -169,7 +177,7 @@ def create_causal_data_loaders(
         pin_memory=use_pin_memory,
         worker_init_fn=_worker_init_fn,
         persistent_workers=num_workers > 0,
-        collate_fn=collator,
+        collate_fn=val_collator,
     )
     # TODO: fix persistent worker race condition before publication
 
