@@ -6,7 +6,6 @@ import torch.nn.functional as F
 
 import math
 
-# CHANGE THIS LINE
 from .registry import register_model
 from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp
 
@@ -388,9 +387,7 @@ class ProximalGMM(BaseCATEModel):
 
         z_sq = (target - mu).pow(2) * torch.exp(-log_var)
 
-        # Proper Gaussian log density.
         log_prob = -0.5 * (z_sq + log_var + math.log(2.0 * math.pi))
-
         log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
 
         return -log_mix.mean()
