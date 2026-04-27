@@ -4,9 +4,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from contextlib import nullcontext
+
 import math
 
-# CHANGE THIS LINE
 from .registry import register_model
 from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp
 
@@ -32,9 +33,7 @@ class ProximalGMM(BaseCATEModel):
         self.y_embed_in = nn.Linear(1, config.embed_dim)
         self.y_embed_icl = nn.Linear(1, icl_dim)
 
-        self.role_ya_gates = nn.Parameter(
-            torch.full((3, config.embed_dim), 2.0)
-        )
+        self.role_ya_gates = nn.Parameter(torch.full((3, config.embed_dim), 2.0))
 
         self.col_blocks = nn.ModuleList(
             [
@@ -106,6 +105,50 @@ class ProximalGMM(BaseCATEModel):
 
         return x_norm, w_norm, z_norm, y_norm, y_std
 
+    def _compute_context_stats(
+        self,
+        x: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
+        y: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """
+        Compute normalization statistics from training/context rows only.
+
+        Inputs here should be training/context rows.
+        """
+        stats = {}
+
+        stats["x_mean"] = x.mean(dim=1, keepdim=True)
+        stats["x_std"] = x.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        stats["w_mean"] = w.mean(dim=1, keepdim=True)
+        stats["w_std"] = w.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        stats["z_mean"] = z.mean(dim=1, keepdim=True)
+        stats["z_std"] = z.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        stats["y_mean"] = y.mean(dim=1, keepdim=True)
+        stats["y_std"] = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        return stats
+
+    def _normalize_with_stats(
+        self,
+        x: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
+        stats: dict[str, torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Normalize rows using cached context statistics.
+        """
+        x_norm = (x - stats["x_mean"]) / stats["x_std"]
+        w_norm = (w - stats["w_mean"]) / stats["w_std"]
+        z_norm = (z - stats["z_mean"]) / stats["z_std"]
+
+        return x_norm, w_norm, z_norm
+
     def _circular_group_features(
         self,
         tensor: torch.Tensor,
@@ -130,6 +173,30 @@ class ProximalGMM(BaseCATEModel):
 
         return tensor[:, :, idx_matrix]
 
+    def _embed_feature_families(
+        self,
+        x_norm: torch.Tensor,
+        w_norm: torch.Tensor,
+        z_norm: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Embed X, W, Z separately, without injecting y/a context.
+
+        Returns:
+            emb_x: [batch, n_rows, n_x_tokens, embed_dim]
+            emb_w: [batch, n_rows, n_w_tokens, embed_dim]
+            emb_z: [batch, n_rows, n_z_tokens, embed_dim]
+        """
+        x_grouped = self._circular_group_features(x_norm, self.feature_group_size_x)
+        w_grouped = self._circular_group_features(w_norm, self.feature_group_size_w)
+        z_grouped = self._circular_group_features(z_norm, self.feature_group_size_z)
+
+        emb_x = self.x_embed(x_grouped)
+        emb_w = self.w_embed(w_grouped)
+        emb_z = self.z_embed(z_grouped)
+
+        return emb_x, emb_w, emb_z
+
     def _embed_inputs(
         self,
         x_norm: torch.Tensor,
@@ -146,28 +213,18 @@ class ProximalGMM(BaseCATEModel):
         """
         n_train = y_norm.shape[1]
 
-        x_grouped = self._circular_group_features(
-            x_norm, self.feature_group_size_x
+        emb_x, emb_w, emb_z = self._embed_feature_families(
+            x_norm=x_norm,
+            w_norm=w_norm,
+            z_norm=z_norm,
         )
-        w_grouped = self._circular_group_features(
-            w_norm, self.feature_group_size_w
-        )
-        z_grouped = self._circular_group_features(
-            z_norm, self.feature_group_size_z
-        )
-
-        emb_x = self.x_embed(x_grouped)
-        emb_w = self.w_embed(w_grouped)
-        emb_z = self.z_embed(z_grouped)
 
         emb_a = self.a_embed(a[:, :, None, None])
         emb_y = self.y_embed_in(y_norm[:, :, None, None])
 
         ya_context = emb_y + emb_a
 
-        role_gates = torch.sigmoid(self.role_ya_gates).view(
-            3, 1, 1, 1, -1
-        )
+        role_gates = torch.sigmoid(self.role_ya_gates).view(3, 1, 1, 1, -1)
 
         emb_x[:, :n_train] = emb_x[:, :n_train] + role_gates[0] * ya_context
         emb_w[:, :n_train] = emb_w[:, :n_train] + role_gates[1] * ya_context
@@ -246,9 +303,11 @@ class ProximalGMM(BaseCATEModel):
 
         row_repr = row_repr.clone()
 
-        row_repr[:, :n_train] = row_repr[:, :n_train] + self.y_embed_icl(
-            y_norm[:, :, None]
-        ) + self.a_embed_icl(a[:, :, None])
+        row_repr[:, :n_train] = (
+            row_repr[:, :n_train]
+            + self.y_embed_icl(y_norm[:, :, None])
+            + self.a_embed_icl(a[:, :, None])
+        )
 
         return row_repr
 
@@ -388,9 +447,7 @@ class ProximalGMM(BaseCATEModel):
 
         z_sq = (target - mu).pow(2) * torch.exp(-log_var)
 
-        # Proper Gaussian log density.
         log_prob = -0.5 * (z_sq + log_var + math.log(2.0 * math.pi))
-
         log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
 
         return -log_mix.mean()
@@ -407,30 +464,277 @@ class ProximalGMM(BaseCATEModel):
         w_test: typing.Optional[torch.Tensor] = None,
         z_test: typing.Optional[torch.Tensor] = None,
         return_log_variance: bool = False,
+        use_cache: bool = True,
+        cache: typing.Optional[dict[str, typing.Any]] = None,
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
-        Estimates the CATE.
-        If return_log_variance is True, returns (expected_mean, overall_log_variance).
-        Otherwise, returns just the expected mean.
+        Estimate the CATE.
+
+        If explicit test tensors are provided and use_cache=True, this uses the
+        representation-cache inference path.
+
+        Otherwise, it falls back to the standard full-sequence forward pass.
+
+        Args:
+            x, w, z:
+                Training/context rows, unless x_test/w_test/z_test are None.
+                If x_test/w_test/z_test are None, these are assumed to already
+                contain both train and test rows.
+
+            a_train, y_train:
+                Treatment and outcome for training/context rows.
+
+            x_test, w_test, z_test:
+                Optional explicit test rows.
+
+            use_cache:
+                Whether to use the simple representation cache when explicit
+                test rows are provided.
+
+            cache:
+                Optional precomputed representation cache. If provided, it is
+                reused. If None and use_cache=True, a cache is built internally.
         """
 
-        if out is None:
-            mode = (
-                "explicit_test"
-                if (x_test is not None and w_test is not None and z_test is not None)
-                else "full_sequence"
+        explicit_test_flags = [
+            x_test is not None,
+            w_test is not None,
+            z_test is not None,
+        ]
+        if any(explicit_test_flags) and not all(explicit_test_flags):
+            raise ValueError(
+                "x_test, w_test, and z_test must either all be provided or all be None."
             )
 
-            if mode == "explicit_test":
-                x_full = torch.cat([x, x_test], dim=1)
-                w_full = torch.cat([w, w_test], dim=1)
-                z_full = torch.cat([z, z_test], dim=1)
+        if out is None:
+            has_explicit_test = x_test is not None
+
+            # Cache path: only for explicit test rows.
+            # During training, prefer the ordinary differentiable path.
+            if has_explicit_test and use_cache and not self.training:
+                if cache is None:
+                    cache = self.build_representation_cache(
+                        x=x,
+                        a=a_train,
+                        w=w,
+                        z=z,
+                        y=y_train,
+                        detach=True,
+                    )
+
+                out = self._forward_with_representation_cache(
+                    x_test=x_test,
+                    w_test=w_test,
+                    z_test=z_test,
+                    cache=cache,
+                )
+
             else:
-                x_full, w_full, z_full = x, w, z
+                if has_explicit_test:
+                    x_full = torch.cat([x, x_test], dim=1)
+                    w_full = torch.cat([w, w_test], dim=1)
+                    z_full = torch.cat([z, z_test], dim=1)
+                else:
+                    x_full, w_full, z_full = x, w, z
 
-            # Forward pass returns [batch, n_test, 3K]
-            out = self.forward(x=x_full, a=a_train, w=w_full, z=z_full, y=y_train)
+                out = self.forward(
+                    x=x_full,
+                    a=a_train,
+                    w=w_full,
+                    z=z_full,
+                    y=y_train,
+                )
 
+        return self._outputs_to_cate(
+            out=out,
+            return_log_variance=return_log_variance,
+        )
+
+    def build_representation_cache(
+        self,
+        x: torch.Tensor,
+        a: torch.Tensor,
+        w: torch.Tensor,
+        z: torch.Tensor,
+        y: torch.Tensor,
+        detach: bool = True,
+    ) -> dict[str, typing.Any]:
+        """
+        Build an inference cache from the training/context set.
+
+        This cache stores representations, not attention K/V tensors.
+
+        Inputs:
+            x, w, z: training/context rows only
+            a, y: training/context treatment/outcome only
+
+        Returns:
+            cache dict used by forward_with_representation_cache.
+        """
+        assert y.shape == a.shape, "y and a must have the same shape"
+
+        n_train = y.shape[1]
+
+        grad_context = torch.no_grad() if detach else nullcontext()
+
+        with grad_context:
+            stats = self._compute_context_stats(
+                x=x,
+                w=w,
+                z=z,
+                y=y,
+            )
+
+            x_norm, w_norm, z_norm = self._normalize_with_stats(
+                x=x,
+                w=w,
+                z=z,
+                stats=stats,
+            )
+            y_norm = (y - stats["y_mean"]) / stats["y_std"]
+
+            emb_train = self._embed_inputs(
+                x_norm=x_norm,
+                a=a,
+                w_norm=w_norm,
+                z_norm=z_norm,
+                y_norm=y_norm,
+            )
+
+            train_col_states = []
+
+            for block in self.col_blocks:
+                train_col_states.append(emb_train)
+                emb_train = block.col_attn(
+                    emb_train,
+                    kv_max_idx=n_train,
+                )
+
+            train_row_repr = self._run_row_attention(emb_train)
+
+            train_icl_repr = self._add_icl_context(
+                row_repr=train_row_repr,
+                a=a,
+                y_norm=y_norm,
+            )
+
+            cache: dict[str, typing.Any] = {
+                "n_train": n_train,
+                "x_mean": stats["x_mean"],
+                "x_std": stats["x_std"],
+                "w_mean": stats["w_mean"],
+                "w_std": stats["w_std"],
+                "z_mean": stats["z_mean"],
+                "z_std": stats["z_std"],
+                "y_mean": stats["y_mean"],
+                "y_std": stats["y_std"],
+                "train_col_states": train_col_states,
+                "train_icl_repr": train_icl_repr,
+            }
+
+        if detach:
+            detached_cache: dict[str, typing.Any] = {}
+
+            for key, value in cache.items():
+                if torch.is_tensor(value):
+                    detached_cache[key] = value.detach()
+                elif isinstance(value, list):
+                    detached_cache[key] = [
+                        item.detach() if torch.is_tensor(item) else item
+                        for item in value
+                    ]
+                else:
+                    detached_cache[key] = value
+
+            cache = detached_cache
+
+        return cache
+
+    def _encode_test_rows_with_representation_cache(
+        self,
+        x_test: torch.Tensor,
+        w_test: torch.Tensor,
+        z_test: torch.Tensor,
+        cache: dict[str, typing.Any],
+    ) -> torch.Tensor:
+        """
+        Encode test rows using cached training/context representations.
+
+        Returns:
+            test_row_repr: [batch, n_test, icl_dim]
+        """
+        x_norm = (x_test - cache["x_mean"]) / cache["x_std"]
+        w_norm = (w_test - cache["w_mean"]) / cache["w_std"]
+        z_norm = (z_test - cache["z_mean"]) / cache["z_std"]
+
+        emb_x, emb_w, emb_z = self._embed_feature_families(
+            x_norm=x_norm,
+            w_norm=w_norm,
+            z_norm=z_norm,
+        )
+        emb_test = torch.cat([emb_x, emb_w, emb_z], dim=-2)
+
+        # Run column attention for test rows only.
+        # Each block uses cached train-side column states as KV.
+        for block, train_col_state in zip(
+            self.col_blocks,
+            cache["train_col_states"],
+        ):
+            emb_test = block.col_attn(
+                emb_test,
+                kv=train_col_state,
+            )
+
+        test_row_repr = self._run_row_attention(emb_test)
+
+        return test_row_repr
+
+    def _forward_with_representation_cache(
+        self,
+        x_test: torch.Tensor,
+        w_test: torch.Tensor,
+        z_test: torch.Tensor,
+        cache: dict[str, typing.Any],
+    ) -> torch.Tensor:
+        """
+        Forward pass for explicit test rows using a representation cache.
+
+        Returns:
+            out: [batch, n_test, 3 * n_gmm]
+        """
+        n_train = cache["n_train"]
+
+        test_row_repr = self._encode_test_rows_with_representation_cache(
+            x_test=x_test,
+            w_test=w_test,
+            z_test=z_test,
+            cache=cache,
+        )
+
+        row_repr = torch.cat(
+            [cache["train_icl_repr"], test_row_repr],
+            dim=1,
+        )
+
+        test_repr = self._run_icl_attention(
+            row_repr=row_repr,
+            n_train=n_train,
+        )
+
+        out_norm = self._decode_gmm(test_repr)
+
+        out = self._denormalize_outputs(
+            out=out_norm,
+            y_std=cache["y_std"],
+        )
+
+        return out
+
+    def _outputs_to_cate(
+        self,
+        out: torch.Tensor,
+        return_log_variance: bool = False,
+    ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         logits = out[..., : self.n_gmm]
         means = out[..., self.n_gmm : 2 * self.n_gmm]
         log_vars = out[..., 2 * self.n_gmm :]
@@ -442,11 +746,13 @@ class ProximalGMM(BaseCATEModel):
         if return_log_variance:
             variances = torch.exp(log_vars)
             expected_x_squared = (pi * (variances + means * means)).sum(
-                dim=-1, keepdim=True
+                dim=-1,
+                keepdim=True,
             )
 
             total_variance = torch.clamp(
-                expected_x_squared - expected_mean * expected_mean, min=1e-8
+                expected_x_squared - expected_mean * expected_mean,
+                min=1e-8,
             )
             overall_log_variance = torch.log(total_variance)
 

@@ -357,46 +357,6 @@ def test_estimate_cate_math_verification():
         expected_log_var = math.log(2.0)
         assert torch.allclose(log_var, torch.tensor([[[expected_log_var]]]), atol=1e-5)
 
-
-def test_estimate_cate_partial_test_inputs():
-    config = ModelConfig(
-        feature_group_size_x=2,
-        feature_group_size_w=2,
-        feature_group_size_z=2,
-        embed_dim=16,
-    )
-    model = ProximalGMM(config)
-
-    batch_size = 2
-    n_train = 5
-    n_test = 3
-    n_full = n_train + n_test
-
-    x_full = torch.randn(batch_size, n_full, 4)
-    w_full = torch.randn(batch_size, n_full, 4)
-    z_full = torch.randn(batch_size, n_full, 4)
-    a_train = torch.randn(batch_size, n_train)
-    y_train = torch.randn(batch_size, n_train)
-
-    # Provide x_test and w_test, but not z_test
-    # The mode should fallback to full_sequence, and the explicit_test cat should not be triggered
-    # However, since x_full, w_full, z_full are already of full size, the model should process them
-    # and return predictions for the last n_test elements
-
-    mean = model.estimate_CATE(
-        x=x_full,
-        a_train=a_train,
-        w=w_full,
-        z=z_full,
-        y_train=y_train,
-        x_test=torch.randn(batch_size, n_test, 4),  # Partial explicit test inputs
-        w_test=torch.randn(batch_size, n_test, 4),  # Partial explicit test inputs
-        # z_test=None
-    )
-
-    assert mean.shape == (batch_size, n_test, 1)
-
-
 def test_estimate_cate_multiple_gmm_components():
     config = ModelConfig(
         feature_group_size_x=2,
