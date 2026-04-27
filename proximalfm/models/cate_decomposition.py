@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import math
+
 from .registry import register_model
 from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp, DistributionAwareEmbedder
 
@@ -98,7 +100,7 @@ class ProximalDecomposedCATE(BaseCATEModel):
         self.out_ln = nn.LayerNorm(icl_dim)
 
         self.ate_head = nn.Linear(icl_dim, 1)
-        self.delta_head = nn.Linear(icl_dim, 1)  # TODO: change the delta to a gmm
+        self.delta_mlp = get_mlp(icl_dim, icl_dim * 2, 3 * self.n_gmm)
 
     def _normalize_inputs(
         self,
@@ -457,13 +459,14 @@ class ProximalDecomposedCATE(BaseCATEModel):
         test_repr = self.out_ln(test_repr)
 
         # 1. Predict ATE from Context
-        pooled_context = context_repr.mean(dim=1)    # shape: [batch, icl_dim]
-        pred_context_ate = self.ate_head(pooled_context)  # shape: [batch, 1]
+        pooled_context = context_repr.mean(dim=1)
+        pred_context_ate = self.ate_head(pooled_context)
         
-        # 2. Predict Delta for Query
-        pred_delta = self.delta_head(test_repr).squeeze(-1)  # shape: [batch, n_test]
+        # 2. Predict Delta GMM for Query
+        delta_out_norm = self.delta_mlp(test_repr)
+        delta_out_raw = self._denormalize_outputs(delta_out_norm, y_std)
 
-        return pred_context_ate, pred_delta
+        return pred_context_ate, delta_out_raw
 
     def loss(
         self, 
@@ -472,21 +475,35 @@ class ProximalDecomposedCATE(BaseCATEModel):
         target_context: torch.Tensor
     ) -> torch.Tensor:
         """
-        Dual loss: MSE for Context ATE + MSE for Query CATE.
-        """
-        pred_context_ate, pred_delta = outputs
+        Dual loss: MSE for Context ATE + GMM NLL for Query CATE.
+        """  
+        pred_context_ate, delta_out_raw = outputs
 
-        # Ensure shapes are [batch, n_rows]
         if target_query.dim() == 3:
             target_query = target_query.squeeze(-1)
         if target_context.dim() == 3:
             target_context = target_context.squeeze(-1)
 
+        # --- 1. ATE Loss (Context) ---
         true_context_ate = target_context.mean(dim=1, keepdim=True)
         loss_ate = F.mse_loss(pred_context_ate, true_context_ate)
 
-        pred_query_cate = pred_context_ate + pred_delta
-        loss_cate = F.mse_loss(pred_query_cate, target_query)
+        # --- 2. CATE GMM Loss (Query) ---
+        logits = delta_out_raw[..., : self.n_gmm]
+        delta_means = delta_out_raw[..., self.n_gmm : 2 * self.n_gmm]
+        log_vars = delta_out_raw[..., 2 * self.n_gmm :]
+        log_vars = log_vars.clamp(min=-12.0, max=8.0)
+
+        cate_means = delta_means + pred_context_ate.unsqueeze(-1)
+        log_pi = F.log_softmax(logits, dim=-1)
+        
+        target_expanded = target_query.unsqueeze(-1)
+        
+        z_sq = (target_expanded - cate_means).pow(2) * torch.exp(-log_vars)
+        log_prob = -0.5 * (z_sq + log_vars + math.log(2.0 * math.pi))
+        
+        log_mix = torch.logsumexp(log_pi + log_prob, dim=-1)
+        loss_cate = -log_mix.mean()
 
         return loss_ate + loss_cate
 
@@ -497,19 +514,35 @@ class ProximalDecomposedCATE(BaseCATEModel):
         w: torch.Tensor,
         z: torch.Tensor,
         y_train: torch.Tensor,
+        out: typing.Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         return_log_variance: bool = False,
         **kwargs,
-    ) -> torch.Tensor:
-        """
-        Estimate CATE for the query set as Context ATE + Query Delta.
-        """
-        #TODO: retrieve the output of forward as argument here to avoid double forward pass
-        pred_context_ate, pred_delta = self.forward(x=x, a=a_train, w=w, z=z, y=y_train)
+    ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         
-        # Broadcasting [batch, 1] + [batch, n_test]
-        pred_cate = pred_context_ate + pred_delta
+        if out is None:
+            pred_context_ate, delta_out_raw = self.forward(x=x, a=a_train, w=w, z=z, y=y_train)
+        else:
+            pred_context_ate, delta_out_raw = out
+
+        logits = delta_out_raw[..., : self.n_gmm]
+        delta_means = delta_out_raw[..., self.n_gmm : 2 * self.n_gmm]
+        log_vars = delta_out_raw[..., 2 * self.n_gmm :]
+        log_vars = log_vars.clamp(min=-12.0, max=8.0)
+
+        cate_means = delta_means + pred_context_ate.unsqueeze(-1)        
+        pi = F.softmax(logits, dim=-1)
+        
+        expected_mean = (pi * cate_means).sum(dim=-1)
 
         if return_log_variance:
-            return pred_cate, None  # GMM is gone for now, so log-variance is not predicted
+            variances = torch.exp(log_vars)
+            expected_x_squared = (pi * (variances + cate_means * cate_means)).sum(dim=-1)
+            
+            total_variance = torch.clamp(
+                expected_x_squared - expected_mean * expected_mean, min=1e-8
+            )
+            overall_log_variance = torch.log(total_variance)
+            
+            return expected_mean, overall_log_variance
 
-        return pred_cate
+        return expected_mean
