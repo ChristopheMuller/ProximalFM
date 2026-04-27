@@ -36,10 +36,10 @@ def test_proximal_prior_config_defaults():
     config = ProximalPriorConfig()
 
     # Check primitive defaults
-    assert config.d_u == 4
-    assert config.d_x == 8
-    assert config.d_z == 6
-    assert config.d_w == 6
+    assert config.d_u == 3
+    assert config.d_x == 5
+    assert config.d_z == 4
+    assert config.d_w == 4
     assert config.noise_scale_x == 0.05
     assert config.noise_scale_z == 0.05
     assert config.noise_scale_w == 0.05
