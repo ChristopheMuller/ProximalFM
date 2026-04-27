@@ -32,6 +32,10 @@ class ProximalGMM(BaseCATEModel):
         self.y_embed_in = nn.Linear(1, config.embed_dim)
         self.y_embed_icl = nn.Linear(1, icl_dim)
 
+        self.role_ya_gates = nn.Parameter(
+            torch.full((3, config.embed_dim), 2.0)
+        )
+
         self.col_blocks = nn.ModuleList(
             [
                 InducedTransformerBlock(
@@ -127,8 +131,16 @@ class ProximalGMM(BaseCATEModel):
         emb_a = self.a_embed(a[:, :, None, None])
         emb_y = self.y_embed_in(y_norm[:, :, None, None])
 
+        ya_context = emb_y + emb_a  # [batch, n_train, 1, embed_dim]
+        role_gates = torch.sigmoid(self.role_ya_gates).view(
+            3, 1, 1, 1, -1
+        )
+
+        emb_x[:, :n_train] = emb_x[:, :n_train] + role_gates[0] * ya_context
+        emb_w[:, :n_train] = emb_w[:, :n_train] + role_gates[1] * ya_context
+        emb_z[:, :n_train] = emb_z[:, :n_train] + role_gates[2] * ya_context
+
         emb = torch.concatenate([emb_x, emb_w, emb_z], dim=-2)
-        emb[:, :n_train] += emb_y + emb_a
 
         # ─── 3. TRANSFORMER BLOCKS ───────────────────────────────────────────
         for block in self.col_blocks:
