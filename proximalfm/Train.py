@@ -377,13 +377,15 @@ class CATETrainer:
         return x, a, w, z, y, target, y_std, target_context
 
     def _forward_and_loss(self, x, a, w, z, y, target, y_std, target_context, alpha):
-        pred_ate, pred_delta = self.model(x=x, a=a, w=w, z=z, y=y)
-        out = (pred_ate, pred_delta)
 
+        out = self.model(x=x, a=a, w=w, z=z, y=y)
+        
         loss_model = self.model.loss(out, target_query=target, target_context=target_context)
 
-        expected_mean = pred_ate + pred_delta
-        overall_log_variance = None  # GMM is gone for now
+        expected_mean, overall_log_variance = self.model.estimate_CATE(
+            x=x, a_train=a, w=w, z=z, y_train=y, 
+            out=out, return_log_variance=True
+        )
 
         loss_mse_raw = F.mse_loss(expected_mean, target)
 
