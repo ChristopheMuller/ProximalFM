@@ -105,22 +105,32 @@ class ProximalDecomposedCATE(BaseCATEModel):
     def _normalize_inputs(
         self,
         x: torch.Tensor,
+        a: torch.Tensor,
         w: torch.Tensor,
         z: torch.Tensor,
         y: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Normalize y and feature groups using only the training/context rows.
-
-        Returns:
-            x_norm, w_norm, z_norm, y_norm, y_std
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         n_train = y.shape[1]
 
         y_mean = y.mean(dim=1, keepdim=True)
         y_std = y.std(dim=1, unbiased=False, keepdim=True) + 1e-8
         y_norm = (y - y_mean) / y_std
 
+        # --- Compute Residual Scale for Delta ---
+        mask_1 = (a == 1.0).float()
+        mask_0 = (a == 0.0).float()
+        
+        count_1 = mask_1.sum(dim=1, keepdim=True)
+        count_0 = mask_0.sum(dim=1, keepdim=True)
+        
+        # Fallback to y_mean if a class is entirely missing
+        mu_1 = torch.where(count_1 > 0, (y * mask_1).sum(dim=1, keepdim=True) / count_1.clamp(min=1.0), y_mean)
+        mu_0 = torch.where(count_0 > 0, (y * mask_0).sum(dim=1, keepdim=True) / count_0.clamp(min=1.0), y_mean)
+        
+        residuals = y - (mask_1 * mu_1 + mask_0 * mu_0)
+        y_res_std = residuals.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        # --- Compute Feature Scale ---
         def group_norm(tensor: torch.Tensor) -> torch.Tensor:
             context_slice = tensor[:, :n_train, :]
             tensor_mean = context_slice.mean(dim=1, keepdim=True)
@@ -131,7 +141,7 @@ class ProximalDecomposedCATE(BaseCATEModel):
         w_norm = group_norm(w)
         z_norm = group_norm(z)
 
-        return x_norm, w_norm, z_norm, y_norm, y_std
+        return x_norm, w_norm, z_norm, y_norm, y_std, y_res_std
 
     def _compute_context_stats(
         self,
@@ -389,23 +399,19 @@ class ProximalDecomposedCATE(BaseCATEModel):
     def _denormalize_outputs(
         self,
         out: torch.Tensor,
-        y_std: torch.Tensor,
+        scale: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Convert normalized GMM mean/log-variance back to raw outcome scale.
-
-        Important:
-            CATE/ITE is a difference, so the mean is multiplied by y_std
-            but y_mean is not added back.
+        Convert normalized GMM mean/log-variance back to raw scale using the provided scale tensor.
         """
-        y_std_expanded = y_std.unsqueeze(-1)
+        scale_expanded = scale.unsqueeze(-1)
 
         logits = out[..., : self.n_gmm]
         pred_mean_norm = out[..., self.n_gmm : 2 * self.n_gmm]
         pred_log_var_norm = out[..., 2 * self.n_gmm :]
 
-        pred_mean_raw = pred_mean_norm * y_std_expanded
-        pred_log_var_raw = pred_log_var_norm + 2 * torch.log(y_std_expanded)
+        pred_mean_raw = pred_mean_norm * scale_expanded
+        pred_log_var_raw = pred_log_var_norm + 2 * torch.log(scale_expanded)
 
         return torch.cat(
             [logits, pred_mean_raw, pred_log_var_raw],
@@ -422,8 +428,9 @@ class ProximalDecomposedCATE(BaseCATEModel):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         n_train = y.shape[1]
 
-        x_norm, w_norm, z_norm, y_norm, y_std = self._normalize_inputs(
+        x_norm, w_norm, z_norm, y_norm, y_std, y_res_std = self._normalize_inputs(
             x=x,
+            a=a,
             w=w,
             z=z,
             y=y,
@@ -458,13 +465,14 @@ class ProximalDecomposedCATE(BaseCATEModel):
         context_repr = self.out_ln(context_repr)
         test_repr = self.out_ln(test_repr)
 
-        # 1. Predict ATE from Context
+        # 1. Predict ATE from Context (Denormalize with global Y standard deviation)
         pooled_context = context_repr.mean(dim=1)
-        pred_context_ate = self.ate_head(pooled_context)
+        pred_context_ate_norm = self.ate_head(pooled_context)
+        pred_context_ate = pred_context_ate_norm * y_std 
         
-        # 2. Predict Delta GMM for Query
+        # 2. Predict Delta GMM for Query (Denormalize with residual standard deviation)
         delta_out_norm = self.delta_mlp(test_repr)
-        delta_out_raw = self._denormalize_outputs(delta_out_norm, y_std)
+        delta_out_raw = self._denormalize_outputs(delta_out_norm, y_res_std)
 
         return pred_context_ate, delta_out_raw
 
