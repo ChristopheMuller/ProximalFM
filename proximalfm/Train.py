@@ -25,7 +25,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
@@ -164,7 +163,6 @@ class LoggerCallback(Callback):
             logs["Metrics/val_mspe"] = val_metrics.get("mspe")
             if "variance" in val_metrics and val_metrics["variance"] > 0:
                 logs["Metrics/val_variance"] = val_metrics["variance"]
-
             logs["Time/val_s"] = val_metrics.get("time_s")
 
             if "cov50" in val_metrics and val_metrics["cov50"] > 0:
@@ -329,7 +327,6 @@ class CATETrainer:
         with open(os.path.join(path_dir, "data_config.yaml"), "w") as f:
             yaml.dump(self.data_cfg, f)
 
-
     def _log_info(self, message: str) -> None:
         for cb in self.callbacks:
             cb.on_log_info(message)
@@ -379,21 +376,19 @@ class CATETrainer:
         expected_mean, overall_log_variance = self.model.estimate_CATE(
             x=x, a_train=a, w=w, z=z, y_train=y, out=out, return_log_variance=True
         )
-
         loss_mse_raw = F.mse_loss(expected_mean, target)
-
         loss = loss_model
         return loss, loss_mse_raw, loss_model, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
         loss.backward()
-        
+
         clip_value = self.train_cfg.get("clip_grad", 0.0)
         max_norm = clip_value if clip_value > 0 else float("inf")
-        
+
         grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
-        
+
         if self.global_step < self.warmup_steps:
             lr_scale = min(1.0, (self.global_step + 1) / self.warmup_steps)
             for param_group in self.optimizer.param_groups:
@@ -401,7 +396,6 @@ class CATETrainer:
 
         self.global_step += 1
         self.optimizer.step()
-
         return grad_norm
 
     def _compute_batch_metrics(
@@ -538,15 +532,7 @@ class CATETrainer:
         total_loss = torch.zeros(1, device=self.device)
         total_loss_mse = torch.zeros(1, device=self.device)
         total_loss_model = torch.zeros(1, device=self.device)
-        sum_sq_err = torch.zeros(1, device=self.device)
-        sum_sq_pe = torch.zeros(1, device=self.device)
-        total_model = torch.zeros(1, device=self.device)
-        total_samples = 0
-        total_variance = torch.zeros(1, device=self.device)
         total_grad_norm = torch.zeros(1, device=self.device)
-        total_cov50 = torch.zeros(1, device=self.device)
-        total_cov95 = torch.zeros(1, device=self.device)
-        total_cov99 = torch.zeros(1, device=self.device)
 
         epoch_start = time.time()
 
@@ -555,7 +541,6 @@ class CATETrainer:
             desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Train]",
         ) as pbar:
             for batch in pbar:
-                
                 batch = self._move_batch(batch)
                 x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 
@@ -565,51 +550,22 @@ class CATETrainer:
                     loss_model,
                     pred_mean,
                     pred_log_var,
-                ) = self._forward_and_loss(
-                    x, a, w, z, y, target, y_std
-                )
-
+                ) = self._forward_and_loss(x, a, w, z, y, target, y_std)
                 total_grad_norm += self._optimization_step(loss)
 
                 total_loss += loss.detach()
                 total_loss_mse += loss_mse.detach()
                 total_loss_model += loss_model.detach()
 
-                metrics = self._compute_batch_metrics(
-                    pred_mean,
-                    pred_log_var,
-                    target,
-                )
-
-                sum_sq_err += metrics["sum_sq_err"]
-                sum_sq_pe += metrics["sum_sq_pe"]
-                total_model += loss_model.detach() * metrics["num_samples"]
-                total_samples += metrics["num_samples"]
-                if "variance_mean" in metrics:
-                    total_variance += metrics["variance_mean"]
-                if "cov50" in metrics:
-                    total_cov50 += metrics["cov50"]
-                if "cov95" in metrics:
-                    total_cov95 += metrics["cov95"]
-                if "cov99" in metrics:
-                    total_cov99 += metrics["cov99"]
-
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
 
         num_batches = len(self.train_loader)
+
         avg_loss = (total_loss / num_batches).item()
         avg_loss_mse = (total_loss_mse / num_batches).item()
         avg_loss_model = (total_loss_model / num_batches).item()
-        rmse = np.sqrt(sum_sq_err.item() / max(total_samples, 1))
-        model = (total_model / max(total_samples, 1)).item()
-        avg_variance = (total_variance / num_batches).item()
         avg_grad_norm = (total_grad_norm / num_batches).item()
-        cov50 = (total_cov50 / max(total_samples, 1)).item()
-        cov95 = (total_cov95 / max(total_samples, 1)).item()
-        cov99 = (total_cov99 / max(total_samples, 1)).item()
-
-        mspe = (sum_sq_pe / max(total_samples, 1)).item()
 
         self.train_losses.append(avg_loss)
         self._log_info(f"Epoch {epoch + 1} train done in {format_time(epoch_time)}")
@@ -618,15 +574,8 @@ class CATETrainer:
             "loss_total": avg_loss,
             "loss_mse": avg_loss_mse,
             "loss_model": avg_loss_model,
-            "model": model,
-            "rmse": rmse,
-            "mspe": mspe,
-            "variance": avg_variance,
             "grad_norm": avg_grad_norm,
             "time_s": epoch_time,
-            "cov50": cov50,
-            "cov95": cov95,
-            "cov99": cov99,
         }
 
     # ------------------------------------------------------------------
@@ -908,17 +857,17 @@ def main() -> None:
     finally:
         t = getattr(trainer, "total_training_time", 0.0)
         log_info(f"Total training time:        {format_time(t)}")
-        
+
         epoch_times = getattr(trainer, "epoch_times", [])
         if epoch_times:
-            log_info(
-                f"Mean epoch time:            {format_time(np.mean(epoch_times))}"
-            )
-        
+            log_info(f"Mean epoch time:            {format_time(np.mean(epoch_times))}")
+
         validation_times = getattr(trainer, "validation_times", [])
         if validation_times:
-            log_info(f"Mean validation time:       {format_time(np.mean(validation_times))}")
-        
+            log_info(
+                f"Mean validation time:       {format_time(np.mean(validation_times))}"
+            )
+
         for cb in callbacks:
             cb.on_train_end(trainer)
 
