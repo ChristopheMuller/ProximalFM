@@ -409,6 +409,7 @@ def run_neural_model(
         feature_group_size_x=mcfg.get("feature_group_size_x", 5),
         feature_group_size_w=mcfg.get("feature_group_size_w", 4),
         feature_group_size_z=mcfg.get("feature_group_size_z", 4),
+        n_cls_rows=mcfg.get("n_cls_rows", 128),
     )
     model = ProximalGMM(config=model_config).to(device, dtype=dtype)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
