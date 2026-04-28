@@ -3,7 +3,6 @@ training:
   epochs: 1500
   lr: 0.0003
   warmup_steps: 1000
-  warmup_epochs: 100
   weight_decay: 0.0002
   clip_grad: 1.5
   early_stop: 30          # patience in epochs before early stopping
