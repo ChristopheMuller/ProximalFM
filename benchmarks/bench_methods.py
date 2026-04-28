@@ -59,36 +59,16 @@ except ImportError:
 
 # --- CausalPFN Setup (with FAISS Monkeypatch) ---
 try:
-    # 1. Stop PyTorch and FAISS from fighting over Mac C++ threads
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    import os
+    # Prevent PyTorch/FAISS thread collisions (crucial for benchmark stability)
+    for k in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]:
+        os.environ[k] = "1"
     os.environ["KMP_DUPLICATE_OK"] = "True"
 
-    import faiss
-
-    # 2. Monkeypatch FAISS to protect it from internal data corruption
-    _original_add = faiss.IndexFlatL2.add
-    _original_search = faiss.IndexFlatL2.search
-
-    def _safe_add(self, x):
-        x_safe = np.ascontiguousarray(x, dtype=np.float32)
-        return _original_add(self, x_safe)
-
-    def _safe_search(self, x, k):
-        x_safe = np.ascontiguousarray(x, dtype=np.float32)
-        return _original_search(self, x_safe, k)
-
-    faiss.IndexFlatL2.add = _safe_add
-    faiss.IndexFlatL2.search = _safe_search
-
-    # Alias the import so it doesn't collide with the CATEEstimator base class!
     from causalpfn import CATEEstimator as CausalPFN_Model
-
     _CAUSALPFN_AVAILABLE = True
 except ImportError:
     _CAUSALPFN_AVAILABLE = False
-
 
 from contextlib import contextmanager
 
@@ -875,32 +855,23 @@ class DoPFN_Estimator(CATEEstimator):
 
 
 class CausalPFN_Estimator(CATEEstimator):
-    def __init__(
-        self,
-        use_W: bool = True,
-        use_Z: bool = True,
-    ):
+    def __init__(self, use_W: bool = True, use_Z: bool = True):
         if not _CAUSALPFN_AVAILABLE:
-            raise ImportError("causalpfn is not installed or the FAISS patch failed.")
+            raise ImportError("causalpfn is not installed.")
 
+        import torch
         torch.set_num_threads(1)
 
         if "default" not in _CAUSALPFN_CACHE:
             with silent():
-                # verbose=False might help silence it further natively
-                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
-                    device="cpu", verbose=False
-                )
+                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(device="cpu", verbose=False)
 
         self.model = _CAUSALPFN_CACHE["default"]
-
-        # We don't build A into the features because CausalPFN takes it explicitly
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
 
-        # Enforce C-contiguous memory, float32, and 1D shapes for A and Y
         X_train = np.ascontiguousarray(feat, dtype=np.float32)
         A_train = np.ascontiguousarray(A.ravel(), dtype=np.float32)
         Y_train = np.ascontiguousarray(Y.ravel(), dtype=np.float32)
@@ -911,8 +882,6 @@ class CausalPFN_Estimator(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
-
-        # Enforce C-contiguous float32 for inference
         X_test = np.ascontiguousarray(feat, dtype=np.float32)
 
         with silent():
