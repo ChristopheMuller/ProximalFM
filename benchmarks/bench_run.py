@@ -397,20 +397,7 @@ def run_neural_model(
     device = torch.device(device_str)
     dtype = getattr(torch, mcfg.get("dtype", "float32"))
 
-    model_config = ModelConfig(
-        embed_dim=mcfg.get("embed_dim", 64),
-        col_num_blocks=mcfg.get("col_num_blocks", 3),
-        row_num_blocks=mcfg.get("row_num_blocks", 3),
-        icl_num_blocks=mcfg.get("icl_num_blocks", 12),
-        col_nhead=mcfg.get("col_nhead", 8),
-        row_nhead=mcfg.get("row_nhead", 8),
-        icl_nhead=mcfg.get("icl_nhead", 8),
-        n_gmm_components=mcfg.get("n_gmm_components", 1),
-        feature_group_size_x=mcfg.get("feature_group_size_x", 5),
-        feature_group_size_w=mcfg.get("feature_group_size_w", 4),
-        feature_group_size_z=mcfg.get("feature_group_size_z", 4),
-        n_cls_rows=mcfg.get("n_cls_rows", 128),
-    )
+    model_config = ModelConfig(**mcfg)
     model = ProximalGMM(config=model_config).to(device, dtype=dtype)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])

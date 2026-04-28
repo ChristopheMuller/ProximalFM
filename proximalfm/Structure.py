@@ -71,6 +71,7 @@ class ProximalEpisode:
 @dataclass
 class ModelConfig:
     type: str = "gmm"
+    dtype: torch.dtype = torch.float32
     quantiles: list[float] = field(default_factory=lambda: [0.1, 0.5, 0.9])
     embed_dim: int = 64
     col_num_blocks: int = 3

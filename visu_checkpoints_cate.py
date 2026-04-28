@@ -64,22 +64,7 @@ def main():
         
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
-    config_model = ModelConfig(
-        type=model_cfg.get("type", "gmm"),
-        quantiles=model_cfg.get("quantiles", [0.1, 0.5, 0.9]),
-        embed_dim=model_cfg.get("embed_dim", 64),
-        col_num_blocks=model_cfg.get("col_num_blocks", 3), 
-        row_num_blocks=model_cfg.get("row_num_blocks", 3),
-        icl_num_blocks=model_cfg.get("icl_num_blocks", 12),
-        col_nhead=model_cfg.get("col_nhead", 8),
-        row_nhead=model_cfg.get("row_nhead", 8),
-        icl_nhead=model_cfg.get("icl_nhead", 8),
-        feature_group_size_x=model_cfg.get("feature_group_size_x", 5),
-        feature_group_size_w=model_cfg.get("feature_group_size_w", 4),
-        feature_group_size_z=model_cfg.get("feature_group_size_z", 4),
-        n_gmm_components=model_cfg.get("n_gmm_components", 1),
-        n_cls_rows=model_cfg.get("n_cls_rows", 128),
-    )
+    config_model = ModelConfig(**model_cfg)
     model = ProximalGMM(
         config=config_model
     ).to(device, dtype=dtype)
@@ -93,19 +78,7 @@ def main():
     samples_per_episode = n_train + k_test_points
     batch_size = 1
 
-    prior_config = ProximalPriorConfig(
-        type=prior_cfg["type"],
-        d_x=prior_cfg["d_x"],
-        d_z=prior_cfg["d_z"],
-        d_w=prior_cfg["d_w"],
-        d_u=prior_cfg["d_u"],
-        noise_scale_w=prior_cfg["noise_scale_w"],
-        noise_scale_z=prior_cfg["noise_scale_z"],
-        noise_scale_x=prior_cfg["noise_scale_x"],
-        temperature=prior_cfg.get("temperature", 1),
-        confounding_strength=prior_cfg.get("confounding_strength", 1),
-        dtype=dtype,
-    )
+    prior_config = ProximalPriorConfig(**prior_cfg)
 
     loaders = create_causal_data_loaders(
         prior_config=prior_config,
