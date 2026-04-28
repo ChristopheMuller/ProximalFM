@@ -147,11 +147,10 @@ def main():
             mean, var = model.estimate_CATE(x=x, z=z, w=w, a_train=a_train, y_train=y_train, return_log_variance=True)
 
             # Extract query predictions. `out` has shape (1, k_test_points, 2)
-            pred_mean = mean[0, :, 0].cpu().numpy()      
-            pred_log_var = var[0, :, 0].cpu().numpy()   
-            
-            # Standard deviation for error bars
-            pred_std = np.exp(0.5 * pred_log_var)
+            pred_mean = mean[0, :, 0].cpu().numpy()
+            if var is not None:
+                pred_log_var = var[0, :, 0].cpu().numpy()   
+                pred_std = np.exp(0.5 * pred_log_var)
 
         # Plotting
         ax = axes[idx]
@@ -162,18 +161,28 @@ def main():
         ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label="Perfect Prediction")
 
         # Scatter with error bars (2 std devs for ~95% confidence interval)
-        ax.errorbar(
-            true_ite, 
-            pred_mean, 
-            yerr=2 * pred_std, 
-            fmt='o', 
-            alpha=0.6, 
-            capsize=3,
-            ecolor='gray',
-            markerfacecolor='royalblue',
-            markeredgecolor='darkblue',
-            label=r"Pred Mean $\pm 2\sigma$"
-        )
+        if var is not None:
+            ax.errorbar(
+                true_ite, 
+                pred_mean, 
+                yerr=2 * pred_std, 
+                fmt='o', 
+                alpha=0.6, 
+                capsize=3,
+                ecolor='gray',
+                markerfacecolor='royalblue',
+                markeredgecolor='darkblue',
+                label=r"Pred Mean $\pm 2\sigma$"
+            )
+        else:
+            ax.scatter(
+                true_ite, 
+                pred_mean, 
+                alpha=0.6, 
+                color='royalblue', 
+                edgecolor='darkblue', 
+                label="Predicted CATE"
+            )
 
         ax.set_title(f"Epoch {epoch}", fontsize=14)
         ax.set_xlabel("True ITE")

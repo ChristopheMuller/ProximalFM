@@ -3,6 +3,7 @@ from ..Structure import ModelConfig
 
 from .registry import MODEL_REGISTRY
 from . import gmm as gmm
+from . import mse as mse
 from . import quantile as quantile
 
 
