@@ -537,3 +537,72 @@ def make_cate_rich_table(
         tbl.add_row(str(method), *cells)
 
     return tbl
+
+def make_combined_rich_table(
+    ate_summary: pd.DataFrame, 
+    cate_summary: pd.DataFrame, 
+    title: str = "Benchmark Results"
+) -> "Table":  
+    from rich.table import Table
+    from rich import box
+
+    tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
+    tbl.add_column("Method", style="bold cyan", no_wrap=True)
+
+    # ── ATE Columns ──
+    tbl.add_column("ATE: R²", justify="right")
+    tbl.add_column("ATE: NRMSE", justify="right")
+    tbl.add_column("ATE: NRMedSE", justify="right")
+
+    # ── CATE Columns ──
+    tbl.add_column("CATE: R² mean", justify="right")
+    tbl.add_column("CATE: R²(shape)", justify="right")
+    tbl.add_column("CATE: NRMSE", justify="right")
+    tbl.add_column("CATE: NRMedSE", justify="right")
+
+    tbl.add_column("Time (s)", justify="right")
+
+    # Pre-calculate column styles universally using the existing rich color logic
+    ate_styles = {
+        "ATE R²": _get_column_styles(ate_summary["ATE R²"], "ATE R²"),
+        "NormRMSE": _get_column_styles(ate_summary["NormRMSE"], "NormRMSE"),
+        "NormRMedSE": _get_column_styles(ate_summary["NormRMedSE"], "NormRMedSE"),
+        "Time (s)": _get_column_styles(ate_summary["Time (s)"], "Time (s)")
+    }
+
+    cate_styles = {
+        "Mean R²": _get_column_styles(cate_summary["Mean R²"], "Mean R²"),
+        "Mean R²(shape)": _get_column_styles(cate_summary["Mean R²(shape)"], "Mean R²(shape)"),
+        "NormRMSE": _get_column_styles(cate_summary["NormRMSE"], "NormRMSE"),
+        "NormRMedSE": _get_column_styles(cate_summary["NormRMedSE"], "NormRMedSE"),
+    }
+
+    for method in ate_summary.index:
+        ate_row = ate_summary.loc[method]
+        # Handle cases where a method failed or isn't in cate_summary yet
+        cate_row = cate_summary.loc[method] if method in cate_summary.index else pd.Series(dtype=float)
+
+        def get_styled(row, col_key, styles, format_str="{}"):
+            val = row.get(col_key, float("nan"))
+            if pd.isna(val):
+                return "-"
+            style = styles[col_key].get(method, "")
+            formatted_val = format_str.format(val)
+            return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
+
+        cells = [
+            get_styled(ate_row, "ATE R²", ate_styles),
+            get_styled(ate_row, "NormRMSE", ate_styles),
+            get_styled(ate_row, "NormRMedSE", ate_styles),
+
+            get_styled(cate_row, "Mean R²", cate_styles),
+            get_styled(cate_row, "Mean R²(shape)", cate_styles),
+            get_styled(cate_row, "NormRMSE", cate_styles),
+            get_styled(cate_row, "NormRMedSE", cate_styles),
+
+            get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}")
+        ]
+        
+        tbl.add_row(str(method), *cells)
+
+    return tbl

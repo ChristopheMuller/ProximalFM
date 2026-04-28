@@ -77,10 +77,8 @@ from benchmarks.bench_methods import build_method
 from benchmarks.bench_metrics import (
     compute_all_metrics,
     build_summary_tables,
-    make_ate_rich_table,
-    make_cate_rich_table,
+    make_combined_rich_table,
 )
-
 # ── Optional: neural model support (may not be installed) ─────────────────────
 try:
     from proximalfm.Structure import ProximalPriorConfig, ModelConfig
@@ -458,12 +456,6 @@ def print_partial_results(
     accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
     true_ites: np.ndarray,
 ) -> None:
-    """Print a quick ATE summary for all methods completed so far.
-
-    WHY print partial results?
-        Long benchmarks can run for hours.  Seeing intermediate results lets
-        you spot clearly-failing methods early and decide whether to abort.
-    """
     if not accumulated:
         return
 
@@ -472,13 +464,12 @@ def print_partial_results(
         for name, (preds, times) in accumulated.items()
     ]
     all_df = pd.concat(frames, ignore_index=True)
-    ate_df, _ = build_summary_tables(all_df)
-
-    if "Time (s)" in ate_df.columns:
-        ate_df["Time (s)"] = ate_df["Time (s)"].round(2)
+    
+    # We now unpack both ATE and CATE DataFrames during the live step
+    ate_df, cate_df = build_summary_tables(all_df)
 
     console.print(
-        Padding(make_ate_rich_table(ate_df, title="ATE — results so far"), (1, 4))
+        Padding(make_combined_rich_table(ate_df, cate_df, title="Live Results So Far"), (1, 4))
     )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -637,8 +628,8 @@ def main() -> None:
 
     ate_summary, cate_summary = build_summary_tables(all_results)
 
-    console.print(Padding(make_ate_rich_table(ate_summary), (1, 4)))
-    console.print(Padding(make_cate_rich_table(cate_summary), (1, 4)))
+    # REPLACE THE TWO SEPARATE PRINTS WITH THIS:
+    console.print(Padding(make_combined_rich_table(ate_summary, cate_summary, title="Final Evaluation"), (1, 4)))
 
     # Save full episode-level results for further analysis
     results_csv = results_dir / "results.csv"
