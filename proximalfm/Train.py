@@ -137,7 +137,6 @@ class LoggerCallback(Callback):
         logs["Loss/train_model"] = train_metrics.get("loss_model")
 
         # Parameters / Optimization
-        logs["Parameters/alpha"] = train_metrics.get("alpha")
         logs["Parameters/grad_norm"] = train_metrics.get("grad_norm")
         if hasattr(trainer, "optimizer") and trainer.optimizer.param_groups:
             logs["Parameters/learning_rate"] = trainer.optimizer.param_groups[0]["lr"]
@@ -372,7 +371,7 @@ class CATETrainer:
 
         return x, a, w, z, y, target, y_std
 
-    def _forward_and_loss(self, x, a, w, z, y, target, y_std, alpha):
+    def _forward_and_loss(self, x, a, w, z, y, target, y_std):
         out = self.model(x=x, a=a, w=w, z=z, y=y)
         loss_model = self.model.loss(out, target)
 
@@ -383,12 +382,7 @@ class CATETrainer:
 
         loss_mse_raw = F.mse_loss(expected_mean, target)
 
-        y_std_expanded = y_std.unsqueeze(-1) if y_std.dim() == 2 else y_std
-        loss_mse_normalized = F.mse_loss(
-            expected_mean / y_std_expanded, target / y_std_expanded
-        )
-
-        loss = alpha * loss_mse_normalized + (1 - alpha) * loss_model
+        loss = loss_model
         return loss, loss_mse_raw, loss_model, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
@@ -556,9 +550,6 @@ class CATETrainer:
 
         epoch_start = time.time()
 
-        # alpha epoch loss = 1 if epoch = 0, then linearly decay to 0 by epoch warmup_epochs
-        alpha_epoch_loss = 1 - min(1, epoch / self.train_cfg.get("warmup_epochs", 300))
-
         with tqdm(
             self.train_loader,
             desc=f"Epoch {epoch + 1}/{self.train_cfg['epochs']} [Train]",
@@ -575,7 +566,7 @@ class CATETrainer:
                     pred_mean,
                     pred_log_var,
                 ) = self._forward_and_loss(
-                    x, a, w, z, y, target, y_std, alpha_epoch_loss
+                    x, a, w, z, y, target, y_std
                 )
 
                 total_grad_norm += self._optimization_step(loss)
@@ -632,7 +623,6 @@ class CATETrainer:
             "mspe": mspe,
             "variance": avg_variance,
             "grad_norm": avg_grad_norm,
-            "alpha": alpha_epoch_loss,
             "time_s": epoch_time,
             "cov50": cov50,
             "cov95": cov95,

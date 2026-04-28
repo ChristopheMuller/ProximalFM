@@ -54,7 +54,6 @@ def mock_config(tmp_path):
             "log_dir": str(tmp_path / "logs"),
             "save_dir": str(tmp_path / "saves"),
             "seed": 42,
-            "warmup_epochs": 1,
             "clip_grad": 1.0,
             "val_freq": 1,
             "save_freq": 1,
@@ -207,7 +206,6 @@ def test_train_epoch(mock_create_loaders, mock_wandb, mock_config):
     assert "rmse" in train_metrics
     assert "variance" in train_metrics
     assert "grad_norm" in train_metrics
-    assert "alpha" in train_metrics
     assert "time_s" in train_metrics
     assert len(trainer.train_losses) == 1
     
