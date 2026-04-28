@@ -16,7 +16,7 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_linear__3gmm_medium"
+MODEL = "bnn_complete__128_mse_and_gnll"
 FILTER_REMOVE_EPOCHS = []
 FILTER_KEEP_EPOCHS = None
 
@@ -78,6 +78,7 @@ def main():
         feature_group_size_w=model_cfg.get("feature_group_size_w", 4),
         feature_group_size_z=model_cfg.get("feature_group_size_z", 4),
         n_gmm_components=model_cfg.get("n_gmm_components", 1),
+        n_cls_rows=model_cfg.get("n_cls_rows", 128),
     )
     model = ProximalGMM(
         config=config_model
@@ -215,7 +216,6 @@ def main():
         fig.delaxes(axes[j])
 
     plt.tight_layout()
-    plt.savefig(f"cate_checkpoints_{MODEL}.pdf")
     plt.show()
 
 if __name__ == "__main__":

@@ -15,10 +15,10 @@ from proximalfm.models.gmm import ProximalGMM
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "cate_linear__3gmm_medium"
+MODEL = "bnn_complete__longRun"
 device_str = "mps"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1,10,30,50,100,150,200,250,300]
+FILTER_KEEP_EPOCHS = [1, 10, 30, 50, 100, 150, 200, 250, 300, 350, 400, 420]
 
 def load_config() -> dict:
 
@@ -218,7 +218,6 @@ def main():
         fig.delaxes(axes[j])
 
     plt.tight_layout()
-    plt.savefig(f"ate_checkpoints_{MODEL}.pdf")
     plt.show()
 
 if __name__ == "__main__":
