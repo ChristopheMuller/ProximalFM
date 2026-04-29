@@ -9,7 +9,13 @@ from contextlib import nullcontext
 import math
 
 from .registry import register_model
-from .base import BaseCATEModel, InducedTransformerBlock, TransformerBlock, get_mlp, DistributionAwareEmbedder
+from .base import (
+    BaseCATEModel,
+    InducedTransformerBlock,
+    TransformerBlock,
+    get_mlp,
+    DistributionAwareEmbedder,
+)
 
 
 @register_model("mse")
@@ -57,7 +63,7 @@ class ProximalMSE(BaseCATEModel):
             self.x_embed = nn.Linear(config.feature_group_size_x, config.embed_dim)
             self.w_embed = nn.Linear(config.feature_group_size_w, config.embed_dim)
             self.z_embed = nn.Linear(config.feature_group_size_z, config.embed_dim)
-        
+
         self.a_embed = nn.Linear(1, config.embed_dim)
         self.a_embed_icl = nn.Linear(1, icl_dim)
 
@@ -587,7 +593,6 @@ class ProximalMSE(BaseCATEModel):
     ) -> typing.Union[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         means = out[..., 0:1]
         if return_log_variance:
-
             return means, None
 
         return means

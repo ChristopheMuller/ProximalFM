@@ -153,9 +153,7 @@ class LoggerCallback(Callback):
 
             logs["CATE/r2"] = val_metrics.get("cate_r2_mean")
             logs["CATE/r2_shape"] = val_metrics.get("cate_r2_shape_mean")
-            logs["CATE/r2_ate_penalty"] = val_metrics.get(
-                "cate_r2_ate_penalty_mean"
-            )
+            logs["CATE/r2_ate_penalty"] = val_metrics.get("cate_r2_ate_penalty_mean")
             logs["CATE/rmse"] = val_metrics.get("rmse")
             logs["CATE/mae"] = val_metrics.get("cate_mae_mean")
             logs["CATE/normrmse"] = val_metrics.get("cate_rmse_norm_mean")
@@ -372,13 +370,23 @@ class CATETrainer:
         )
         loss_mse_raw = F.mse_loss(expected_mean, target)
         if overall_log_variance is not None:
-            loss_gnll_raw = 0.5 * (
-                overall_log_variance
-                + (expected_mean - target) ** 2 / overall_log_variance.exp().clamp(min=1e-8)
-            ).mean()
+            loss_gnll_raw = (
+                0.5
+                * (
+                    overall_log_variance
+                    + (expected_mean - target) ** 2
+                    / overall_log_variance.exp().clamp(min=1e-8)
+                ).mean()
+            )
         else:
             loss_gnll_raw = torch.tensor(0.0, device=expected_mean.device)
-        return loss_model, loss_mse_raw, loss_gnll_raw, expected_mean, overall_log_variance
+        return (
+            loss_model,
+            loss_mse_raw,
+            loss_gnll_raw,
+            expected_mean,
+            overall_log_variance,
+        )
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()

@@ -218,6 +218,7 @@ class QASSMax(
             * q
         )
 
+
 class DistributionAwareEmbedder(nn.Module):
     def __init__(self, group_size, embed_dim, num_heads, num_blocks, n_inducing):
         super().__init__()

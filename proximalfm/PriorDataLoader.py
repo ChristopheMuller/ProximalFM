@@ -150,7 +150,9 @@ def create_causal_data_loaders(
         max_episode_size=max_episode_size,
     )
 
-    val_prior_config = val_prior_config if val_prior_config is not None else prior_config
+    val_prior_config = (
+        val_prior_config if val_prior_config is not None else prior_config
+    )
     val_collator = DynamicBatchCollator(
         prior_config=val_prior_config,
         min_episode_size=min_episode_size,
