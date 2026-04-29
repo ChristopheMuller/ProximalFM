@@ -165,11 +165,6 @@ class LoggerCallback(Callback):
                 logs["Metrics/val_variance"] = val_metrics["variance"]
             logs["Time/val_s"] = val_metrics.get("time_s")
 
-            if "cov50" in val_metrics and val_metrics["cov50"] > 0:
-                logs["Calibration/val_cov50"] = val_metrics.get("cov50")
-                logs["Calibration/val_cov95"] = val_metrics.get("cov95")
-                logs["Calibration/val_cov99"] = val_metrics.get("cov99")
-
             logs["Bias-Variance/val_bias_sq"] = val_metrics.get("bias_sq")
             logs["Bias-Variance/val_error_var"] = val_metrics.get("error_var")
             logs["Bias-Variance/mse"] = val_metrics.get("mse")
@@ -487,9 +482,6 @@ class CATETrainer:
             if pred_var is not None:
                 metrics["variance_mean"] = pred_var.mean()
                 metrics["variance_sum"] = pred_var.sum()
-                metrics["cov50"] = (abs_error <= 0.674 * pred_std).float().sum()
-                metrics["cov95"] = (abs_error <= 1.960 * pred_std).float().sum()
-                metrics["cov99"] = (abs_error <= 2.576 * pred_std).float().sum()
 
             return metrics
 
@@ -589,9 +581,6 @@ class CATETrainer:
         sum_sq_err = torch.zeros(1, device=self.device)
         sum_sq_pe = torch.zeros(1, device=self.device)
         total_samples = 0
-        total_cov50 = torch.zeros(1, device=self.device)
-        total_cov95 = torch.zeros(1, device=self.device)
-        total_cov99 = torch.zeros(1, device=self.device)
 
         sum_error = torch.zeros(1, device=self.device)
         sum_target = torch.zeros(1, device=self.device)
@@ -641,12 +630,6 @@ class CATETrainer:
                     total_samples += metrics["num_samples"]
                     if "variance_sum" in metrics:
                         total_variance += metrics["variance_sum"]
-                    if "cov50" in metrics:
-                        total_cov50 += metrics["cov50"]
-                    if "cov95" in metrics:
-                        total_cov95 += metrics["cov95"]
-                    if "cov99" in metrics:
-                        total_cov99 += metrics["cov99"]
 
                     total_cate_r2 += metrics["sum_cate_r2"]
                     total_episodes += metrics["num_episodes"]
@@ -701,10 +684,6 @@ class CATETrainer:
 
         avg_variance = (total_variance / denom).item()
 
-        cov95 = (total_cov95 / denom).item()
-        cov50 = (total_cov50 / denom).item()
-        cov99 = (total_cov99 / denom).item()
-
         self.val_rmses.append(rmse)
         if self.global_step >= self.warmup_steps:
             self.scheduler.step(rmse)
@@ -724,9 +703,6 @@ class CATETrainer:
             "error_var": ite_error_var,
             "variance": avg_variance,
             "time_s": val_time,
-            "cov50": cov50,
-            "cov95": cov95,
-            "cov99": cov99,
             "cate_r2_shape_mean": cate_r2_shape_mean,
             "cate_r2_ate_penalty_mean": cate_r2_ate_penalty_mean,
             "cate_mae_mean": cate_mae_mean,
