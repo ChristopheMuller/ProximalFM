@@ -3,9 +3,10 @@ training:
   device: mps
   early_stop: 30
   epochs: 1500
-  exp_name: "bnn_complete__longRunMSE"
+  exp_name: "test"
   gpu: 0
-  log_dir: "runs/bnn_complete"
+  log_dir: "runs/"
+  group_wandb: "group1"
   lr: 0.0003
   save_dir: "checkpoints"
   save_freq: 10

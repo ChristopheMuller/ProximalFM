@@ -106,6 +106,7 @@ class LoggerCallback(Callback):
 
         wandb.init(
             project="proximal-fm",
+            group=self.train_cfg.get("group_wandb", "default"),
             name=f"{exp_name}_{run_name}",
             config=self.config,
             dir=self.train_cfg.get("log_dir", "runs"),
@@ -147,7 +148,7 @@ class LoggerCallback(Callback):
         if val_metrics:
             logs["ATE/r2"] = val_metrics.get("ate_r2")
             logs["ATE/bias"] = val_metrics.get("bias")
-            logs["ATE/normmae"] = val_metrics.get("ate_normmae")
+            logs["ATE/mae"] = val_metrics.get("ate_mae")
             logs["ATE/normrmse"] = val_metrics.get("ate_normrmse")
 
             logs["CATE/r2"] = val_metrics.get("cate_r2_mean")
@@ -457,6 +458,7 @@ class CATETrainer:
             cate_rmse_norm_episode = torch.sqrt(mse_episode) / (std_tau_episode + 1e-8)
 
             ate_error_norm_episode = ate_residuals / (std_tau_episode + 1e-8)
+            ate_mae_episode = ate_residuals.abs()
 
             metrics = {
                 "sum_sq_err": residuals.pow(2).sum(),
@@ -474,6 +476,7 @@ class CATETrainer:
                 "sum_cate_r2_ate_penalty": cate_r2_ate_penalty.sum(),
                 "num_valid_cate_episodes": num_valid_cate_episodes,
                 "sum_cate_mae": cate_mae_episode.sum(),
+                "sum_ate_mae": ate_mae_episode.sum(),
                 "sum_cate_rmse_norm": cate_rmse_norm_episode.sum(),
                 "sum_ate_error_norm": ate_error_norm_episode.sum(),
                 "sum_abs_ate_error_norm": ate_error_norm_episode.abs().sum(),
@@ -598,8 +601,8 @@ class CATETrainer:
         total_cate_r2_ate_penalty = torch.zeros(1, device=self.device)
         total_cate_mae = torch.zeros(1, device=self.device)
         total_cate_rmse_norm = torch.zeros(1, device=self.device)
+        total_ate_mae = torch.zeros(1, device=self.device)
         total_ate_error_norm = torch.zeros(1, device=self.device)
-        total_abs_ate_error_norm = torch.zeros(1, device=self.device)
         total_sq_ate_error_norm = torch.zeros(1, device=self.device)
 
         val_start = time.time()
@@ -643,8 +646,8 @@ class CATETrainer:
                     total_cate_r2_ate_penalty += metrics["sum_cate_r2_ate_penalty"]
                     total_cate_mae += metrics["sum_cate_mae"]
                     total_cate_rmse_norm += metrics["sum_cate_rmse_norm"]
+                    total_ate_mae += metrics["sum_ate_mae"]
                     total_ate_error_norm += metrics["sum_ate_error_norm"]
-                    total_abs_ate_error_norm += metrics["sum_abs_ate_error_norm"]
                     total_sq_ate_error_norm += metrics["sum_sq_ate_error_norm"]
 
         val_time = time.time() - val_start
@@ -678,7 +681,7 @@ class CATETrainer:
         ep_denom = max(total_episodes, 1)
         cate_mae_mean = (total_cate_mae / ep_denom).item()
         cate_rmse_norm_mean = (total_cate_rmse_norm / ep_denom).item()
-        ate_normmae = (total_abs_ate_error_norm / ep_denom).item()
+        ate_mae = (total_ate_mae / ep_denom).item()
         ate_normrmse = np.sqrt((total_sq_ate_error_norm / ep_denom).item())
 
         avg_variance = (total_variance / denom).item()
@@ -705,7 +708,7 @@ class CATETrainer:
             "cate_r2_ate_penalty_mean": cate_r2_ate_penalty_mean,
             "cate_mae_mean": cate_mae_mean,
             "cate_rmse_norm_mean": cate_rmse_norm_mean,
-            "ate_normmae": ate_normmae,
+            "ate_mae": ate_mae,
             "ate_normrmse": ate_normrmse,
         }
 
