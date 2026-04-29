@@ -1,8 +1,8 @@
-#%%
+# %%
 
 from prior._dataset import PriorDataset
 
-#%%
+# %%
 
 print("Initializing Proximal PriorDataset...")
 
@@ -45,7 +45,7 @@ print(f"d_Z shape:       {d_Z.shape}  -> (Batch,) Active features per dataset")
 print(f"seq_lens shape:    {seq_lens.shape}  -> (Batch,) Sequence lengths")
 print(f"train_sizes shape: {train_sizes.shape}  -> (Batch,) Train split indices")
 
-#%%
+# %%
 
 print("\nX:")
 print(X[0, :, : d_X[0]])
@@ -68,4 +68,4 @@ print(Y0[0, :20])
 print("\nY1:")
 print(Y1[0, :20])
 
-#%%
+# %%

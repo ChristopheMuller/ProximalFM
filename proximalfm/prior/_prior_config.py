@@ -16,6 +16,9 @@ DEFAULT_FIXED_HP = {
     "scale_by_max_features": False,
     "permute_features": True,
     "permute_labels": True,
+    # Propensity
+    "propensity_epsilon": 0.05,
+    "propensity_temperature": 1.0,
 }
 
 DEFAULT_SAMPLED_HP = {

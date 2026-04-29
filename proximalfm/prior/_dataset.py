@@ -13,6 +13,13 @@ The main class is PriorDataset, which provides an iterable interface for generat
 an infinite stream of synthetic datasets with diverse characteristics.
 """
 
+
+#########
+# TODO:
+# - Generate not only U -> X but also X -> U or X <-> U relationships
+# - Generate not only U -> Z but also Z -> U
+#########
+
 from __future__ import annotations
 
 import os
@@ -550,28 +557,95 @@ class SCMPrior(Prior):
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 
         while True:
-            X, y = prior_cls(**params)()
+            prior_unit = prior_cls(
+                **params
+            )  # need to change parameter to have num_cause = dim_U
+            U = prior_unit.xsampler.sample()
+
+            X = prior_unit(input=U, d_out=params["dim_X"])
+            input_WZ = torch.cat([U, X], dim=-1)
+            W = prior_unit(input=input_WZ, d_out=params["dim_W"])
+            Z = prior_unit(input=input_WZ, d_out=params["dim_Z"])
+
+            input_A = torch.cat([U, X, Z], dim=-1)
+            input_A = self.prepare_input(type="A", input=input_A, **params)
+            A_logits = prior_unit(input=input_A, d_out=1).squeeze(-1)
+            A = self.sample_A(
+                A_logits,
+                epsilon=params["propensity_epsilon"],
+                temperature=params["propensity_temperature"],
+            )
+
+            input_y = torch.cat([U, X, W], dim=-1)
+            input_y0 = self.prepare_input(type="y0", input=input_y, **params)
+            input_y1 = self.prepare_input(type="y1", input=input_y, **params)
+
+            y0 = prior_unit(input=input_y0, d_out=1, outcome=True).squeeze(-1)
+            y1 = prior_unit(input=input_y1, d_out=1, outcome=True).squeeze(-1)
+
+            y = torch.where(A == 1, y1, y0)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
-            X, y = X.unsqueeze(0), y.unsqueeze(0)
-            d = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
+            X, W, Z, y, y0, y1 = (
+                X.unsqueeze(0),
+                W.unsqueeze(0),
+                Z.unsqueeze(0),
+                y.unsqueeze(0),
+                y0.unsqueeze(0),
+                y1.unsqueeze(0),
+            )
+            d_X = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
+            d_W = torch.tensor([params["dim_W"]], device=self.device, dtype=torch.long)
+            d_Z = torch.tensor([params["dim_Z"]], device=self.device, dtype=torch.long)
 
             # Only keep valid datasets with sufficient features and balanced classes
-            X, d = self.delete_unique_features(X, d)
-            if (d > 0).all():
-                X, y, d = X.squeeze(0), y.squeeze(0), d.squeeze(0)
+            X, d_X = self.delete_unique_features(X, d_X)
+            W, d_W = self.delete_unique_features(W, d_W)
+            Z, d_Z = self.delete_unique_features(Z, d_Z)
+            if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
+                X, W, Z, A, y, y0, y1, d_X, d_W, d_Z = (
+                    X.squeeze(0),
+                    W.squeeze(0),
+                    Z.squeeze(0),
+                    A.squeeze(0),
+                    y.squeeze(0),
+                    y0.squeeze(0),
+                    y1.squeeze(0),
+                    d_X.squeeze(0),
+                    d_W.squeeze(0),
+                    d_Z.squeeze(0),
+                )
                 return (
                     X,
-                    torch.zeros_like(X),
-                    torch.zeros_like(X),
-                    torch.zeros_like(y),
+                    W,
+                    Z,
+                    A,
                     y,
-                    y,
-                    y,
-                    d,
-                    d,
-                    d,
+                    y0,
+                    y1,
+                    d_X,
+                    d_W,
+                    d_Z,
                 )
+
+    def prepare_input(self, type: str, input: Tensor, **params) -> Tensor:
+        if type == "A":
+            return input
+        elif type == "y0":
+            A0 = torch.zeros((input.shape[0], 1), device=input.device)
+            input = torch.cat([input, A0], dim=-1)
+            return input
+        elif type == "y1":
+            A1 = torch.ones((input.shape[0], 1), device=input.device)
+            input = torch.cat([input, A1], dim=-1)
+            return input
+
+    def sample_A(
+        self, logits: Tensor, epsilon: float = 0.05, temperature: float = 1.0
+    ) -> Tensor:
+        probs = torch.sigmoid(logits / temperature)
+        probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
+        return torch.bernoulli(probs).long()
 
     @torch.no_grad()
     def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:

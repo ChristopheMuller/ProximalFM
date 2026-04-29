@@ -92,8 +92,8 @@ class MLPSCM(nn.Module):
     scale_init_std_by_dropout : bool, default=True
         Whether to scale the `init_std` during weight initialization to compensate
         for the variance reduction caused by dropout. If `True`, `init_std` is
-        divided by :math:`\sqrt{1 - p_{\text{dropout}}}` or
-        :math:`\sqrt{p_{\text{keep}}}` depending on the initialization method.
+        divided by :math:`\\sqrt{1 - p_{\\text{dropout}}}` or
+        :math:`\\sqrt{p_{\\text{keep}}}` depending on the initialization method.
 
     sampling : str, default="normal"
         The method used by `XSampler` to generate the initial 'cause' variables.
@@ -255,7 +255,7 @@ class MLPSCM(nn.Module):
             nn.init.normal_(param, std=std)
             param *= torch.bernoulli(torch.full_like(param, 1 - dropout_prob))
 
-    def forward(self):
+    def forward(self, input=None, outcome=None, d_out=1):
         """Generates synthetic data by sampling input features and applying MLP transformations."""
         causes = self.xsampler.sample()  # (seq_len, num_causes)
 
@@ -278,7 +278,10 @@ class MLPSCM(nn.Module):
         if self.num_outputs == 1:
             y = y.squeeze(-1)
 
-        return X, y
+        if d_out == 1:
+            return X[:, 0]
+
+        return X
 
     def handle_outputs(self, causes, outputs):
         """Handle outputs based on whether causal or not.
