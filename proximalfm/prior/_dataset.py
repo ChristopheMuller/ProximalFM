@@ -550,25 +550,31 @@ class SCMPrior(Prior):
 
         while True:
             X, y = prior_cls(**params)()
-            X, y = Reg2Cls(params)(X, y)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
             X, y = X.unsqueeze(0), y.unsqueeze(0)
-            d = torch.tensor(
-                [params["num_features"]], device=self.device, dtype=torch.long
-            )
+            d = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
 
             # Only keep valid datasets with sufficient features and balanced classes
             X, d = self.delete_unique_features(X, d)
             if (d > 0).all():
-                return X.squeeze(0), y.squeeze(0), d.squeeze(0)
+                X, y, d = X.squeeze(0), y.squeeze(0), d.squeeze(0)
+                return (
+                    X,
+                    torch.zeros_like(X),
+                    torch.zeros_like(X),
+                    torch.zeros((X.shape[0], 1, 1)),
+                    y,
+                    y,
+                    y,
+                    d,
+                    d,
+                    d,
+                )
 
     @torch.no_grad()
-    def get_batch(
-        self, batch_size: Optional[int] = None
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """Generate a batch of datasets by first creating a parameter list and then processing it.
-
+    def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
+        """Generate a batch of proximal datasets.
         Parameters
         ----------
         batch_size : int, optional
@@ -576,23 +582,10 @@ class SCMPrior(Prior):
 
         Returns
         -------
-        X : Tensor or NestedTensor
-            Features tensor. If seq_len_per_gp=False, shape is
-            ``(batch_size, seq_len, max_features)``.
-            If seq_len_per_gp=True, returns a NestedTensor.
-
-        y : Tensor or NestedTensor
-            Labels tensor. If seq_len_per_gp=False, shape is ``(batch_size, seq_len)``.
-            If seq_len_per_gp=True, returns a NestedTensor.
-
-        d : Tensor
-            Number of active features per dataset after filtering, shape ``(batch_size,)``.
-
-        seq_lens : Tensor
-            Sequence length for each dataset, shape ``(batch_size,)``.
-
-        train_sizes : Tensor
-            Position for train/test split for each dataset, shape ``(batch_size,)``.
+        Tuple containing:
+            X, W, Z, A, Y_obs, Y0, Y1 : Tensors (or NestedTensors if seq_len_per_gp=True)
+            d_X, d_W, d_Z : Active dimension trackers for the proxies and covariates
+            seq_lens, train_sizes : Metadata tensors
         """
         batch_size = batch_size or self.batch_size
 
@@ -627,7 +620,8 @@ class SCMPrior(Prior):
                 break
 
             group_sampled_hp = self.hp_sampling()
-            # If per-group, sample seq_len and train_size for this group. Otherwise, use global ones
+
+            # Sequence Length & Max Dimension Scaling
             if self.seq_len_per_gp:
                 gp_seq_len = self.sample_seq_len(
                     self.min_seq_len,
@@ -638,19 +632,20 @@ class SCMPrior(Prior):
                 gp_train_size = self.sample_train_size(
                     self.min_train_size, self.max_train_size, gp_seq_len
                 )
-                # Adjust max features based on seq_len for this group
-                gp_max_features = self.adjust_max_features(
-                    gp_seq_len, self.max_dim_X, 0, 0
+                # Adjust maximum dimensions proportionally if sequence is huge to avoid OOM
+                gp_max_X, gp_max_W, gp_max_Z = self.adjust_max_features(
+                    gp_seq_len, self.max_dim_X, self.max_dim_W, self.max_dim_Z
                 )
             else:
                 gp_seq_len = global_seq_len
                 gp_train_size = global_train_size
-                gp_max_features = self.max_dim_X
+                gp_max_X, gp_max_W, gp_max_Z = (
+                    self.max_dim_X,
+                    self.max_dim_W,
+                    self.max_dim_Z,
+                )
 
-            # Calculate number of subgroups for this group
-            num_subgps_in_gp = math.ceil(
-                actual_gp_size / size_per_subgp
-            )  # default -> 1 subgroup per group.
+            num_subgps_in_gp = math.ceil(actual_gp_size / size_per_subgp)
 
             # Generate parameters for each subgroup
             for subgp_idx in range(num_subgps_in_gp):
@@ -663,47 +658,54 @@ class SCMPrior(Prior):
 
                 # Subgroups share prior type, number of features, and sampled HPs
                 subgp_prior_type = self.get_prior()
-                subgp_num_features = round(
-                    np.random.uniform(self.min_dim_X, gp_max_features)
-                )
                 subgp_sampled_hp = {
                     k: v() if callable(v) else v for k, v in group_sampled_hp.items()
                 }
 
-                # Generate parameters for each dataset in this subgroup
-                for ds_idx in range(actual_subgp_size):
-                    # Each dataset has its own number of classes
-                    if np.random.random() > 0.5:
-                        ds_num_classes = np.random.randint(
-                            2, 99 + 1
-                        )  # num_classes hard-fixed
-                    else:
-                        ds_num_classes = 2
+                # 1. Sample Latent Confounder Dimension
+                dim_U = np.random.randint(self.min_dim_U, self.max_dim_U + 1)
 
-                    # Create parameters dictionary for this dataset
+                # 2. Enforce Completeness: dim(W) >= dim(U) and dim(Z) >= dim(U)
+                # We use max() to ensure the lower bound satisfies both the user's config and the DAG requirement
+                min_W_req = max(self.min_dim_W, dim_U)
+                max_W_req = max(gp_max_W, min_W_req)
+                dim_W = np.random.randint(min_W_req, max_W_req + 1)
+
+                min_Z_req = max(self.min_dim_Z, dim_U)
+                max_Z_req = max(gp_max_Z, min_Z_req)
+                dim_Z = np.random.randint(min_Z_req, max_Z_req + 1)
+
+                # 3. Sample Covariates (No completeness requirement relative to U)
+                max_X_req = max(self.min_dim_X, gp_max_X)
+                dim_X = np.random.randint(self.min_dim_X, max_X_req + 1)
+
+                for ds_idx in range(actual_subgp_size):
                     params = {
-                        **self.fixed_hp,  # Fixed HPs
+                        **self.fixed_hp,
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
-                        # If per-gp setting, use adjusted max features for this group because we use nested tensors
-                        # If not per-gp setting, use global max features to fix size for concatenation
-                        "max_features": gp_max_features
+                        # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
+                        "max_dim_X": gp_max_X
                         if self.seq_len_per_gp
                         else self.max_dim_X,
-                        **subgp_sampled_hp,  # sampled HPs for this group
+                        "max_dim_W": gp_max_W
+                        if self.seq_len_per_gp
+                        else self.max_dim_W,
+                        "max_dim_Z": gp_max_Z
+                        if self.seq_len_per_gp
+                        else self.max_dim_Z,
+                        **subgp_sampled_hp,
                         "prior_type": subgp_prior_type,
-                        "num_features": subgp_num_features,
-                        "num_classes": ds_num_classes,
+                        # Pass the exact active dimensions for this specific graph
+                        "dim_U": dim_U,
+                        "dim_W": dim_W,
+                        "dim_Z": dim_Z,
+                        "dim_X": dim_X,
                         "device": self.device,
                     }
                     param_list.append(params)
 
-        # Use joblib to generate datasets in parallel.
-        # Note: the 'loky' backend does not support nested parallelism during DDP, whereas the 'threading' backend does.
-        # However, 'threading' does not respect `inner_max_num_threads`.
-        # Therefore, we stick with the 'loky' backend for parallelism, but this requires generating
-        # the prior datasets separately from the training process and loading them from disk,
-        # rather than generating them on-the-fly.
+        # Parallel Generation
         if self.n_jobs > 1 and self.device == "cpu":
             with joblib.parallel_config(
                 n_jobs=self.n_jobs,
@@ -717,22 +719,44 @@ class SCMPrior(Prior):
         else:
             results = [self.generate_dataset(params) for params in param_list]
 
-        X_list, y_list, d_list = zip(*results)
+        (
+            X_list,
+            W_list,
+            Z_list,
+            A_list,
+            Y_obs_list,
+            Y0_list,
+            Y1_list,
+            d_X_list,
+            d_W_list,
+            d_Z_list,
+        ) = zip(*results)
 
         # Combine Results
         if self.seq_len_per_gp:
-            # Use nested tensors for variable sequence lengths
-            X = nested_tensor([x.to(self.device) for x in X_list], device=self.device)
-            y = nested_tensor([y.to(self.device) for y in y_list], device=self.device)
+            X = nested_tensor([t.to(self.device) for t in X_list], device=self.device)
+            W = nested_tensor([t.to(self.device) for t in W_list], device=self.device)
+            Z = nested_tensor([t.to(self.device) for t in Z_list], device=self.device)
+            A = nested_tensor([t.to(self.device) for t in A_list], device=self.device)
+            Y_obs = nested_tensor(
+                [t.to(self.device) for t in Y_obs_list], device=self.device
+            )
+            Y0 = nested_tensor([t.to(self.device) for t in Y0_list], device=self.device)
+            Y1 = nested_tensor([t.to(self.device) for t in Y1_list], device=self.device)
         else:
-            # Stack into regular tensors for fixed sequence length
-            X = torch.stack(X_list).to(self.device)  # (B, T, H)
-            y = torch.stack(y_list).to(self.device)  # (B, T)
+            X = torch.stack(X_list).to(self.device)
+            W = torch.stack(W_list).to(self.device)
+            Z = torch.stack(Z_list).to(self.device)
+            A = torch.stack(A_list).to(self.device)
+            Y_obs = torch.stack(Y_obs_list).to(self.device)
+            Y0 = torch.stack(Y0_list).to(self.device)
+            Y1 = torch.stack(Y1_list).to(self.device)
 
-        # Metadata (always regular tensors)
-        d = torch.stack(d_list).to(
-            self.device
-        )  # Actual number of features after filtering out constant ones
+        # Metadata
+        d_X = torch.stack(d_X_list).to(self.device)
+        d_W = torch.stack(d_W_list).to(self.device)
+        d_Z = torch.stack(d_Z_list).to(self.device)
+
         seq_lens = torch.tensor(
             [params["seq_len"] for params in param_list],
             device=self.device,
@@ -744,7 +768,7 @@ class SCMPrior(Prior):
             dtype=torch.long,
         )
 
-        return X, y, d, seq_lens, train_sizes
+        return X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes
 
     def get_prior(self) -> str:
         """Determine which prior type to use for generation.
