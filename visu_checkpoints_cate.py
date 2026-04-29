@@ -12,13 +12,13 @@ import torch
 import yaml
 from tqdm import tqdm
 
-from proximalfm.models.gmm import ProximalGMM
+from proximalfm.models import build_model
 from proximalfm.Structure import ProximalPriorConfig, ModelConfig
 from proximalfm.PriorDataLoader import create_causal_data_loaders
 
-MODEL = "bnn_complete__128_mse_and_gnll"
+MODEL = "bnn_complete__longRunMSE"
 FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = None
+FILTER_KEEP_EPOCHS = [1, 10, 30, 50, 70, 100, 120, 150, 200, 250, 300, 330]
 
 def load_config() -> dict:
     full_config = {}
@@ -65,9 +65,7 @@ def main():
     dtype = getattr(torch, model_cfg.get("dtype", "float32"))
 
     config_model = ModelConfig(**model_cfg)
-    model = ProximalGMM(
-        config=config_model
-    ).to(device, dtype=dtype)
+    model = build_model(model_config=config_model).to(device, dtype=dtype)
     model.eval()
 
     # ---------------------------------------------------------
