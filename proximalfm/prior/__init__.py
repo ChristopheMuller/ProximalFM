@@ -1,17 +1,10 @@
-"""Prior module for proximal causal inference data generation."""
+"""Synthetic prior data generation for TabICL pre-training.
 
-from .BNNPrior import BNNPrior
-from .BNNPriorComplete import BNNPriorComplete
-from .CATELinearPrior import CATELinearPrior
-from .ConfoundingLinearPrior import ConfoundingLinearPrior
-from .FungibleSmall import FungibleSmall
-from .LinearPrior import LinearPrior
+Only :class:`PriorDataset` is public. All other symbols in this subpackage
+are internal pre-training utilities and may change without notice. A CLI
+entry point is provided via ``python -m tabicl.prior``.
+"""
 
-__all__ = [
-    "BNNPrior",
-    "BNNPriorComplete",
-    "CATELinearPrior",
-    "ConfoundingLinearPrior",
-    "FungibleSmall",
-    "LinearPrior",
-]
+from ._dataset import PriorDataset
+
+__all__ = ["PriorDataset"]
