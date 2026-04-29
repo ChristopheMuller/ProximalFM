@@ -500,9 +500,14 @@ class SCMPrior(Prior):
         batch_size: int = 256,
         batch_size_per_gp: int = 4,
         batch_size_per_subgp: Optional[int] = None,
-        min_features: int = 2,
-        max_features: int = 100,
-        max_classes: int = 10,
+        min_dim_U: int = 3,
+        max_dim_U: int = 10,
+        min_dim_W: int = 3,
+        max_dim_W: int = 10,
+        min_dim_Z: int = 3,
+        max_dim_Z: int = 10,
+        min_dim_X: int = 5,
+        max_dim_X: int = 20,
         min_seq_len: Optional[int] = None,
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
@@ -519,9 +524,9 @@ class SCMPrior(Prior):
     ):
         super().__init__(
             batch_size=batch_size,
-            min_features=min_features,
-            max_features=max_features,
-            max_classes=max_classes,
+            min_features=min_dim_X,
+            max_features=max_dim_X,
+            max_classes=10,
             min_seq_len=min_seq_len,
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
@@ -532,6 +537,16 @@ class SCMPrior(Prior):
 
         self.batch_size_per_gp = batch_size_per_gp
         self.batch_size_per_subgp = batch_size_per_subgp or batch_size_per_gp
+
+        self.min_dim_U = min_dim_U
+        self.max_dim_U = max_dim_U
+        self.min_dim_W = min_dim_W
+        self.max_dim_W = max_dim_W
+        self.min_dim_Z = min_dim_Z
+        self.max_dim_Z = max_dim_Z
+        self.min_dim_X = min_dim_X
+        self.max_dim_X = max_dim_X
+
         self.seq_len_per_gp = seq_len_per_gp
         self.prior_type = prior_type
         self.fixed_hp = fixed_hp
@@ -796,7 +811,12 @@ class SCMPrior(Prior):
 
 
 class PriorDataset(IterableDataset):
-    """Main dataset class that provides an infinite iterator over synthetic tabular datasets.
+    """Main dataset class that provides an infinite iterator over synthetic tabular datasets
+    designed for Proximal Causal Learning.
+
+    Generates datasets adhering to a specific Directed Acyclic Graph (DAG) structure
+    where an unmeasured confounder U is addressed using outcome-inducing (W) and
+    treatment-inducing (Z) proxies, alongside observed baseline covariates (X).
 
     Parameters
     ----------
@@ -810,14 +830,33 @@ class PriorDataset(IterableDataset):
         Number of datasets per subgroup, with more similar causal structures.
         If None, defaults to batch_size_per_gp.
 
-    min_features : int, default=2
-        Minimum number of features per dataset.
+    min_dim_U : int, default=3
+        Minimum dimensionality of the unmeasured latent confounder U.
 
-    max_features : int, default=100
-        Maximum number of features per dataset.
+    max_dim_U : int, default=10
+        Maximum dimensionality of the unmeasured latent confounder U.
 
-    max_classes : int, default=10
-        Maximum number of target classes.
+    min_dim_W : int, default=3
+        Minimum dimensionality of the outcome-inducing proxy W. To satisfy the
+        completeness assumption, the sampled dimension should ideally satisfy
+        $dim(W) \\ge dim(U)$.
+
+    max_dim_W : int, default=10
+        Maximum dimensionality of the outcome-inducing proxy W.
+
+    min_dim_Z : int, default=3
+        Minimum dimensionality of the treatment-inducing proxy Z. To satisfy the
+        completeness assumption, the sampled dimension should ideally satisfy
+        $dim(Z) \\ge dim(U)$.
+
+    max_dim_Z : int, default=10
+        Maximum dimensionality of the treatment-inducing proxy Z.
+
+    min_dim_X : int, default=5
+        Minimum dimensionality of the observed baseline covariates X.
+
+    max_dim_X : int, default=20
+        Maximum dimensionality of the observed baseline covariates X.
 
     min_seq_len : int, optional
         Minimum samples per dataset. If None, uses max_seq_len directly.
@@ -844,20 +883,16 @@ class PriorDataset(IterableDataset):
         specific distributions to ensure model robustness on smaller datasets.
 
     prior_type : str, default="mlp_scm"
-        Type of prior: 'mlp_scm' (default), 'tree_scm', 'mix_scm', or 'dummy'.
-
-        1. SCM-based: Structural causal models with complex feature relationships
-         - 'mlp_scm': MLP-based causal models
-         - 'tree_scm': Tree-based causal models
-         - 'mix_scm': Probabilistic mix of the above models
-
-        2. Dummy: Randomly generated datasets for debugging
+        Type of prior structural causal model to use for the DAG mechanisms:
+         - 'mlp_scm': MLP-based non-linear mechanisms.
+         - 'tree_scm': Tree-based mechanisms (e.g., Random Forest, XGBoost).
+         - 'mix_scm': Probabilistic mix of the above models.
 
     scm_fixed_hp : dict, default=DEFAULT_FIXED_HP
-        Fixed parameters for SCM-based priors.
+        Fixed structural configuration parameters for the SCM.
 
     scm_sampled_hp : dict, default=DEFAULT_SAMPLED_HP
-        Parameters sampled during generation.
+        Parameters sampled during generation (e.g., dropout, noise scale).
 
     n_jobs : int, default=-1
         Number of parallel jobs to run (-1 means using all processors).
@@ -874,9 +909,14 @@ class PriorDataset(IterableDataset):
         batch_size: int = 256,
         batch_size_per_gp: int = 4,
         batch_size_per_subgp: Optional[int] = None,
-        min_features: int = 2,
-        max_features: int = 100,
-        max_classes: int = 10,
+        min_dim_U: int = 3,
+        max_dim_U: int = 10,
+        min_dim_W: int = 3,
+        max_dim_W: int = 10,
+        min_dim_Z: int = 3,
+        max_dim_Z: int = 10,
+        min_dim_X: int = 5,
+        max_dim_X: int = 20,
         min_seq_len: Optional[int] = None,
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
@@ -897,9 +937,14 @@ class PriorDataset(IterableDataset):
             batch_size=batch_size,
             batch_size_per_gp=batch_size_per_gp,
             batch_size_per_subgp=batch_size_per_subgp,
-            min_features=min_features,
-            max_features=max_features,
-            max_classes=max_classes,
+            min_dim_U=min_dim_U,
+            max_dim_U=max_dim_U,
+            min_dim_W=min_dim_W,
+            max_dim_W=max_dim_W,
+            min_dim_Z=min_dim_Z,
+            max_dim_Z=max_dim_Z,
+            min_dim_X=min_dim_X,
+            max_dim_X=max_dim_X,
             min_seq_len=min_seq_len,
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
@@ -918,9 +963,14 @@ class PriorDataset(IterableDataset):
         self.batch_size = batch_size
         self.batch_size_per_gp = batch_size_per_gp
         self.batch_size_per_subgp = batch_size_per_subgp or batch_size_per_gp
-        self.min_features = min_features
-        self.max_features = max_features
-        self.max_classes = max_classes
+        self.min_dim_U = min_dim_U
+        self.max_dim_U = max_dim_U
+        self.min_dim_W = min_dim_W
+        self.max_dim_W = max_dim_W
+        self.min_dim_Z = min_dim_Z
+        self.max_dim_Z = max_dim_Z
+        self.min_dim_X = min_dim_X
+        self.max_dim_X = max_dim_X
         self.min_seq_len = min_seq_len
         self.max_seq_len = max_seq_len
         self.log_seq_len = log_seq_len
@@ -1003,8 +1053,10 @@ class PriorDataset(IterableDataset):
             f"  prior_type: {self.prior_type}\n"
             f"  batch_size: {self.batch_size}\n"
             f"  batch_size_per_gp: {self.batch_size_per_gp}\n"
-            f"  features: {self.min_features} - {self.max_features}\n"
-            f"  max classes: {self.max_classes}\n"
+            f"  features U: {self.min_dim_U} - {self.max_dim_U}\n"
+            f"  features W: {self.min_dim_W} - {self.max_dim_W}\n"
+            f"  features Z: {self.min_dim_Z} - {self.max_dim_Z}\n"
+            f"  features X: {self.min_dim_X} - {self.max_dim_X}\n"
             f"  seq_len: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
             f"  sequence length varies across groups: {self.seq_len_per_gp}\n"
             f"  train_size: {self.min_train_size} - {self.max_train_size}\n"
