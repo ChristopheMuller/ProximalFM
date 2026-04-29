@@ -892,45 +892,28 @@ class PriorDataset(IterableDataset):
         device: str = "cpu",
     ):
         super().__init__()
-        if prior_type == "dummy":
-            self.prior = DummyPrior(
-                batch_size=batch_size,
-                min_features=min_features,
-                max_features=max_features,
-                max_classes=max_classes,
-                min_seq_len=min_seq_len,
-                max_seq_len=max_seq_len,
-                log_seq_len=log_seq_len,
-                min_train_size=min_train_size,
-                max_train_size=max_train_size,
-                device=device,
-            )
-        elif prior_type in ["mlp_scm", "tree_scm", "mix_scm"]:
-            self.prior = SCMPrior(
-                batch_size=batch_size,
-                batch_size_per_gp=batch_size_per_gp,
-                batch_size_per_subgp=batch_size_per_subgp,
-                min_features=min_features,
-                max_features=max_features,
-                max_classes=max_classes,
-                min_seq_len=min_seq_len,
-                max_seq_len=max_seq_len,
-                log_seq_len=log_seq_len,
-                seq_len_per_gp=seq_len_per_gp,
-                min_train_size=min_train_size,
-                max_train_size=max_train_size,
-                replay_small=replay_small,
-                prior_type=prior_type,
-                fixed_hp=scm_fixed_hp,
-                sampled_hp=scm_sampled_hp,
-                n_jobs=n_jobs,
-                num_threads_per_generate=num_threads_per_generate,
-                device=device,
-            )
-        else:
-            raise ValueError(
-                f"Unknown prior type '{prior_type}'. Available options: 'mlp_scm', 'tree_scm', 'mix_scm', or 'dummy'."
-            )
+
+        self.prior = SCMPrior(
+            batch_size=batch_size,
+            batch_size_per_gp=batch_size_per_gp,
+            batch_size_per_subgp=batch_size_per_subgp,
+            min_features=min_features,
+            max_features=max_features,
+            max_classes=max_classes,
+            min_seq_len=min_seq_len,
+            max_seq_len=max_seq_len,
+            log_seq_len=log_seq_len,
+            seq_len_per_gp=seq_len_per_gp,
+            min_train_size=min_train_size,
+            max_train_size=max_train_size,
+            replay_small=replay_small,
+            prior_type=prior_type,
+            fixed_hp=scm_fixed_hp,
+            sampled_hp=scm_sampled_hp,
+            n_jobs=n_jobs,
+            num_threads_per_generate=num_threads_per_generate,
+            device=device,
+        )
 
         self.batch_size = batch_size
         self.batch_size_per_gp = batch_size_per_gp
