@@ -95,6 +95,35 @@ def silent():
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
 
+def _switch_src_context(target_repo_name: str, competitor_repo_name: str):
+    """
+    Forces Python to forget the competitor's 'src' folder and strictly 
+    bind 'src' to the target repository.
+    """
+    import importlib
+    from pathlib import Path
+
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    target_path = str(PROJECT_ROOT / target_repo_name)
+    competitor_path = str(PROJECT_ROOT / competitor_repo_name)
+
+    # 1. Ban the competitor: Remove it completely from the path
+    while competitor_path in sys.path:
+        sys.path.remove(competitor_path)
+
+    # 2. Elevate the target: Put it at the absolute front
+    if target_path in sys.path:
+        sys.path.remove(target_path)
+    sys.path.insert(0, target_path)
+
+    # 3. Obliterate the cache: Delete anything related to 'src'
+    keys_to_delete = [k for k in sys.modules if k == "src" or k.startswith("src.")]
+    for k in keys_to_delete:
+        del sys.modules[k]
+
+    # 4. Invalidate filesystem cache: Forces Python to look at sys.path[0] again
+    importlib.invalidate_caches()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Feature construction
@@ -486,25 +515,12 @@ class P2SLS(CATEEstimator):
 
 class NMMR_Wrappers(CATEEstimator):
     def __init__(self, model_type: str, estimate_cate: bool, **kwargs):
-        # 1. Isolate the environment
-        import sys
-        from pathlib import Path
 
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        nmmr_path = str(PROJECT_ROOT / "NMMR")
+        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
 
-        if nmmr_path not in sys.path:
-            sys.path.insert(0, nmmr_path)
-
-        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
-        for k in keys:
-            del sys.modules[k]
-
-        # 2. Import locally
         from src.data.ate.data_class import PVTrainDataSet
         from src.models.PMMR.model import PMMRModel
         from src.models.kernelPV.model import KernelPVModel
-
         self.model_type = model_type
         self.estimate_cate = estimate_cate
 
@@ -726,36 +742,15 @@ _CAUSALPFN_CACHE = {}
 
 
 class CausalFM_Estimator(CATEEstimator):
-    """Wrapper for the CausalFM StandardCATEModel.
-
-    Foundation models use in-context learning. The fit() method stores the
-    training episode as context, and predict() evaluates the query points.
-    """
-
-    def __init__(
-        self,
-        checkpoint_path: str,
-        use_W: bool = True,
-        use_Z: bool = True,
-    ):
-        import sys
-        from pathlib import Path
-
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        causalfm_path = str(PROJECT_ROOT / "CausalFM")
-
-        if causalfm_path not in sys.path:
-            sys.path.insert(0, causalfm_path)
-
-        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
-        for k in keys:
-            del sys.modules[k]
+    def __init__(self, checkpoint_path: str, use_W: bool = True, use_Z: bool = True):
+        
+        # Lock in CausalFM, kick out NMMR
+        _switch_src_context(target_repo_name="CausalFM", competitor_repo_name="NMMR")
 
         try:
-            import causalfm
             from causalfm.models import StandardCATEModel
         except ImportError as e:
-            raise ImportError(f"CausalFM import failed: {e}")
+            raise ImportError(f"CausalFM import failed even after switch: {e}")
 
         torch.set_num_threads(1)
 
@@ -766,10 +761,8 @@ class CausalFM_Estimator(CATEEstimator):
                 )
 
         self.model = _CAUSALFM_CACHE[checkpoint_path]
-
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
-        # Placeholders for in-context training data
         self.ctx_x = None
         self.ctx_a = None
         self.ctx_y = None
