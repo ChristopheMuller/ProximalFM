@@ -47,24 +47,39 @@ warnings.filterwarnings(
 
 
 class Prior:
-    """Abstract base class for dataset prior generators.
+    """Abstract base class for dataset prior generators (Proximal Causal Learning).
 
-    Defines the interface and common functionality for different types of
-    synthetic dataset generators.
+    Defines the interface and common functionality for generating synthetic
+    observational datasets with unmeasured confounding and proxies.
 
     Parameters
     ----------
     batch_size : int, default=256
         Total number of datasets to generate per batch.
 
-    min_features : int, default=2
-        Minimum number of features per dataset.
+    min_dim_U : int, default=3
+        Minimum dimensionality of the unmeasured latent confounder U.
 
-    max_features : int, default=100
-        Maximum number of features per dataset.
+    max_dim_U : int, default=10
+        Maximum dimensionality of the unmeasured latent confounder U.
 
-    max_classes : int, default=10
-        Maximum number of target classes.
+    min_dim_W : int, default=3
+        Minimum dimensionality of the outcome-inducing proxy W.
+
+    max_dim_W : int, default=10
+        Maximum dimensionality of the outcome-inducing proxy W.
+
+    min_dim_Z : int, default=3
+        Minimum dimensionality of the treatment-inducing proxy Z.
+
+    max_dim_Z : int, default=10
+        Maximum dimensionality of the treatment-inducing proxy Z.
+
+    min_dim_X : int, default=5
+        Minimum dimensionality of the observed baseline covariates X.
+
+    max_dim_X : int, default=20
+        Maximum dimensionality of the observed baseline covariates X.
 
     min_seq_len : int, optional
         Minimum samples per dataset. If None, uses max_seq_len.
@@ -91,9 +106,14 @@ class Prior:
     def __init__(
         self,
         batch_size: int = 256,
-        min_features: int = 2,
-        max_features: int = 100,
-        max_classes: int = 10,
+        min_dim_U: int = 3,
+        max_dim_U: int = 10,
+        min_dim_W: int = 3,
+        max_dim_W: int = 10,
+        min_dim_Z: int = 3,
+        max_dim_Z: int = 10,
+        min_dim_X: int = 5,
+        max_dim_X: int = 20,
         min_seq_len: Optional[int] = None,
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
@@ -103,11 +123,20 @@ class Prior:
     ):
         self.batch_size = batch_size
 
-        assert min_features <= max_features, "Invalid feature range"
-        self.min_features = min_features
-        self.max_features = max_features
+        assert min_dim_U <= max_dim_U, "Invalid U dimension range"
+        assert min_dim_W <= max_dim_W, "Invalid W dimension range"
+        assert min_dim_Z <= max_dim_Z, "Invalid Z dimension range"
+        assert min_dim_X <= max_dim_X, "Invalid X dimension range"
 
-        self.max_classes = max_classes
+        self.min_dim_U = min_dim_U
+        self.max_dim_U = max_dim_U
+        self.min_dim_W = min_dim_W
+        self.max_dim_W = max_dim_W
+        self.min_dim_Z = min_dim_Z
+        self.max_dim_Z = max_dim_Z
+        self.min_dim_X = min_dim_X
+        self.max_dim_X = max_dim_X
+
         self.min_seq_len = min_seq_len
         self.max_seq_len = max_seq_len
         self.log_seq_len = log_seq_len
@@ -255,43 +284,37 @@ class Prior:
         return train_size
 
     @staticmethod
-    def adjust_max_features(seq_len: int, max_features: int) -> int:
-        """Adjust the maximum number of features based on the sequence length.
+    def adjust_max_features(
+        seq_len: int, max_x: int, max_w: int, max_z: int
+    ) -> Tuple[int, int, int]:
+        """Adjust the maximum dimensions proportionally based on the sequence length."""
+        total_features = max_x + max_w + max_z + 1  # +1 for Treatment A
 
-        This method implements an adaptive feature limit that scales inversely
-        with sequence length. Longer sequences are restricted to fewer features
-        to prevent memory issues and excessive computation times while still
-        maintaining dataset diversity and learning difficulty.
-
-        Parameters
-        ----------
-        seq_len : int
-            Sequence length (number of samples).
-
-        max_features : int
-            Original maximum number of features.
-
-        Returns
-        -------
-        int
-            Adjusted maximum number of features, ensuring computational feasibility.
-        """
         if seq_len <= 10240:
-            return min(100, max_features)
+            limit = 100
         elif 10240 < seq_len <= 20000:
-            return min(80, max_features)
+            limit = 80
         elif 20000 < seq_len <= 30000:
-            return min(60, max_features)
+            limit = 60
         elif 30000 < seq_len <= 40000:
-            return min(40, max_features)
+            limit = 40
         elif 40000 < seq_len <= 50000:
-            return min(30, max_features)
+            limit = 30
         elif 50000 < seq_len <= 60000:
-            return min(20, max_features)
+            limit = 20
         elif 60000 < seq_len <= 65000:
-            return min(15, max_features)
+            limit = 15
         else:
-            return 10
+            limit = 10
+
+        if total_features <= limit:
+            return max_x, max_w, max_z
+
+        scale = limit / total_features
+        adj_x = max(1, int(max_x * scale))
+        adj_w = max(1, int(max_w * scale))
+        adj_z = max(1, int(max_z * scale))
+        return adj_x, adj_w, adj_z
 
     @staticmethod
     def delete_unique_features(X: Tensor, d: Tensor) -> Tuple[Tensor, Tensor]:
@@ -343,81 +366,6 @@ class Prior:
         X_new, d_new = [torch.stack(res) for res in zip(*filtered_results)]
 
         return X_new, d_new
-
-    @staticmethod
-    def sanity_check(
-        X: Tensor,
-        y: Tensor,
-        train_size: int,
-        n_attempts: int = 10,
-        min_classes: int = 2,
-    ) -> bool:
-        """Verify that both train and test sets contain all classes.
-
-        For in-context learning to work properly, we need both the train and test
-        sets to contain examples from all classes. This method checks this condition
-        and attempts to fix invalid splits by randomly permuting the data.
-
-        Parameters
-        ----------
-        X : Tensor
-            Input features tensor of shape ``(B, T, H)``.
-
-        y : Tensor
-            Target labels tensor of shape ``(B, T)``.
-
-        train_size : int
-            Position to split the data into train and test sets.
-
-        n_attempts : int, default=10
-            Number of random permutations to try for fixing invalid splits.
-
-        min_classes : int, default=2
-            Minimum number of classes required in both train and test sets.
-
-        Returns
-        -------
-        bool
-            True if all datasets have valid splits, False otherwise.
-        """
-
-        def is_valid_split(yi: Tensor) -> bool:
-            """Check if a single dataset has a valid train/test split."""
-            # Guard against invalid train_size
-            if train_size <= 0 or train_size >= yi.shape[0]:
-                return False
-
-            # A valid split requires both train and test sets to have the same classes
-            # and at least min_classes different classes must be present
-            unique_tr = torch.unique(yi[:train_size])
-            unique_te = torch.unique(yi[train_size:])
-            return (
-                set(unique_tr.tolist()) == set(unique_te.tolist())
-                and len(unique_tr) >= min_classes
-            )
-
-        # Check each dataset in the batch
-        for i, (xi, yi) in enumerate(zip(X, y)):
-            if is_valid_split(yi):
-                continue
-
-            # If the dataset has an invalid split, try to fix it with random permutations
-            succeeded = False
-            for _ in range(n_attempts):
-                # Generate a random permutation of the samples
-                perm = torch.randperm(yi.shape[0])
-                yi_perm = yi[perm]
-                xi_perm = xi[perm]
-                # Check if the permutation results in a valid split
-                if is_valid_split(yi_perm):
-                    X[i], y[i] = xi_perm, yi_perm
-                    succeeded = True
-                    break
-
-            if not succeeded:  # No valid split was found after all attempts
-                return False
-
-        return True
 
 
 class SCMPrior(Prior):
@@ -524,9 +472,14 @@ class SCMPrior(Prior):
     ):
         super().__init__(
             batch_size=batch_size,
-            min_features=min_dim_X,
-            max_features=max_dim_X,
-            max_classes=10,
+            min_dim_U=min_dim_U,
+            max_dim_U=max_dim_U,
+            min_dim_W=min_dim_W,
+            max_dim_W=max_dim_W,
+            min_dim_Z=min_dim_Z,
+            max_dim_Z=max_dim_Z,
+            min_dim_X=min_dim_X,
+            max_dim_X=max_dim_X,
             min_seq_len=min_seq_len,
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
@@ -607,7 +560,7 @@ class SCMPrior(Prior):
 
             # Only keep valid datasets with sufficient features and balanced classes
             X, d = self.delete_unique_features(X, d)
-            if (d > 0).all() and self.sanity_check(X, y, params["train_size"]):
+            if (d > 0).all():
                 return X.squeeze(0), y.squeeze(0), d.squeeze(0)
 
     @torch.no_grad()
@@ -687,12 +640,12 @@ class SCMPrior(Prior):
                 )
                 # Adjust max features based on seq_len for this group
                 gp_max_features = self.adjust_max_features(
-                    gp_seq_len, self.max_features
+                    gp_seq_len, self.max_dim_X, 0, 0
                 )
             else:
                 gp_seq_len = global_seq_len
                 gp_train_size = global_train_size
-                gp_max_features = self.max_features
+                gp_max_features = self.max_dim_X
 
             # Calculate number of subgroups for this group
             num_subgps_in_gp = math.ceil(
@@ -711,7 +664,7 @@ class SCMPrior(Prior):
                 # Subgroups share prior type, number of features, and sampled HPs
                 subgp_prior_type = self.get_prior()
                 subgp_num_features = round(
-                    np.random.uniform(self.min_features, gp_max_features)
+                    np.random.uniform(self.min_dim_X, gp_max_features)
                 )
                 subgp_sampled_hp = {
                     k: v() if callable(v) else v for k, v in group_sampled_hp.items()
@@ -721,7 +674,9 @@ class SCMPrior(Prior):
                 for ds_idx in range(actual_subgp_size):
                     # Each dataset has its own number of classes
                     if np.random.random() > 0.5:
-                        ds_num_classes = np.random.randint(2, self.max_classes + 1)
+                        ds_num_classes = np.random.randint(
+                            2, 99 + 1
+                        )  # num_classes hard-fixed
                     else:
                         ds_num_classes = 2
 
@@ -734,7 +689,7 @@ class SCMPrior(Prior):
                         # If not per-gp setting, use global max features to fix size for concatenation
                         "max_features": gp_max_features
                         if self.seq_len_per_gp
-                        else self.max_features,
+                        else self.max_dim_X,
                         **subgp_sampled_hp,  # sampled HPs for this group
                         "prior_type": subgp_prior_type,
                         "num_features": subgp_num_features,
