@@ -123,81 +123,45 @@ class MLPSCM(nn.Module):
 
     def __init__(
         self,
-        seq_len: int = 1024,
-        num_features: int = 100,
-        in_dim: int = None,  # Ignored for now
-        num_outputs: int = 1,
-        is_causal: bool = True,
-        num_causes: int = 10,
-        y_is_effect: bool = True,
-        in_clique: bool = False,
-        sort_features: bool = True,
-        num_layers: int = 10,
+        in_dim: int,
+        num_outputs: int,
+        num_layers: int = 4,
         hidden_dim: int = 20,
         mlp_activations: Any = nn.Tanh,
         init_std: float = 1.0,
         block_wise_dropout: bool = True,
         mlp_dropout_prob: float = 0.1,
         scale_init_std_by_dropout: bool = True,
-        sampling: str = "normal",
-        pre_sample_cause_stats: bool = False,
         noise_std: float = 0.01,
         pre_sample_noise_std: bool = False,
         device: str = "cpu",
         **kwargs: Dict[str, Any],
     ):
         super(MLPSCM, self).__init__()
-        self.seq_len = seq_len
-        self.num_features = num_features
+        self.in_dim = in_dim
         self.num_outputs = num_outputs
-        self.is_causal = is_causal
-        self.num_causes = num_causes
-        self.y_is_effect = y_is_effect
-        self.in_clique = in_clique
-        self.sort_features = sort_features
 
-        assert num_layers >= 2, "Number of layers must be at least 2."
-        self.num_layers = num_layers
-
+        # Enforce minimum layers (1 hidden layer + 1 output layer minimum)
+        self.num_layers = max(num_layers, 2)
         self.hidden_dim = hidden_dim
         self.mlp_activations = mlp_activations
         self.init_std = init_std
         self.block_wise_dropout = block_wise_dropout
         self.mlp_dropout_prob = mlp_dropout_prob
         self.scale_init_std_by_dropout = scale_init_std_by_dropout
-        self.sampling = sampling
-        self.pre_sample_cause_stats = pre_sample_cause_stats
         self.noise_std = noise_std
         self.pre_sample_noise_std = pre_sample_noise_std
         self.device = device
 
-        if self.is_causal:
-            # Ensure enough intermediate variables for sampling X and y
-            self.hidden_dim = max(
-                self.hidden_dim, self.num_outputs + 2 * self.num_features
-            )
-        else:
-            # In non-causal mode, features are the causes
-            self.num_causes = self.num_features
+        # Build layers using the explicit in_dim
+        layers = [nn.Linear(self.in_dim, self.hidden_dim)]
 
-        # Define the input sampler
-        self.xsampler = XSampler(
-            self.seq_len,
-            self.num_causes,
-            pre_stats=self.pre_sample_cause_stats,
-            sampling=self.sampling,
-            device=self.device,
-        )
-
-        # Build layers
-        layers = [nn.Linear(self.num_causes, self.hidden_dim)]
         for _ in range(self.num_layers - 1):
-            layers.append(self.generate_layer_modules())
-        # TODO: why was there a if is_causal then no need of "is_output_layer"?
-        layers.append(self.generate_layer_modules(is_output_layer=True))
-        self.layers = nn.Sequential(*layers).to(device)
+            layers.append(self.generate_layer_modules(is_output_layer=False))
 
-        # Initialize layers
+        layers.append(self.generate_layer_modules(is_output_layer=True))
+
+        self.layers = nn.Sequential(*layers).to(device)
         self.initialize_parameters()
 
     def generate_layer_modules(self, is_output_layer=False):
@@ -256,30 +220,21 @@ class MLPSCM(nn.Module):
             nn.init.normal_(param, std=std)
             param *= torch.bernoulli(torch.full_like(param, 1 - dropout_prob))
 
-    def forward(self, input=None, outcome=None, d_out=1):
-        """Generates synthetic data by sampling input features and applying MLP transformations."""
-        causes = self.xsampler.sample()  # (seq_len, num_causes)
+    def forward(
+        self, input: torch.Tensor, outcome: bool = False, d_out: int = 1
+    ) -> torch.Tensor:
+        """Passes the input tensor through the mechanism block."""
+        out = input
 
-        # Generate outputs through MLP layers
-        outputs = [causes]
+        # Simple sequential pass
         for layer in self.layers:
-            outputs.append(layer(outputs[-1]))
-        outputs = outputs[
-            2:
-        ]  # Start from 2 because the first layer is only linear without activation
+            out = layer(out)
 
-        # Handle outputs based on causality
-        X, y = self.handle_outputs(causes, outputs)
+        # Check for NaNs and handle them
+        if torch.any(torch.isnan(out)):
+            out = torch.nan_to_num(out, nan=0.0)
 
-        # Check for NaNs and handle them by setting to default values
-        if torch.any(torch.isnan(X)) or torch.any(torch.isnan(y)):
-            X[:] = 0.0
-            y[:] = -100.0
-
-        if self.num_outputs == 1:
-            y = y.squeeze(-1)
-
-        return y
+        return out
 
     def handle_outputs(self, causes, outputs):
         """Handle outputs based on whether causal or not.
