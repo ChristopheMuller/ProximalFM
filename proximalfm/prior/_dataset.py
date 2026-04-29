@@ -324,7 +324,7 @@ class Prior:
         return adj_x, adj_w, adj_z
 
     @staticmethod
-    def delete_unique_features(X: Tensor, d: Tensor) -> Tuple[Tensor, Tensor]:
+    def filter_constant_features_and_pad(X: Tensor, d: Tensor) -> Tuple[Tensor, Tensor]:
         """Remove features that have only one unique value across all samples.
 
         Single-value features provide no useful information for learning since they
@@ -599,9 +599,9 @@ class SCMPrior(Prior):
             d_Z = torch.tensor([params["dim_Z"]], device=self.device, dtype=torch.long)
 
             # Only keep valid datasets with sufficient features and balanced classes
-            X, d_X = self.delete_unique_features(X, d_X)
-            W, d_W = self.delete_unique_features(W, d_W)
-            Z, d_Z = self.delete_unique_features(Z, d_Z)
+            X, d_X = self.filter_constant_features_and_pad(X, d_X)
+            W, d_W = self.filter_constant_features_and_pad(W, d_W)
+            Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z)
             if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
                 X, W, Z, A, y, y0, y1, d_X, d_W, d_Z = (
                     X.squeeze(0),
