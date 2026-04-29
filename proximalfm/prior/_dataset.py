@@ -40,6 +40,7 @@ from torch.utils.data import IterableDataset
 
 from ._mlp_scm import MLPSCM
 from ._tree_scm import TreeSCM
+from ._utils import XSampler
 
 from ._hp_sampling import HpSamplerList
 from ._reg2cls import Reg2Cls
@@ -564,10 +565,14 @@ class SCMPrior(Prior):
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 
         while True:
-            prior_unit = prior_cls(
-                **params
-            )  # need to change parameter to have num_cause = dim_U
-            U = prior_unit.xsampler.sample()
+            u_sampler = XSampler(
+                seq_len=params["seq_len"],
+                num_features=params["dim_U"],
+                pre_stats=params.get("pre_sample_cause_stats", False),
+                sampling=params.get("sampling", "mixed"),
+                device=self.device,
+            )
+            U = u_sampler.sample()
 
             f_X = prior_cls(
                 in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
