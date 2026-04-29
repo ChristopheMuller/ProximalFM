@@ -564,7 +564,7 @@ class SCMPrior(Prior):
                     X,
                     torch.zeros_like(X),
                     torch.zeros_like(X),
-                    torch.zeros((X.shape[0], 1, 1)),
+                    torch.zeros_like(y),
                     y,
                     y,
                     y,

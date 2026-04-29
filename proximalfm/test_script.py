@@ -44,3 +44,28 @@ print(f"d_W shape:       {d_W.shape}  -> (Batch,) Active features per dataset")
 print(f"d_Z shape:       {d_Z.shape}  -> (Batch,) Active features per dataset")
 print(f"seq_lens shape:    {seq_lens.shape}  -> (Batch,) Sequence lengths")
 print(f"train_sizes shape: {train_sizes.shape}  -> (Batch,) Train split indices")
+
+#%%
+
+print("\nX:")
+print(X[0, :, : d_X[0]])
+
+print("\nW:")
+print(W[0, :, : d_W[0]])
+
+print("\nZ:")
+print(Z[0, :, : d_Z[0]])
+
+print("\nA:")
+print(A[0, :20])
+
+print("\nY_obs:")
+print(Y_obs[0, :20])
+
+print("\nY0:")
+print(Y0[0, :20])
+
+print("\nY1:")
+print(Y1[0, :20])
+
+#%%
