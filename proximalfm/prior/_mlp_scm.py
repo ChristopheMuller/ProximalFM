@@ -125,6 +125,7 @@ class MLPSCM(nn.Module):
         self,
         seq_len: int = 1024,
         num_features: int = 100,
+        in_dim: int = None,  # Ignored for now
         num_outputs: int = 1,
         is_causal: bool = True,
         num_causes: int = 10,
@@ -192,8 +193,8 @@ class MLPSCM(nn.Module):
         layers = [nn.Linear(self.num_causes, self.hidden_dim)]
         for _ in range(self.num_layers - 1):
             layers.append(self.generate_layer_modules())
-        if not self.is_causal:
-            layers.append(self.generate_layer_modules(is_output_layer=True))
+        # TODO: why was there a if is_causal then no need of "is_output_layer"?
+        layers.append(self.generate_layer_modules(is_output_layer=True))
         self.layers = nn.Sequential(*layers).to(device)
 
         # Initialize layers
@@ -278,10 +279,7 @@ class MLPSCM(nn.Module):
         if self.num_outputs == 1:
             y = y.squeeze(-1)
 
-        if d_out == 1:
-            return X[:, 0]
-
-        return X
+        return y
 
     def handle_outputs(self, causes, outputs):
         """Handle outputs based on whether causal or not.

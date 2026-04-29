@@ -324,7 +324,9 @@ class Prior:
         return adj_x, adj_w, adj_z
 
     @staticmethod
-    def filter_constant_features_and_pad(X: Tensor, d: Tensor) -> Tuple[Tensor, Tensor]:
+    def filter_constant_features_and_pad(
+        X: Tensor, d: Tensor, max_d: int
+    ) -> Tuple[Tensor, Tensor]:
         """Remove features that have only one unique value across all samples.
 
         Single-value features provide no useful information for learning since they
@@ -371,6 +373,11 @@ class Prior:
         # Process each dataset in the batch independently
         filtered_results = [filter_unique_features(xi, di) for xi, di in zip(X, d)]
         X_new, d_new = [torch.stack(res) for res in zip(*filtered_results)]
+
+        # Padding to max_d if needed
+        if X_new.shape[-1] < max_d:
+            X_new = F.pad(X_new, (0, max_d - X_new.shape[-1]), mode="constant", value=0)
+        d_new = torch.tensor([min(di, max_d) for di in d_new], device=X_new.device)
 
         return X_new, d_new
 
@@ -552,7 +559,7 @@ class SCMPrior(Prior):
         if params["prior_type"] == "mlp_scm":
             prior_cls = MLPSCM
         elif params["prior_type"] == "tree_scm":
-            prior_cls = TreeSCM
+            prior_cls = MLPSCM  # TODO: change
         else:
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 
@@ -562,14 +569,33 @@ class SCMPrior(Prior):
             )  # need to change parameter to have num_cause = dim_U
             U = prior_unit.xsampler.sample()
 
-            X = prior_unit(input=U, d_out=params["dim_X"])
+            f_X = prior_cls(
+                in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
+            ).to(self.device)
+            X = f_X(U)
+
             input_WZ = torch.cat([U, X], dim=-1)
-            W = prior_unit(input=input_WZ, d_out=params["dim_W"])
-            Z = prior_unit(input=input_WZ, d_out=params["dim_Z"])
+            f_W = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"],
+                num_outputs=params["dim_W"],
+                **params,
+            ).to(self.device)
+            W = f_W(input_WZ)
+
+            f_Z = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"],
+                num_outputs=params["dim_Z"],
+                **params,
+            ).to(self.device)
+            Z = f_Z(input_WZ)
 
             input_A = torch.cat([U, X, Z], dim=-1)
-            input_A = self.prepare_input(type="A", input=input_A, **params)
-            A_logits = prior_unit(input=input_A, d_out=1).squeeze(-1)
+            f_A = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"] + params["dim_Z"],
+                num_outputs=1,
+                **params,
+            ).to(self.device)
+            A_logits = f_A(input_A).squeeze(-1)
             A = self.sample_A(
                 A_logits,
                 epsilon=params["propensity_epsilon"],
@@ -580,8 +606,13 @@ class SCMPrior(Prior):
             input_y0 = self.prepare_input(type="y0", input=input_y, **params)
             input_y1 = self.prepare_input(type="y1", input=input_y, **params)
 
-            y0 = prior_unit(input=input_y0, d_out=1, outcome=True).squeeze(-1)
-            y1 = prior_unit(input=input_y1, d_out=1, outcome=True).squeeze(-1)
+            f_y = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"] + 1,
+                num_outputs=1,
+                **params,
+            ).to(self.device)
+            y0 = f_y(input_y0).squeeze(-1)
+            y1 = f_y(input_y1).squeeze(-1)
 
             y = torch.where(A == 1, y1, y0)
 
@@ -599,9 +630,9 @@ class SCMPrior(Prior):
             d_Z = torch.tensor([params["dim_Z"]], device=self.device, dtype=torch.long)
 
             # Only keep valid datasets with sufficient features and balanced classes
-            X, d_X = self.filter_constant_features_and_pad(X, d_X)
-            W, d_W = self.filter_constant_features_and_pad(W, d_W)
-            Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z)
+            X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
+            W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
+            Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
             if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
                 X, W, Z, A, y, y0, y1, d_X, d_W, d_Z = (
                     X.squeeze(0),
