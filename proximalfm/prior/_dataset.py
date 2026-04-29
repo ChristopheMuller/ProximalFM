@@ -389,20 +389,21 @@ class SCMPrior(Prior):
         Number of datasets per subgroup, with more similar causal structures.
         If None, defaults to batch_size_per_gp.
 
-    min_features : int, default=2
-        Minimum number of features per dataset.
+    min_dim_U, max_dim_U : int
+        Minimum and maximum dimensionality for the latent confounder U.
 
-    max_features : int, default=100
-        Maximum number of features per dataset.
+    min_dim_W, max_dim_W : int
+        Minimum and maximum dimensionality for outcome proxies W.
 
-    max_classes : int, default=10
-        Maximum number of target classes.
+    min_dim_Z, max_dim_Z : int
+        Minimum and maximum dimensionality for treatment proxies Z.
 
-    min_seq_len : int, optional
-        Minimum samples per dataset. If None, uses max_seq_len directly.
+    min_dim_X, max_dim_X : int
+        Minimum and maximum dimensionality for observed covariates X.
 
-    max_seq_len : int, default=1024
-        Maximum samples per dataset.
+    min_seq_len, max_seq_len : int or None
+        Minimum and maximum samples per dataset. If ``min_seq_len`` is None
+        the generator will use ``max_seq_len`` directly.
 
     log_seq_len : bool, default=False
         If True, sample sequence length from a log-uniform distribution.
