@@ -202,7 +202,6 @@ def test_train_epoch(mock_create_loaders, mock_wandb, mock_config):
     
     # Assertions
     assert isinstance(train_metrics, dict)
-    assert "loss_total" in train_metrics
     assert "grad_norm" in train_metrics
     assert "time_s" in train_metrics
     assert len(trainer.train_losses) == 1

@@ -131,9 +131,9 @@ class LoggerCallback(Callback):
             logs["Parameters/total_count"] = self.n_params
 
         # Losses
-        logs["Loss/train_total"] = train_metrics.get("loss_total")
         logs["Loss/train_mse"] = train_metrics.get("loss_mse")
         logs["Loss/train_model"] = train_metrics.get("loss_model")
+        logs["Loss/train_gnll"] = train_metrics.get("loss_gnll")
 
         # Parameters / Optimization
         logs["Parameters/grad_norm"] = train_metrics.get("grad_norm")
@@ -145,28 +145,26 @@ class LoggerCallback(Callback):
 
         # Validation Metrics
         if val_metrics:
-            logs["ATE/val_r2"] = val_metrics.get("ate_r2")
-            logs["ATE/val_bias"] = val_metrics.get("bias")
-            logs["ATE/val_normbias"] = val_metrics.get("ate_normbias")
-            logs["ATE/val_normmae"] = val_metrics.get("ate_normmae")
-            logs["ATE/val_normrmse"] = val_metrics.get("ate_normrmse")
+            logs["ATE/r2"] = val_metrics.get("ate_r2")
+            logs["ATE/bias"] = val_metrics.get("bias")
+            logs["ATE/normmae"] = val_metrics.get("ate_normmae")
+            logs["ATE/normrmse"] = val_metrics.get("ate_normrmse")
 
-            logs["CATE/val_r2"] = val_metrics.get("cate_r2_mean")
-            logs["CATE/val_r2_shape"] = val_metrics.get("cate_r2_shape_mean")
-            logs["CATE/val_r2_ate_penalty"] = val_metrics.get(
+            logs["CATE/r2"] = val_metrics.get("cate_r2_mean")
+            logs["CATE/r2_shape"] = val_metrics.get("cate_r2_shape_mean")
+            logs["CATE/r2_ate_penalty"] = val_metrics.get(
                 "cate_r2_ate_penalty_mean"
             )
-            logs["CATE/val_rmse"] = val_metrics.get("rmse")
-            logs["CATE/val_mae"] = val_metrics.get("cate_mae_mean")
-            logs["CATE/val_normrmse"] = val_metrics.get("cate_rmse_norm_mean")
+            logs["CATE/rmse"] = val_metrics.get("rmse")
+            logs["CATE/mae"] = val_metrics.get("cate_mae_mean")
+            logs["CATE/normrmse"] = val_metrics.get("cate_rmse_norm_mean")
 
-            logs["Metrics/val_mspe"] = val_metrics.get("mspe")
             if "variance" in val_metrics and val_metrics["variance"] > 0:
-                logs["Metrics/val_variance"] = val_metrics["variance"]
+                logs["Metrics/variance"] = val_metrics["variance"]
             logs["Time/val_s"] = val_metrics.get("time_s")
 
-            logs["Bias-Variance/val_bias_sq"] = val_metrics.get("bias_sq")
-            logs["Bias-Variance/val_error_var"] = val_metrics.get("error_var")
+            logs["Bias-Variance/bias_sq"] = val_metrics.get("bias_sq")
+            logs["Bias-Variance/error_var"] = val_metrics.get("error_var")
             logs["Bias-Variance/mse"] = val_metrics.get("mse")
 
         wandb.log(logs, step=trainer.global_step)
@@ -367,13 +365,19 @@ class CATETrainer:
         out = self.model(x=x, a=a, w=w, z=z, y=y)
         loss_model = self.model.loss(out, target)
 
-        # Let the model handle its own extraction logic instead of hardcoding GMM math
+        # -> also compute MSE and GNLL (single normal) for monitoring
         expected_mean, overall_log_variance = self.model.estimate_CATE(
             x=x, a_train=a, w=w, z=z, y_train=y, out=out, return_log_variance=True
         )
         loss_mse_raw = F.mse_loss(expected_mean, target)
-        loss = loss_model
-        return loss, loss_mse_raw, loss_model, expected_mean, overall_log_variance
+        if overall_log_variance is not None:
+            loss_gnll_raw = 0.5 * (
+                overall_log_variance
+                + (expected_mean - target) ** 2 / overall_log_variance.exp().clamp(min=1e-8)
+            ).mean()
+        else:
+            loss_gnll_raw = torch.tensor(0.0, device=expected_mean.device)
+        return loss_model, loss_mse_raw, loss_gnll_raw, expected_mean, overall_log_variance
 
     def _optimization_step(self, loss: torch.Tensor) -> float:
         self.optimizer.zero_grad()
@@ -402,13 +406,10 @@ class CATETrainer:
         with torch.no_grad():
             if pred_log_var is not None and pred_log_var.numel() > 0:
                 pred_var = torch.exp(pred_log_var)
-                pred_std = torch.sqrt(pred_var)
             else:
-                pred_std = None
                 pred_var = None
 
             residuals = pred_mean - target
-            abs_error = residuals.abs()
 
             percentage_errors = residuals / (target + 1e-8)
 
@@ -523,7 +524,7 @@ class CATETrainer:
         self.model.train()
         total_loss = torch.zeros(1, device=self.device)
         total_loss_mse = torch.zeros(1, device=self.device)
-        total_loss_model = torch.zeros(1, device=self.device)
+        total_loss_gnll = torch.zeros(1, device=self.device)
         total_grad_norm = torch.zeros(1, device=self.device)
 
         epoch_start = time.time()
@@ -537,17 +538,17 @@ class CATETrainer:
                 x, a, w, z, y, target, y_std = self._prepare_inputs(batch)
 
                 (
-                    loss,
-                    loss_mse,
                     loss_model,
+                    loss_mse,
+                    loss_gnll,
                     pred_mean,
                     pred_log_var,
                 ) = self._forward_and_loss(x, a, w, z, y, target, y_std)
-                total_grad_norm += self._optimization_step(loss)
+                total_grad_norm += self._optimization_step(loss_model)
 
-                total_loss += loss.detach()
+                total_loss += loss_model.detach()
                 total_loss_mse += loss_mse.detach()
-                total_loss_model += loss_model.detach()
+                total_loss_gnll += loss_gnll.detach()
 
         epoch_time = time.time() - epoch_start
         self.epoch_times.append(epoch_time)
@@ -556,16 +557,16 @@ class CATETrainer:
 
         avg_loss = (total_loss / num_batches).item()
         avg_loss_mse = (total_loss_mse / num_batches).item()
-        avg_loss_model = (total_loss_model / num_batches).item()
+        avg_loss_gnll = (total_loss_gnll / num_batches).item()
         avg_grad_norm = (total_grad_norm / num_batches).item()
 
         self.train_losses.append(avg_loss)
         self._log_info(f"Epoch {epoch + 1} train done in {format_time(epoch_time)}")
 
         return {
-            "loss_total": avg_loss,
+            "loss_model": avg_loss,
             "loss_mse": avg_loss_mse,
-            "loss_model": avg_loss_model,
+            "loss_gnll": avg_loss_gnll,
             "grad_norm": avg_grad_norm,
             "time_s": epoch_time,
         }
@@ -653,7 +654,6 @@ class CATETrainer:
 
         mse = (sum_sq_err / denom).item()
         rmse = np.sqrt(mse)
-        mspe = (sum_sq_pe / denom).item()
 
         # Bias-Variance Decomposition
         ite_bias = (sum_error / denom).item()
@@ -678,7 +678,6 @@ class CATETrainer:
         ep_denom = max(total_episodes, 1)
         cate_mae_mean = (total_cate_mae / ep_denom).item()
         cate_rmse_norm_mean = (total_cate_rmse_norm / ep_denom).item()
-        ate_normbias = (total_ate_error_norm / ep_denom).item()
         ate_normmae = (total_abs_ate_error_norm / ep_denom).item()
         ate_normrmse = np.sqrt((total_sq_ate_error_norm / ep_denom).item())
 
@@ -689,13 +688,12 @@ class CATETrainer:
             self.scheduler.step(rmse)
 
         self._log_info(
-            f"Epoch {epoch + 1} val done: RMSE={rmse:.4f}, CATE_R2={cate_r2_mean:.4f}, ATE_R2={ate_r2:.4f}, Bias={ite_bias:.4f}"
+            f"Epoch {epoch + 1} val done: RMSE={rmse:.4f}, ATE_R2={ate_r2:.4f}, CATE_R2={cate_r2_mean:.4f}, CATE_R2_Shape={cate_r2_shape_mean:.4f}"
         )
 
         return {
             "rmse": rmse,
             "mse": mse,
-            "mspe": mspe,
             "cate_r2_mean": cate_r2_mean,
             "ate_r2": ate_r2,
             "bias": ite_bias,
@@ -707,7 +705,6 @@ class CATETrainer:
             "cate_r2_ate_penalty_mean": cate_r2_ate_penalty_mean,
             "cate_mae_mean": cate_mae_mean,
             "cate_rmse_norm_mean": cate_rmse_norm_mean,
-            "ate_normbias": ate_normbias,
             "ate_normmae": ate_normmae,
             "ate_normrmse": ate_normrmse,
         }
@@ -768,13 +765,12 @@ class CATETrainer:
             # Extract metrics for console logging
             train_model = train_metrics["loss_model"]
             train_mse = train_metrics["loss_mse"]
-            train_total = train_metrics["loss_total"]
+            train_gnll = train_metrics["loss_gnll"]
             val_rmse = val_metrics["rmse"] if val_metrics else float("nan")
 
             self._log_info(
                 f"Epoch {epoch + 1}/{self.train_cfg['epochs']}  "
-                f"train_model={train_model:.4f}  train_rmse={train_mse:.4f}  "
-                f"train_total={train_total:.4f}"
+                f"train_model={train_model:.4f}  train_rmse={train_mse:.4f}  train_gnll={train_gnll:.4f}"
             )
             for cb in self.callbacks:
                 cb.on_epoch_end(self, epoch, train_metrics, val_metrics)
