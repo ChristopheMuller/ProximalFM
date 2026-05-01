@@ -264,8 +264,6 @@ class TabICL(nn.Module):
         )
 
         self.icl_predictor = ICLearning(
-            out_dim=out_dim,
-            max_classes=max_classes,
             d_model=icl_dim,
             num_blocks=icl_num_blocks,
             nhead=icl_nhead,
@@ -428,8 +426,6 @@ class TabICL(nn.Module):
         out = self.icl_predictor(
             representations,
             y_train=y_train,
-            return_logits=return_logits,
-            softmax_temperature=softmax_temperature,
             mgr_config=inference_config.ICL_CONFIG,
         )
 
@@ -786,9 +782,6 @@ class TabICL(nn.Module):
             out = self.icl_predictor.forward_with_repr_cache(
                 representations,
                 train_size=train_size,
-                num_classes=self._cache.num_classes,
-                return_logits=return_logits,
-                softmax_temperature=softmax_temperature,
                 mgr_config=inference_config.ICL_CONFIG,
             )
         else:
@@ -796,9 +789,6 @@ class TabICL(nn.Module):
                 representations,
                 icl_cache=self._cache.icl_cache,
                 y_train=y_train,
-                num_classes=self._cache.num_classes,
-                return_logits=return_logits,
-                softmax_temperature=softmax_temperature,
                 use_cache=use_cache,
                 store_cache=store_cache,
                 mgr_config=inference_config.ICL_CONFIG,

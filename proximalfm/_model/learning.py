@@ -15,9 +15,6 @@ class ICLearning(nn.Module):
 
     Parameters
     ----------
-    out_dim : int
-        Output dimension of the model.
-
     d_model : int
         Model dimension.
 
