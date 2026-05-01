@@ -262,10 +262,17 @@ class LoadPriorDataset(IterableDataset):
             except Exception as e:
                 print(f"Warning: Could not load or parse metadata.json: {e}")
 
-        # Buffer for storing datasets that haven't been returned yet
+        # Buffers for storing datasets that haven't been returned yet
         self.buffer_X = None
-        self.buffer_y = None
-        self.buffer_d = None
+        self.buffer_W = None
+        self.buffer_Z = None
+        self.buffer_A = None
+        self.buffer_Y_obs = None
+        self.buffer_Y0 = None
+        self.buffer_Y1 = None
+        self.buffer_d_X = None
+        self.buffer_d_W = None
+        self.buffer_d_Z = None
         self.buffer_seq_lens = None
         self.buffer_train_sizes = None
         self.buffer_size = 0
@@ -279,7 +286,7 @@ class LoadPriorDataset(IterableDataset):
         Returns
         -------
         tuple
-            A tuple containing (X, y, d, seq_lens, train_sizes, batch_size).
+            A tuple containing (X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes, batch_size).
         """
         batch_file = self.data_dir / f"batch_{self.current_idx:06d}.pt"
 
@@ -292,9 +299,9 @@ class LoadPriorDataset(IterableDataset):
             wait_time += 5
 
         batch = torch.load(batch_file, map_location=self.device, weights_only=True)
-        X = batch["X"]
-        y = batch["y"]
-        d = batch["d"]
+        X, W, Z, A = batch["X"], batch["W"], batch["Z"], batch["A"]
+        Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
+        d_X, d_W, d_Z = batch["d_X"], batch["d_W"], batch["d_Z"]
         seq_lens = batch["seq_lens"]
         train_sizes = batch["train_sizes"]
         batch_size = batch["batch_size"]
@@ -302,12 +309,24 @@ class LoadPriorDataset(IterableDataset):
         if X.is_nested:
             # Wrap nested tensors with SliceNestedTensor
             X = SliceNestedTensor(X)
-            y = SliceNestedTensor(y)
+            W = SliceNestedTensor(W)
+            Z = SliceNestedTensor(Z)
+            A = SliceNestedTensor(A)
+            Y_obs = SliceNestedTensor(Y_obs)
+            Y0 = SliceNestedTensor(Y0)
+            Y1 = SliceNestedTensor(Y1)
         else:
             # Convert sparse tensor to dense
-            X = sparse2dense(
-                X, d.repeat_interleave(seq_lens[0]), dtype=torch.float32
-            ).view(batch_size, seq_lens[0], -1)
+            T = seq_lens[0]
+            X = sparse2dense(X, d_X.repeat_interleave(T), dtype=torch.float32).view(
+                batch_size, T, -1
+            )
+            W = sparse2dense(W, d_W.repeat_interleave(T), dtype=torch.float32).view(
+                batch_size, T, -1
+            )
+            Z = sparse2dense(Z, d_Z.repeat_interleave(T), dtype=torch.float32).view(
+                batch_size, T, -1
+            )
 
         # Delete file if requested
         if self.delete_after_load and batch_file.exists():
@@ -316,32 +335,25 @@ class LoadPriorDataset(IterableDataset):
         # Prepare next index for this process
         self.current_idx += self.ddp_world_size
 
-        return X, y, d, seq_lens, train_sizes, batch_size
+        return (
+            X,
+            W,
+            Z,
+            A,
+            Y_obs,
+            Y0,
+            Y1,
+            d_X,
+            d_W,
+            d_Z,
+            seq_lens,
+            train_sizes,
+            batch_size,
+        )
 
     def __next__(self):
-        """Load datasets until we have at least batch_size, then return exactly batch_size.
+        """Load datasets until we have at least batch_size, then return exactly batch_size."""
 
-        This method accumulates datasets from multiple files if necessary to return
-        the exact number of datasets specified in batch_size. Any extra datasets are
-        kept in a buffer for the next iteration.
-
-        Returns
-        -------
-        X : Tensor or NestedTensor
-            Input features ``[batch_size, seq_len, features]`` or nested tensor.
-
-        y : Tensor or NestedTensor
-            Target labels ``[batch_size, seq_len]`` or nested tensor.
-
-        d : Tensor
-            Number of features per dataset.
-
-        seq_lens : Tensor
-            Sequence length for each dataset.
-
-        train_sizes : Tensor
-            Position at which to split training and evaluation data.
-        """
         # Check if we've reached the maximum number of batches and have no buffered data
         if (
             self.max_batches is not None
@@ -352,11 +364,32 @@ class LoadPriorDataset(IterableDataset):
 
         # Initialize or use existing buffer
         if self.buffer_size == 0:
-            # Load the first batch
-            X, y, d, seq_lens, train_sizes, file_batch_size = self._load_batch_file()
+            (
+                X,
+                W,
+                Z,
+                A,
+                Y_obs,
+                Y0,
+                Y1,
+                d_X,
+                d_W,
+                d_Z,
+                seq_lens,
+                train_sizes,
+                file_batch_size,
+            ) = self._load_batch_file()
+
             self.buffer_X = X
-            self.buffer_y = y
-            self.buffer_d = d
+            self.buffer_W = W
+            self.buffer_Z = Z
+            self.buffer_A = A
+            self.buffer_Y_obs = Y_obs
+            self.buffer_Y0 = Y0
+            self.buffer_Y1 = Y1
+            self.buffer_d_X = d_X
+            self.buffer_d_W = d_W
+            self.buffer_d_Z = d_Z
             self.buffer_seq_lens = seq_lens
             self.buffer_train_sizes = train_sizes
             self.buffer_size = file_batch_size
@@ -372,8 +405,15 @@ class LoadPriorDataset(IterableDataset):
                 # Load another batch and append to buffer
                 (
                     X,
-                    y,
-                    d,
+                    W,
+                    Z,
+                    A,
+                    Y_obs,
+                    Y0,
+                    Y1,
+                    d_X,
+                    d_W,
+                    d_Z,
                     seq_lens,
                     train_sizes,
                     file_batch_size,
@@ -383,8 +423,15 @@ class LoadPriorDataset(IterableDataset):
                 if self.buffer_X is None:
                     # If buffer is empty, directly assign
                     self.buffer_X = X
-                    self.buffer_y = y
-                    self.buffer_d = d
+                    self.buffer_W = W
+                    self.buffer_Z = Z
+                    self.buffer_A = A
+                    self.buffer_Y_obs = Y_obs
+                    self.buffer_Y0 = Y0
+                    self.buffer_Y1 = Y1
+                    self.buffer_d_X = d_X
+                    self.buffer_d_W = d_W
+                    self.buffer_d_Z = d_Z
                     self.buffer_seq_lens = seq_lens
                     self.buffer_train_sizes = train_sizes
                     self.buffer_size = file_batch_size
@@ -394,14 +441,36 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_X = cat_slice_nested_tensors(
                             [self.buffer_X, X], dim=0
                         )
-                        self.buffer_y = cat_slice_nested_tensors(
-                            [self.buffer_y, y], dim=0
+                        self.buffer_W = cat_slice_nested_tensors(
+                            [self.buffer_W, W], dim=0
+                        )
+                        self.buffer_Z = cat_slice_nested_tensors(
+                            [self.buffer_Z, Z], dim=0
+                        )
+                        self.buffer_A = cat_slice_nested_tensors(
+                            [self.buffer_A, A], dim=0
+                        )
+                        self.buffer_Y_obs = cat_slice_nested_tensors(
+                            [self.buffer_Y_obs, Y_obs], dim=0
+                        )
+                        self.buffer_Y0 = cat_slice_nested_tensors(
+                            [self.buffer_Y0, Y0], dim=0
+                        )
+                        self.buffer_Y1 = cat_slice_nested_tensors(
+                            [self.buffer_Y1, Y1], dim=0
                         )
                     else:
                         self.buffer_X = torch.cat([self.buffer_X, X], dim=0)
-                        self.buffer_y = torch.cat([self.buffer_y, y], dim=0)
+                        self.buffer_W = torch.cat([self.buffer_W, W], dim=0)
+                        self.buffer_Z = torch.cat([self.buffer_Z, Z], dim=0)
+                        self.buffer_A = torch.cat([self.buffer_A, A], dim=0)
+                        self.buffer_Y_obs = torch.cat([self.buffer_Y_obs, Y_obs], dim=0)
+                        self.buffer_Y0 = torch.cat([self.buffer_Y0, Y0], dim=0)
+                        self.buffer_Y1 = torch.cat([self.buffer_Y1, Y1], dim=0)
 
-                    self.buffer_d = torch.cat([self.buffer_d, d], dim=0)
+                    self.buffer_d_X = torch.cat([self.buffer_d_X, d_X], dim=0)
+                    self.buffer_d_W = torch.cat([self.buffer_d_W, d_W], dim=0)
+                    self.buffer_d_Z = torch.cat([self.buffer_d_Z, d_Z], dim=0)
                     self.buffer_seq_lens = torch.cat(
                         [self.buffer_seq_lens, seq_lens], dim=0
                     )
@@ -419,42 +488,75 @@ class LoadPriorDataset(IterableDataset):
 
         # Prepare output
         X_out = self.buffer_X[:output_size]
-        y_out = self.buffer_y[:output_size]
-        d_out = self.buffer_d[:output_size]
+        W_out = self.buffer_W[:output_size]
+        Z_out = self.buffer_Z[:output_size]
+        A_out = self.buffer_A[:output_size]
+        Y_obs_out = self.buffer_Y_obs[:output_size]
+        Y0_out = self.buffer_Y0[:output_size]
+        Y1_out = self.buffer_Y1[:output_size]
+        d_X_out = self.buffer_d_X[:output_size]
+        d_W_out = self.buffer_d_W[:output_size]
+        d_Z_out = self.buffer_d_Z[:output_size]
         seq_lens_out = self.buffer_seq_lens[:output_size]
         train_sizes_out = self.buffer_train_sizes[:output_size]
 
         # Update buffer with remaining data
         if output_size < self.buffer_size:
             self.buffer_X = self.buffer_X[output_size:]
-            self.buffer_y = self.buffer_y[output_size:]
-            self.buffer_d = self.buffer_d[output_size:]
+            self.buffer_W = self.buffer_W[output_size:]
+            self.buffer_Z = self.buffer_Z[output_size:]
+            self.buffer_A = self.buffer_A[output_size:]
+            self.buffer_Y_obs = self.buffer_Y_obs[output_size:]
+            self.buffer_Y0 = self.buffer_Y0[output_size:]
+            self.buffer_Y1 = self.buffer_Y1[output_size:]
+            self.buffer_d_X = self.buffer_d_X[output_size:]
+            self.buffer_d_W = self.buffer_d_W[output_size:]
+            self.buffer_d_Z = self.buffer_d_Z[output_size:]
             self.buffer_seq_lens = self.buffer_seq_lens[output_size:]
             self.buffer_train_sizes = self.buffer_train_sizes[output_size:]
             self.buffer_size -= output_size
         else:
             # Buffer is now empty
             self.buffer_X = None
-            self.buffer_y = None
-            self.buffer_d = None
+            self.buffer_W = None
+            self.buffer_Z = None
+            self.buffer_A = None
+            self.buffer_Y_obs = None
+            self.buffer_Y0 = None
+            self.buffer_Y1 = None
+            self.buffer_d_X = None
+            self.buffer_d_W = None
+            self.buffer_d_Z = None
             self.buffer_seq_lens = None
             self.buffer_train_sizes = None
             self.buffer_size = 0
 
         if isinstance(X_out, SliceNestedTensor):
             X_out = X_out.nested_tensor
-            y_out = y_out.nested_tensor
+            W_out = W_out.nested_tensor
+            Z_out = Z_out.nested_tensor
+            A_out = A_out.nested_tensor
+            Y_obs_out = Y_obs_out.nested_tensor
+            Y0_out = Y0_out.nested_tensor
+            Y1_out = Y1_out.nested_tensor
 
-        return X_out, y_out, d_out, seq_lens_out, train_sizes_out
+        return (
+            X_out,
+            W_out,
+            Z_out,
+            A_out,
+            Y_obs_out,
+            Y0_out,
+            Y1_out,
+            d_X_out,
+            d_W_out,
+            d_Z_out,
+            seq_lens_out,
+            train_sizes_out,
+        )
 
     def __repr__(self) -> str:
-        """Return a string representation of the LoadPriorDataset.
-
-        Returns
-        -------
-        str
-            A formatted string with dataset parameters.
-        """
+        """Return a string representation of the LoadPriorDataset."""
         repr_str = (
             f"LoadPriorDataset(\n"
             f"  data_dir: {self.data_dir}\n"
@@ -472,13 +574,10 @@ class LoadPriorDataset(IterableDataset):
             repr_str += f"    prior_type: {self.metadata.get('prior_type', 'N/A')}\n"
             repr_str += f"    batch_size (generated): {self.metadata.get('batch_size', 'N/A')}\n"
             repr_str += f"    batch_size_per_gp: {self.metadata.get('batch_size_per_gp', 'N/A')}\n"
-            repr_str += (
-                f"    min features: {self.metadata.get('min_features', 'N/A')}\n"
-            )
-            repr_str += (
-                f"    max features: {self.metadata.get('max_features', 'N/A')}\n"
-            )
-            repr_str += f"    max classes: {self.metadata.get('max_classes', 'N/A')}\n"
+            repr_str += f"    dim_U: {self.metadata.get('min_dim_U', 'N/A')} - {self.metadata.get('max_dim_U', 'N/A')}\n"
+            repr_str += f"    dim_W: {self.metadata.get('min_dim_W', 'N/A')} - {self.metadata.get('max_dim_W', 'N/A')}\n"
+            repr_str += f"    dim_Z: {self.metadata.get('min_dim_Z', 'N/A')} - {self.metadata.get('max_dim_Z', 'N/A')}\n"
+            repr_str += f"    dim_X: {self.metadata.get('min_dim_X', 'N/A')} - {self.metadata.get('max_dim_X', 'N/A')}\n"
             repr_str += f"    seq_len: {self.metadata.get('min_seq_len', 'N/A') or 'None'} - {self.metadata.get('max_seq_len', 'N/A')}\n"
             repr_str += f"    log_seq_len: {self.metadata.get('log_seq_len', 'N/A')}\n"
             repr_str += f"    sequence length varies across groups: {self.metadata.get('seq_len_per_gp', 'N/A')}\n"
