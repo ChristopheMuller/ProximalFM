@@ -12,6 +12,12 @@ from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 
 
+####
+# TODO:
+# - bring back forward with cache
+####
+
+
 class TabICL(nn.Module):
     """A Tabular In-Context Learning Foundation Model.
 
@@ -239,10 +245,7 @@ class TabICL(nn.Module):
             norm_first=norm_first,
             bias_free_ln=bias_free_ln,
             affine=col_affine,
-            feature_group=col_feature_group,
-            feature_group_size=col_feature_group_size,
             target_aware=col_target_aware,
-            max_classes=max_classes,
             reserve_cls_tokens=row_num_cls,
             ssmax=col_ssmax,
             recompute=recompute,
@@ -338,6 +341,11 @@ class TabICL(nn.Module):
         representations = self.row_interactor(
             self.col_embedder(
                 X,
+                Z=X,
+                W=X,
+                A=torch.randint(
+                    0, 2, (X.shape[0], X.shape[1], 1), device=X.device
+                ).float(),
                 y_train=y_train,
                 d=d,
                 embed_with_test=embed_with_test,
@@ -414,9 +422,13 @@ class TabICL(nn.Module):
         representations = self.row_interactor(
             self.col_embedder(
                 X,
+                Z=X,
+                W=X,
+                A=torch.randint(
+                    0, 2, (X.shape[0], X.shape[1], 1), device=X.device
+                ).float(),
                 y_train=y_train,
                 embed_with_test=embed_with_test,
-                feature_shuffles=feature_shuffles,
                 mgr_config=inference_config.COL_CONFIG,
             ),
             mgr_config=inference_config.ROW_CONFIG,
@@ -610,194 +622,6 @@ class TabICL(nn.Module):
             return results[output_type[0]]
 
         return results
-
-    def forward_with_cache(
-        self,
-        X_train: Optional[Tensor] = None,
-        y_train: Optional[Tensor] = None,
-        X_test: Optional[Tensor] = None,
-        return_logits: bool = True,
-        softmax_temperature: float = 0.9,
-        use_cache: bool = False,
-        store_cache: bool = True,
-        cache: Optional[TabICLCache] = None,
-        cache_mode: str = "kv",
-        inference_config: Optional[InferenceConfig] = None,
-    ) -> Optional[Tensor]:
-        """Forward pass with caching support for efficient inference.
-
-        This method enables caching of training data computations to speed up
-        repeated inference on the same training context. Two caching modes are
-        supported:
-
-        - ``"kv"``: Cache KV projections from both column embedding and ICL
-          transformer layers. Fastest inference but uses more memory.
-        - ``"repr"``: Cache column embedding KV projections and row interaction
-          outputs (representations with y_train baked in). Uses ~24x less memory
-          for the ICL part, at the cost of re-running the ICL transformer.
-
-        Exactly one of `use_cache` or `store_cache` must be True.
-
-        When ``store_cache=True``:
-        - Requires X_train and y_train to be provided
-        - Processes training data and stores cached values in self._cache
-        - If X_test is also provided, returns predictions for test samples
-        - If X_test is None, returns None (cache-only mode)
-
-        When ``use_cache=True``:
-        - Requires X_test and a populated self._cache
-        - Uses cached values for training data
-
-        Parameters
-        ----------
-        X_train : Optional[Tensor], default=None
-            Training input of shape (B, train_size, H). Required when store_cache=True.
-
-        y_train : Optional[Tensor], default=None
-            Training target of shape (B, train_size). Required when store_cache=True.
-
-        X_test : Optional[Tensor], default=None
-            Test input of shape (B, test_size, H). Required when use_cache=True and optional
-            when store_cache=True.
-
-        return_logits : bool, default=True
-            If True, return raw logits instead of probabilities.
-
-        softmax_temperature : float, default=0.9
-            Temperature for the softmax function.
-
-        use_cache : bool, default=False
-            Whether to use cached values to avoid redundant computation.
-
-        store_cache : bool, default=True
-            Whether to store computed values in cache.
-
-        cache : Optional[TabICLCache], default=None
-            External cache to use for inference. If provided, equivalent to
-            setting use_cache=True and store_cache=False, but uses the provided
-            cache instead of the model's internal self._cache.
-
-        cache_mode : str, default="kv"
-            Caching strategy: ``"kv"`` for KV projection caching, ``"repr"`` for
-            representation caching. Ignored when ``use_cache=True`` (auto-detected
-            from cache contents).
-
-        inference_config : Optional[InferenceConfig], default=None
-            Inference configuration.
-
-        Returns
-        -------
-        Optional[Tensor]
-            Predictions of shape (B, test_size, out_dim), or None if store_cache=True
-            and X_test is not provided.
-
-        Raises
-        ------
-        ValueError
-            If use_cache == store_cache (exactly one must be True),
-            if store_cache=True but X_train or y_train is None, or
-            if use_cache=True but X_test is None or no cache exists.
-        """
-
-        if cache is not None:
-            use_cache = True
-            store_cache = False
-            self._cache = cache
-
-        if use_cache == store_cache:
-            raise ValueError("Exactly one of use_cache or store_cache must be True")
-
-        if cache_mode not in ("kv", "repr"):
-            raise ValueError(f"cache_mode must be 'kv' or 'repr', got '{cache_mode}'")
-
-        if inference_config is None:
-            inference_config = InferenceConfig()
-
-        # Auto-detect cache mode from cache contents
-        if use_cache and self._cache is not None and self._cache.cache_type == "repr":
-            cache_mode = "repr"
-
-        if store_cache:
-            if X_train is None or y_train is None:
-                raise ValueError(
-                    "X_train and y_train are required when store_cache=True"
-                )
-
-            # Initialize cache based on training data
-            num_classes = len(torch.unique(y_train[0])) if self.max_classes > 0 else 0
-            self._cache = TabICLCache(
-                train_shape=X_train.shape, num_classes=num_classes
-            )
-
-            if X_test is None:
-                X = X_train
-            else:
-                X = torch.cat([X_train, X_test], dim=1)
-
-        if use_cache:
-            if X_test is None:
-                raise ValueError("X_test is required when use_cache=True")
-
-            if self._cache is None or self._cache.is_empty():
-                raise ValueError(
-                    "No cache available. Call with store_cache=True first."
-                )
-
-            X = X_test
-            y_train = None
-
-        # Column-wise embedding with cache support -> Row-wise interaction
-        representations = self.row_interactor(
-            self.col_embedder.forward_with_cache(
-                X,
-                col_cache=self._cache.col_cache,
-                y_train=y_train,
-                use_cache=use_cache,
-                store_cache=store_cache,
-                mgr_config=inference_config.COL_CONFIG,
-            ),
-            mgr_config=inference_config.ROW_CONFIG,
-        )
-
-        # Dataset-wise in-context learning
-        if cache_mode == "repr":
-            if store_cache:
-                train_size = y_train.shape[1]
-                # Bake y_train into train portion of representations
-                representations = self.icl_predictor.prepare_repr_cache(
-                    representations, y_train
-                )
-                self._cache.row_repr = representations[:, :train_size]
-
-                if X_test is None:
-                    return None
-            else:
-                # Concatenate cached train representations with test representations
-                train_repr = self._cache.row_repr
-                train_size = train_repr.shape[1]
-                representations = torch.cat(
-                    [train_repr.to(representations.device), representations], dim=1
-                )
-
-            out = self.icl_predictor.forward_with_repr_cache(
-                representations,
-                train_size=train_size,
-                mgr_config=inference_config.ICL_CONFIG,
-            )
-        else:
-            out = self.icl_predictor.forward_with_cache(
-                representations,
-                icl_cache=self._cache.icl_cache,
-                y_train=y_train,
-                use_cache=use_cache,
-                store_cache=store_cache,
-                mgr_config=inference_config.ICL_CONFIG,
-            )
-
-            if X_test is None:
-                return None
-
-        return out
 
     def predict_stats_with_cache(
         self,
