@@ -7,7 +7,7 @@ from typing import Dict, Any
 import torch
 from torch import nn
 
-from ._utils import GaussianNoise, XSampler
+from ._utils import GaussianNoise
 
 
 class MLPSCM(nn.Module):
@@ -221,7 +221,8 @@ class MLPSCM(nn.Module):
             param *= torch.bernoulli(torch.full_like(param, 1 - dropout_prob))
 
     def forward(
-        self, input: torch.Tensor, outcome: bool = False, d_out: int = 1
+        self,
+        input: torch.Tensor,
     ) -> torch.Tensor:
         """Passes the input tensor through the mechanism block."""
         out = input
@@ -235,65 +236,3 @@ class MLPSCM(nn.Module):
             out = torch.nan_to_num(out, nan=0.0)
 
         return out
-
-    def handle_outputs(self, causes, outputs):
-        """Handle outputs based on whether causal or not.
-
-        If causal, sample inputs and target from the graph.
-        If not causal, directly use causes as inputs and last output as target.
-
-        Parameters
-        ----------
-        causes : torch.Tensor
-            Causes of shape ``(seq_len, num_causes)``.
-
-        outputs : list of torch.Tensor
-            List of output tensors from MLP layers.
-
-        Returns
-        -------
-        X : torch.Tensor
-            Input features of shape ``(seq_len, num_features)``.
-
-        y : torch.Tensor
-            Target of shape ``(seq_len, num_outputs)``.
-        """
-        if self.is_causal:
-            outputs_flat = torch.cat(outputs, dim=-1)
-            if self.in_clique:
-                # When in_clique=True, features and targets are sampled as a block, ensuring that
-                # selected variables may share dense dependencies.
-                start = random.randint(
-                    0, outputs_flat.shape[-1] - self.num_outputs - self.num_features
-                )
-                random_perm = start + torch.randperm(
-                    self.num_outputs + self.num_features, device=self.device
-                )
-            else:
-                # Otherwise, features and targets are randomly and independently selected
-                random_perm = torch.randperm(
-                    outputs_flat.shape[-1] - 1, device=self.device
-                )
-
-            indices_X = random_perm[
-                self.num_outputs : self.num_outputs + self.num_features
-            ]
-            if self.y_is_effect:
-                # If targets are effects, take last output dims
-                indices_y = list(range(-self.num_outputs, 0))
-            else:
-                # Otherwise, take from the beginning of the permuted list
-                indices_y = random_perm[: self.num_outputs]
-
-            if self.sort_features:
-                indices_X, _ = torch.sort(indices_X)
-
-            # Select input features and targets from outputs
-            X = outputs_flat[:, indices_X]
-            y = outputs_flat[:, indices_y]
-        else:
-            # In non-causal mode, use original causes and last layer output
-            X = causes
-            y = outputs[-1]
-
-        return X, y
