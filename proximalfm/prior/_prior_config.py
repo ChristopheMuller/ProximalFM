@@ -18,7 +18,7 @@ DEFAULT_FIXED_HP = {
     "permute_labels": True,
     # Propensity
     "propensity_epsilon": 0.05,
-    "propensity_temperature": 1.0,
+    "propensity_temperature": {"distribution": "uniform", "min": 0.5, "max": 2.0},
 }
 
 DEFAULT_SAMPLED_HP = {
