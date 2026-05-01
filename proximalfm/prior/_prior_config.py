@@ -42,17 +42,6 @@ DEFAULT_SAMPLED_HP = {
         "max": 5.0,
     },
     # MLPSCM and TreeSCM
-    "is_causal": {"distribution": "meta_choice", "choice_values": [True, False]},
-    "num_causes": {
-        "distribution": "meta_trunc_norm_log_scaled",
-        "max_mean": 12,
-        "min_mean": 1,
-        "round": True,
-        "lower_bound": 1,
-    },
-    "y_is_effect": {"distribution": "meta_choice", "choice_values": [True, False]},
-    "in_clique": {"distribution": "meta_choice", "choice_values": [True, False]},
-    "sort_features": {"distribution": "meta_choice", "choice_values": [True, False]},
     "num_layers": {
         "distribution": "meta_trunc_norm_log_scaled",
         "max_mean": 6,
