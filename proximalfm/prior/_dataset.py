@@ -608,16 +608,16 @@ class SCMPrior(Prior):
             )
 
             input_y = torch.cat([U, X, W], dim=-1)
-            input_y0 = self.prepare_input(type="y0", input=input_y, **params)
-            input_y1 = self.prepare_input(type="y1", input=input_y, **params)
-
+            input_joint = self.prepare_input(type="y", input=input_y, **params)
             f_y = prior_cls(
                 in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"] + 1,
                 num_outputs=1,
                 **params,
             ).to(self.device)
-            y0 = f_y(input_y0).squeeze(-1)
-            y1 = f_y(input_y1).squeeze(-1)
+            y_joint = f_y(input_joint).squeeze(-1)
+
+            n = input_y.shape[0]
+            y0, y1 = y_joint[:n], y_joint[n:]
 
             y = torch.where(A == 1, y1, y0)
 
@@ -667,14 +667,18 @@ class SCMPrior(Prior):
     def prepare_input(self, type: str, input: Tensor, **params) -> Tensor:
         if type == "A":
             return input
-        elif type == "y0":
-            A0 = torch.zeros((input.shape[0], 1), device=input.device)
-            input = torch.cat([input, A0], dim=-1)
-            return input
-        elif type == "y1":
-            A1 = torch.ones((input.shape[0], 1), device=input.device)
-            input = torch.cat([input, A1], dim=-1)
-            return input
+
+        elif type == "y":
+            n = input.shape[0]
+
+            A0 = torch.zeros((n, 1), device=input.device)
+            A1 = torch.ones((n, 1), device=input.device)
+
+            input_y0 = torch.cat([input, A0], dim=-1)
+            input_y1 = torch.cat([input, A1], dim=-1)
+
+            input_joint = torch.cat([input_y0, input_y1], dim=0)
+            return input_joint
 
     def sample_A(
         self, logits: Tensor, epsilon: float = 0.05, temperature: float = 1.0
