@@ -391,6 +391,7 @@ class ICLearning(nn.Module):
         """
         # When using cache, skip y_train embedding — it's already baked
         # into the cached K/V projections from the store_cache pass.
+        train_size = None
         if store_cache:
             assert y_train is not None, "y_train must be provided when store_cache=True"
             train_size = y_train.shape[1]
