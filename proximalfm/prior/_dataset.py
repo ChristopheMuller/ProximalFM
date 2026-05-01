@@ -560,7 +560,7 @@ class SCMPrior(Prior):
         if params["prior_type"] == "mlp_scm":
             prior_cls = MLPSCM
         elif params["prior_type"] == "tree_scm":
-            prior_cls = MLPSCM  # TODO: change
+            prior_cls = TreeSCM
         else:
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 

@@ -316,7 +316,7 @@ class TreeSCM(nn.Module):
 
         return nn.Sequential(tree_layer, noise_layer)
 
-    def forward(self, input=None, outcome=None, d_out=1):
+    def forward(self):
         """Generates synthetic data by sampling input features and applying tree-based transformations."""
         causes = self.xsampler.sample()  # (seq_len, num_causes)
 
@@ -339,10 +339,7 @@ class TreeSCM(nn.Module):
         if self.num_outputs == 1:
             y = y.squeeze(-1)
 
-        if d_out == 1:
-            return X[:, 0]
-
-        return X[:, :d_out]
+        return X, y
 
     def handle_outputs(self, causes, outputs):
         """Handle outputs based on whether causal or not.
