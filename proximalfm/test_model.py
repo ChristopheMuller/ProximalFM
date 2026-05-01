@@ -28,59 +28,52 @@ Y_obs_out = torch.randn(B, train_size)
 print("-" * 50)
 print(" PHASE 1: Testing Isolated ICLearning (Step A)")
 print("-" * 50)
-try:
-    icl_model = ICLearning(
-        d_model=d_model,
-        num_blocks=2,  # Kept small for fast initialization
-        nhead=4,
-        dim_feedforward=256,
-    )
-    icl_model.eval()
 
-    # Mock the output of RowInteraction
-    R_dummy = torch.randn(B, T, d_model)
 
-    out = icl_model(R_dummy, Y_obs_out)
-    print("✅ ICLearning Forward Pass Successful!")
-    print(f"   Expected Shape: ({B}, {test_size}, 4)")
-    print(f"   Actual Shape:   {tuple(out.shape)}")
-    assert out.shape == (B, test_size, 4), "Shape mismatch in ICLearning!"
+icl_model = ICLearning(
+    d_model=d_model,
+    num_blocks=2,  # Kept small for fast initialization
+    nhead=4,
+    dim_feedforward=256,
+)
+icl_model.eval()
 
-except Exception as e:
-    print(f"❌ ICLearning Test Failed:\n{e}")
+# Mock the output of RowInteraction
+R_dummy = torch.randn(B, T, d_model)
+
+out = icl_model(R_dummy, Y_obs_out)
+print("✅ ICLearning Forward Pass Successful!")
+print(f"   Expected Shape: ({B}, {test_size}, 4)")
+print(f"   Actual Shape:   {tuple(out.shape)}")
+assert out.shape == (B, test_size, 4), "Shape mismatch in ICLearning!"
 
 
 print("\n" + "-" * 50)
 print(" PHASE 2: Testing Full TabICL (For Step B & C)")
 print("-" * 50)
-try:
-    # Initialize full model.
-    # CRITICAL: max_classes=0 triggers the continuous regression pathways
-    tabicl_model = TabICL(
-        max_classes=0,
-        embed_dim=d_model,
-        col_num_blocks=1,
-        row_num_blocks=1,
-        icl_num_blocks=1,
-    )
-    tabicl_model.eval()
+# Initialize full model.
+# CRITICAL: max_classes=0 triggers the continuous regression pathways
+tabicl_model = TabICL(
+    embed_dim=d_model,
+    col_num_blocks=1,
+    row_num_blocks=1,
+    icl_num_blocks=1,
+)
+tabicl_model.eval()
 
-    # BEFORE STEP B IS COMPLETE:
-    # TabICL still expects a single X tensor of shape (B, T, H).
-    # We concatenate our features to mock this temporarily.
-    X_concat = torch.cat([X_out, W_out, Z_out, A_out], dim=-1)
+# BEFORE STEP B IS COMPLETE:
+# TabICL still expects a single X tensor of shape (B, T, H).
+# We concatenate our features to mock this temporarily.
+X_concat = torch.cat([X_out, W_out, Z_out, A_out], dim=-1)
 
-    # Run forward pass
-    out = tabicl_model(X=X_concat, y_train=Y_obs_out)
+# Run forward pass
+out = tabicl_model(X=X_concat, W=W_out, Z=Z_out, A=A_out, y_train=Y_obs_out)
 
-    print("✅ TabICL Forward Pass Successful!")
-    print(f"   Expected Shape: ({B}, {test_size}, 4)")
-    print(f"   Actual Shape:   {tuple(out.shape)}")
+print("✅ TabICL Forward Pass Successful!")
+print(f"   Expected Shape: ({B}, {test_size}, 4)")
+print(f"   Actual Shape:   {tuple(out.shape)}")
 
-    # NOTE: After you complete Step B & C, you will change this call to:
-    # out = tabicl_model(X_out, W_out, Z_out, A_out, Y_obs_out)
-
-except Exception as e:
-    print(f"❌ Full TabICL Test Failed:\n{e}")
+# NOTE: After you complete Step B & C, you will change this call to:
+# out = tabicl_model(X_out, W_out, Z_out, A_out, Y_obs_out)
 
 # %%
