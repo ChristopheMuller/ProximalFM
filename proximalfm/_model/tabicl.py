@@ -322,10 +322,6 @@ class TabICL(nn.Module):
         train_size = y_train.shape[1]
         assert train_size <= T, "Number of training samples exceeds total samples"
 
-        # Check if d is provided and has the same length as the number of features
-        if d is not None and len(d.unique()) == 1 and d[0] == H:
-            d = None
-
         # Column-wise embedding -> Row-wise interaction
         representations = self.row_interactor(
             self.col_embedder(
