@@ -171,19 +171,14 @@ class ColEmbedding(nn.Module):
         # 4 Causal Roles: 0=X, 1=Z, 2=W, 3=A
         self.role_embedding = nn.Embedding(num_embeddings=4, embedding_dim=embed_dim)
 
-    def _apply_skip_mask(self, tensor: Tensor, lengths: Optional[Tensor]) -> Tensor:
-        """Fills padded feature columns with -100.0 so the SetTransformer ignores them."""
+    def _get_invalid_mask(
+        self, max_len: int, lengths: Optional[Tensor], B: int, device: torch.device
+    ) -> Tensor:
+        """Returns a boolean mask of shape (B, max_len) where True = Invalid Padding."""
         if lengths is None:
-            return tensor
-        B, T, H = tensor.shape
-        # Create a mask of shape (B, H) where True means "invalid padded feature"
-        indices = torch.arange(H, device=tensor.device).unsqueeze(0).expand(B, H)
-        invalid_mask = indices >= lengths.unsqueeze(1)
-
-        # Expand mask to (B, T, H) and apply the skip value
-        tensor_out = tensor.clone()
-        tensor_out[invalid_mask.unsqueeze(1).expand(-1, T, -1)] = -100.0
-        return tensor_out
+            return torch.zeros(B, max_len, dtype=torch.bool, device=device)
+        indices = torch.arange(max_len, device=device).unsqueeze(0).expand(B, max_len)
+        return indices >= lengths.unsqueeze(1)
 
     def _compute_embeddings(
         self,
@@ -192,7 +187,8 @@ class ColEmbedding(nn.Module):
         W: Tensor,
         A: Tensor,
         train_size: int,
-        y_train: Optional[Tensor] = None,
+        y_train: Optional[Tensor],
+        inv_concat: Tensor,
         embed_with_test: bool = False,
     ) -> Tensor:
         """Feature embedding using a shared set transformer with Causal Roles.
@@ -228,7 +224,10 @@ class ColEmbedding(nn.Module):
             # Add to the training portion of all features
             src[..., :train_size, :] = src[..., :train_size, :] + y_emb
 
-        # 4. Pass through the Set Transformer
+        inv_mask_exp = inv_concat.unsqueeze(-1).unsqueeze(-1).expand_as(src)
+        src[inv_mask_exp] = -100.0
+
+        # 4. Pass through Set Transformer
         src = self.tf_col(src, train_size=None if embed_with_test else train_size)
 
         # 5. Affine transformation (scales the original raw features)
@@ -239,7 +238,19 @@ class ColEmbedding(nn.Module):
         else:
             embeddings = src
 
-        return embeddings
+        # Clean up any garbage from affine
+        embeddings[inv_mask_exp] = -100.0
+
+        valid_mask = ~inv_concat  # 1 for valid, 0 for invalid
+        # Stable sort keeps CLS -> X -> Z -> W -> A order intact, just removes the gaps!
+        sort_indices = torch.argsort(
+            valid_mask.int(), dim=1, descending=True, stable=True
+        )
+
+        gather_indices = sort_indices.unsqueeze(-1).unsqueeze(-1).expand_as(embeddings)
+        embeddings_sorted = torch.gather(embeddings, dim=1, index=gather_indices)
+
+        return embeddings_sorted
 
     def _train_forward(
         self,
@@ -296,6 +307,7 @@ class ColEmbedding(nn.Module):
         """
 
         train_size = y_train.shape[1]
+        B = X.shape[0]
 
         # 1. Pad X to reserve space for the CLS tokens
         if self.reserve_cls_tokens > 0:
@@ -303,23 +315,33 @@ class ColEmbedding(nn.Module):
             if d_X is not None:
                 d_X = d_X + self.reserve_cls_tokens
 
-        # 2. Mask invalid features with the model's native skip_value (-100.0)
-        X = self._apply_skip_mask(X, d_X)
-        Z = self._apply_skip_mask(Z, d_Z)
-        W = self._apply_skip_mask(W, d_W)
+        # Create precise boolean masks for invalid padding
+        inv_X = self._get_invalid_mask(X.shape[2], d_X, B, X.device)
+        inv_Z = self._get_invalid_mask(Z.shape[2], d_Z, B, Z.device)
+        inv_W = self._get_invalid_mask(W.shape[2], d_W, B, W.device)
+        inv_A = torch.zeros(
+            B, A.shape[2], dtype=torch.bool, device=A.device
+        )  # A is always valid
+        # (B, Total_Max_Features)
+        inv_concat = torch.cat([inv_X, inv_Z, inv_W, inv_A], dim=1)
 
-        # 3. Transpose and unsqueeze to shape (B, num_features, T, 1)
+        # Transpose
         X_feat = X.transpose(1, 2).unsqueeze(-1)
         Z_feat = Z.transpose(1, 2).unsqueeze(-1)
         W_feat = W.transpose(1, 2).unsqueeze(-1)
         A_feat = A.transpose(1, 2).unsqueeze(-1)
 
-        # 4. Compute embeddings
         embeddings = self._compute_embeddings(
-            X_feat, Z_feat, W_feat, A_feat, train_size, y_train, embed_with_test
+            X_feat,
+            Z_feat,
+            W_feat,
+            A_feat,
+            train_size,
+            y_train,
+            inv_concat,
+            embed_with_test,
         )
 
-        # 5. Transpose back to (B, T, total_features, E)
         return embeddings.transpose(1, 2)
 
     def _inference_forward(
@@ -335,21 +357,23 @@ class ColEmbedding(nn.Module):
         embed_with_test: bool = False,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
-
         if mgr_config is None:
             mgr_config = InferenceConfig().COL_CONFIG
         self.inference_mgr.configure(**mgr_config)
 
         train_size = y_train.shape[1]
+        B = X.shape[0]
 
         if self.reserve_cls_tokens > 0:
             X = F.pad(X, (self.reserve_cls_tokens, 0), value=-100.0)
             if d_X is not None:
                 d_X = d_X + self.reserve_cls_tokens
 
-        X = self._apply_skip_mask(X, d_X)
-        Z = self._apply_skip_mask(Z, d_Z)
-        W = self._apply_skip_mask(W, d_W)
+        inv_X = self._get_invalid_mask(X.shape[2], d_X, B, X.device)
+        inv_Z = self._get_invalid_mask(Z.shape[2], d_Z, B, Z.device)
+        inv_W = self._get_invalid_mask(W.shape[2], d_W, B, W.device)
+        inv_A = torch.zeros(B, A.shape[2], dtype=torch.bool, device=A.device)
+        inv_concat = torch.cat([inv_X, inv_Z, inv_W, inv_A], dim=1)
 
         X_feat = X.transpose(1, 2).unsqueeze(-1)
         Z_feat = Z.transpose(1, 2).unsqueeze(-1)
@@ -366,6 +390,7 @@ class ColEmbedding(nn.Module):
                     ("A", A_feat),
                     ("train_size", train_size),
                     ("y_train", y_train),
+                    ("inv_concat", inv_concat),
                     ("embed_with_test", embed_with_test),
                 ]
             ),
@@ -386,7 +411,6 @@ class ColEmbedding(nn.Module):
         embed_with_test: bool = False,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
-
         if self.training:
             embeddings = self._train_forward(
                 X, Z, W, A, y_train, d_X, d_Z, d_W, embed_with_test
