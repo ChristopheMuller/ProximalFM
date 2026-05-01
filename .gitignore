@@ -10,3 +10,5 @@ results/*
 benchmarks/results/*
 
 *.pdf
+*.pt
+*.json

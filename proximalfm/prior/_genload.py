@@ -28,8 +28,8 @@ import torch
 import numpy as np
 from torch.utils.data import IterableDataset
 
-from _dataset import PriorDataset
-from _prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
+from proximalfm.prior._dataset import PriorDataset
+from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 warnings.filterwarnings(
     "ignore",
