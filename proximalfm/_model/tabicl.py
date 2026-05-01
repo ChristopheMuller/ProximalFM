@@ -1,13 +1,11 @@
 from __future__ import annotations
-from typing import Optional, List, Union, Literal
+from typing import Optional, Union, Literal
 
-import torch
 from torch import nn, Tensor
 
 from .embedding import ColEmbedding
 from .interaction import RowInteraction
 from .learning import ICLearning
-from .quantile_dist import QuantileToDistribution
 from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 
@@ -149,15 +147,11 @@ class TabICL(nn.Module):
 
     def __init__(
         self,
-        max_classes: int = 10,
-        num_quantiles: int = 999,
         embed_dim: int = 128,
         col_num_blocks: int = 3,
         col_nhead: int = 8,
         col_num_inds: int = 128,
         col_affine: bool = False,
-        col_feature_group: Union[bool, Literal["same", "valid"]] = "same",
-        col_feature_group_size: int = 3,
         col_target_aware: bool = True,
         col_ssmax: Union[
             bool,
@@ -198,31 +192,15 @@ class TabICL(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
-        # Determine task type
-        if max_classes == 0:  # Regression
-            if num_quantiles <= 0:
-                raise ValueError(
-                    "For regression (max_classes=0), num_quantiles must be greater than 0."
-                )
-            out_dim = num_quantiles
-            self.quantile_dist = QuantileToDistribution(num_quantiles=num_quantiles)
-        else:  # Classification
-            out_dim = max_classes
-
-        self.max_classes = max_classes
-        self.num_quantiles = num_quantiles
         self.embed_dim = embed_dim
         self.col_num_blocks = col_num_blocks
         self.col_nhead = col_nhead
         self.col_num_inds = col_num_inds
         self.col_affine = col_affine
-        self.col_feature_group = col_feature_group
-        self.col_feature_group_size = col_feature_group_size
         self.col_target_aware = col_target_aware
         self.col_ssmax = col_ssmax
         self.row_num_blocks = row_num_blocks
         self.row_nhead = row_nhead
-        self.row_num_cls = row_num_cls
         self.row_rope_base = row_rope_base
         self.row_rope_interleaved = row_rope_interleaved
         self.icl_num_blocks = icl_num_blocks
@@ -291,11 +269,21 @@ class TabICL(nn.Module):
         """Clear the stored cache."""
         self._cache = None
 
+    def _get_d_total(self, d_X, d_Z, d_W):
+        if d_X is not None and d_Z is not None and d_W is not None:
+            return d_X + d_Z + d_W + 1  # RowInteraction adds num_cls itself
+        return None
+
     def _train_forward(
         self,
         X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A: Tensor,
         y_train: Tensor,
-        d: Optional[Tensor] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
         embed_with_test: bool = False,
     ) -> Tensor:
         """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning for training.
@@ -328,6 +316,7 @@ class TabICL(nn.Module):
             - For regression (max_classes=0): out_dim = num_quantiles
             - For classification (max_classes>0): out_dim = max_classes
         """
+        d_total = self._get_d_total(d_X, d_Z, d_W)
 
         B, T, H = X.shape
         train_size = y_train.shape[1]
@@ -340,17 +329,17 @@ class TabICL(nn.Module):
         # Column-wise embedding -> Row-wise interaction
         representations = self.row_interactor(
             self.col_embedder(
-                X,
-                Z=X,
-                W=X,
-                A=torch.randint(
-                    0, 2, (X.shape[0], X.shape[1], 1), device=X.device
-                ).float(),
+                X=X,
+                Z=Z,
+                W=W,
+                A=A,
                 y_train=y_train,
-                d=d,
+                d_X=d_X,
+                d_Z=d_Z,
+                d_W=d_W,
                 embed_with_test=embed_with_test,
             ),
-            d=d,
+            d=d_total,
         )
 
         # Dataset-wise in-context learning
@@ -359,11 +348,14 @@ class TabICL(nn.Module):
     def _inference_forward(
         self,
         X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A: Tensor,
         y_train: Tensor,
-        feature_shuffles: Optional[List[List[int]]] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
         embed_with_test: bool = False,
-        return_logits: bool = True,
-        softmax_temperature: float = 0.9,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
         """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning.
@@ -419,6 +411,7 @@ class TabICL(nn.Module):
             inference_config = InferenceConfig()
 
         # Column-wise embedding -> Row-wise interaction
+        d_total = self._get_d_total(d_X, d_Z, d_W)
         representations = self.row_interactor(
             self.col_embedder(
                 X,
@@ -428,9 +421,13 @@ class TabICL(nn.Module):
                     0, 2, (X.shape[0], X.shape[1], 1), device=X.device
                 ).float(),
                 y_train=y_train,
+                d_X=d_X,
+                d_Z=d_Z,
+                d_W=d_W,
                 embed_with_test=embed_with_test,
                 mgr_config=inference_config.COL_CONFIG,
             ),
+            d=d_total,
             mgr_config=inference_config.ROW_CONFIG,
         )
 
@@ -446,12 +443,14 @@ class TabICL(nn.Module):
     def forward(
         self,
         X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A: Tensor,
         y_train: Tensor,
-        d: Optional[Tensor] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
         embed_with_test: bool = False,
-        feature_shuffles: Optional[List[List[int]]] = None,
-        return_logits: bool = True,
-        softmax_temperature: float = 0.9,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
         """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning.
@@ -509,238 +508,12 @@ class TabICL(nn.Module):
         """
 
         if self.training:
-            out = self._train_forward(X, y_train, d=d, embed_with_test=embed_with_test)
+            out = self._train_forward(
+                X, Z, W, A, y_train, d_X, d_Z, d_W, embed_with_test
+            )
         else:
             out = self._inference_forward(
-                X,
-                y_train,
-                feature_shuffles=feature_shuffles,
-                embed_with_test=embed_with_test,
-                return_logits=return_logits,
-                softmax_temperature=softmax_temperature,
-                inference_config=inference_config,
+                X, Z, W, A, y_train, d_X, d_Z, d_W, embed_with_test, inference_config
             )
 
         return out
-
-    def predict_stats(
-        self,
-        X: Tensor,
-        y_train: Tensor,
-        output_type: str = "mean",
-        alphas: Optional[List[float]] = None,
-        embed_with_test: bool = False,
-        inference_config: InferenceConfig = None,
-    ) -> Tensor:
-        """Compute summary statistics from predicted quantiles.
-
-        Parameters
-        ----------
-        X : Tensor
-            Input tensor of shape (B, T, H) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features (columns)
-            The first train_size positions contain training samples, and the remaining
-            positions contain test samples.
-
-        y_train : Tensor
-            Training labels of shape (B, train_size) where:
-             - B is the number of tables
-             - train_size is the number of training samples provided for in-context learning
-
-        output_type : str or list of str, default="mean"
-            Determines the type of output to return. Supported values:
-            - "mean": Mean of the predicted quantiles (fast, no tail modeling).
-            - "variance": Variance of the predicted quantiles (fast, no tail modeling).
-            - "median": Median via inverse CDF interpolation.
-            - "quantiles": Specific quantiles via inverse CDF. Use `alphas` to specify levels.
-            If a list, returns a dict with the requested statistics.
-
-        alphas : Optional[List[float]], default=None
-            Probability levels for quantile output. Only used when "quantiles" is in `output_type`.
-            Default: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].
-
-        embed_with_test : bool, default=False
-            If True, allow training samples to attend to test samples during embedding.
-
-        inference_config : InferenceConfig
-            Inference configuration.
-
-        Returns
-        -------
-        Tensor or dict of Tensors
-            - If `output_type` is a single string: returns the corresponding tensor.
-            - If `output_type` is a list: returns a dict mapping names to tensors.
-
-            Output shapes:
-
-            - "mean", "variance", "median": (B, test_size)
-            - "quantiles": (B, test_size, len(alphas))
-            - "raw_quantiles": (B, test_size, num_quantiles), where `num_quantiles` denotes
-                the number of quantile levels configured in the model architecture.
-        """
-        assert (
-            self.max_classes == 0
-        ), "predict_stats is only applicable for regression tasks"
-
-        raw_quantiles = self._inference_forward(
-            X,
-            y_train,
-            embed_with_test=embed_with_test,
-            inference_config=inference_config,
-        )  # (B, test_size, num_quantiles)
-
-        dist = self.quantile_dist(raw_quantiles)
-        raw_quantiles = dist.quantiles  # dist ensures that quantiles are monotonic
-
-        output_type = [output_type] if isinstance(output_type, str) else output_type
-        results = {}
-
-        if "mean" in output_type:
-            results["mean"] = raw_quantiles.mean(dim=-1)
-        if "variance" in output_type:
-            results["variance"] = raw_quantiles.var(dim=-1)
-        if "median" in output_type:
-            results["median"] = dist.icdf(
-                alpha=torch.tensor(
-                    0.5, device=raw_quantiles.device, dtype=raw_quantiles.dtype
-                )
-            )
-        if "quantiles" in output_type:
-            if alphas is None:
-                alphas = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-            results["quantiles"] = dist.icdf(
-                alpha=torch.tensor(
-                    alphas, device=raw_quantiles.device, dtype=raw_quantiles.dtype
-                )
-            )
-        if "raw_quantiles" in output_type:
-            results["raw_quantiles"] = raw_quantiles
-
-        if len(output_type) == 1:
-            return results[output_type[0]]
-
-        return results
-
-    def predict_stats_with_cache(
-        self,
-        X_train: Optional[Tensor] = None,
-        y_train: Optional[Tensor] = None,
-        X_test: Optional[Tensor] = None,
-        output_type: str = "mean",
-        alphas: Optional[List[float]] = None,
-        use_cache: bool = False,
-        store_cache: bool = True,
-        cache: Optional[TabICLCache] = None,
-        cache_mode: str = "kv",
-        inference_config: Optional[InferenceConfig] = None,
-    ) -> Optional[Tensor]:
-        """Compute summary statistics from predicted quantiles with KV caching.
-
-        Parameters
-        ----------
-        X_train : Optional[Tensor], default=None
-            Training input of shape (B, train_size, H). Required when store_cache=True.
-
-        y_train : Optional[Tensor], default=None
-            Training target of shape (B, train_size). Required when store_cache=True.
-
-        X_test : Optional[Tensor], default=None
-            Test input of shape (B, test_size, H). Required when use_cache=True and
-            optional when store_cache=True.
-
-        output_type : str or list of str, default="mean"
-            Determines the type of output to return. Supported values:
-            - "mean": Mean of the predicted quantiles (fast, no tail modeling).
-            - "variance": Variance of the predicted quantiles (fast, no tail modeling).
-            - "median": Median via inverse CDF interpolation.
-            - "quantiles": Specific quantiles via inverse CDF. Use `alphas` to specify levels.
-            If a list, returns a dict with the requested statistics.
-
-        alphas : Optional[List[float]], default=None
-            Probability levels for quantile output. Only used when "quantiles" is in
-            `output_type`. Default: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9].
-
-        use_cache : bool, default=False
-            Whether to use cached values to avoid redundant computation.
-
-        store_cache : bool, default=True
-            Whether to store computed values in cache.
-
-        cache : Optional[TabICLCache], default=None
-            External cache to use for inference. If provided, equivalent to
-            setting use_cache=True and store_cache=False.
-
-        cache_mode : str, default="kv"
-            Caching strategy: ``"kv"`` for KV projection caching, ``"repr"`` for
-            representation caching. Ignored when ``use_cache=True`` (auto-detected
-            from cache contents).
-
-        inference_config : Optional[InferenceConfig], default=None
-            Inference configuration.
-
-        Returns
-        -------
-        Tensor or dict of Tensors or None
-            None if store_cache=True and X_test is not provided. Otherwise:
-
-            - If `output_type` is a single string: returns the corresponding tensor.
-            - If `output_type` is a list: returns a dict mapping names to tensors.
-
-            Output shapes:
-
-            - "mean", "variance", "median": (B, test_size)
-            - "quantiles": (B, test_size, len(alphas))
-            - "raw_quantiles": (B, test_size, num_quantiles), where `num_quantiles` denotes
-                the number of quantile levels configured in the model architecture.
-        """
-        assert (
-            self.max_classes == 0
-        ), "predict_stats_with_cache is only applicable for regression tasks"
-
-        raw_quantiles = self.forward_with_cache(
-            X_train=X_train,
-            y_train=y_train,
-            X_test=X_test,
-            use_cache=use_cache,
-            store_cache=store_cache,
-            cache=cache,
-            cache_mode=cache_mode,
-            inference_config=inference_config,
-        )
-
-        if raw_quantiles is None:
-            return None
-
-        dist = self.quantile_dist(raw_quantiles)
-        raw_quantiles = dist.quantiles
-
-        output_type = [output_type] if isinstance(output_type, str) else output_type
-        results = {}
-
-        if "mean" in output_type:
-            results["mean"] = raw_quantiles.mean(dim=-1)
-        if "variance" in output_type:
-            results["variance"] = raw_quantiles.var(dim=-1)
-        if "median" in output_type:
-            results["median"] = dist.icdf(
-                alpha=torch.tensor(
-                    0.5, device=raw_quantiles.device, dtype=raw_quantiles.dtype
-                )
-            )
-        if "quantiles" in output_type:
-            if alphas is None:
-                alphas = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-            results["quantiles"] = dist.icdf(
-                alpha=torch.tensor(
-                    alphas, device=raw_quantiles.device, dtype=raw_quantiles.dtype
-                )
-            )
-        if "raw_quantiles" in output_type:
-            results["raw_quantiles"] = raw_quantiles
-
-        if len(output_type) == 1:
-            return results[output_type[0]]
-
-        return results
