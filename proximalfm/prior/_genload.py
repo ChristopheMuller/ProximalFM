@@ -12,14 +12,6 @@ This module provides two main classes:
 The data is saved in a sparse format to reduce storage requirements and loaded
 on demand during training. The module supports distributed training by allowing
 different processes to load different batches in a coordinated way.
-
-The saved data includes:
-- X: Input features in sparse format or nested tensor (for variable-length sequences)
-- y: Target labels as regular tensor or nested tensor (for variable-length sequences)
-- d: Number of features per dataset
-- seq_lens: Sequence length for each dataset
-- train_sizes: Position at which to split training and evaluation data
-- batch_size: Number of datasets in the batch
 """
 
 from __future__ import annotations
@@ -520,9 +512,14 @@ class SavePriorDataset:
         self.prior = PriorDataset(
             batch_size=self.args.batch_size,
             batch_size_per_gp=self.args.batch_size_per_gp,
-            min_features=self.args.min_features,
-            max_features=self.args.max_features,
-            max_classes=self.args.max_classes,
+            min_dim_U=self.args.min_dim_U,
+            max_dim_U=self.args.max_dim_U,
+            min_dim_W=self.args.min_dim_W,
+            max_dim_W=self.args.max_dim_W,
+            min_dim_Z=self.args.min_dim_Z,
+            max_dim_Z=self.args.max_dim_Z,
+            min_dim_X=self.args.min_dim_X,
+            max_dim_X=self.args.max_dim_X,
             min_seq_len=self.args.min_seq_len,
             max_seq_len=self.args.max_seq_len,
             log_seq_len=self.args.log_seq_len,
@@ -549,9 +546,14 @@ class SavePriorDataset:
             "max_seq_len": self.args.max_seq_len,
             "log_seq_len": self.args.log_seq_len,
             "seq_len_per_gp": self.args.seq_len_per_gp,
-            "min_features": self.args.min_features,
-            "max_features": self.args.max_features,
-            "max_classes": self.args.max_classes,
+            "min_dim_U": self.args.min_dim_U,
+            "max_dim_U": self.args.max_dim_U,
+            "min_dim_W": self.args.min_dim_W,
+            "max_dim_W": self.args.max_dim_W,
+            "min_dim_Z": self.args.min_dim_Z,
+            "max_dim_Z": self.args.max_dim_Z,
+            "min_dim_X": self.args.min_dim_X,
+            "max_dim_X": self.args.max_dim_X,
             "min_train_size": self.args.min_train_size,
             "max_train_size": self.args.max_train_size,
             "replay_small": self.args.replay_small,
@@ -559,43 +561,31 @@ class SavePriorDataset:
         with open(self.save_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
-    def save_batch_sparse(self, batch_idx, X, y, d, seq_lens, train_sizes):
+    def save_batch_sparse(
+        self, batch_idx, X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes
+    ):
         """Save batch data in sparse format for efficient storage.
 
         This method handles the conversion between dense and sparse tensor formats
         when appropriate and saves the batch data to a PyTorch file. It uses an atomic
         write pattern (writing to a temporary file and then renaming) to ensure data
         integrity even if the process is interrupted during saving.
-
-        Parameters
-        ----------
-        batch_idx : int
-            Index of the current batch used for file naming.
-
-        X : torch.Tensor
-            Input features tensor, either in dense format
-            ``[batch_size, seq_len, features]`` or in nested tensor format for
-            variable sequence lengths.
-
-        y : torch.Tensor
-            Target labels tensor.
-
-        d : torch.Tensor
-            Number of features for each dataset.
-
-        seq_lens : torch.Tensor
-            Sequence length for each dataset.
-
-        train_sizes : torch.Tensor
-            Position at which to split training and evaluation data.
         """
 
         if self.args.seq_len_per_gp:
-            # X and y are nested tensors and they are already sparse
-            B = len(d)
+            # Tensors are nested and already sparse
+            B = len(d_X)
         else:
-            B, T, H = X.shape
-            X = dense2sparse(X.view(-1, H), d.repeat_interleave(T), dtype=torch.float32)
+            B, T, _ = X.shape
+            X = dense2sparse(
+                X.view(-1, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
+            )
+            W = dense2sparse(
+                W.view(-1, W.shape[-1]), d_W.repeat_interleave(T), dtype=torch.float32
+            )
+            Z = dense2sparse(
+                Z.view(-1, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
+            )
 
         # Create temporary file first
         batch_file = self.save_dir / f"batch_{batch_idx:06d}.pt"
@@ -603,8 +593,15 @@ class SavePriorDataset:
         torch.save(
             {
                 "X": X,
-                "y": y,
-                "d": d,
+                "W": W,
+                "Z": Z,
+                "A": A,
+                "Y_obs": Y_obs,
+                "Y0": Y0,
+                "Y1": Y1,
+                "d_X": d_X,
+                "d_W": d_W,
+                "d_Z": d_Z,
                 "seq_lens": seq_lens,
                 "train_sizes": train_sizes,
                 "batch_size": B,
@@ -625,14 +622,43 @@ class SavePriorDataset:
             range(self.args.resume_from, self.args.resume_from + self.args.num_batches),
             desc="Generating batches",
         ):
-            X, y, d, seq_lens, train_sizes = self.prior.get_batch()
+            (
+                X,
+                W,
+                Z,
+                A,
+                Y_obs,
+                Y0,
+                Y1,
+                d_X,
+                d_W,
+                d_Z,
+                seq_lens,
+                train_sizes,
+            ) = self.prior.get_batch()
+
             # Move tensors to CPU before saving
-            X = X.cpu()
-            y = y.cpu()
-            d = d.cpu()
+            X, W, Z, A = X.cpu(), W.cpu(), Z.cpu(), A.cpu()
+            Y_obs, Y0, Y1 = Y_obs.cpu(), Y0.cpu(), Y1.cpu()
+            d_X, d_W, d_Z = d_X.cpu(), d_W.cpu(), d_Z.cpu()
             seq_lens = seq_lens.cpu()
             train_sizes = train_sizes.cpu()
-            self.save_batch_sparse(batch_idx, X, y, d, seq_lens, train_sizes)
+
+            self.save_batch_sparse(
+                batch_idx,
+                X,
+                W,
+                Z,
+                A,
+                Y_obs,
+                Y0,
+                Y1,
+                d_X,
+                d_W,
+                d_Z,
+                seq_lens,
+                train_sizes,
+            )
 
 
 if __name__ == "__main__":
@@ -678,13 +704,46 @@ if __name__ == "__main__":
         "--batch_size_per_gp", type=int, default=4, help="Batch size per group"
     )
     parser.add_argument(
-        "--min_features", type=int, default=2, help="Minimum number of features"
+        "--min_dim_U", type=int, default=3, help="Minimum dimensionality of latent U"
     )
     parser.add_argument(
-        "--max_features", type=int, default=100, help="Maximum number of features"
+        "--max_dim_U", type=int, default=10, help="Maximum dimensionality of latent U"
     )
     parser.add_argument(
-        "--max_classes", type=int, default=10, help="Maximum number of classes"
+        "--min_dim_W",
+        type=int,
+        default=3,
+        help="Minimum dimensionality of outcome proxy W",
+    )
+    parser.add_argument(
+        "--max_dim_W",
+        type=int,
+        default=10,
+        help="Maximum dimensionality of outcome proxy W",
+    )
+    parser.add_argument(
+        "--min_dim_Z",
+        type=int,
+        default=3,
+        help="Minimum dimensionality of treatment proxy Z",
+    )
+    parser.add_argument(
+        "--max_dim_Z",
+        type=int,
+        default=10,
+        help="Maximum dimensionality of treatment proxy Z",
+    )
+    parser.add_argument(
+        "--min_dim_X",
+        type=int,
+        default=5,
+        help="Minimum dimensionality of baseline covariates X",
+    )
+    parser.add_argument(
+        "--max_dim_X",
+        type=int,
+        default=20,
+        help="Maximum dimensionality of baseline covariates X",
     )
     parser.add_argument(
         "--min_seq_len", type=int, default=None, help="Minimum sequence length"
