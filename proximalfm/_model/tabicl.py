@@ -414,12 +414,10 @@ class TabICL(nn.Module):
         d_total = self._get_d_total(d_X, d_Z, d_W)
         representations = self.row_interactor(
             self.col_embedder(
-                X,
-                Z=X,
-                W=X,
-                A=torch.randint(
-                    0, 2, (X.shape[0], X.shape[1], 1), device=X.device
-                ).float(),
+                X=X,
+                Z=Z,
+                W=W,
+                A=A,
                 y_train=y_train,
                 d_X=d_X,
                 d_Z=d_Z,
