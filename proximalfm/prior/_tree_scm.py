@@ -207,85 +207,49 @@ class TreeSCM(nn.Module):
 
     def __init__(
         self,
-        seq_len: int = 1024,
-        num_features: int = 100,
-        num_outputs: int = 1,
-        is_causal: bool = True,
-        num_causes: int = 10,
-        y_is_effect: bool = True,
-        in_clique: bool = False,
-        sort_features: bool = True,
-        num_layers: int = 5,
+        in_dim: int,
+        num_outputs: int,
+        num_layers: int = 2,
         hidden_dim: int = 10,
         tree_model: str = "xgboost",
         max_depth_lambda: float = 0.5,
         n_estimators_lambda: float = 0.5,
-        sampling: str = "normal",
-        pre_sample_cause_stats: bool = False,
         noise_std: float = 0.01,
         pre_sample_noise_std: bool = False,
         device: str = "cpu",
-        **kwargs,
+        **kwargs: dict,
     ):
         super(TreeSCM, self).__init__()
-        # Tree models can be slow so we use less layers, smaller hidden dim, and non-causal mode
-        is_causal = False
-        num_layers = np.random.randint(1, 3)
-        hidden_dim = np.random.randint(3, 10)
 
-        # Data Generation Settings
-        self.seq_len = seq_len
-        self.num_features = num_features
+        self.in_dim = in_dim
         self.num_outputs = num_outputs
-        self.is_causal = is_causal
-        self.num_causes = num_causes
-        self.y_is_effect = y_is_effect
-        self.in_clique = in_clique
-        self.sort_features = sort_features
-        self.num_layers = num_layers
+
+        # Tree models are computationally heavy, so we keep layers and dims small by default.
+        # Overriding kwargs if necessary, but using the passed parameters as a base.
+        self.num_layers = max(1, num_layers)
         self.hidden_dim = hidden_dim
+
         self.tree_model = tree_model
         self.tree_depth_lambda = max_depth_lambda
         self.tree_n_estimators_lambda = n_estimators_lambda
-        self.sampling = sampling
-        self.pre_sample_cause_stats = pre_sample_cause_stats
         self.noise_std = noise_std
         self.pre_sample_noise_std = pre_sample_noise_std
         self.device = device
 
-        if self.is_causal:
-            # Ensure enough intermediate variables for sampling X and y
-            self.hidden_dim = max(
-                self.hidden_dim, self.num_outputs + 2 * self.num_features
-            )
+        # Build layers sequentially
+        layers = []
+
+        if self.num_layers == 1:
+            # If only 1 layer, it goes straight from input to output
+            layers.append(self.generate_layer_modules(is_output_layer=True))
         else:
-            # In non-causal mode, features are the causes
-            self.num_causes = self.num_features
+            # First layer outputs to hidden_dim
+            layers.append(self.generate_layer_modules(is_output_layer=False))
 
-        # Define the input sampler
-        self.xsampler = XSampler(
-            seq_len=self.seq_len,
-            num_features=self.num_causes,
-            pre_stats=self.pre_sample_cause_stats,
-            sampling=self.sampling,
-            device=self.device,
-        )
+            # Intermediate layers
+            for _ in range(self.num_layers - 2):
+                layers.append(self.generate_layer_modules(is_output_layer=False))
 
-        # Build layers
-        max_depth = 2 + int(np.random.exponential(1 / self.tree_depth_lambda))
-        n_estimators = 1 + int(np.random.exponential(1 / self.tree_n_estimators_lambda))
-        layers = [
-            TreeLayer(
-                tree_model=self.tree_model,
-                max_depth=min(max_depth, 4),
-                n_estimators=min(n_estimators, 4),
-                out_dim=self.hidden_dim,
-                device=self.device,
-            )
-        ]
-        for _ in range(self.num_layers - 1):
-            layers.append(self.generate_layer_modules())
-        if not self.is_causal:
             layers.append(self.generate_layer_modules(is_output_layer=True))
         self.layers = nn.Sequential(*layers).to(device)
 
@@ -316,89 +280,33 @@ class TreeSCM(nn.Module):
 
         return nn.Sequential(tree_layer, noise_layer)
 
-    def forward(self):
-        """Generates synthetic data by sampling input features and applying tree-based transformations."""
-        causes = self.xsampler.sample()  # (seq_len, num_causes)
-
-        # Generate outputs through MLP layers
-        outputs = [causes]
-        for layer in self.layers:
-            outputs.append(layer(outputs[-1]))
-        outputs = outputs[
-            2:
-        ]  # Start from 2 because the first layer is only linear without activation
-
-        # Handle outputs based on causality
-        X, y = self.handle_outputs(causes, outputs)
-
-        # Check for NaNs and handle them by setting to default values
-        if torch.any(torch.isnan(X)) or torch.any(torch.isnan(y)):
-            X[:] = 0.0
-            y[:] = -100.0
-
-        if self.num_outputs == 1:
-            y = y.squeeze(-1)
-
-        return X, y
-
-    def handle_outputs(self, causes, outputs):
-        """Handle outputs based on whether causal or not.
-
-        If causal, sample inputs and target from the graph.
-        If not causal, directly use causes as inputs and last output as target.
+    def forward(
+        self,
+        input: torch.Tensor,
+    ) -> torch.Tensor:
+        """Passes the input tensor through the tree-based mechanism block.
 
         Parameters
         ----------
-        causes : torch.Tensor
-            Causes of shape ``(seq_len, num_causes)``.
-
-        outputs : list of torch.Tensor
-            List of output tensors from tree layers.
+        input : torch.Tensor
+            Input tensor containing the concatenated parent variables.
+            Shape: (seq_len, in_dim)
 
         Returns
         -------
-        X : torch.Tensor
-            Input features of shape ``(seq_len, num_features)``.
-
-        y : torch.Tensor
-            Target of shape ``(seq_len, num_outputs)``.
+        torch.Tensor
+            The generated child variables.
+            Shape: (seq_len, num_outputs)
         """
-        if self.is_causal:
-            outputs_flat = torch.cat(outputs, dim=-1)
-            if self.in_clique:
-                # When in_clique=True, features and targets are sampled as a block, ensuring that
-                # selected variables may share dense dependencies.
-                start = random.randint(
-                    0, outputs_flat.shape[-1] - self.num_outputs - self.num_features
-                )
-                random_perm = start + torch.randperm(
-                    self.num_outputs + self.num_features, device=self.device
-                )
-            else:
-                # Otherwise, features and targets are randomly and independently selected
-                random_perm = torch.randperm(
-                    outputs_flat.shape[-1] - 1, device=self.device
-                )
+        out = input
 
-            indices_X = random_perm[
-                self.num_outputs : self.num_outputs + self.num_features
-            ]
-            if self.y_is_effect:
-                # If targets are effects, take last output dims
-                indices_y = list(range(-self.num_outputs, 0))
-            else:
-                # Otherwise, take from the beginning of the permuted list
-                indices_y = random_perm[: self.num_outputs]
+        # Simple sequential pass through the tree layers and noise
+        for layer in self.layers:
+            out = layer(out)
 
-            if self.sort_features:
-                indices_X, _ = torch.sort(indices_X)
+        # Check for NaNs (which can occasionally happen with extreme tree splits or noise)
+        # and handle them safely
+        if torch.any(torch.isnan(out)):
+            out = torch.nan_to_num(out, nan=0.0)
 
-            # Select input features and targets from outputs
-            X = outputs_flat[:, indices_X]
-            y = outputs_flat[:, indices_y]
-        else:
-            # In non-causal mode, use original causes and last layer output
-            X = causes
-            y = outputs[-1]
-
-        return X, y
+        return out

@@ -5,7 +5,7 @@ DEFAULT_FIXED_HP = {
     # SCMPrior
     "mix_probs": (0.7, 0.3),
     # TreeSCM
-    "tree_model": "xgboost",
+    "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
     # Reg2Cls
