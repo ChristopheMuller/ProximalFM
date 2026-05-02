@@ -21,11 +21,11 @@ from torch.distributed import init_process_group, destroy_process_group
 from tqdm import tqdm
 import wandb
 
-from tabicl._model.tabicl import TabICL
-from tabicl.prior._dataset import PriorDataset
-from tabicl.prior._genload import LoadPriorDataset
-from tabicl.train._optim import get_scheduler
-from tabicl.train._train_config import build_parser
+from proximalfm._model.tabicl import TabICL
+from proximalfm.prior._dataset import PriorDataset
+from proximalfm.prior._genload import LoadPriorDataset
+from proximalfm.train._optim import get_scheduler
+from proximalfm.train._train_config import build_parser
 
 warnings.filterwarnings(
     "ignore",

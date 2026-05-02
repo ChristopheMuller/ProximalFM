@@ -1,6 +1,6 @@
-"""CLI entry point: python -m tabicl.train"""
-from tabicl.train._train_config import build_parser
-from tabicl.train._run import Trainer
+"""CLI entry point: python -m proximalfm.train"""
+from proximalfm.train._train_config import build_parser
+from proximalfm.train._run import Trainer
 from torch.multiprocessing import set_start_method
 
 if __name__ == "__main__":

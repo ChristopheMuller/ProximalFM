@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from transformers import (
+from transformers import (  # uv pip install "transformers[torch]";  https://github.com/huggingface/transformers
     get_constant_schedule,
     get_linear_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
