@@ -1,3 +1,23 @@
+####
+# Changes vs TabICL:
+# - Regression Specialization: Excised all classification-specific logic,
+#   including hierarchical classification ('ClassNode'), grouping, and
+#   label encoding.
+# - Hardcoded Output Dimension: Replaced the dynamic 'out_dim' parameter
+#   with a fixed output size of 4, tailored for the mean and variance of Y0 and Y1.
+# - Unified Target Encoder: Standardized 'y_encoder' as 'nn.Linear(1, d_model)',
+#   removing the 'OneHotAndLinear' path previously used for classification.
+# - Inference Streamlining: Simplified '_predict_standard' and '_inference_forward'
+#   by removing 'softmax_temperature', 'return_logits', and multi-class
+#   slicing logic.
+# - Cleaned API: Removed 'max_classes' and 'out_dim' from the constructor,
+#   as the task type is now strictly continuous proximal learning.
+# - Caching Logic: Simplified 'forward_with_cache' and 'forward_with_repr_cache'
+#   to handle only regression outputs without verifying class counts or
+#   hierarchical depth.
+####
+
+
 from __future__ import annotations
 
 from typing import Optional, Union

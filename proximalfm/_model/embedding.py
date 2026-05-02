@@ -1,3 +1,32 @@
+####
+# Changes vs TabICL:
+# - Proximal Variable Support: Redesigned the module to accept and process
+#   four distinct variable groups: X (covariates), Z (treatment proxies),
+#   W (outcome proxies), and A (treatment).
+# - Role Embeddings: Added an nn.Embedding layer to assign unique role-specific
+#   tokens to each group, allowing the Set Transformer to distinguish
+#   between proxy types.
+# - Unified Concatenation: All variables (X, Z, W, A) are concatenated into a
+#   single sequence before being processed by the Set Transformer.
+# - Selective Masking: Implemented per-proxy-type masking (inv_X, inv_Z, etc.)
+#   to handle datasets where proxies have different feature counts.
+# - Target Specialization: Replaced the complex Mixed-Radix Ensemble and
+#   Classification logic with a simple Linear encoder, shifting focus
+#   strictly to regression/CATE estimation.
+# - Padding-Aware Sorting: Added logic to sort embeddings by validity (using
+#   torch.gather), ensuring that valid feature embeddings are packed at
+#   the front of the sequence for subsequent layers.
+# - Simplified Forward: Removed feature grouping logic (circular permutation)
+#   and KV caching support to streamline the proximal learning pipeline.
+####
+
+####
+# TODO:
+# - Add feature_group back?
+# - Add back the with_cache options for inference and forward.
+# - Verify the whole thing: why masking with -100, can't we do something closer to original code, ...
+####
+
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -11,14 +40,6 @@ from .layers import SkippableLinear
 from .encoders import SetTransformer
 from .inference import InferenceManager
 from .inference_config import MgrConfig, InferenceConfig
-
-
-####
-# TODO:
-# - Add feature_group back?
-# - Add back the with_cache options for inference and forward.
-# - Verify the whole thing: why masking with -100, can't we do something closer to original code, ...
-####
 
 
 class ColEmbedding(nn.Module):

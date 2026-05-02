@@ -1,3 +1,31 @@
+####
+# Changes vs TabICL:
+# - Proximal Input Protocol: Expanded 'forward', '_train_forward', and
+#   '_inference_forward' to accept the full causal quadruple: X (covariates),
+#   Z (treatment proxies), W (outcome proxies), and A (treatment).
+# - Causal Dimension Aggregation: Added '_get_d_total' to compute the unified
+#   feature count ($d_{total} = d_X + d_Z + d_W + 1$) required for
+#   position-aware row interactions.
+# - Target Task Simplification: Removed 'max_classes' and 'num_quantiles'
+#   logic, effectively deprecating the 'QuantileToDistribution' post-processing
+#   to focus on direct proximal learning.
+# - Parameter Pruning: Removed feature grouping configurations
+#   (col_feature_group, col_feature_group_size) from the top-level module
+#   to align with the new 'ColEmbedding' implementation.
+# - Deprecated Stat Methods: Excised 'predict_stats' and
+#   'predict_stats_with_cache', as the current iteration prioritizes raw
+#   proximal output over distribution-based regression stats.
+# - Interface Streamlining: Removed 'return_logits' and 'softmax_temperature'
+#   logic from inference calls, reflecting the shift from classification
+#   to continuous proximal estimation.
+####
+
+####
+# TODO:
+# - bring back forward with cache
+####
+
+
 from __future__ import annotations
 from typing import Optional, Union, Literal
 
@@ -8,12 +36,6 @@ from .interaction import RowInteraction
 from .learning import ICLearning
 from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
-
-
-####
-# TODO:
-# - bring back forward with cache
-####
 
 
 class TabICL(nn.Module):
