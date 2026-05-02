@@ -1,8 +1,8 @@
-"""CLI entry point: python -m tabicl.prior
+"""CLI entry point: python -m proximalfm.prior
 
 Generates synthetic prior datasets for TabICL training.
 """
 
 import runpy
 
-runpy.run_module("tabicl.prior._genload", run_name="__main__", alter_sys=True)
+runpy.run_module("proximalfm.prior._genload", run_name="__main__", alter_sys=True)
