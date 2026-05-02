@@ -1,3 +1,21 @@
+####
+# Changes vs TabICL:
+# - Functional Decoupling: Shifted from a standalone dataset generator to a modular
+#   feature-to-feature transformation block.
+# - Explicit Dimensions: Replaced implicit causal parameters (num_causes, num_features)
+#   with explicit 'in_dim' and 'num_outputs' to support directed graph components.
+# - Externalized Sampling: Removed the internal 'XSampler'; the module now receives
+#   parent variables as 'input' in the forward pass rather than sampling them internally.
+# - Removal of Causal Selection: Excised 'handle_outputs', 'in_clique', and feature
+#   sorting logic, as variable partitioning is now handled at the dataset level.
+# - Forward Pass Simplification: Replaced hidden-state slicing with a standard
+#   sequential pass, returning only the final layer's output.
+# - NaN Handling: Modernized error recovery using 'torch.nan_to_num' instead of
+#   manual tensor slicing and constant assignment.
+# - Layer Architecture: Refined the 'layers' sequence to consistently include an
+#   output projection layer regardless of the causal flag.
+####
+
 from __future__ import annotations
 
 import math

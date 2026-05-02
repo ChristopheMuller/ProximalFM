@@ -13,6 +13,26 @@ The main class is PriorDataset, which provides an iterable interface for generat
 an infinite stream of synthetic datasets with diverse characteristics.
 """
 
+####
+# Changes vs TabICL:
+# - Proximal DAG Structure: Implemented specific causal relationships (U -> X, W, Z, A, Y)
+#   to replace generic i.i.d. feature sampling.
+# - Feature Partitioning: Replaced 'max_features' with specific ranges for Latent U,
+#   Covariates X, Outcome Proxies W, and Treatment Proxies Z.
+# - Potential Outcomes: Added counterfactual generation for Y(0) and Y(1) via joint
+#   forward passes with intervened treatment values.
+# - Completeness Heuristic: Enforced dim(W) >= dim(U) and dim(Z) >= dim(U) during
+#   hyperparameter sampling to support proximal identification.
+# - Positivity Control: Introduced 'sample_A' with temperature scaling and epsilon
+#   clamping to ensure treatment overlap (P(A|X,U) > 0).
+# - Robust Padding: Replaced dynamic filtering with 'filter_constant_features_and_pad'
+#   to maintain fixed block sizes for X, W, and Z across datasets.
+# - Regression Alignment: Removed classification logic (Reg2Cls) and class-balance
+#   sanity checks to facilitate continuous CATE estimation.
+# - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
+#   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
+####
+
 
 #########
 # TODO:

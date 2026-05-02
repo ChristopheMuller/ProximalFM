@@ -14,6 +14,24 @@ on demand during training. The module supports distributed training by allowing
 different processes to load different batches in a coordinated way.
 """
 
+####
+# Changes vs TabICL:
+# - Schema Expansion: Updated both Loader and Saver to handle the full proximal
+#   feature set (X, W, Z, A) and target set (Y_obs, Y0, Y1).
+# - Multi-Proxy Buffer Management: Expanded the internal buffers in 'LoadPriorDataset'
+#   to track 12 distinct data streams instead of 5.
+# - Sparse/Dense Support for Proxies: Extended 'dense2sparse' and 'sparse2dense'
+#   operations to W and Z proxies, maintaining storage efficiency for the new dimensions.
+# - Metadata Granularity: Modified 'save_metadata' and the repr output to document
+#   independent dimension ranges for U, W, Z, and X.
+# - Nested Tensor Slicing: Updated 'SliceNestedTensor' and 'cat_slice_nested_tensors'
+#   to handle the additional proximal variables during batch accumulation.
+# - CLI Modernization: Replaced generic '--max_features' and '--max_classes'
+#   arguments with specific causal dimension flags (--min_dim_U, --max_dim_Z, etc.).
+# - Return Signature: Refactored 'get_batch' and 'next' to return the 12-tuple
+#   structure required for continuous proximal causal learning.
+####
+
 from __future__ import annotations
 
 import time

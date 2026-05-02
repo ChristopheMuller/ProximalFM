@@ -1,3 +1,28 @@
+####
+# Changes vs TabICL:
+# - Modular Transformation: Converted from a standalone dataset generator into a
+#   reusable DAG component that maps parent nodes to child nodes.
+# - Externalized Input: Removed internal 'XSampler' and 'handle_outputs' logic; the
+#   module now processes an explicit 'input' tensor in the forward pass.
+# - Parameter Flexibility: Removed the hardcoded overrides for 'is_causal',
+#   'num_layers', and 'hidden_dim', allowing these to be controlled via the
+#   global SCMPrior configuration.
+# - Dimension Refactoring: Replaced implicit causal selection parameters with
+#   explicit 'in_dim' and 'num_outputs' to align with the proximal DAG structure.
+# - API Alignment: Renamed lambda parameters (e.g., 'max_depth_lambda') to match
+#   the updated naming convention in the hyperparameter sampler.
+# - Error Handling: Switched to 'torch.nan_to_num' for cleaner and more efficient
+#   recovery from tree-induced numerical instabilities.
+# - Sequential Logic: Streamlined the forward pass to a standard sequential flow,
+#   removing intermediate state tracking and causal indexing.
+####
+
+#####
+# TODO:
+# - cpu to gpu transfer: can be improved?
+# - XGB does not work -> crashes
+#####
+
 from __future__ import annotations
 
 import random
