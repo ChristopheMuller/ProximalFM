@@ -330,6 +330,11 @@ class ColEmbedding(nn.Module):
         train_size = y_train.shape[1]
         B = X.shape[0]
 
+        X, Z, W, A = X.float(), Z.float(), W.float(), A.float()
+
+        if A.dim() == 2:
+            A = A.unsqueeze(-1)
+
         # 1. Pad X to reserve space for the CLS tokens
         if self.reserve_cls_tokens > 0:
             X = F.pad(X, (self.reserve_cls_tokens, 0), value=-100.0)

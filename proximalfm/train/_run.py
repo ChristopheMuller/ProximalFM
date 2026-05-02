@@ -173,23 +173,28 @@ class Trainer:
         """Build and initialize the TabICL model."""
 
         self.model_config = {
-            "max_classes": self.config.max_classes,
             "embed_dim": self.config.embed_dim,
             "col_num_blocks": self.config.col_num_blocks,
             "col_nhead": self.config.col_nhead,
             "col_num_inds": self.config.col_num_inds,
+            "col_affine": self.config.col_affine,
+            "col_target_aware": self.config.col_target_aware,
+            "col_ssmax": self.config.col_ssmax,
             "row_num_blocks": self.config.row_num_blocks,
             "row_nhead": self.config.row_nhead,
             "row_num_cls": self.config.row_num_cls,
             "row_rope_base": self.config.row_rope_base,
+            "row_rope_interleaved": self.config.row_rope_interleaved,
             "icl_num_blocks": self.config.icl_num_blocks,
             "icl_nhead": self.config.icl_nhead,
+            "icl_ssmax": self.config.icl_ssmax,
             "ff_factor": self.config.ff_factor,
             "dropout": self.config.dropout,
             "activation": self.config.activation,
             "norm_first": self.config.norm_first,
+            "bias_free_ln": self.config.bias_free_ln,
+            "recompute": self.config.recompute,
         }
-
         model = TabICL(**self.model_config)
         model.to(device=self.config.device)
 
@@ -230,16 +235,19 @@ class Trainer:
             self.raw_model = model
 
     def configure_prior(self):
-        """Set up a tabular dataset generator for synthetic data during training."""
-
+        """Set up a tabular dataset generator for proximal synthetic data."""
         if self.config.prior_dir is None:
-            # Generate prior data on the fly
             dataset = PriorDataset(
                 batch_size=self.config.batch_size,
                 batch_size_per_gp=self.config.batch_size_per_gp,
-                min_features=self.config.min_features,
-                max_features=self.config.max_features,
-                max_classes=self.config.max_classes,
+                min_dim_U=self.config.min_dim_U,
+                max_dim_U=self.config.max_dim_U,
+                min_dim_W=self.config.min_dim_W,
+                max_dim_W=self.config.max_dim_W,
+                min_dim_Z=self.config.min_dim_Z,
+                max_dim_Z=self.config.max_dim_Z,
+                min_dim_X=self.config.min_dim_X,
+                max_dim_X=self.config.max_dim_X,
                 min_seq_len=self.config.min_seq_len,
                 max_seq_len=self.config.max_seq_len,
                 log_seq_len=self.config.log_seq_len,
@@ -537,7 +545,20 @@ class Trainer:
 
         return seq_len, train_size
 
-    def align_micro_batch(self, micro_X, micro_y, micro_d, seq_len):
+    def align_micro_batch(
+        self,
+        micro_X,
+        micro_W,
+        micro_Z,
+        micro_A,
+        micro_Y_obs,
+        micro_Y0,
+        micro_Y1,
+        micro_d_X,
+        micro_d_W,
+        micro_d_Z,
+        seq_len,
+    ):
         """Truncate micro batch tensors to required dimensions.
 
         Truncates sequence length and feature dimensions to the validated `seq_len`
@@ -569,16 +590,27 @@ class Trainer:
         # Truncate sequence length
         if micro_X.shape[1] > seq_len:
             micro_X = micro_X[:, :seq_len]
+            micro_W = micro_W[:, :seq_len]
+            micro_Z = micro_Z[:, :seq_len]
+            micro_A = micro_A[:, :seq_len]
+            micro_Y_obs = micro_Y_obs[:, :seq_len]
+            micro_Y0 = micro_Y0[:, :seq_len]
+            micro_Y1 = micro_Y1[:, :seq_len]
 
-        if micro_y.shape[1] > seq_len:
-            micro_y = micro_y[:, :seq_len]
+        # Truncate feature dimensions
+        max_X = micro_d_X.max().item()
+        if micro_X.shape[-1] > max_X:
+            micro_X = micro_X[..., :max_X]
 
-        # Truncate feature dimension
-        max_features = micro_d.max().item()
-        if micro_X.shape[-1] > max_features:
-            micro_X = micro_X[..., :max_features]
+        max_W = micro_d_W.max().item()
+        if micro_W.shape[-1] > max_W:
+            micro_W = micro_W[..., :max_W]
 
-        return micro_X, micro_y
+        max_Z = micro_d_Z.max().item()
+        if micro_Z.shape[-1] > max_Z:
+            micro_Z = micro_Z[..., :max_Z]
+
+        return micro_X, micro_W, micro_Z, micro_A, micro_Y_obs, micro_Y0, micro_Y1
 
     def run_micro_batch(self, micro_batch, micro_batch_idx, num_micro_batches):
         """Process a micro batch for gradient accumulation.
@@ -600,39 +632,109 @@ class Trainer:
         dict
             Result dictionary with 'ce' and 'accuracy' keys.
         """
-        micro_X, micro_y, micro_d, micro_seq_len, micro_train_size = micro_batch
+        # Unpack the 12 items
+        (
+            micro_X,
+            micro_W,
+            micro_Z,
+            micro_A,
+            micro_Y_obs,
+            micro_Y0,
+            micro_Y1,
+            micro_d_X,
+            micro_d_W,
+            micro_d_Z,
+            micro_seq_len,
+            micro_train_size,
+        ) = micro_batch
+
         seq_len, train_size = self.validate_micro_batch(micro_seq_len, micro_train_size)
-        micro_X, micro_y = self.align_micro_batch(micro_X, micro_y, micro_d, seq_len)
+
+        (
+            micro_X,
+            micro_W,
+            micro_Z,
+            micro_A,
+            micro_Y_obs,
+            micro_Y0,
+            micro_Y1,
+        ) = self.align_micro_batch(
+            micro_X,
+            micro_W,
+            micro_Z,
+            micro_A,
+            micro_Y_obs,
+            micro_Y0,
+            micro_Y1,
+            micro_d_X,
+            micro_d_W,
+            micro_d_Z,
+            seq_len,
+        )
 
         # Move to device
         micro_X = micro_X.to(self.config.device)
-        micro_y = micro_y.to(self.config.device)
-        micro_d = micro_d.to(self.config.device)
+        micro_W = micro_W.to(self.config.device)
+        micro_Z = micro_Z.to(self.config.device)
+        micro_A = micro_A.to(self.config.device)
+        micro_Y_obs = micro_Y_obs.to(self.config.device)
+        micro_Y0 = micro_Y0.to(self.config.device)
+        micro_Y1 = micro_Y1.to(self.config.device)
+        micro_d_X = micro_d_X.to(self.config.device)
+        micro_d_W = micro_d_W.to(self.config.device)
+        micro_d_Z = micro_d_Z.to(self.config.device)
 
-        y_train = micro_y[:, :train_size]
-        y_test = micro_y[:, train_size:]
+        y_train_obs = micro_Y_obs[:, :train_size]
 
-        # Set DDP gradient sync for last micro batch only
+        # Test targets for loss
+        y_test_0 = micro_Y0[:, train_size:]
+        y_test_1 = micro_Y1[:, train_size:]
+        true_cate = y_test_1 - y_test_0
+
         if self.ddp:
             self.model.require_backward_grad_sync = (
                 micro_batch_idx == num_micro_batches - 1
             )
 
         with self.amp_ctx:
-            pred = self.model(micro_X, y_train, micro_d)  # (B, test_size, max_classes)
-            pred = pred.flatten(end_dim=-2)
-            true = y_test.long().flatten()
-            loss = F.cross_entropy(pred, true)
+            # Model predicts (B, test_size, 4)
+            pred = self.model(
+                micro_X,
+                micro_Z,
+                micro_W,
+                micro_A,
+                y_train_obs,
+                micro_d_X,
+                micro_d_Z,
+                micro_d_W,
+            )
 
-        # Scale loss for gradient accumulation and backpropagate
-        scaled_loss = loss / num_micro_batches
+            pred_Y0_mean = pred[..., 0]
+            pred_Y0_logvar = pred[..., 1]
+            pred_Y1_mean = pred[..., 2]
+            pred_Y1_logvar = pred[..., 3]
+            pred_CATE_mean = pred_Y1_mean - pred_Y0_mean
+
+            loss_y0 = F.gaussian_nll_loss(
+                pred_Y0_mean, y_test_0, torch.exp(pred_Y0_logvar)
+            )
+            loss_y1 = F.gaussian_nll_loss(
+                pred_Y1_mean, y_test_1, torch.exp(pred_Y1_logvar)
+            )
+            loss_cate = F.mse_loss(pred_CATE_mean, true_cate)
+
+            total_loss = loss_y0 + loss_y1 + loss_cate
+
+        scaled_loss = total_loss / num_micro_batches
         self.scaler.scale(scaled_loss).backward()
 
         with torch.no_grad():
-            micro_results = {}
-            micro_results["ce"] = scaled_loss.item()
-            accuracy = (pred.argmax(dim=1) == true).sum() / len(true)
-            micro_results["accuracy"] = accuracy.item() / num_micro_batches
+            micro_results = {
+                "loss_total": scaled_loss.item(),
+                "mse_cate": (loss_cate.item() / num_micro_batches),
+                "nll_y0": (loss_y0.item() / num_micro_batches),
+                "nll_y1": (loss_y1.item() / num_micro_batches),
+            }
 
         return micro_results
 
@@ -675,7 +777,7 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {"ce": 0.0, "accuracy": 0.0}
+        results = {"loss_total": 0.0, "mse_cate": 0.0, "nll_y0": 0.0, "nll_y1": 0.0}
         failed_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):

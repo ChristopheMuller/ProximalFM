@@ -1,4 +1,4 @@
-"""Define argument parser for TabICL training."""
+"""Define argument parser for Proximal TabICL training."""
 
 import argparse
 
@@ -22,7 +22,7 @@ def train_size_type(value):
 
 
 def build_parser():
-    """Build an argument parser with all TabICL training arguments.
+    """Build an argument parser with all Proximal TabICL training arguments.
 
     Returns
     -------
@@ -39,7 +39,7 @@ def build_parser():
         "--wandb_log", default=False, type=str2bool, help="Log results using wandb"
     )
     parser.add_argument(
-        "--wandb_project", type=str, default="TabICL", help="Wandb project name"
+        "--wandb_project", type=str, default="ProximalFM", help="Wandb project name"
     )
     parser.add_argument("--wandb_name", type=str, default=None, help="Wandb run name")
     parser.add_argument("--wandb_id", type=str, default=None, help="Wandb run ID")
@@ -58,7 +58,7 @@ def build_parser():
     ###########################################################################
     parser.add_argument(
         "--device",
-        default="cuda",
+        default="mps",
         type=str,
         help="Device for training: cpu, cuda, cuda:0",
     )
@@ -142,7 +142,9 @@ def build_parser():
         help="Power factor for polynomial decay scheduler",
     )
 
-    # Prior Dataset Config
+    ###########################################################################
+    ###### Prior Dataset Config ###############################################
+    ###########################################################################
     parser.add_argument(
         "--prior_dir",
         type=str,
@@ -164,15 +166,58 @@ def build_parser():
     parser.add_argument(
         "--batch_size_per_gp", type=int, default=4, help="Batch size per group"
     )
+
+    # Proximal Causal Dimensions
     parser.add_argument(
-        "--min_features", type=int, default=5, help="The minimum number of features"
+        "--min_dim_U",
+        type=int,
+        default=3,
+        help="Minimum dimensionality of latent confounder U",
     )
     parser.add_argument(
-        "--max_features", type=int, default=100, help="The maximum number of features"
+        "--max_dim_U",
+        type=int,
+        default=10,
+        help="Maximum dimensionality of latent confounder U",
     )
     parser.add_argument(
-        "--max_classes", type=int, default=10, help="The maximum number of classes"
+        "--min_dim_W",
+        type=int,
+        default=3,
+        help="Minimum dimensionality of outcome proxy W",
     )
+    parser.add_argument(
+        "--max_dim_W",
+        type=int,
+        default=10,
+        help="Maximum dimensionality of outcome proxy W",
+    )
+    parser.add_argument(
+        "--min_dim_Z",
+        type=int,
+        default=3,
+        help="Minimum dimensionality of treatment proxy Z",
+    )
+    parser.add_argument(
+        "--max_dim_Z",
+        type=int,
+        default=10,
+        help="Maximum dimensionality of treatment proxy Z",
+    )
+    parser.add_argument(
+        "--min_dim_X",
+        type=int,
+        default=5,
+        help="Minimum dimensionality of baseline covariates X",
+    )
+    parser.add_argument(
+        "--max_dim_X",
+        type=int,
+        default=20,
+        help="Maximum dimensionality of baseline covariates X",
+    )
+
+    # Sequence Length and Split
     parser.add_argument(
         "--min_seq_len", type=int, default=None, help="Minimum samples per dataset"
     )
@@ -238,10 +283,42 @@ def build_parser():
         help="If True, compile the model using torch.compile for speedup",
     )
 
-    # Column Embedding Config
+    # Shared Architecture Config
     parser.add_argument(
         "--embed_dim", type=int, default=128, help="Base embedding dimension"
     )
+    parser.add_argument(
+        "--ff_factor",
+        type=int,
+        default=2,
+        help="Expansion factor for feedforward dimensions",
+    )
+    parser.add_argument(
+        "--dropout", type=float, default=0.0, help="Dropout probability"
+    )
+    parser.add_argument(
+        "--activation", type=str, default="gelu", help="Activation function type"
+    )
+    parser.add_argument(
+        "--norm_first",
+        default=True,
+        type=str2bool,
+        help="If True, use pre-norm transformer architecture",
+    )
+    parser.add_argument(
+        "--bias_free_ln",
+        default=False,
+        type=str2bool,
+        help="If True, removes bias from all LayerNorm layers",
+    )
+    parser.add_argument(
+        "--recompute",
+        default=False,
+        type=str2bool,
+        help="If True, uses gradient checkpointing to save memory",
+    )
+
+    # Column Embedding Config
     parser.add_argument(
         "--col_num_blocks",
         type=int,
@@ -259,6 +336,24 @@ def build_parser():
         type=int,
         default=128,
         help="Number of inducing points in column embedder",
+    )
+    parser.add_argument(
+        "--col_affine",
+        default=False,
+        type=str2bool,
+        help="If True, computes column embeddings as an affine transformation",
+    )
+    parser.add_argument(
+        "--col_target_aware",
+        default=True,
+        type=str2bool,
+        help="If True, incorporates target information into column-wise embeddings",
+    )
+    parser.add_argument(
+        "--col_ssmax",
+        type=str,
+        default="qassmax-mlp-elementwise",
+        help="Type of scalable softmax to use in the column embedding transformer",
     )
     parser.add_argument(
         "--freeze_col",
@@ -293,6 +388,12 @@ def build_parser():
         help="RoPE base value for row interactor",
     )
     parser.add_argument(
+        "--row_rope_interleaved",
+        default=False,
+        type=str2bool,
+        help="If True, uses interleaved rotation for RoPE",
+    )
+    parser.add_argument(
         "--freeze_row",
         default=False,
         type=str2bool,
@@ -313,30 +414,16 @@ def build_parser():
         help="Number of attention heads in ICL predictor",
     )
     parser.add_argument(
+        "--icl_ssmax",
+        type=str,
+        default="qassmax-mlp-elementwise",
+        help="Type of scalable softmax to use in the in-context learning transformer",
+    )
+    parser.add_argument(
         "--freeze_icl",
         default=False,
         type=str2bool,
         help="Whether to freeze the ICL predictor",
-    )
-
-    # Shared Architecture Config
-    parser.add_argument(
-        "--ff_factor",
-        type=int,
-        default=2,
-        help="Expansion factor for feedforward dimensions",
-    )
-    parser.add_argument(
-        "--dropout", type=float, default=0.0, help="Dropout probability"
-    )
-    parser.add_argument(
-        "--activation", type=str, default="gelu", help="Activation function type"
-    )
-    parser.add_argument(
-        "--norm_first",
-        default=True,
-        type=str2bool,
-        help="If True, use pre-norm transformer architecture",
     )
 
     ###########################################################################
