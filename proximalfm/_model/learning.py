@@ -89,6 +89,7 @@ class ICLearning(nn.Module):
         bias_free_ln: bool = False,
         ssmax: Union[bool, str] = False,
         recompute: bool = False,
+        out_dim: int = 999,
     ):
         super().__init__()
 
@@ -111,11 +112,10 @@ class ICLearning(nn.Module):
 
         self.y_encoder = nn.Linear(1, d_model)
 
-        # FORCE out_dim to dimension 4 (mean + log-var of two potential outcomes)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, 4)
+            nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, out_dim)
         )
-        self.inference_mgr = InferenceManager(enc_name="tf_icl", out_dim=4)
+        self.inference_mgr = InferenceManager(enc_name="tf_icl", out_dim=out_dim)
 
     def _icl_predictions(self, R: Tensor, y_train: Tensor) -> Tensor:
         """In-context learning predictions.

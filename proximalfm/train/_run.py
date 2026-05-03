@@ -34,6 +34,41 @@ warnings.filterwarnings(
 )
 
 
+def compute_hl_gauss_loss(
+    logits: torch.Tensor,
+    y_target: torch.Tensor,
+    bin_centers: torch.Tensor,
+    bin_width: torch.Tensor,
+    sigma: float,
+) -> torch.Tensor:
+    """
+    Computes the Histogram Loss with Gaussian Smoothing.
+    logits: (B, T, nbins)
+    y_target: (B, T)
+    """
+    # Expand target for broadcasting: (B, T, 1)
+    y_target_expanded = y_target.unsqueeze(-1)
+
+    def normal_cdf(x, mean, std):
+        return 0.5 * (1.0 + torch.erf((x - mean) / (math.sqrt(2) * std)))
+
+    lower_edges = bin_centers - 0.5 * bin_width
+    upper_edges = bin_centers + 0.5 * bin_width
+
+    # Compute soft probabilities across bins
+    cdf_upper = normal_cdf(upper_edges, y_target_expanded, sigma)
+    cdf_lower = normal_cdf(lower_edges, y_target_expanded, sigma)
+
+    p = cdf_upper - cdf_lower
+    p = p / (p.sum(dim=-1, keepdim=True) + 1e-8)  # Renormalize
+
+    # Cross-entropy
+    log_probs = F.log_softmax(logits, dim=-1)
+    ce_loss = -torch.sum(p * log_probs, dim=-1).mean()
+
+    return ce_loss
+
+
 class Timer:
     """Context manager for timing code execution."""
 
@@ -685,6 +720,9 @@ class Trainer:
 
         y_train_obs = micro_Y_obs[:, :train_size]
 
+        # Squeeze A down to (B, T) to match y_train_obs
+        A_train = micro_A[:, :train_size].squeeze(-1)
+
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
         y_test_1 = micro_Y1[:, train_size:]
@@ -696,43 +734,83 @@ class Trainer:
             )
 
         with self.amp_ctx:
-            # Model predicts (B, test_size, 4)
-            pred = self.model(
+            # 1. Get shift/scale from the context
+            (
+                y0_shift,
+                y0_scale,
+                y1_shift,
+                y1_scale,
+            ) = self.raw_model._get_y0_y1_shift_scale(y_train_obs, A_train)
+
+            # 2. Standardize Context Y BEFORE feeding it to the model
+            y_train_obs_std = torch.where(
+                A_train == 1,
+                (y_train_obs - y1_shift) / y1_scale,
+                (y_train_obs - y0_shift) / y0_scale,
+            )
+
+            # 3. Model predicts logits of shape (B, test_size, nbins * 2)
+            pred_logits = self.model(
                 micro_X,
                 micro_Z,
                 micro_W,
                 micro_A,
-                y_train_obs,
+                y_train_obs_std,
                 micro_d_X,
                 micro_d_Z,
                 micro_d_W,
             )
 
-            pred_Y0_mean = pred[..., 0]
-            pred_Y0_logvar = pred[..., 1]
-            pred_Y1_mean = pred[..., 2]
-            pred_Y1_logvar = pred[..., 3]
-            pred_CATE_mean = pred_Y1_mean - pred_Y0_mean
+            nbins = self.raw_model.nbins
+            logits_y0 = pred_logits[..., :nbins]
+            logits_y1 = pred_logits[..., nbins:]
 
-            loss_y0 = F.gaussian_nll_loss(
-                pred_Y0_mean, y_test_0, torch.exp(pred_Y0_logvar)
-            )
-            loss_y1 = F.gaussian_nll_loss(
-                pred_Y1_mean, y_test_1, torch.exp(pred_Y1_logvar)
-            )
-            loss_cate = F.mse_loss(pred_CATE_mean, true_cate)
+            # 4. Standardize Ground Truth targets using context statistics
+            y_test_0_std = (y_test_0 - y0_shift) / y0_scale
+            y_test_1_std = (y_test_1 - y1_shift) / y1_scale
 
-            total_loss = loss_y0 + loss_y1 + loss_cate
+            # 5. Compute HL-Gauss Loss for BOTH potential outcomes
+            loss_y0 = compute_hl_gauss_loss(
+                logits_y0,
+                y_test_0_std,
+                self.raw_model.bin_centers,
+                self.raw_model.bin_width,
+                self.raw_model.sigma,
+            )
+            loss_y1 = compute_hl_gauss_loss(
+                logits_y1,
+                y_test_1_std,
+                self.raw_model.bin_centers,
+                self.raw_model.bin_width,
+                self.raw_model.sigma,
+            )
+
+            total_loss = loss_y0 + loss_y1
 
         scaled_loss = total_loss / num_micro_batches
         self.scaler.scale(scaled_loss).backward()
 
+        # 6. Calculate Mean Squared Error of the CATE for WandB tracking (No Gradients)
         with torch.no_grad():
+            probs_y0 = F.softmax(logits_y0, dim=-1)
+            probs_y1 = F.softmax(logits_y1, dim=-1)
+
+            # Expected value in standardized space
+            mean_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
+            mean_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
+
+            # Unstandardize back to reality
+            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
+            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
+
+            pred_cate = pred_y1 - pred_y0
+            mse_cate = F.mse_loss(pred_cate, true_cate)
+
             micro_results = {
                 "loss_total": scaled_loss.item(),
-                "mse_cate": (loss_cate.item() / num_micro_batches),
-                "nll_y0": (loss_y0.item() / num_micro_batches),
-                "nll_y1": (loss_y1.item() / num_micro_batches),
+                "mse_cate": (mse_cate.item() / num_micro_batches),
+                "loss_y0": (loss_y0.item() / num_micro_batches),
+                "loss_y1": (loss_y1.item() / num_micro_batches),
             }
 
         return micro_results
@@ -776,7 +854,7 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {"loss_total": 0.0, "mse_cate": 0.0, "nll_y0": 0.0, "nll_y1": 0.0}
+        results = {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
         failed_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):

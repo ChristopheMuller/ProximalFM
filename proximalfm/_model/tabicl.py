@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Optional, Union, Literal
 
 from torch import nn, Tensor
+import torch
 
 from .embedding import ColEmbedding
 from .interaction import RowInteraction
@@ -166,6 +167,11 @@ class TabICL(nn.Module):
 
     def __init__(
         self,
+        nbins: int = 1000,
+        vmin: float = -10.0,
+        vmax: float = 10.0,
+        joint_quantiles: bool = False,
+        sigma: float = 0.5,
         embed_dim: int = 128,
         col_num_blocks: int = 3,
         col_nhead: int = 8,
@@ -209,6 +215,12 @@ class TabICL(nn.Module):
     ):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
+
+        self.nbins = nbins
+        self.vmin = vmin
+        self.vmax = vmax
+        self.joint_quantiles = joint_quantiles
+        self.sigma = sigma  # used in the loss function, not here.
 
         self.embed_dim = embed_dim
         self.col_num_blocks = col_num_blocks
@@ -260,6 +272,14 @@ class TabICL(nn.Module):
             recompute=recompute,
         )
 
+        bin_edges = torch.linspace(vmin, vmax, nbins + 1)
+        bin_width = bin_edges[1] - bin_edges[0]
+        bin_centers = bin_edges[:-1] + 0.5 * bin_width
+
+        self.register_buffer("bin_edges", bin_edges)
+        self.register_buffer("bin_width", bin_width)
+        self.register_buffer("bin_centers", bin_centers)
+
         self.icl_predictor = ICLearning(
             d_model=icl_dim,
             num_blocks=icl_num_blocks,
@@ -271,6 +291,7 @@ class TabICL(nn.Module):
             bias_free_ln=bias_free_ln,
             ssmax=icl_ssmax,
             recompute=recompute,
+            out_dim=nbins * 2,
         )
 
         # KV cache for efficient inference
@@ -289,6 +310,66 @@ class TabICL(nn.Module):
         if d_X is not None and d_Z is not None and d_W is not None:
             return d_X + d_Z + d_W + 1  # RowInteraction adds num_cls itself
         return None
+
+    def _get_y0_y1_shift_scale(self, y_context: Tensor, A_context: Tensor):
+        """Calculates standardization stats separately for treated and control."""
+        # Ensure A is squeezed to (B, train_size) to match y_context
+        if A_context.dim() > 2:
+            A_context = A_context.squeeze()
+
+        # 1. Compute joint stats for all batches (used as fallback or if strictly enforced)
+        joint_mean = y_context.mean(dim=1, keepdim=True)
+        # unbiased=False matches the manual N-division variance calculation below
+        joint_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
+
+        # If explicitly forced to use joint quantiles for ALL batches
+        if getattr(self, "joint_quantiles", False):
+            return joint_mean, joint_std, joint_mean, joint_std
+
+        # 2. Compute separate stats
+        treated_mask = (A_context == 1).float()
+        control_mask = (A_context == 0).float()
+
+        treated_counts = treated_mask.sum(dim=1, keepdim=True)
+        control_counts = control_mask.sum(dim=1, keepdim=True)
+
+        # 3. Create a fallback mask: True if EITHER group has fewer than 5 samples in that specific episode
+        fallback_mask = (treated_counts < 5) | (control_counts < 5)
+
+        # Clamp counts to avoid division by zero during the manual calculation
+        safe_treated_counts = treated_counts.clamp(min=1.0)
+        safe_control_counts = control_counts.clamp(min=1.0)
+
+        y1_mean = (y_context * treated_mask).sum(
+            dim=1, keepdim=True
+        ) / safe_treated_counts
+        y0_mean = (y_context * control_mask).sum(
+            dim=1, keepdim=True
+        ) / safe_control_counts
+
+        y1_std = (
+            torch.sqrt(
+                ((y_context - y1_mean) ** 2 * treated_mask).sum(dim=1, keepdim=True)
+                / safe_treated_counts
+            )
+            + 1e-8
+        )
+        y0_std = (
+            torch.sqrt(
+                ((y_context - y0_mean) ** 2 * control_mask).sum(dim=1, keepdim=True)
+                / safe_control_counts
+            )
+            + 1e-8
+        )
+
+        # 4. Apply the fallback: Use joint stats if fallback_mask is True, else use separate stats
+        y0_shift = torch.where(fallback_mask, joint_mean, y0_mean)
+        y1_shift = torch.where(fallback_mask, joint_mean, y1_mean)
+
+        y0_scale = torch.where(fallback_mask, joint_std, y0_std)
+        y1_scale = torch.where(fallback_mask, joint_std, y1_std)
+
+        return y0_shift, y0_scale, y1_shift, y1_scale
 
     def _train_forward(
         self,

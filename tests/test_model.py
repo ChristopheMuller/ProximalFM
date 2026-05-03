@@ -31,6 +31,7 @@ def setup_model_and_data():
         row_num_cls=4,
         icl_num_blocks=1,
         icl_nhead=2,
+        nbins=100,
     )
 
     # Generate synthetic input tensors
@@ -64,8 +65,7 @@ def test_tabicl_training_mode(setup_model_and_data):
     out = model(*inputs)
 
     # Check shape: (Batch, Test_Size, Out_Dim)
-    # Note: Out_Dim is currently hardcoded to 4 in your ICLearning module
-    expected_shape = (B, test_size, 4)
+    expected_shape = (B, test_size, 200)
     assert (
         out.shape == expected_shape
     ), f"Training output shape mismatch. Expected {expected_shape}, got {out.shape}"
@@ -90,7 +90,7 @@ def test_tabicl_padding_logic(setup_model_and_data):
     model.train()
     out = model(X, Z, W, A, y_train, d_X=d_X_reduced, d_Z=d_Z_reduced, d_W=d_W_reduced)
 
-    expected_shape = (B, test_size, 4)
+    expected_shape = (B, test_size, 200)
     assert (
         out.shape == expected_shape
     ), "Model failed to handle reduced feature counts properly."
