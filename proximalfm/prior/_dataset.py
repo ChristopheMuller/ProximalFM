@@ -787,6 +787,8 @@ class SCMPrior(Prior):
                     self.max_dim_W,
                     self.max_dim_Z,
                 )
+            gp_max_W = max(gp_max_W, self.max_dim_U)
+            gp_max_Z = max(gp_max_Z, self.max_dim_U)
 
             num_subgps_in_gp = math.ceil(actual_gp_size / size_per_subgp)
 
@@ -828,15 +830,9 @@ class SCMPrior(Prior):
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
                         # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
-                        "max_dim_X": gp_max_X
-                        if self.seq_len_per_gp
-                        else self.max_dim_X,
-                        "max_dim_W": gp_max_W
-                        if self.seq_len_per_gp
-                        else self.max_dim_W,
-                        "max_dim_Z": gp_max_Z
-                        if self.seq_len_per_gp
-                        else self.max_dim_Z,
+                        "max_dim_X": gp_max_X,
+                        "max_dim_W": gp_max_W,
+                        "max_dim_Z": gp_max_Z,
                         **subgp_sampled_hp,
                         "prior_type": subgp_prior_type,
                         # Pass the exact active dimensions for this specific graph
