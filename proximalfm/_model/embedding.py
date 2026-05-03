@@ -18,6 +18,7 @@
 #   the front of the sequence for subsequent layers.
 # - Simplified Forward: Removed feature grouping logic (circular permutation)
 #   and KV caching support to streamline the proximal learning pipeline.
+# - make it always target-aware, instead of having it as a config option
 ####
 
 ####
@@ -98,11 +99,6 @@ class ColEmbedding(nn.Module):
         If True, computes embeddings as: :math:`\\text{features} \\times W + b`.
         If False, directly uses the set transformer output as embeddings.
 
-    target_aware : bool, default=False
-        If True, incorporates target information into embeddings during training.
-        The target values are embedded into the same embedding space and added to each feature's embeddings,
-        enabling the model to be aware of target information.
-
     reserve_cls_tokens : int, default=4
         Number of slots to reserve for CLS tokens to avoid concatenation.
 
@@ -142,7 +138,6 @@ class ColEmbedding(nn.Module):
         norm_first: bool = True,
         bias_free_ln: bool = False,
         affine: bool = True,
-        target_aware: bool = False,
         reserve_cls_tokens: int = 4,
         ssmax: Union[bool, str] = False,
         recompute: bool = False,
@@ -150,7 +145,6 @@ class ColEmbedding(nn.Module):
         super().__init__()
         self.embed_dim = embed_dim
         self.reserve_cls_tokens = reserve_cls_tokens
-        self.target_aware = target_aware
         self.affine = affine
 
         self.in_linear = SkippableLinear(1, embed_dim)
@@ -169,8 +163,8 @@ class ColEmbedding(nn.Module):
             recompute=recompute,
         )
 
-        if target_aware:
-            self.y_encoder = nn.Linear(1, embed_dim)
+        self.y0_encoder = nn.Linear(1, embed_dim)
+        self.y1_encoder = nn.Linear(1, embed_dim)
 
         if affine:
             self.out_w = SkippableLinear(embed_dim, embed_dim)
@@ -191,6 +185,21 @@ class ColEmbedding(nn.Module):
 
         # 4 Causal Roles: 0=X, 1=Z, 2=W, 3=A
         self.role_embedding = nn.Embedding(num_embeddings=4, embedding_dim=embed_dim)
+
+    def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
+        """
+        y expected shape: (B, train_size)
+        A expected shape: (B, train_size)
+        """
+        # Project to embeddings -> shape: (B, train_size, embed_dim)
+        y0_emb = self.y0_encoder(y.unsqueeze(-1))
+        y1_emb = self.y1_encoder(y.unsqueeze(-1))
+
+        # Unsqueeze A so shape is (B, train_size, 1) to broadcast across embed_dim
+        A_expanded = A.unsqueeze(-1)
+
+        y_emb = torch.where(A_expanded == 0, y0_emb, y1_emb)
+        return y_emb
 
     def _get_invalid_mask(
         self, max_len: int, lengths: Optional[Tensor], B: int, device: torch.device
@@ -234,16 +243,12 @@ class ColEmbedding(nn.Module):
         raw_features = torch.cat([X, Z, W, A], dim=1)
 
         # 3. Add target embeddings (y_train) to the context rows
-        if self.target_aware:
-            assert (
-                y_train is not None
-            ), "y_train must be provided when target_aware=True."
+        assert y_train is not None, "y_train must be provided."
 
-            # Project 1D target to embedding space, and unsqueeze to broadcast across features
-            y_emb = self.y_encoder(y_train.unsqueeze(-1)).unsqueeze(1)
-
-            # Add to the training portion of all features
-            src[..., :train_size, :] = src[..., :train_size, :] + y_emb
+        A_train = A[:, 0, :train_size, 0]
+        y_emb = self.y_encoder(y_train, A_train)
+        y_emb_broadcast = y_emb.unsqueeze(1)
+        src[..., :train_size, :] = src[..., :train_size, :] + y_emb_broadcast
 
         inv_mask_exp = inv_concat.unsqueeze(-1).unsqueeze(-1).expand_as(src)
         src[inv_mask_exp] = -100.0

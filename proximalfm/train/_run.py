@@ -178,7 +178,6 @@ class Trainer:
             "col_nhead": self.config.col_nhead,
             "col_num_inds": self.config.col_num_inds,
             "col_affine": self.config.col_affine,
-            "col_target_aware": self.config.col_target_aware,
             "col_ssmax": self.config.col_ssmax,
             "row_num_blocks": self.config.row_num_blocks,
             "row_nhead": self.config.row_nhead,

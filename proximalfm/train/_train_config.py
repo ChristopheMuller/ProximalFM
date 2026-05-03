@@ -344,12 +344,6 @@ def build_parser():
         help="If True, computes column embeddings as an affine transformation",
     )
     parser.add_argument(
-        "--col_target_aware",
-        default=True,
-        type=str2bool,
-        help="If True, incorporates target information into column-wise embeddings",
-    )
-    parser.add_argument(
         "--col_ssmax",
         type=str,
         default="qassmax-mlp-elementwise",

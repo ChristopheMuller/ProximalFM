@@ -95,9 +95,6 @@ class TabICL(nn.Module):
     col_feature_group_size : int, default=3
         Number of features per group when feature grouping is enabled.
 
-    col_target_aware : bool, default=True
-        If True, incorporates target information into column-wise embeddings.
-
     col_ssmax : bool or str, default="qassmax-mlp-elementwise"
         Type of scalable softmax to use in the column embedding transformer. Note that only the first
         attention layer of the induced self-attention blocks uses SSMax.
@@ -174,7 +171,6 @@ class TabICL(nn.Module):
         col_nhead: int = 8,
         col_num_inds: int = 128,
         col_affine: bool = False,
-        col_target_aware: bool = True,
         col_ssmax: Union[
             bool,
             Literal[
@@ -219,7 +215,6 @@ class TabICL(nn.Module):
         self.col_nhead = col_nhead
         self.col_num_inds = col_num_inds
         self.col_affine = col_affine
-        self.col_target_aware = col_target_aware
         self.col_ssmax = col_ssmax
         self.row_num_blocks = row_num_blocks
         self.row_nhead = row_nhead
@@ -245,7 +240,6 @@ class TabICL(nn.Module):
             norm_first=norm_first,
             bias_free_ln=bias_free_ln,
             affine=col_affine,
-            target_aware=col_target_aware,
             reserve_cls_tokens=row_num_cls,
             ssmax=col_ssmax,
             recompute=recompute,
