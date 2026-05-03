@@ -749,6 +749,9 @@ class Trainer:
                 y1_scale,
             ) = self.raw_model._get_y0_y1_shift_scale(y_train_obs, A_train)
 
+            y0_scale = torch.where(y0_scale < 1e-7, torch.ones_like(y0_scale), y0_scale)
+            y1_scale = torch.where(y1_scale < 1e-7, torch.ones_like(y1_scale), y1_scale)
+
             # 2. Standardize Context Y BEFORE feeding it to the model
             y_train_obs_std = torch.where(
                 A_train == 1,
