@@ -722,6 +722,13 @@ class Trainer:
 
         # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
+        n0 = (A_train == 0).sum(dim=1)  # (B,)
+        n1 = (A_train == 1).sum(dim=1)  # (B,)
+        if (n0 == 0).any() or (n1 == 0).any():
+            print(
+                f"[Step {self.curr_step}] Skipping micro-batch: degenerate treatment groups"
+            )
+            return {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
 
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
