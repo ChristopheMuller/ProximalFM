@@ -608,3 +608,138 @@ class TabICL(nn.Module):
             )
 
         return out
+
+    @torch.no_grad()
+    def predict(
+        self,
+        X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A: Tensor,
+        y_train: Tensor,
+        target: Literal["y0", "y1", "cate"] = "cate",
+        output_type: Literal["mean", "quantiles", "distribution"] = "mean",
+        quantiles: Optional[list[float]] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        inference_config: Optional[InferenceConfig] = None,
+    ) -> Union[Tensor, dict]:
+        """
+        Predicts potential outcomes or CATE given query features alongside context.
+        Handles both batched sequences and single instances.
+
+        Parameters
+        ----------
+        X, Z, W, A: Tensor
+            The full sequence tensors (context + queries). Shapes should be (B, T, D).
+        y_train: Tensor
+            The context labels of shape (B, train_size).
+        target: Literal["y0", "y1", "cate"]
+            The causal estimand to extract.
+        output_type: Literal["mean", "quantiles", "distribution"]
+            The type of prediction output.
+        quantiles: Optional[list[float]]
+            List of quantiles to evaluate if output_type="quantiles". Default is [0.1, 0.5, 0.9].
+
+        Returns
+        -------
+        Tensor or dict
+            Depends on output_type.
+        """
+        # Ensure evaluation mode
+        was_training = self.training
+        self.eval()
+
+        # 1. Forward pass to get logits for queries
+        # Output shape: (B, test_size, nbins * 2)
+        logits = self._inference_forward(
+            X=X,
+            Z=Z,
+            W=W,
+            A=A,
+            y_train=y_train,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            inference_config=inference_config,
+        )
+
+        train_size = y_train.shape[1]
+        A_context = A[:, :train_size]
+
+        # 2. Extract standardisation stats from context to map bins back to the original scale
+        y0_shift, y0_scale, y1_shift, y1_scale = self._get_y0_y1_shift_scale(
+            y_train, A_context
+        )
+
+        # Reshape to (B, 1, 1) for broadcasting over test_size and nbins
+        y0_shift, y0_scale = y0_shift.unsqueeze(-1), y0_scale.unsqueeze(-1)
+        y1_shift, y1_scale = y1_shift.unsqueeze(-1), y1_scale.unsqueeze(-1)
+
+        # 3. Separate logits and convert to probabilities
+        probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
+        probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
+
+        # 4. Un-standardize bin centers: (B, 1, nbins)
+        vals_y0 = self.bin_centers.view(1, 1, -1) * y0_scale + y0_shift
+        vals_y1 = self.bin_centers.view(1, 1, -1) * y1_scale + y1_shift
+
+        self.train(was_training)
+
+        # --- Helper: Mean ---
+        def _get_mean(probs, vals):
+            return torch.sum(probs * vals, dim=-1)
+
+        # --- Helper: Quantiles ---
+        def _get_quantiles(probs, vals, q_list):
+            cdf = torch.cumsum(probs, dim=-1)
+            results = []
+            for q in q_list:
+                # Find bin indices where CDF crosses the quantile threshold
+                idx = torch.searchsorted(cdf, q).clamp(max=self.nbins - 1)
+                q_vals = torch.gather(vals, -1, idx.unsqueeze(-1)).squeeze(-1)
+                results.append(q_vals)
+            return torch.stack(results, dim=-1)
+
+        # --- Output Routing ---
+        if output_type == "distribution":
+            if target == "y0":
+                return {"values": vals_y0, "weights": probs_y0}
+            elif target == "y1":
+                return {"values": vals_y1, "weights": probs_y1}
+            elif target == "cate":
+                return {
+                    "y0": {"values": vals_y0, "weights": probs_y0},
+                    "y1": {"values": vals_y1, "weights": probs_y1},
+                }
+
+        elif output_type == "mean":
+            mean_y0 = _get_mean(probs_y0, vals_y0)
+            mean_y1 = _get_mean(probs_y1, vals_y1)
+
+            if target == "y0":
+                return mean_y0
+            elif target == "y1":
+                return mean_y1
+            elif target == "cate":
+                return mean_y1 - mean_y0
+
+        elif output_type == "quantiles":
+            if quantiles is None:
+                quantiles = [0.1, 0.5, 0.9]
+
+            q_tensor = torch.tensor(quantiles, device=logits.device, dtype=logits.dtype)
+            q_y0 = _get_quantiles(probs_y0, vals_y0, q_tensor)
+            q_y1 = _get_quantiles(probs_y1, vals_y1, q_tensor)
+
+            if target == "y0":
+                return q_y0
+            elif target == "y1":
+                return q_y1
+            elif target == "cate":
+                # Returns difference of marginal quantiles.
+                return q_y1 - q_y0
+
+        else:
+            raise ValueError(f"Unknown output_type: {output_type}")
