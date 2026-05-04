@@ -53,39 +53,29 @@ with open("transfer_rules.yaml", "r") as f:
 TRANSFER_RULES = config.get("transfer_rules", {})
 
 
-def compute_hl_gauss_loss(
-    logits: torch.Tensor,
-    y_target: torch.Tensor,
-    bin_centers: torch.Tensor,
-    bin_width: torch.Tensor,
-    sigma: float,
+def compute_crps_loss(
+    logits: torch.Tensor, y_target: torch.Tensor, bin_edges: torch.Tensor
 ) -> torch.Tensor:
     """
-    Computes the Histogram Loss with Gaussian Smoothing.
-    logits: (B, T, nbins)
-    y_target: (B, T)
+    Computes the Ranked Probability Score (Discrete CRPS).
+    Requires zero hyperparameters and naturally respects the distance between bins.
     """
-    # Expand target for broadcasting: (B, T, 1)
+    # Convert logits to probabilities
+    probs = F.softmax(logits, dim=-1)
+
+    # 1. Compute predicted CDF
+    pred_cdf = torch.cumsum(probs, dim=-1)
+
+    # 2. Compute target CDF
+    # It is an ideal step function: 0 for bins below the target, 1 for bins above
     y_target_expanded = y_target.unsqueeze(-1)
+    # bin_edges[1:] represents the upper edge of each bin
+    target_cdf = (bin_edges[1:].view(1, 1, -1) >= y_target_expanded).float()
 
-    def normal_cdf(x, mean, std):
-        return 0.5 * (1.0 + torch.erf((x - mean) / (math.sqrt(2) * std)))
+    # 3. CRPS is the Mean Squared Error between the CDFs
+    crps = torch.mean((pred_cdf - target_cdf) ** 2, dim=-1)
 
-    lower_edges = bin_centers - 0.5 * bin_width
-    upper_edges = bin_centers + 0.5 * bin_width
-
-    # Compute soft probabilities across bins
-    cdf_upper = normal_cdf(upper_edges, y_target_expanded, sigma)
-    cdf_lower = normal_cdf(lower_edges, y_target_expanded, sigma)
-
-    p = cdf_upper - cdf_lower
-    p = p / (p.sum(dim=-1, keepdim=True) + 1e-8)  # Renormalize
-
-    # Cross-entropy
-    log_probs = F.log_softmax(logits, dim=-1)
-    ce_loss = -torch.sum(p * log_probs, dim=-1).mean()
-
-    return ce_loss
+    return crps.mean()
 
 
 class Timer:
@@ -854,20 +844,16 @@ class Trainer:
             y_test_0_std = (y_test_0 - y0_shift) / y0_scale
             y_test_1_std = (y_test_1 - y1_shift) / y1_scale
 
-            # 5. Compute HL-Gauss Loss for BOTH potential outcomes
-            loss_y0 = compute_hl_gauss_loss(
+            # 5. Compute CRPS Loss for BOTH potential outcomes
+            loss_y0 = compute_crps_loss(
                 logits_y0,
                 y_test_0_std,
-                self.raw_model.bin_centers,
-                self.raw_model.bin_width,
-                self.raw_model.sigma,
+                self.raw_model.bin_edges,
             )
-            loss_y1 = compute_hl_gauss_loss(
+            loss_y1 = compute_crps_loss(
                 logits_y1,
                 y_test_1_std,
-                self.raw_model.bin_centers,
-                self.raw_model.bin_width,
-                self.raw_model.sigma,
+                self.raw_model.bin_edges,
             )
 
             total_loss = loss_y0 + loss_y1
