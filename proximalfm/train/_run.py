@@ -250,6 +250,7 @@ class Trainer:
             "norm_first": self.config.norm_first,
             "bias_free_ln": self.config.bias_free_ln,
             "recompute": self.config.recompute,
+            "sigma": self.config.sigma,
         }
         model = TabICL(**self.model_config)
         model.to(device=self.config.device)

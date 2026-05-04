@@ -48,7 +48,7 @@ def build_parser():
     )
     parser.add_argument(
         "--wandb_mode",
-        default="offline",
+        default="online",
         type=str,
         help="Wandb logging mode: online, offline, or disabled",
     )
@@ -418,6 +418,13 @@ def build_parser():
         default=False,
         type=str2bool,
         help="Whether to freeze the ICL predictor",
+    )
+
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=0.5,
+        help="Sigma in the quantile loss",
     )
 
     ###########################################################################
