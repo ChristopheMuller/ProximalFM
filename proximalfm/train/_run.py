@@ -20,6 +20,7 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from tqdm import tqdm
 import wandb
+import yaml
 
 from proximalfm._model.tabicl import TabICL
 from proximalfm.prior._dataset import PriorDataset
@@ -32,6 +33,24 @@ warnings.filterwarnings(
     message=".*The PyTorch API of nested tensors is in prototype stage.*",
     category=UserWarning,
 )
+
+
+def get_parameter_state(param_name: str, rules: dict) -> str:
+    """Finds the longest matching prefix in the rules dict for a given parameter name."""
+    best_match = "default"
+    longest_prefix = 0
+    for prefix, state in rules.items():
+        if prefix == "default":
+            continue
+        if param_name.startswith(prefix) and len(prefix) > longest_prefix:
+            best_match = prefix
+            longest_prefix = len(prefix)
+    return rules.get(best_match, rules.get("default", "scratch"))
+
+
+with open("transfer_rules.yaml", "r") as f:
+    config = yaml.safe_load(f)
+TRANSFER_RULES = config.get("transfer_rules", {})
 
 
 def compute_hl_gauss_loss(
@@ -232,25 +251,54 @@ class Trainer:
         model = TabICL(**self.model_config)
         model.to(device=self.config.device)
 
+        checkpoint_path = None
+        if hasattr(self.config, "checkpoint_path") and self.config.checkpoint_path:
+            checkpoint_path = self.config.checkpoint_path
+        elif hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
+            checkpoint_path = self.get_latest_checkpoint()
+
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            if self.master_process:
+                print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
+
+            checkpoint = torch.load(
+                checkpoint_path, map_location=self.config.device, weights_only=True
+            )
+            old_state_dict = checkpoint.get("state_dict", checkpoint)
+            model_state_dict = model.state_dict()
+            filtered_state_dict = {}
+
+            # 1. Filter weights based on TRANSFER_RULES
+            for name, weight in old_state_dict.items():
+                if (
+                    name in model_state_dict
+                    and weight.shape == model_state_dict[name].shape
+                ):
+                    state = get_parameter_state(name, TRANSFER_RULES)
+                    if state in ["finetune", "freeze"]:
+                        filtered_state_dict[name] = weight
+
+            # 2. Load the allowed weights (strict=False leaves "scratch" weights as random)
+            model.load_state_dict(filtered_state_dict, strict=False)
+
+        # 3. Apply freezing logic
+        for name, param in model.named_parameters():
+            state = get_parameter_state(name, TRANSFER_RULES)
+            if state == "freeze":
+                param.requires_grad = False
+                if self.master_process and self.config.wandb_log:
+                    pass
+            else:
+                param.requires_grad = True
+
         if self.master_process:
             num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            print(f"Model has {num_params} parameters.")
-
-        # Freeze model components if requested
-        if self.config.freeze_col:
-            model.col_embedder.eval()
-            for param in model.col_embedder.parameters():
-                param.requires_grad = False
-
-        if self.config.freeze_row:
-            model.row_interactor.eval()
-            for param in model.row_interactor.parameters():
-                param.requires_grad = False
-
-        if self.config.freeze_icl:
-            model.icl_predictor.eval()
-            for param in model.icl_predictor.parameters():
-                param.requires_grad = False
+            frozen_params = sum(
+                p.numel() for p in model.parameters() if not p.requires_grad
+            )
+            print(
+                f"Model built: {num_params:,} trainable params | {frozen_params:,} frozen params."
+            )
 
         # Compile model if requested
         if self.config.model_compile:
@@ -380,12 +428,7 @@ class Trainer:
             return None
 
     def load_checkpoint(self):
-        """Load model and training state from checkpoint.
-
-        First checks if `checkpoint_path` is directly specified. If not, attempts to find
-        the latest checkpoint in the checkpoint directory.
-        """
-
+        """Load optimizer and scheduler state from checkpoint (Weights are handled in build_model)."""
         checkpoint_path = None
         if hasattr(self.config, "checkpoint_path") and self.config.checkpoint_path:
             checkpoint_path = self.config.checkpoint_path
@@ -393,28 +436,21 @@ class Trainer:
             checkpoint_path = self.get_latest_checkpoint()
 
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
-            print("No checkpoint found, starting from scratch.")
             return
 
-        print(f"Loading checkpoint from {checkpoint_path}")
+        # If you are doing transfer learning, you almost NEVER want to load the old optimizer states.
+        if self.config.only_load_model:
+            print("Transfer learning active: Starting with a fresh optimizer.")
+            return
+
         checkpoint = torch.load(
             checkpoint_path, map_location=self.config.device, weights_only=True
         )
 
-        # Load model state
-        if "state_dict" not in checkpoint:
-            raise ValueError("Checkpoint does not contain model state")
-
-        self.raw_model.load_state_dict(checkpoint["state_dict"])
-
-        # Optionally load optimizer and scheduler state
-        if self.config.only_load_model:
-            print("Only loading model weights")
-        else:
-            self.optimizer.load_state_dict(checkpoint["optimizer_state"])
-            self.scheduler.load_state_dict(checkpoint["scheduler_state"])
-            self.curr_step = checkpoint["curr_step"]
-            print(f"Resuming training at step {self.curr_step}")
+        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
+        self.curr_step = checkpoint["curr_step"]
+        print(f"Resuming optimizer state at step {self.curr_step}")
 
     def save_checkpoint(self, name: str):
         """Save model and training state to checkpoint file.
@@ -718,6 +754,17 @@ class Trainer:
         micro_d_W = micro_d_W.to(self.config.device)
         micro_d_Z = micro_d_Z.to(self.config.device)
 
+        def safe_standardize(x):
+            mu = x.mean(dim=1, keepdim=True)
+            std = x.std(dim=1, keepdim=True)
+            # Prevent division by zero for zero-variance or zero-padded features
+            std = torch.where(std < 1e-5, torch.ones_like(std), std)
+            return (x - mu) / std
+
+        micro_X = safe_standardize(micro_X)
+        micro_W = safe_standardize(micro_W)
+        micro_Z = safe_standardize(micro_Z)
+
         y_train_obs = micro_Y_obs[:, :train_size]
 
         # Squeeze A down to (B, T) to match y_train_obs
@@ -770,6 +817,21 @@ class Trainer:
                 micro_d_Z,
                 micro_d_W,
             )
+            if pred_logits.isnan().any():
+                # skip this loop,
+                print(
+                    f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
+                )
+                print(
+                    f"Degenerate y_obs datasets: {(y_train_obs == y_train_obs[:, :train_size].mean(dim=1, keepdim=True)).all(dim=1).any().item()}"
+                )
+
+                return {
+                    "loss_total": 0.0,
+                    "mse_cate": 0.0,
+                    "loss_y0": 0.0,
+                    "loss_y1": 0.0,
+                }
 
             nbins = self.raw_model.nbins
             logits_y0 = pred_logits[..., :nbins]
