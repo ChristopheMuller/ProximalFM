@@ -208,10 +208,13 @@ class Trainer:
                     with open(id_path, "r") as f:
                         self.config.wandb_id = f.read().strip()
 
+            current_time = timeit.default_timer()
+            name_with_time = f"{self.config.wandb_name}_{current_time:.0f}"
+
             self.wandb_run = wandb.init(
                 dir=self.config.wandb_dir,
                 project=self.config.wandb_project,
-                name=self.config.wandb_name,
+                name=name_with_time,
                 id=self.config.wandb_id,
                 config=self.config,
                 resume="allow",
@@ -775,7 +778,16 @@ class Trainer:
             print(
                 f"[Step {self.curr_step}] Skipping micro-batch: degenerate treatment groups"
             )
-            return {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
+            return (
+                self.last_results
+                if hasattr(self, "last_results")
+                else {
+                    "loss_total": 0.0,
+                    "mse_cate": 0.0,
+                    "loss_y0": 0.0,
+                    "loss_y1": 0.0,
+                }
+            )
 
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
@@ -822,13 +834,16 @@ class Trainer:
                 print(
                     f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
                 )
-
-                return {
-                    "loss_total": 0.0,
-                    "mse_cate": 0.0,
-                    "loss_y0": 0.0,
-                    "loss_y1": 0.0,
-                }
+                return (
+                    self.last_results
+                    if hasattr(self, "last_results")
+                    else {
+                        "loss_total": 0.0,
+                        "mse_cate": 0.0,
+                        "loss_y0": 0.0,
+                        "loss_y1": 0.0,
+                    }
+                )
 
             nbins = self.raw_model.nbins
             logits_y0 = pred_logits[..., :nbins]
@@ -881,6 +896,7 @@ class Trainer:
                 "loss_y0": (loss_y0.item() / num_micro_batches),
                 "loss_y1": (loss_y1.item() / num_micro_batches),
             }
+            self.last_results = micro_results
 
         return micro_results
 
