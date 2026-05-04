@@ -822,9 +822,6 @@ class Trainer:
                 print(
                     f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
                 )
-                print(
-                    f"Degenerate y_obs datasets: {(y_train_obs == y_train_obs[:, :train_size].mean(dim=1, keepdim=True)).all(dim=1).any().item()}"
-                )
 
                 return {
                     "loss_total": 0.0,
