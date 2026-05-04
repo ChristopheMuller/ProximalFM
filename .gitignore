@@ -13,3 +13,5 @@ benchmarks/results/*
 *.pt
 *.json
 *.ckpt
+
+wandb
