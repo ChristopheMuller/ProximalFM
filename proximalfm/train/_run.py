@@ -766,9 +766,9 @@ class Trainer:
         n0 = (A_train == 0).sum(dim=1)  # (B,)
         n1 = (A_train == 1).sum(dim=1)  # (B,)
         if (n0 == 0).any() or (n1 == 0).any():
-            print(
-                f"[Step {self.curr_step}] Skipping micro-batch: degenerate treatment groups"
-            )
+            # print(
+            #     f"[Step {self.curr_step}] Skipping micro-batch: degenerate treatment groups"
+            # )
             return (
                 self.last_results
                 if hasattr(self, "last_results")
