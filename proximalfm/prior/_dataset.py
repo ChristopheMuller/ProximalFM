@@ -63,7 +63,7 @@ from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
 from ._hp_sampling import HpSamplerList
-from ._reg2cls import Reg2Cls
+from ._reg2cls import Reg2Cls, standard_scaling, outlier_removing
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -598,6 +598,7 @@ class SCMPrior(Prior):
                 in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
             ).to(self.device)
             X = f_X(U)
+            X = standard_scaling(outlier_removing(X))
 
             input_WZ = torch.cat([U, X], dim=-1)
             f_W = prior_cls(
@@ -606,6 +607,7 @@ class SCMPrior(Prior):
                 **params,
             ).to(self.device)
             W = f_W(input_WZ)
+            W = standard_scaling(outlier_removing(W))
 
             f_Z = prior_cls(
                 in_dim=params["dim_U"] + params["dim_X"],
@@ -613,6 +615,7 @@ class SCMPrior(Prior):
                 **params,
             ).to(self.device)
             Z = f_Z(input_WZ)
+            Z = standard_scaling(outlier_removing(Z))
 
             input_A = torch.cat([U, X, Z], dim=-1)
             f_A = prior_cls(
@@ -643,6 +646,9 @@ class SCMPrior(Prior):
                 **params,
             ).to(self.device)
             y_joint = f_y(input_joint).squeeze(-1)
+            y_joint = standard_scaling(
+                outlier_removing(y_joint.unsqueeze(-1), threshold=4.0)
+            ).squeeze(-1)
 
             n = input_y.shape[0]
             y0, y1 = y_joint[:n], y_joint[n:]
@@ -845,7 +851,7 @@ class SCMPrior(Prior):
                     param_list.append(params)
 
         # Parallel Generation
-        if self.n_jobs > 1 and self.device == "cpu":
+        if self.n_jobs != 1 and self.device == "cpu":
             with joblib.parallel_config(
                 n_jobs=self.n_jobs,
                 backend="loky",
