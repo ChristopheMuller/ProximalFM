@@ -740,6 +740,7 @@ class SavePriorDataset:
             desc="Generating batches",
         ):
             (
+                U,
                 X,
                 W,
                 Z,
@@ -747,6 +748,7 @@ class SavePriorDataset:
                 Y_obs,
                 Y0,
                 Y1,
+                d_U,
                 d_X,
                 d_W,
                 d_Z,

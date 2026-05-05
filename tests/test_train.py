@@ -4,30 +4,50 @@ from proximalfm.train._run import Trainer
 import torch
 from unittest.mock import patch, MagicMock
 
+
 @pytest.fixture
 def dummy_args(tmp_path):
     parser = build_parser()
     # minimal dummy config
     # Note: embed_dim / row_nhead must be > 2 for RotaryEmbedding (16 / 4 = 4)
-    args = parser.parse_args([
-        "--max_steps", "1",
-        "--batch_size", "2",
-        "--micro_batch_size", "2",
-        "--min_seq_len", "10",
-        "--max_seq_len", "20",
-        "--min_train_size", "5",
-        "--max_train_size", "15",
-        "--embed_dim", "16",
-        "--row_nhead", "4",
-        "--col_num_blocks", "1",
-        "--row_num_blocks", "1",
-        "--icl_num_blocks", "1",
-        "--amp", "False",
-        "--device", "cpu",
-        "--wandb_mode", "disabled",
-        "--checkpoint_dir", str(tmp_path),
-    ])
+    args = parser.parse_args(
+        [
+            "--max_steps",
+            "1",
+            "--batch_size",
+            "2",
+            "--micro_batch_size",
+            "2",
+            "--min_seq_len",
+            "10",
+            "--max_seq_len",
+            "20",
+            "--min_train_size",
+            "5",
+            "--max_train_size",
+            "15",
+            "--embed_dim",
+            "16",
+            "--row_nhead",
+            "4",
+            "--col_num_blocks",
+            "1",
+            "--row_num_blocks",
+            "1",
+            "--icl_num_blocks",
+            "1",
+            "--amp",
+            "False",
+            "--device",
+            "cpu",
+            "--wandb_mode",
+            "disabled",
+            "--checkpoint_dir",
+            str(tmp_path),
+        ]
+    )
     return args
+
 
 @patch("wandb.init")
 def test_trainer_initialization(mock_wandb_init, dummy_args):
@@ -35,14 +55,16 @@ def test_trainer_initialization(mock_wandb_init, dummy_args):
     assert trainer.config.max_steps == 1
     assert trainer.model is not None
 
+
 def test_trainer_run_one_epoch(dummy_args):
     trainer = Trainer(dummy_args)
 
     # We want to patch the dataloader to return a fast dummy batch
-    with patch.object(trainer, 'dataloader') as mock_dataloader:
+    with patch.object(trainer, "dataloader") as mock_dataloader:
         # Create a dummy batch
         # 12 items: (X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_len, train_size)
 
+        U = torch.randn(2, 20, dummy_args.max_dim_U)
         X = torch.randn(2, 20, dummy_args.max_dim_X)
         W = torch.randn(2, 20, dummy_args.max_dim_W)
         Z = torch.randn(2, 20, dummy_args.max_dim_Z)
@@ -50,13 +72,29 @@ def test_trainer_run_one_epoch(dummy_args):
         Y_obs = torch.randn(2, 20)
         Y0 = torch.randn(2, 20)
         Y1 = torch.randn(2, 20)
+        d_U = torch.tensor([3, 4])
         d_X = torch.tensor([5, 6])
         d_W = torch.tensor([4, 5])
         d_Z = torch.tensor([3, 4])
         seq_len = torch.tensor([15, 15])
         train_size = torch.tensor([10, 10])
 
-        dummy_batch = (X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_len, train_size)
+        dummy_batch = (
+            U,
+            X,
+            W,
+            Z,
+            A,
+            Y_obs,
+            Y0,
+            Y1,
+            d_U,
+            d_X,
+            d_W,
+            d_Z,
+            seq_len,
+            train_size,
+        )
 
         # Make the mock dataloader yield this batch once
         mock_dataloader.__iter__.return_value = iter([dummy_batch])
@@ -69,6 +107,7 @@ def test_trainer_run_one_epoch(dummy_args):
         trainer.train()
         assert trainer.curr_step == 1
 
+
 def test_trainer_sub_functions(dummy_args):
     trainer = Trainer(dummy_args)
 
@@ -80,7 +119,7 @@ def test_trainer_sub_functions(dummy_args):
     assert train_size == 5
 
     # Test align_micro_batch
-    X = torch.randn(2, 20, 10) # B=2, T=20, max_dim=10
+    X = torch.randn(2, 20, 10)  # B=2, T=20, max_dim=10
     W = torch.randn(2, 20, 10)
     Z = torch.randn(2, 20, 10)
     A = torch.randn(2, 20, 1)

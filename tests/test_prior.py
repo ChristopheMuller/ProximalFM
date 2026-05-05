@@ -42,7 +42,22 @@ def test_scm_prior_get_batch():
         max_train_size=0.8,
         prior_type="mlp_scm",
     )
-    X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes = prior.get_batch()
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = prior.get_batch()
 
     assert X.shape[0] == 4
     assert W.shape[0] == 4
@@ -78,7 +93,22 @@ def test_scm_prior_mix_scm():
         max_train_size=0.8,
         prior_type="mix_scm",
     )
-    X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes = prior.get_batch()
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = prior.get_batch()
     assert X.shape[0] == 4
 
 
@@ -100,7 +130,22 @@ def test_scm_prior_tree_scm():
         max_train_size=0.8,
         prior_type="tree_scm",
     )
-    X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes = prior.get_batch()
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = prior.get_batch()
     assert X.shape[0] == 2
 
 
@@ -123,7 +168,22 @@ def test_scm_prior_seq_len_per_gp():
         seq_len_per_gp=True,
         prior_type="mlp_scm",
     )
-    X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes = prior.get_batch()
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = prior.get_batch()
 
     # When seq_len_per_gp=True, the tensors should be nested tensors
     assert X.is_nested
@@ -154,7 +214,7 @@ def test_prior_dataset():
         prior_type="mlp_scm",
     )
 
-    X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes = next(
+    U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes = next(
         iter(dataset)
     )
 
