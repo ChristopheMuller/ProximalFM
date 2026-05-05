@@ -656,7 +656,8 @@ class SCMPrior(Prior):
             y = torch.where(A == 1, y1, y0)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
-            X, W, Z, y, y0, y1 = (
+            U, X, W, Z, y, y0, y1 = (
+                U.unsqueeze(0),
                 X.unsqueeze(0),
                 W.unsqueeze(0),
                 Z.unsqueeze(0),
@@ -664,16 +665,19 @@ class SCMPrior(Prior):
                 y0.unsqueeze(0),
                 y1.unsqueeze(0),
             )
+            d_U = torch.tensor([params["dim_U"]], device=self.device, dtype=torch.long)
             d_X = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
             d_W = torch.tensor([params["dim_W"]], device=self.device, dtype=torch.long)
             d_Z = torch.tensor([params["dim_Z"]], device=self.device, dtype=torch.long)
 
             # Only keep valid datasets with sufficient features and balanced classes
+            U, d_U = self.filter_constant_features_and_pad(U, d_U, params["max_dim_U"])
             X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
             if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
-                X, W, Z, A, y, y0, y1, d_X, d_W, d_Z = (
+                U, X, W, Z, A, y, y0, y1, d_U, d_X, d_W, d_Z = (
+                    U.squeeze(0),
                     X.squeeze(0),
                     W.squeeze(0),
                     Z.squeeze(0),
@@ -681,11 +685,13 @@ class SCMPrior(Prior):
                     y.squeeze(0),
                     y0.squeeze(0),
                     y1.squeeze(0),
+                    d_U.squeeze(0),
                     d_X.squeeze(0),
                     d_W.squeeze(0),
                     d_Z.squeeze(0),
                 )
                 return (
+                    U,
                     X,
                     W,
                     Z,
@@ -693,6 +699,7 @@ class SCMPrior(Prior):
                     y,
                     y0,
                     y1,
+                    d_U,
                     d_X,
                     d_W,
                     d_Z,
@@ -836,6 +843,7 @@ class SCMPrior(Prior):
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
                         # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
+                        "max_dim_U": self.max_dim_U,
                         "max_dim_X": gp_max_X,
                         "max_dim_W": gp_max_W,
                         "max_dim_Z": gp_max_Z,
@@ -865,6 +873,7 @@ class SCMPrior(Prior):
             results = [self.generate_dataset(params) for params in param_list]
 
         (
+            U_list,
             X_list,
             W_list,
             Z_list,
@@ -872,6 +881,7 @@ class SCMPrior(Prior):
             Y_obs_list,
             Y0_list,
             Y1_list,
+            d_U_list,
             d_X_list,
             d_W_list,
             d_Z_list,
@@ -879,6 +889,7 @@ class SCMPrior(Prior):
 
         # Combine Results
         if self.seq_len_per_gp:
+            U = nested_tensor([t.to(self.device) for t in U_list], device=self.device)
             X = nested_tensor([t.to(self.device) for t in X_list], device=self.device)
             W = nested_tensor([t.to(self.device) for t in W_list], device=self.device)
             Z = nested_tensor([t.to(self.device) for t in Z_list], device=self.device)
@@ -889,6 +900,7 @@ class SCMPrior(Prior):
             Y0 = nested_tensor([t.to(self.device) for t in Y0_list], device=self.device)
             Y1 = nested_tensor([t.to(self.device) for t in Y1_list], device=self.device)
         else:
+            U = torch.stack(U_list).to(self.device)
             X = torch.stack(X_list).to(self.device)
             W = torch.stack(W_list).to(self.device)
             Z = torch.stack(Z_list).to(self.device)
@@ -898,6 +910,7 @@ class SCMPrior(Prior):
             Y1 = torch.stack(Y1_list).to(self.device)
 
         # Metadata
+        d_U = torch.stack(d_U_list).to(self.device)
         d_X = torch.stack(d_X_list).to(self.device)
         d_W = torch.stack(d_W_list).to(self.device)
         d_Z = torch.stack(d_Z_list).to(self.device)
@@ -913,7 +926,7 @@ class SCMPrior(Prior):
             dtype=torch.long,
         )
 
-        return X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes
+        return U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes
 
     def get_prior(self) -> str:
         """Determine which prior type to use for generation.

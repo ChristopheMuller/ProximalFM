@@ -355,8 +355,8 @@ class Trainer:
             dataset,
             batch_size=None,  # No additional batching since PriorDataset handles batching internally
             shuffle=False,
-            num_workers=1,
-            prefetch_factor=4,
+            num_workers=8,
+            prefetch_factor=16,
             pin_memory=True if self.config.prior_device == "cpu" else False,
             pin_memory_device=self.config.device
             if self.config.prior_device == "cpu"
@@ -698,6 +698,7 @@ class Trainer:
         """
         # Unpack the 12 items
         (
+            micro_U,
             micro_X,
             micro_W,
             micro_Z,
@@ -705,6 +706,7 @@ class Trainer:
             micro_Y_obs,
             micro_Y0,
             micro_Y1,
+            micro_d_U,
             micro_d_X,
             micro_d_W,
             micro_d_Z,
@@ -822,9 +824,9 @@ class Trainer:
             )
             if pred_logits.isnan().any():
                 # skip this loop,
-                print(
-                    f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
-                )
+                # print(
+                #     f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
+                # )
                 return (
                     self.last_results
                     if hasattr(self, "last_results")
