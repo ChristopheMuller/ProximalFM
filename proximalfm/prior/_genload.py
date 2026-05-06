@@ -317,15 +317,16 @@ class LoadPriorDataset(IterableDataset):
             wait_time += 5
 
         batch = torch.load(batch_file, map_location=self.device, weights_only=True)
-        X, W, Z, A = batch["X"], batch["W"], batch["Z"], batch["A"]
+        U, X, W, Z, A = batch["U"], batch["X"], batch["W"], batch["Z"], batch["A"]
         Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
-        d_X, d_W, d_Z = batch["d_X"], batch["d_W"], batch["d_Z"]
+        d_U, d_X, d_W, d_Z = batch["d_U"], batch["d_X"], batch["d_W"], batch["d_Z"]
         seq_lens = batch["seq_lens"]
         train_sizes = batch["train_sizes"]
         batch_size = batch["batch_size"]
 
         if X.is_nested:
             # Wrap nested tensors with SliceNestedTensor
+            U = SliceNestedTensor(U)
             X = SliceNestedTensor(X)
             W = SliceNestedTensor(W)
             Z = SliceNestedTensor(Z)
@@ -336,6 +337,9 @@ class LoadPriorDataset(IterableDataset):
         else:
             # Convert sparse tensor to dense
             T = seq_lens[0]
+            U = sparse2dense(U, d_U.repeat_interleave(T), dtype=torch.float32).view(
+                batch_size, T, -1
+            )
             X = sparse2dense(X, d_X.repeat_interleave(T), dtype=torch.float32).view(
                 batch_size, T, -1
             )
@@ -354,6 +358,7 @@ class LoadPriorDataset(IterableDataset):
         self.current_idx += self.ddp_world_size
 
         return (
+            U,
             X,
             W,
             Z,
@@ -361,6 +366,7 @@ class LoadPriorDataset(IterableDataset):
             Y_obs,
             Y0,
             Y1,
+            d_U,
             d_X,
             d_W,
             d_Z,
@@ -383,6 +389,7 @@ class LoadPriorDataset(IterableDataset):
         # Initialize or use existing buffer
         if self.buffer_size == 0:
             (
+                U,
                 X,
                 W,
                 Z,
@@ -390,6 +397,7 @@ class LoadPriorDataset(IterableDataset):
                 Y_obs,
                 Y0,
                 Y1,
+                d_U,
                 d_X,
                 d_W,
                 d_Z,
@@ -398,6 +406,7 @@ class LoadPriorDataset(IterableDataset):
                 file_batch_size,
             ) = self._load_batch_file()
 
+            self.buffer_U = U
             self.buffer_X = X
             self.buffer_W = W
             self.buffer_Z = Z
@@ -405,6 +414,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = Y_obs
             self.buffer_Y0 = Y0
             self.buffer_Y1 = Y1
+            self.buffer_d_U = d_U
             self.buffer_d_X = d_X
             self.buffer_d_W = d_W
             self.buffer_d_Z = d_Z
@@ -422,6 +432,7 @@ class LoadPriorDataset(IterableDataset):
             try:
                 # Load another batch and append to buffer
                 (
+                    U,
                     X,
                     W,
                     Z,
@@ -429,6 +440,7 @@ class LoadPriorDataset(IterableDataset):
                     Y_obs,
                     Y0,
                     Y1,
+                    d_U,
                     d_X,
                     d_W,
                     d_Z,
@@ -440,6 +452,7 @@ class LoadPriorDataset(IterableDataset):
                 # Concatenate with existing buffer
                 if self.buffer_X is None:
                     # If buffer is empty, directly assign
+                    self.buffer_U = U
                     self.buffer_X = X
                     self.buffer_W = W
                     self.buffer_Z = Z
@@ -447,6 +460,7 @@ class LoadPriorDataset(IterableDataset):
                     self.buffer_Y_obs = Y_obs
                     self.buffer_Y0 = Y0
                     self.buffer_Y1 = Y1
+                    self.buffer_d_U = d_U
                     self.buffer_d_X = d_X
                     self.buffer_d_W = d_W
                     self.buffer_d_Z = d_Z
@@ -456,6 +470,9 @@ class LoadPriorDataset(IterableDataset):
                 else:
                     # Otherwise concatenate, handling SliceNestedTensor if needed
                     if isinstance(X, SliceNestedTensor):
+                        self.buffer_U = cat_slice_nested_tensors(
+                            [self.buffer_U, U], dim=0
+                        )
                         self.buffer_X = cat_slice_nested_tensors(
                             [self.buffer_X, X], dim=0
                         )
@@ -478,6 +495,7 @@ class LoadPriorDataset(IterableDataset):
                             [self.buffer_Y1, Y1], dim=0
                         )
                     else:
+                        self.buffer_U = torch.cat([self.buffer_U, U], dim=0)
                         self.buffer_X = torch.cat([self.buffer_X, X], dim=0)
                         self.buffer_W = torch.cat([self.buffer_W, W], dim=0)
                         self.buffer_Z = torch.cat([self.buffer_Z, Z], dim=0)
@@ -486,6 +504,7 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_Y0 = torch.cat([self.buffer_Y0, Y0], dim=0)
                         self.buffer_Y1 = torch.cat([self.buffer_Y1, Y1], dim=0)
 
+                    self.buffer_d_U = torch.cat([self.buffer_d_U, d_U], dim=0)
                     self.buffer_d_X = torch.cat([self.buffer_d_X, d_X], dim=0)
                     self.buffer_d_W = torch.cat([self.buffer_d_W, d_W], dim=0)
                     self.buffer_d_Z = torch.cat([self.buffer_d_Z, d_Z], dim=0)
@@ -505,6 +524,7 @@ class LoadPriorDataset(IterableDataset):
         output_size = min(self.batch_size, self.buffer_size)
 
         # Prepare output
+        U_out = self.buffer_U[:output_size]
         X_out = self.buffer_X[:output_size]
         W_out = self.buffer_W[:output_size]
         Z_out = self.buffer_Z[:output_size]
@@ -512,6 +532,7 @@ class LoadPriorDataset(IterableDataset):
         Y_obs_out = self.buffer_Y_obs[:output_size]
         Y0_out = self.buffer_Y0[:output_size]
         Y1_out = self.buffer_Y1[:output_size]
+        d_U_out = self.buffer_d_U[:output_size]
         d_X_out = self.buffer_d_X[:output_size]
         d_W_out = self.buffer_d_W[:output_size]
         d_Z_out = self.buffer_d_Z[:output_size]
@@ -520,6 +541,7 @@ class LoadPriorDataset(IterableDataset):
 
         # Update buffer with remaining data
         if output_size < self.buffer_size:
+            self.buffer_U = self.buffer_U[output_size:]
             self.buffer_X = self.buffer_X[output_size:]
             self.buffer_W = self.buffer_W[output_size:]
             self.buffer_Z = self.buffer_Z[output_size:]
@@ -527,6 +549,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = self.buffer_Y_obs[output_size:]
             self.buffer_Y0 = self.buffer_Y0[output_size:]
             self.buffer_Y1 = self.buffer_Y1[output_size:]
+            self.buffer_d_U = self.buffer_d_U[output_size:]
             self.buffer_d_X = self.buffer_d_X[output_size:]
             self.buffer_d_W = self.buffer_d_W[output_size:]
             self.buffer_d_Z = self.buffer_d_Z[output_size:]
@@ -535,6 +558,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_size -= output_size
         else:
             # Buffer is now empty
+            self.buffer_U = None
             self.buffer_X = None
             self.buffer_W = None
             self.buffer_Z = None
@@ -542,6 +566,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = None
             self.buffer_Y0 = None
             self.buffer_Y1 = None
+            self.buffer_d_U = None
             self.buffer_d_X = None
             self.buffer_d_W = None
             self.buffer_d_Z = None
@@ -550,6 +575,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_size = 0
 
         if isinstance(X_out, SliceNestedTensor):
+            U_out = U_out.nested_tensor
             X_out = X_out.nested_tensor
             W_out = W_out.nested_tensor
             Z_out = Z_out.nested_tensor
@@ -559,6 +585,7 @@ class LoadPriorDataset(IterableDataset):
             Y1_out = Y1_out.nested_tensor
 
         return (
+            U_out,
             X_out,
             W_out,
             Z_out,
@@ -566,6 +593,7 @@ class LoadPriorDataset(IterableDataset):
             Y_obs_out,
             Y0_out,
             Y1_out,
+            d_U_out,
             d_X_out,
             d_W_out,
             d_Z_out,
@@ -679,7 +707,22 @@ class SavePriorDataset:
             json.dump(metadata, f, indent=2)
 
     def save_batch_sparse(
-        self, batch_idx, X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes
+        self,
+        batch_idx,
+        U,
+        X,
+        W,
+        Z,
+        A,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
     ):
         """Save batch data in sparse format for efficient storage.
 
@@ -694,6 +737,9 @@ class SavePriorDataset:
             B = len(d_X)
         else:
             B, T, _ = X.shape
+            U = dense2sparse(
+                U.view(-1, U.shape[-1]), d_U.repeat_interleave(T), dtype=torch.float32
+            )
             X = dense2sparse(
                 X.view(-1, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
             )
@@ -709,6 +755,7 @@ class SavePriorDataset:
         temp_file = self.save_dir / f"batch_{batch_idx:06d}.pt.tmp"
         torch.save(
             {
+                "U": U,
                 "X": X,
                 "W": W,
                 "Z": Z,
@@ -716,6 +763,7 @@ class SavePriorDataset:
                 "Y_obs": Y_obs,
                 "Y0": Y0,
                 "Y1": Y1,
+                "d_U": d_U,
                 "d_X": d_X,
                 "d_W": d_W,
                 "d_Z": d_Z,
@@ -765,6 +813,7 @@ class SavePriorDataset:
 
             self.save_batch_sparse(
                 batch_idx,
+                U,
                 X,
                 W,
                 Z,
@@ -772,6 +821,7 @@ class SavePriorDataset:
                 Y_obs,
                 Y0,
                 Y1,
+                d_U,
                 d_X,
                 d_W,
                 d_Z,
