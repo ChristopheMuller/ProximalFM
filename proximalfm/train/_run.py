@@ -193,6 +193,9 @@ class Trainer:
         """Set up Weights & Biases logging."""
 
         if self.config.wandb_log and self.master_process:
+            if hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
+                os.makedirs(self.config.checkpoint_dir, exist_ok=True)
+
             id_path = os.path.join(self.config.checkpoint_dir, "wand_id.txt")
             if self.config.wandb_id is None:
                 if os.path.exists(id_path):
@@ -451,8 +454,10 @@ class Trainer:
         """
         ckpt_dir = self.config.checkpoint_dir
 
-        if not os.path.isdir(ckpt_dir):
+        if not ckpt_dir:
             return None
+
+        os.makedirs(ckpt_dir, exist_ok=True)
 
         # Filter for files with "ckpt" extension matching the pattern "step-*.ckpt"
         checkpoints = [
@@ -523,6 +528,9 @@ class Trainer:
     def manage_checkpoint(self):
         """Manage temporary checkpoints by deleting the oldest when limit is exceeded."""
         ckpt_dir = self.config.checkpoint_dir
+        if ckpt_dir:
+            os.makedirs(ckpt_dir, exist_ok=True)
+
         limit = self.config.max_checkpoints
 
         # Filter for files with "ckpt" extension matching the pattern "step-*.ckpt"
