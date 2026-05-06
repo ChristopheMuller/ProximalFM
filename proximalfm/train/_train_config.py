@@ -467,4 +467,20 @@ def build_parser():
         help="Whether to only load model weights",
     )
 
+    ###########################################################################
+    ###### Validation #########################################################
+    ###########################################################################
+    parser.add_argument(
+        "--val_dir",
+        default=None,
+        type=str,
+        help="Directory for validation data.",
+    )
+    parser.add_argument(
+        "--val_interval",
+        default=50,
+        type=int,
+        help="Steps between validation checks",
+    )
+
     return parser
