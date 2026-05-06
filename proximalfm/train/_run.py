@@ -131,6 +131,7 @@ class Trainer:
         self.configure_wandb()
         self.build_model()
         self.configure_prior()
+        self.configure_validation_prior()
         self.configure_optimizer()
         self.configure_amp()
         self.load_checkpoint()
@@ -363,6 +364,59 @@ class Trainer:
             else "",
         )
 
+    def configure_validation_prior(self):
+        """Set up the dataloader for the fixed validation set."""
+        if self.config.val_dir is None:
+            self.val_dataloader = None
+            return
+
+        # 1. Count exactly how many batch files exist in the folder
+        all_val_files = [
+            f
+            for f in os.listdir(self.config.val_dir)
+            if f.startswith("batch_") and f.endswith(".pt")
+        ]
+        total_val_files = len(all_val_files)
+
+        if total_val_files == 0:
+            raise ValueError(f"No validation files found in {self.config.val_dir}")
+
+        self.val_batches_per_rank = len(
+            [
+                i
+                for i in range(total_val_files)
+                if i % self.ddp_world_size == self.ddp_rank
+            ]
+        )
+
+        val_dataset = LoadPriorDataset(
+            data_dir=self.config.val_dir,
+            batch_size=self.config.batch_size,
+            ddp_world_size=self.ddp_world_size,
+            ddp_rank=self.ddp_rank,
+            start_from=0,
+            delete_after_load=False,
+            device=self.config.prior_device,
+        )
+
+        if self.master_process:
+            print(
+                f"Validation dataset configured from {self.config.val_dir} ({total_val_files} total files)."
+            )
+
+        # Create dataloader
+        self.val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=None,
+            shuffle=False,
+            num_workers=1,  # Keep this at 1 for static validation to avoid worker deadlock
+            prefetch_factor=2,
+            pin_memory=True if self.config.prior_device == "cpu" else False,
+            pin_memory_device=self.config.device
+            if self.config.prior_device == "cpu"
+            else "",
+        )
+
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
 
@@ -559,6 +613,21 @@ class Trainer:
                     ):
                         self.manage_checkpoint()
 
+            # Must run on ALL processes to prevent DDP hangs during all_reduce
+            if (
+                self.val_dataloader is not None
+                and self.curr_step % self.config.val_interval == 0
+            ):
+                val_results = self.validate()
+                results.update(val_results)
+
+                # Log to console only on master
+                if self.master_process:
+                    print(
+                        f"\n[Step {self.curr_step}] Validation | "
+                        + " | ".join([f"{k}: {v:.4f}" for k, v in val_results.items()])
+                    )
+
             # Logging to Weights & Biases
             if self.wandb_run is not None:
                 # Add learning rate to results
@@ -676,7 +745,9 @@ class Trainer:
 
         return micro_X, micro_W, micro_Z, micro_A, micro_Y_obs, micro_Y0, micro_Y1
 
-    def run_micro_batch(self, micro_batch, micro_batch_idx, num_micro_batches):
+    def run_micro_batch(
+        self, micro_batch, micro_batch_idx, num_micro_batches, is_train=True
+    ):
         """Process a micro batch for gradient accumulation.
 
         Parameters
@@ -860,8 +931,12 @@ class Trainer:
 
             total_loss = loss_y0 + loss_y1
 
-        scaled_loss = total_loss / num_micro_batches
-        self.scaler.scale(scaled_loss).backward()
+        if is_train:
+            scaled_loss = total_loss / num_micro_batches
+            self.scaler.scale(scaled_loss).backward()
+            reported_loss_total = scaled_loss.item()
+        else:
+            reported_loss_total = total_loss.item()
 
         # 6. Calculate Mean Squared Error of the CATE for WandB tracking (No Gradients)
         with torch.no_grad():
@@ -880,10 +955,16 @@ class Trainer:
             mse_cate = F.mse_loss(pred_cate, true_cate)
 
             micro_results = {
-                "loss_total": scaled_loss.item(),
-                "mse_cate": (mse_cate.item() / num_micro_batches),
-                "loss_y0": (loss_y0.item() / num_micro_batches),
-                "loss_y1": (loss_y1.item() / num_micro_batches),
+                "loss_total": reported_loss_total if is_train else total_loss.item(),
+                "mse_cate": (mse_cate.item() / num_micro_batches)
+                if is_train
+                else mse_cate.item(),
+                "loss_y0": (loss_y0.item() / num_micro_batches)
+                if is_train
+                else loss_y0.item(),
+                "loss_y1": (loss_y1.item() / num_micro_batches)
+                if is_train
+                else loss_y1.item(),
             }
             self.last_results = micro_results
 
@@ -969,6 +1050,88 @@ class Trainer:
         self.scheduler.step()
 
         return results
+
+    def run_val_batch(self, batch):
+        """Evaluate the model on a batch without gradients."""
+        batch = [t.to_padded_tensor(padding=0.0) if t.is_nested else t for t in batch]
+
+        num_micro_batches = math.ceil(
+            self.config.batch_size / self.config.micro_batch_size
+        )
+        micro_batches = [
+            torch.split(t, self.config.micro_batch_size, dim=0) for t in batch
+        ]
+        micro_batches = list(zip(*micro_batches))
+
+        results = {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
+        valid_micro_batches = 0
+
+        for idx, micro_batch in enumerate(micro_batches):
+            try:
+                with self.amp_ctx:
+                    micro_results = self.run_micro_batch(
+                        micro_batch, idx, num_micro_batches, is_train=False
+                    )
+                    for k, v in micro_results.items():
+                        results[k] += v
+                valid_micro_batches += 1
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                continue
+
+        # Average across the valid micro-batches for this specific batch
+        if valid_micro_batches > 0:
+            for k in results.keys():
+                results[k] /= valid_micro_batches
+
+        return results
+
+    @torch.no_grad()
+    def validate(self):
+        """Run a full validation pass over the val_dir."""
+        # Safety check if there are no batches for this rank
+        if self.val_dataloader is None or getattr(self, "val_batches_per_rank", 0) == 0:
+            return {}
+
+        self.model.eval()
+        total_metrics = {
+            "loss_total": 0.0,
+            "mse_cate": 0.0,
+            "loss_y0": 0.0,
+            "loss_y1": 0.0,
+        }
+
+        # We recreate the iterator to loop through the directory from the start
+        val_iterator = iter(self.val_dataloader)
+
+        # EXACTLY loop self.val_batches_per_rank times to prevent timeout
+        for _ in range(self.val_batches_per_rank):
+            try:
+                batch = next(val_iterator)
+                batch_results = self.run_val_batch(batch)
+                for k, v in batch_results.items():
+                    total_metrics[k] += v
+            except StopIteration:
+                # Fallback just in case the dataset does raise StopIteration
+                break
+
+        self.model.train()
+
+        # Average the metrics across the batches processed by this rank
+        for k in total_metrics.keys():
+            total_metrics[k] /= self.val_batches_per_rank
+
+        # If DDP, average the metrics across all GPUs
+        if self.ddp:
+            for k, v in total_metrics.items():
+                tensor_v = torch.tensor(v, device=self.config.device)
+                torch.distributed.all_reduce(
+                    tensor_v, op=torch.distributed.ReduceOp.AVG
+                )
+                total_metrics[k] = tensor_v.item()
+
+        # Prefix keys with "val_" for clean logging
+        return {f"val_{k}": v for k, v in total_metrics.items()}
 
 
 if __name__ == "__main__":
