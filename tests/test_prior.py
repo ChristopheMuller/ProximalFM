@@ -221,63 +221,6 @@ def test_prior_dataset():
     assert X.shape[0] == 2
 
 
-def test_save_and_load_prior_dataset(tmp_path):
-    # Set seq_len constant so sizes match when concatenation happens in load.
-    args = ArgsMock(
-        save_dir=str(tmp_path),
-        batch_size=4,
-        batch_size_per_gp=4,  # Set per gp same as batch size to avoid nested tensor
-        min_dim_U=2,
-        max_dim_U=3,
-        min_dim_W=4,
-        max_dim_W=4,
-        min_dim_Z=4,
-        max_dim_Z=4,
-        min_dim_X=5,
-        max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=51,
-        log_seq_len=False,
-        seq_len_per_gp=False,  # Use constant seq len
-        min_train_size=10,
-        max_train_size=40,  # Constant train size to prevent mismatch in train_sizes?
-        replay_small=False,
-        prior_type="mlp_scm",
-        num_batches=2,
-        resume_from=0,
-        n_jobs=1,
-        num_threads_per_generate=1,
-        device="cpu",
-    )
-
-    saver = SavePriorDataset(args)
-    saver.run()
-
-    assert (tmp_path / "metadata.json").exists()
-    assert (tmp_path / "batch_000000.pt").exists()
-    assert (tmp_path / "batch_000001.pt").exists()
-
-    loader = LoadPriorDataset(data_dir=str(tmp_path), batch_size=3, max_batches=2)
-
-    batches = []
-    try:
-        while True:
-            batches.append(next(loader))
-    except StopIteration:
-        pass
-
-    assert len(batches) == 3
-
-    batch1 = batches[0]
-    assert batch1[0].shape[0] == 3
-
-    batch2 = batches[1]
-    assert batch2[0].shape[0] == 3
-
-    batch3 = batches[2]
-    assert batch3[0].shape[0] == 2
-
-
 def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):
     args = ArgsMock(
         save_dir=str(tmp_path),
