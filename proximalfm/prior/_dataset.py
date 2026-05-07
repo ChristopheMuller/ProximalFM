@@ -636,17 +636,55 @@ class SCMPrior(Prior):
                 continue
 
             input_y = torch.cat([U, X, W], dim=-1)
-            input_joint = self.prepare_input(type="y", input=input_y, **params)
-            f_y = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"] + 1,
+
+            # 1. Generate Baseline Outcome: Y(0)
+            f_y_base = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
                 num_outputs=1,
                 **params,
             ).to(self.device)
-            y_joint = f_y(input_joint).squeeze(-1)
+            y_base = f_y_base(input_y).squeeze(-1)
+            y_base_std = y_base.std() + 1e-8
 
-            n = input_y.shape[0]
-            y0, y1 = y_joint[:n], y_joint[n:]
+            # 2. Generate Raw Heterogeneous Treatment Effect
+            f_cate = prior_cls(
+                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
+                num_outputs=1,
+                **params,
+            ).to(self.device)
+            raw_cate = f_cate(input_y).squeeze(-1)
 
+            # 3. Standardize to isolate pure heterogeneity (mean=0, std=1)
+            normalized_cate = (raw_cate - raw_cate.mean()) / (raw_cate.std() + 1e-8)
+
+            # 4. Define ATE and HTE
+            cate_hte = normalized_cate * y_base_std * params.get("cate_strength", 1.0)
+
+            random_magnitude = torch.rand(1, device=self.device).squeeze()
+            random_sign = (
+                torch.randint(0, 2, (1,), device=self.device).squeeze().float() * 2 - 1
+            )
+
+            ate = (
+                y_base_std
+                * params.get("ate_strength", 1.0)
+                * random_magnitude
+                * random_sign
+            )
+            cate = ate + cate_hte
+
+            # 5. Compute the shifted outcome
+            y_shifted = y_base + cate
+
+            # 6. Randomly allocate to Y(0) and Y(1) to balance variance asymmetry
+            if torch.rand(1).item() > 0.5:
+                y0 = y_base
+                y1 = y_shifted
+            else:
+                y0 = y_shifted
+                y1 = y_base
+
+            # 7. Compute observed Y
             y = torch.where(A == 1, y1, y0)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
