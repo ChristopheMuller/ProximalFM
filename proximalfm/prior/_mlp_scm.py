@@ -175,23 +175,21 @@ class MLPSCM(nn.Module):
         layers = [nn.Linear(self.in_dim, self.hidden_dim)]
 
         for _ in range(self.num_layers - 1):
-            layers.append(self.generate_layer_modules(is_output_layer=False))
-
-        layers.append(self.generate_layer_modules(is_output_layer=True))
+            layers.append(self.generate_layer_modules())
 
         self.layers = nn.Sequential(*layers).to(device)
         self.initialize_parameters()
 
-    def generate_layer_modules(self, is_output_layer=False):
+    def generate_layer_modules(self):
         """Generates a layer module with activation, linear transformation, and noise."""
-        out_dim = self.num_outputs if is_output_layer else self.hidden_dim
+        # Removed is_output_layer flag; all layers maintain hidden_dim width
         activation = self.mlp_activations()
-        linear_layer = nn.Linear(self.hidden_dim, out_dim)
+        linear_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
 
         if self.pre_sample_noise_std:
             noise_std = torch.abs(
                 torch.normal(
-                    torch.zeros(size=(1, out_dim), device=self.device),
+                    torch.zeros(size=(1, self.hidden_dim), device=self.device),
                     float(self.noise_std),
                 )
             )
@@ -242,15 +240,30 @@ class MLPSCM(nn.Module):
         self,
         input: torch.Tensor,
     ) -> torch.Tensor:
-        """Passes the input tensor through the mechanism block."""
         out = input
+        outputs = []
 
-        # Simple sequential pass
+        # 1. Sequential pass & collect intermediate states
         for layer in self.layers:
             out = layer(out)
+            outputs.append(out)
 
-        # Check for NaNs and handle them
-        if torch.any(torch.isnan(out)):
-            out = torch.nan_to_num(out, nan=0.0)
+        # 2. Pool all hidden states together
+        pool = torch.cat(outputs, dim=-1)
 
-        return out
+        # 3. Permutation sampling
+        random_perm = torch.randperm(pool.shape[-1], device=pool.device)
+        indices = random_perm[: self.num_outputs]
+
+        # Sort indices to preserve topological ordering.
+        # This ensures that if variable A causally precedes B in the generation graph,
+        # it appears earlier in the returned feature vector.
+        indices, _ = torch.sort(indices)
+
+        final_out = pool[:, indices]
+
+        # 4. Check for NaNs and handle them
+        if torch.any(torch.isnan(final_out)):
+            final_out = torch.nan_to_num(final_out, nan=0.0)
+
+        return final_out
