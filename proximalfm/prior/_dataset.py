@@ -737,22 +737,6 @@ class SCMPrior(Prior):
                     d_Z,
                 )
 
-    def prepare_input(self, type: str, input: Tensor, **params) -> Tensor:
-        if type == "A":
-            return input
-
-        elif type == "y":
-            n = input.shape[0]
-
-            A0 = torch.zeros((n, 1), device=input.device)
-            A1 = torch.ones((n, 1), device=input.device)
-
-            input_y0 = torch.cat([input, A0], dim=-1)
-            input_y1 = torch.cat([input, A1], dim=-1)
-
-            input_joint = torch.cat([input_y0, input_y1], dim=0)
-            return input_joint
-
     def sample_A(
         self, logits: Tensor, epsilon: float = 0.05, temperature: float = 1.0
     ) -> Tensor:

@@ -83,4 +83,20 @@ DEFAULT_SAMPLED_HP = {
         "choice_values": [True, False],
     },
     "propensity_temperature": {"distribution": "uniform", "min": 0.5, "max": 2.0},
+    "cate_strength": {
+        "distribution": "meta_trunc_norm_log_scaled",
+        "min_mean": 0.1,
+        "max_mean": 1.5,
+        "min_std": 0.1,
+        "max_std": 1.0,
+        "lower_bound": 0.01,
+        "round": False,
+    },
+    "ate_strength": {
+        "distribution": "meta_gamma",
+        "max_alpha": 5.0,
+        "max_scale": 1.0,
+        "lower_bound": 0.0,
+        "round": False,
+    },
 }

@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="seaborn")  # S
 
 #%% --- 1. Instantiate the Prior Dataset ---
 dataset = PriorDataset(
-    batch_size=3,
+    batch_size=2,
     min_dim_U=1,
     max_dim_U=1,
     min_dim_W=1,
@@ -33,7 +33,7 @@ dataset = PriorDataset(
 )
 
 #%% --- 2. Generate and Store All Datasets (Flattened) ---
-n_batches = 5
+n_batches = 20
 iterator = iter(dataset)
 
 print(f"Generating {n_batches * dataset.batch_size} datasets...")
@@ -196,7 +196,7 @@ plt.show()
 
 #%% --- 6. Plot Individual Datasets ---
 
-K_to_plot = 10
+K_to_plot = 5
 fig2, axes2 = plt.subplots(K_to_plot, 3, figsize=(18, 5 * K_to_plot))
 
 if K_to_plot == 1:
