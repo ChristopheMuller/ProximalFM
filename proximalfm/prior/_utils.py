@@ -13,7 +13,11 @@ class GaussianNoise(nn.Module):
         self.std = std
 
     def forward(self, X):
-        return X + torch.normal(torch.zeros_like(X), self.std)
+        # We handle case where self.std might be a Tensor or a float.
+        # If it's a tensor, we use torch.randn_like to support broadcasting over elements.
+        if isinstance(self.std, torch.Tensor):
+            return X + torch.randn_like(X) * self.std
+        return X + torch.empty_like(X).normal_(0, self.std)
 
 
 class XSampler:

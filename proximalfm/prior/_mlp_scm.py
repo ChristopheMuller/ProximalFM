@@ -210,18 +210,25 @@ class MLPSCM(nn.Module):
     def initialize_with_block_dropout(self, param, index):
         """Initializes parameters using block-wise dropout."""
         nn.init.zeros_(param)
-        n_blocks = random.randint(1, math.ceil(math.sqrt(min(param.shape))))
-        block_size = [dim // n_blocks for dim in param.shape]
-        keep_prob = (n_blocks * block_size[0] * block_size[1]) / param.numel()
+        shape = param.shape
+        n_blocks = random.randint(1, math.ceil(math.sqrt(min(shape))))
+
+        b_rows = shape[0] // n_blocks
+        b_cols = shape[1] // n_blocks
+
+        if b_rows == 0 or b_cols == 0:
+             nn.init.normal_(param, std=self.init_std)
+             return
+
+        keep_prob = (n_blocks * b_rows * b_cols) / param.numel()
+        std = self.init_std / (keep_prob**0.5 if self.scale_init_std_by_dropout else 1)
+
         for block in range(n_blocks):
-            block_slice = tuple(
-                slice(dim * block, dim * (block + 1)) for dim in block_size
-            )
-            nn.init.normal_(
-                param[block_slice],
-                std=self.init_std
-                / (keep_prob**0.5 if self.scale_init_std_by_dropout else 1),
-            )
+            r_start = block * b_rows
+            c_start = block * b_cols
+            r_end = r_start + b_rows
+            c_end = c_start + b_cols
+            nn.init.normal_(param[r_start:r_end, c_start:c_end], std=std)
 
     def initialize_normally(self, param, index):
         """Initializes parameters using normal distribution."""
@@ -260,10 +267,7 @@ class MLPSCM(nn.Module):
         # it appears earlier in the returned feature vector.
         indices, _ = torch.sort(indices)
 
-        final_out = pool[:, indices]
+        final_out = pool[..., indices]
 
-        # 4. Check for NaNs and handle them
-        if torch.any(torch.isnan(final_out)):
-            final_out = torch.nan_to_num(final_out, nan=0.0)
-
-        return final_out
+        # 4. Check for NaNs and handle them (optimized: unconditional vector replacement)
+        return torch.nan_to_num(final_out, nan=0.0)
