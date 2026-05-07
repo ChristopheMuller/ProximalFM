@@ -249,10 +249,15 @@ class TreeSCM(nn.Module):
         self.in_dim = in_dim
         self.num_outputs = num_outputs
 
-        # Tree models are computationally heavy, so we keep layers and dims small by default.
-        # Overriding kwargs if necessary, but using the passed parameters as a base.
-        self.num_layers = max(1, num_layers)
+        # Ensure we have at least 2 layers to sample from intermediate steps
+        self.num_layers = max(2, num_layers)
         self.hidden_dim = hidden_dim
+
+        # Ensure the pool of intermediate nodes is large enough
+        self.pool_size = self.num_layers * self.hidden_dim
+        assert (
+            self.pool_size >= self.num_outputs
+        ), f"Network too small: {self.pool_size} hidden nodes cannot provide {self.num_outputs} outputs."
 
         self.tree_model = tree_model
         self.tree_depth_lambda = max_depth_lambda
@@ -263,24 +268,14 @@ class TreeSCM(nn.Module):
 
         # Build layers sequentially
         layers = []
+        for _ in range(self.num_layers):
+            layers.append(self.generate_layer_modules())
 
-        if self.num_layers == 1:
-            # If only 1 layer, it goes straight from input to output
-            layers.append(self.generate_layer_modules(is_output_layer=True))
-        else:
-            # First layer outputs to hidden_dim
-            layers.append(self.generate_layer_modules(is_output_layer=False))
-
-            # Intermediate layers
-            for _ in range(self.num_layers - 2):
-                layers.append(self.generate_layer_modules(is_output_layer=False))
-
-            layers.append(self.generate_layer_modules(is_output_layer=True))
         self.layers = nn.Sequential(*layers).to(device)
 
-    def generate_layer_modules(self, is_output_layer=False):
-        """Generates a layer module with activation, tree-based transformation, and noise."""
-        out_dim = self.num_outputs if is_output_layer else self.hidden_dim
+    def generate_layer_modules(self):
+        """Generates a layer module with tree-based transformation and noise."""
+        out_dim = self.hidden_dim  # All layers maintain hidden_dim width
 
         max_depth = 2 + int(np.random.exponential(1 / self.tree_depth_lambda))
         n_estimators = 1 + int(np.random.exponential(1 / self.tree_n_estimators_lambda))
@@ -309,29 +304,29 @@ class TreeSCM(nn.Module):
         self,
         input: torch.Tensor,
     ) -> torch.Tensor:
-        """Passes the input tensor through the tree-based mechanism block.
-
-        Parameters
-        ----------
-        input : torch.Tensor
-            Input tensor containing the concatenated parent variables.
-            Shape: (seq_len, in_dim)
-
-        Returns
-        -------
-        torch.Tensor
-            The generated child variables.
-            Shape: (seq_len, num_outputs)
-        """
+        """Passes the input tensor through the tree mechanism and samples intermediates."""
         out = input
+        outputs = []
 
-        # Simple sequential pass through the tree layers and noise
+        # 1. Sequential pass & collect intermediate states
         for layer in self.layers:
             out = layer(out)
+            outputs.append(out)
 
-        # Check for NaNs (which can occasionally happen with extreme tree splits or noise)
-        # and handle them safely
-        if torch.any(torch.isnan(out)):
-            out = torch.nan_to_num(out, nan=0.0)
+        # 2. Pool all hidden states together
+        pool = torch.cat(outputs, dim=-1)
 
-        return out
+        # 3. Permutation sampling
+        random_perm = torch.randperm(pool.shape[-1], device=pool.device)
+        indices = random_perm[: self.num_outputs]
+
+        # Sort indices to preserve the causal/topological ordering
+        indices, _ = torch.sort(indices)
+
+        final_out = pool[:, indices]
+
+        # 4. Check for NaNs and handle them safely
+        if torch.any(torch.isnan(final_out)):
+            final_out = torch.nan_to_num(final_out, nan=0.0)
+
+        return final_out
