@@ -260,10 +260,6 @@ class MLPSCM(nn.Module):
         # it appears earlier in the returned feature vector.
         indices, _ = torch.sort(indices)
 
-        final_out = pool[:, indices]
+        final_out = pool[..., indices]
 
-        # 4. Check for NaNs and handle them
-        if torch.any(torch.isnan(final_out)):
-            final_out = torch.nan_to_num(final_out, nan=0.0)
-
-        return final_out
+        return torch.nan_to_num(final_out, nan=0.0)
