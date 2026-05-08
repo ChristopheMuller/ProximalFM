@@ -628,11 +628,11 @@ class SCMPrior(Prior):
             )
             a_mean = A.float().mean().item()
             if a_mean < 0.05 or a_mean > 0.95:
-                print(
-                    f"Degenerate treatment distribution: mean A={a_mean:.3f}, "
-                    f"train_size={params['train_size']}, seq_len={params['seq_len']}, "
-                    f"A_dist_full={A_logits.float().sigmoid().mean().item():.3f}"
-                )
+                # print(
+                #     f"Degenerate treatment distribution: mean A={a_mean:.3f}, "
+                #     f"train_size={params['train_size']}, seq_len={params['seq_len']}, "
+                #     f"A_dist_full={A_logits.float().sigmoid().mean().item():.3f}"
+                # )
                 continue
 
             input_y = torch.cat([U, X, W], dim=-1)
