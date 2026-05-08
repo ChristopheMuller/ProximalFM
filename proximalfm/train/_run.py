@@ -974,6 +974,20 @@ class Trainer:
                 if is_train
                 else loss_y1.item(),
             }
+
+            if not is_train:
+                from proximalfm.train._eval import compute_po_metrics
+
+                po_metrics = compute_po_metrics(
+                    pred_y0=pred_y0,
+                    pred_y1=pred_y1,
+                    true_y0=y_test_0,
+                    true_y1=y_test_1,
+                    y0_scale=y0_scale,
+                    y1_scale=y1_scale,
+                )
+                micro_results.update(po_metrics)
+
             self.last_results = micro_results
 
         return micro_results
@@ -1071,7 +1085,7 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
+        results = {}
         valid_micro_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):
@@ -1081,6 +1095,8 @@ class Trainer:
                         micro_batch, idx, num_micro_batches, is_train=False
                     )
                     for k, v in micro_results.items():
+                        if k not in results:
+                            results[k] = 0.0
                         results[k] += v
                 valid_micro_batches += 1
             except torch.cuda.OutOfMemoryError:
@@ -1102,12 +1118,7 @@ class Trainer:
             return {}
 
         self.model.eval()
-        total_metrics = {
-            "loss_total": 0.0,
-            "mse_cate": 0.0,
-            "loss_y0": 0.0,
-            "loss_y1": 0.0,
-        }
+        total_metrics = {}
 
         # We recreate the iterator to loop through the directory from the start
         val_iterator = iter(self.val_dataloader)
@@ -1118,6 +1129,8 @@ class Trainer:
                 batch = next(val_iterator)
                 batch_results = self.run_val_batch(batch)
                 for k, v in batch_results.items():
+                    if k not in total_metrics:
+                        total_metrics[k] = 0.0
                     total_metrics[k] += v
             except StopIteration:
                 # Fallback just in case the dataset does raise StopIteration
