@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="seaborn")  # S
 
 #%% --- 1. Instantiate the Prior Dataset ---
 dataset = PriorDataset(
-    batch_size=2,
+    batch_size=10,
     min_dim_U=1,
     max_dim_U=1,
     min_dim_W=1,
@@ -27,13 +27,13 @@ dataset = PriorDataset(
     min_dim_X=2,
     max_dim_X=2,
     seq_len_per_gp=False,
-    max_seq_len=500,
+    max_seq_len=300,
     prior_type="mlp_scm",
     device="cpu",
 )
 
 #%% --- 2. Generate and Store All Datasets (Flattened) ---
-n_batches = 20
+n_batches = 10
 iterator = iter(dataset)
 
 print(f"Generating {n_batches * dataset.batch_size} datasets...")
@@ -196,8 +196,8 @@ plt.show()
 
 #%% --- 6. Plot Individual Datasets ---
 
-K_to_plot = 5
-fig2, axes2 = plt.subplots(K_to_plot, 3, figsize=(18, 5 * K_to_plot))
+K_to_plot = 15
+fig2, axes2 = plt.subplots(K_to_plot, 4, figsize=(24, 5 * K_to_plot))
 
 if K_to_plot == 1:
     axes2 = [axes2]
@@ -210,12 +210,16 @@ for idx, ds in enumerate(all_datasets[:K_to_plot]):
     ax_scatter = axes2[idx][0]
     ax_true = axes2[idx][1]
     ax_obs = axes2[idx][2]
+    ax_cate = axes2[idx][3]  # New axis for Y(1) - Y(0)
 
     # Flatten just for the scatter and KDE plots (handles 1D variables gracefully)
     y0_flat = y0_samp.ravel()
     y1_flat = y1_samp.ravel()
     y_obs_flat = y_obs_samp.ravel()
     a_flat = a_samp.ravel()
+
+    # Calculate true Individual Treatment Effects (CATE)
+    cate_flat = y1_flat - y0_flat
 
     # 1. Scatter of Y0 vs Y1
     ax_scatter.scatter(y0_flat, y1_flat, alpha=0.5, color="purple", s=15)
@@ -266,6 +270,23 @@ for idx, ds in enumerate(all_datasets[:K_to_plot]):
     ax_obs.set_title(f"DGP {idx+1}: Confounded Observational Marginals")
     ax_obs.set_xlabel("Observed Outcome Value")
     ax_obs.legend()
+
+    # 4. True Treatment Effect Distribution (Y1 - Y0)
+    sns.kdeplot(cate_flat, fill=True, ax=ax_cate, color="mediumseagreen")
+
+    # Reference line for zero effect
+    ax_cate.axvline(x=0, color="red", linestyle="--", alpha=0.6, label="Zero Effect")
+
+    # Reference line for Average Treatment Effect (ATE)
+    ate = np.mean(cate_flat)
+    ax_cate.axvline(
+        x=ate, color="black", linestyle="-", alpha=0.8, label=f"ATE = {ate:.2f}"
+    )
+
+    ax_cate.set_title(f"DGP {idx+1}: True Treatment Effect (CATE)")
+    ax_cate.set_xlabel("Y(1) - Y(0)")
+    ax_cate.set_ylabel("Density")
+    ax_cate.legend()
 
 plt.tight_layout()
 plt.show()
