@@ -5,6 +5,9 @@ import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
 from sklearn.metrics import r2_score
 from tqdm import tqdm
 
@@ -99,6 +102,13 @@ metrics = {
     "Leakage Delta: Z _|_ W | (X, U)": [],
     "Leakage Delta: Y _|_ Z | (A, X, U)": [],
     "Leakage Delta: W _|_ (A, Z) | (X, U)": [],
+    "Confounding Bias (Naive ATE - True ATE)": [],
+    "Confounding Bias (Naive ATE - True ATE) Normalized": [],
+    "Outcome Variance Gap (Delta R^2_Y)": [],
+    "Treatment Selection Gap (Delta AUC_A)": [],
+    "True ATE": [],
+    "Naive ATE": [],
+    "Std of Y_obs": [],
 }
 
 print(
@@ -156,6 +166,52 @@ for ds in tqdm(all_datasets, desc="Evaluating Datasets"):
     )
     metrics["Leakage Delta: W _|_ (A, Z) | (X, U)"].append(delta_waz)
 
+    # --- 4.3: Confounding Bias (ATE Gap) ---
+    true_ate = np.mean(y1 - y0)
+
+    features_AX = np.concatenate([a_2d, x], axis=1)
+    lr_naive = LinearRegression().fit(features_AX, y_obs)
+    naive_ate = lr_naive.coef_[0]
+
+    bias = naive_ate - true_ate
+    metrics["Confounding Bias (Naive ATE - True ATE)"].append(bias)
+    metrics["Confounding Bias (Naive ATE - True ATE) Normalized"].append(
+        bias / np.std(y_obs)
+    )
+
+    # --- 4.4: Outcome Variance Gap (Delta R^2_Y) ---
+    features_AXU = np.concatenate([a_2d, x, u], axis=1)
+
+    rf_y_naive = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_AX, y_obs)
+    r2_y_naive = r2_score(y_obs, rf_y_naive.predict(features_AX))
+
+    rf_y_oracle = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_AXU, y_obs)
+    r2_y_oracle = r2_score(y_obs, rf_y_oracle.predict(features_AXU))
+
+    metrics["Outcome Variance Gap (Delta R^2_Y)"].append(r2_y_oracle - r2_y_naive)
+
+    # --- 4.5: Treatment Selection Gap (Delta AUC_A) ---
+    features_XZ = np.concatenate([x, z_2d], axis=1)
+    features_XZU = np.concatenate([x, z_2d, u], axis=1)
+
+    clf_a_naive = RandomForestClassifier(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_XZ, a)
+    auc_a_naive = roc_auc_score(a, clf_a_naive.predict_proba(features_XZ)[:, 1])
+
+    clf_a_oracle = RandomForestClassifier(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_XZU, a)
+    auc_a_oracle = roc_auc_score(a, clf_a_oracle.predict_proba(features_XZU)[:, 1])
+
+    metrics["Treatment Selection Gap (Delta AUC_A)"].append(auc_a_oracle - auc_a_naive)
+    metrics["True ATE"].append(true_ate)
+    metrics["Naive ATE"].append(naive_ate)
+    metrics["Std of Y_obs"].append(np.std(y_obs))
 
 #%% --- 5. Print Summary Reports & Visualizations ---
 print("\n" + "=" * 50)
@@ -189,6 +245,8 @@ for idx, (metric_name, values) in enumerate(metrics.items()):
 
     # Apply the requested x-axis limits
     ax.set_xlim(lower_limit, 1.1)
+    if idx == 5:
+        break
 
 plt.tight_layout()
 plt.show()
@@ -196,7 +254,7 @@ plt.show()
 
 #%% --- 6. Plot Individual Datasets ---
 
-K_to_plot = 15
+K_to_plot = 5
 fig2, axes2 = plt.subplots(K_to_plot, 4, figsize=(24, 5 * K_to_plot))
 
 if K_to_plot == 1:
@@ -290,5 +348,57 @@ for idx, ds in enumerate(all_datasets[:K_to_plot]):
 
 plt.tight_layout()
 plt.show()
+
+#%% --- 7. Print Summary Reports & Visualizations ---
+
+# --- Plotting the Confounding Metrics ---
+fig3, axes3 = plt.subplots(1, 3, figsize=(18, 5))
+
+# 1. Confounding Bias
+sns.histplot(
+    metrics["Confounding Bias (Naive ATE - True ATE) Normalized"],
+    ax=axes3[0],
+    color="crimson",
+    bins=20,
+    kde=True,
+)
+axes3[0].axvline(x=0, color="black", linestyle="--", alpha=0.8, label="Zero Bias")
+axes3[0].set_title(
+    "Confounding Bias (Normalized)\n(Naive ATE - True ATE)", fontweight="bold"
+)
+axes3[0].set_xlabel("Bias Magnitude")
+axes3[0].legend()
+
+# 2. Outcome Variance Gap
+sns.histplot(
+    metrics["Outcome Variance Gap (Delta R^2_Y)"],
+    ax=axes3[1],
+    color="darkorange",
+    bins=20,
+    kde=True,
+)
+axes3[1].axvline(x=0, color="black", linestyle="--", alpha=0.8)
+axes3[1].set_title(
+    "Outcome Variance Gap\n($\\Delta R^2$ when exposing U)", fontweight="bold"
+)
+axes3[1].set_xlabel("Additional $R^2$ from U")
+
+# 3. Treatment Selection Gap
+sns.histplot(
+    metrics["Treatment Selection Gap (Delta AUC_A)"],
+    ax=axes3[2],
+    color="darkviolet",
+    bins=20,
+    kde=True,
+)
+axes3[2].axvline(x=0, color="black", linestyle="--", alpha=0.8)
+axes3[2].set_title(
+    "Treatment Selection Gap\n($\\Delta$ AUC when exposing U)", fontweight="bold"
+)
+axes3[2].set_xlabel("Additional AUC from U")
+
+plt.tight_layout()
+plt.show()
+
 
 #%%
