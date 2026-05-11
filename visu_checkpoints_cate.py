@@ -1,203 +1,138 @@
 #%%
 
-import glob
-import os
-import re
-import math
-
-# import matplotlib.subplots
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-import yaml
-from tqdm import tqdm
+import numpy as np
+import matplotlib.pyplot as plt
 
-from proximalfm.models import build_model
-from proximalfm.Structure import ProximalPriorConfig, ModelConfig
-from proximalfm.PriorDataLoader import create_causal_data_loaders
+#%%
 
-MODEL = "bnn_complete__longRunMSE"
-FILTER_REMOVE_EPOCHS = []
-FILTER_KEEP_EPOCHS = [1, 10, 30, 50, 70, 100, 120, 150, 200, 250, 300, 330]
+from proximalfm.prior import PriorDataset
 
-def load_config() -> dict:
-    full_config = {}
-    config_training_path = os.path.join("checkpoints", MODEL, "train_config.yaml")
-    with open(config_training_path, "r") as f:
-        full_config["training"] = yaml.safe_load(f)
+#%%
 
-    config_prior_path = os.path.join("checkpoints", MODEL, "prior_config.yaml")
-    with open(config_prior_path, "r") as f:
-        full_config["prior"] = yaml.safe_load(f)
+prior = PriorDataset(
+    batch_size=1,
+    batch_size_per_gp=1,
+    min_dim_U=1,
+    max_dim_U=1,
+    min_dim_W=1,
+    max_dim_W=2,
+    min_dim_Z=1,
+    max_dim_Z=2,
+    min_dim_X=1,
+    max_dim_X=3,
+    min_seq_len=None,
+    max_seq_len=256,
+    log_seq_len=False,
+    seq_len_per_gp=False,
+    min_train_size=0.8,
+    max_train_size=0.95,
+    replay_small=False,
+    prior_type="mlp_scm",
+    device="cpu",
+)
 
-    config_model_path = os.path.join("checkpoints", MODEL, "model_config.yaml")
-    with open(config_model_path, "r") as f:
-        full_config["model"] = yaml.safe_load(f)
+batch = prior.get_batch(batch_size=2)
 
-    config_data_path = os.path.join("checkpoints", MODEL, "data_config.yaml")
-    with open(config_data_path, "r") as f:
-        full_config["data"] = yaml.safe_load(f)
+U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
 
-    return full_config
+if len(Y0.shape) == 1:
+    Y0 = Y0.unsqueeze(0)
+if len(Y1.shape) == 1:
+    Y1 = Y1.unsqueeze(0)
+if len(A.shape) == 1:
+    A = A.unsqueeze(0)
+if len(Y_obs.shape) == 1:
+    Y_obs = Y_obs.unsqueeze(0)
+y_obs_train = Y_obs[:, : train_sizes[0]]
+y_obs_test = Y_obs[:, train_sizes[0] :]
 
-def extract_epoch(filepath: str) -> int:
-    """Extract epoch number from checkpoint filename for sorting."""
-    match = re.search(r"model_epoch_(\d+)", os.path.basename(filepath))
-    return int(match.group(1)) if match else -1
+#%%
+import os
 
-def main():
-    config = load_config()
-    train_cfg = config["training"]
-    prior_cfg = config["prior"]
-    model_cfg = config["model"]
+checkpoint_path = "check_1/"
 
-    # ---------------------------------------------------------
-    # 1. Setup Device & Model
-    # ---------------------------------------------------------
-    device_str = train_cfg.get("device", "cpu")
-    if device_str == "cuda" and torch.cuda.is_available():
-        device = torch.device(f"cuda:{train_cfg.get('gpu', 0)}")
-    elif device_str == "mps" and torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-        
-    dtype = getattr(torch, model_cfg.get("dtype", "float32"))
+all_checkpoints = [
+    f
+    for f in os.listdir(checkpoint_path)
+    if f.startswith("step-") and f.endswith(".ckpt")
+]
 
-    config_model = ModelConfig(**model_cfg)
-    model = build_model(model_config=config_model).to(device, dtype=dtype)
-    model.eval()
+all_checkpoints.sort(key=lambda x: int(x.split("-")[1].split(".")[0]))
 
-    # ---------------------------------------------------------
-    # 2. Generate exactly 1 episode with K test points
-    # ---------------------------------------------------------
-    n_train = config["data"].get("context_size", 200)
-    k_test_points = 150
-    samples_per_episode = n_train + k_test_points
-    batch_size = 1
+for checkp in all_checkpoints:
+    print(checkpoint_path + checkp)
 
-    prior_config = ProximalPriorConfig(**prior_cfg)
+first_checkpoint = torch.load(checkpoint_path + all_checkpoints[0], map_location="cpu")
 
-    loaders = create_causal_data_loaders(
-        prior_config=prior_config,
-        batch_size=batch_size,       
-        min_episode_size=samples_per_episode,
-        max_episode_size=samples_per_episode,
-        train_episodes=1,            
-        val_episodes=1,     
-        num_workers=1,
-        seed=9999999,
+#%%
+from proximalfm._model import TabICL
+
+model = TabICL(**first_checkpoint["config"])
+
+# figures: 4 columns, and enough rows to fit all checkpoints
+num_checkpoints = len(all_checkpoints)
+num_cols = 4
+num_rows = (num_checkpoints + num_cols - 1) // num_cols
+
+fig, axes = plt.subplots(num_rows, num_cols, figsize=(4 * num_cols, 4 * num_rows))
+axes = axes.flatten()
+
+max_y_target = y_obs_test[0].max().item()
+min_y_target = y_obs_test[0].min().item()
+
+for i, checkp in enumerate(all_checkpoints):
+    checkpoint = torch.load(checkpoint_path + checkp, map_location="cpu")
+    print(f"Checkpoint: {checkp}, Step: {checkpoint['curr_step']}")
+
+    model.load_state_dict(checkpoint["state_dict"])
+
+    out = model.predict(
+        X,
+        W,
+        Z,
+        A.unsqueeze(-1).float(),
+        y_train=y_obs_train,
+        output_type="mean",
+        target="cate",
+    )[0]
+
+    axes[i].scatter(y_obs_test[0].cpu(), out.cpu())
+    min_x = min(min_y_target, out.min().item())
+    max_x = max(max_y_target, out.max().item())
+    axes[i].plot([min_x, max_x], [min_x, max_x], color="red", linestyle="--")
+    axes[i].set_title(f"{checkp}")
+    axes[i].set_xlabel("True CATE")
+    axes[i].set_ylabel("Predicted CATE")
+
+
+#%%
+
+
+for i, checkp in enumerate(all_checkpoints):
+    checkpoint = torch.load(checkpoint_path + checkp, map_location="cpu")
+    print(f"Checkpoint: {checkp}, Step: {checkpoint['curr_step']}")
+
+    model.load_state_dict(checkpoint["state_dict"])
+
+    out = model.predict(
+        X,
+        W,
+        Z,
+        A.unsqueeze(-1).float(),
+        y_train=y_obs_train,
+        output_type="distribution",
+        target="cate",
     )
-    
-    # Grab the single batch
-    batch = next(iter(loaders["val"]))
-    batch = {k: v.to(device) for k, v in batch.items()}
 
-    x = batch["X"]
-    z = batch["Z"]
-    w = batch["W"]
-    
-    # A and Y transposed to (1, N_total, 1)
-    a_full = batch["A"]
-    y_full = batch["Y"]
+    out_weights = out["y0"]["weights"][0, 0]
 
-    # True ITE for the k test points: shape (k_test_points,)
-    # Original shape before transpose is (seq_len, batch_size, 1)
-    true_ite = batch["ITE"][0, n_train:, 0].cpu().numpy()
+    # plot the weight shape:
+    plt.figure()
+    plt.bar(height=out_weights.cpu().numpy(), x=np.arange(len(out_weights)))
+    plt.title(f"Weights for {checkp}")
+    plt.xlabel("Bin Index")
+    plt.ylabel("Weight")
 
-    # ---------------------------------------------------------
-    # 3. Find and sort checkpoints
-    # ---------------------------------------------------------
-    path = os.path.join(train_cfg["save_dir"], train_cfg.get("exp_name", "cate_run"))
-    checkpoints = glob.glob(os.path.join(path, "model_epoch_*.pth"))
-    
-    checkpoints = [c for c in checkpoints if "best" not in c]
-    checkpoints.sort(key=extract_epoch)
 
-    if not checkpoints:
-        raise FileNotFoundError(f"No checkpoints found in {path} matching pattern 'model_epoch_*.pth'")
-
-    if FILTER_KEEP_EPOCHS:
-        checkpoints = [c for c in checkpoints if extract_epoch(c) in FILTER_KEEP_EPOCHS]
-    selected_checkpoints = [c for c in checkpoints if extract_epoch(c) not in FILTER_REMOVE_EPOCHS]
-    num_plots = len(selected_checkpoints)
-
-    # ---------------------------------------------------------
-    # 4. Evaluate and Plot
-    # ---------------------------------------------------------
-    cols = 3
-    rows = math.ceil(num_plots / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(24, 5 * rows))
-
-    axes = np.array(axes).flatten()
-
-    for idx, ckpt_path in enumerate(tqdm(selected_checkpoints, desc="Evaluating Checkpoints")):
-        epoch = extract_epoch(ckpt_path)
-        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        
-        with torch.no_grad():
-            # Slice A and Y to only include the context rows
-            a_train = a_full[:, :n_train, 0] # (1, n_train)
-            y_train = y_full[:, :n_train, 0] # (1, n_train)
-            
-            # Forward pass
-            mean, var = model.estimate_CATE(x=x, z=z, w=w, a_train=a_train, y_train=y_train, return_log_variance=True)
-
-            # Extract query predictions. `out` has shape (1, k_test_points, 2)
-            pred_mean = mean[0, :, 0].cpu().numpy()
-            if var is not None:
-                pred_log_var = var[0, :, 0].cpu().numpy()   
-                pred_std = np.exp(0.5 * pred_log_var)
-
-        # Plotting
-        ax = axes[idx]
-        
-        # Perfect prediction line
-        min_val = min(true_ite.min(), pred_mean.min()) - 0.2
-        max_val = max(true_ite.max(), pred_mean.max()) + 0.2
-        ax.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label="Perfect Prediction")
-
-        # Scatter with error bars (2 std devs for ~95% confidence interval)
-        if var is not None:
-            ax.errorbar(
-                true_ite, 
-                pred_mean, 
-                yerr=2 * pred_std, 
-                fmt='o', 
-                alpha=0.6, 
-                capsize=3,
-                ecolor='gray',
-                markerfacecolor='royalblue',
-                markeredgecolor='darkblue',
-                label=r"Pred Mean $\pm 2\sigma$"
-            )
-        else:
-            ax.scatter(
-                true_ite, 
-                pred_mean, 
-                alpha=0.6, 
-                color='royalblue', 
-                edgecolor='darkblue', 
-                label="Predicted CATE"
-            )
-
-        ax.set_title(f"Epoch {epoch}", fontsize=14)
-        ax.set_xlabel("True ITE")
-        ax.set_ylabel("Predicted CATE")
-        ax.set_xlim([true_ite.min(), true_ite.max()])
-        ax.set_ylim([min_val, max_val])
-        ax.grid(True, alpha=0.3)
-        if idx == 0:
-            ax.legend()
-
-    # Hide any unused subplots
-    for j in range(len(selected_checkpoints), len(axes)):
-        fig.delaxes(axes[j])
-
-    plt.tight_layout()
-    plt.show()
-
-if __name__ == "__main__":
-    main()
-# %%
+#%%
