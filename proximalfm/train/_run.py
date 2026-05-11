@@ -654,9 +654,9 @@ class Trainer:
 
             # Logging to Weights & Biases
             if self.wandb_run is not None:
-                # Add learning rate to results
                 results["lr"] = self.scheduler.get_last_lr()[0]
-                wandb.log(results, step=self.curr_step)
+                if self.curr_step > wandb.run.step:
+                    wandb.log(results, step=self.curr_step)
 
     def validate_micro_batch(self, micro_seq_len, micro_train_size):
         """Validate consistent sequence length and train size within a micro batch.
