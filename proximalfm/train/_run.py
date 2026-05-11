@@ -303,6 +303,11 @@ class Trainer:
                 f"Model built: {num_params:,} trainable params | {frozen_params:,} frozen params."
             )
 
+            if self.wandb_run is not None:
+                self.wandb_run.summary["trainable_params"] = num_params
+                self.wandb_run.summary["frozen_params"] = frozen_params
+                self.wandb_run.summary["total_params"] = num_params + frozen_params
+
         # Compile model if requested
         if self.config.model_compile:
             model = torch.compile(model, dynamic=True)
