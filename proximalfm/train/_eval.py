@@ -43,7 +43,6 @@ class CausalEvaluator:
         nrmse_cate = rmse_cate / y_obs_std.squeeze(-1)
 
         return {
-            "cate/rmse": rmse_cate.mean().item(),
             "cate/nrmse": nrmse_cate.mean().item(),
         }
 
