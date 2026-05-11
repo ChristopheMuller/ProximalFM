@@ -63,7 +63,6 @@ from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
 from ._hp_sampling import HpSamplerList
-from ._reg2cls import Reg2Cls, standard_scaling, outlier_removing
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -204,13 +203,13 @@ class Prior:
 
         # Check for valid ranges based on type
         if isinstance(min_train_size, int) and isinstance(max_train_size, int):
-            assert (
-                0 < min_train_size < max_train_size
-            ), "0 < min_train_size < max_train_size"
+            assert 0 < min_train_size < max_train_size, (
+                "0 < min_train_size < max_train_size"
+            )
         elif isinstance(min_train_size, float) and isinstance(max_train_size, float):
-            assert (
-                0 < min_train_size < max_train_size < 1
-            ), "0 < min_train_size < max_train_size < 1"
+            assert 0 < min_train_size < max_train_size < 1, (
+                "0 < min_train_size < max_train_size < 1"
+            )
         else:
             raise ValueError(
                 "Both training sizes must be of the same type (int or float)"
@@ -584,6 +583,40 @@ class SCMPrior(Prior):
         else:
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 
+        f_X = prior_cls(
+            in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
+        ).to(self.device)
+
+        f_W = prior_cls(
+            in_dim=params["dim_U"] + params["dim_X"],
+            num_outputs=params["dim_W"],
+            **params,
+        ).to(self.device)
+
+        f_Z = prior_cls(
+            in_dim=params["dim_U"] + params["dim_X"],
+            num_outputs=params["dim_Z"],
+            **params,
+        ).to(self.device)
+
+        f_A = prior_cls(
+            in_dim=params["dim_U"] + params["dim_X"] + params["dim_Z"],
+            num_outputs=1,
+            **params,
+        ).to(self.device)
+
+        f_y_base = prior_cls(
+            in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
+            num_outputs=1,
+            **params,
+        ).to(self.device)
+
+        f_cate = prior_cls(
+            in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
+            num_outputs=1,
+            **params,
+        ).to(self.device)
+
         while True:
             u_sampler = XSampler(
                 seq_len=params["seq_len"],
@@ -594,32 +627,14 @@ class SCMPrior(Prior):
             )
             U = u_sampler.sample()
 
-            f_X = prior_cls(
-                in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
-            ).to(self.device)
             X = f_X(U)
 
             input_WZ = torch.cat([U, X], dim=-1)
-            f_W = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"],
-                num_outputs=params["dim_W"],
-                **params,
-            ).to(self.device)
             W = f_W(input_WZ)
 
-            f_Z = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"],
-                num_outputs=params["dim_Z"],
-                **params,
-            ).to(self.device)
             Z = f_Z(input_WZ)
 
             input_A = torch.cat([U, X, Z], dim=-1)
-            f_A = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_Z"],
-                num_outputs=1,
-                **params,
-            ).to(self.device)
             A_logits = f_A(input_A).squeeze(-1)
             A = self.sample_A(
                 A_logits,
@@ -638,20 +653,10 @@ class SCMPrior(Prior):
             input_y = torch.cat([U, X, W], dim=-1)
 
             # 1. Generate Baseline Outcome: Y(0)
-            f_y_base = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                num_outputs=1,
-                **params,
-            ).to(self.device)
             y_base = f_y_base(input_y).squeeze(-1)
             y_base_std = y_base.std() + 1e-8
 
             # 2. Generate Raw Heterogeneous Treatment Effect
-            f_cate = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                num_outputs=1,
-                **params,
-            ).to(self.device)
             raw_cate = f_cate(input_y).squeeze(-1)
 
             # 3. Standardize to isolate pure heterogeneity (mean=0, std=1)
