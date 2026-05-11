@@ -104,9 +104,7 @@ def test_compute_cate_metrics_perfect_prediction(evaluator, batch_size, seq_len)
     metrics = evaluator.compute_cate_metrics(pred_cate, true_cate, y_obs_std)
 
     # Updated keys to match "cate/" instead of "val_cate/"
-    assert "cate/rmse" in metrics
     assert "cate/nrmse" in metrics
-    assert metrics["cate/rmse"] == pytest.approx(0.0)
     assert metrics["cate/nrmse"] == pytest.approx(0.0)
 
 
@@ -122,10 +120,8 @@ def test_compute_cate_metrics_known_values(evaluator, offset, scale):
 
     metrics = evaluator.compute_cate_metrics(pred_cate, true_cate, y_obs_std)
 
-    expected_rmse = offset
     expected_nrmse = offset / scale
 
-    assert metrics["cate/rmse"] == pytest.approx(expected_rmse)
     assert metrics["cate/nrmse"] == pytest.approx(expected_nrmse)
 
 
@@ -166,12 +162,11 @@ def test_evaluate_all(evaluator):
     )
 
     # Check that all keys from both sub-functions are present
-    expected_keys = ["po/nrmse_y0", "po/nrmse_y1", "cate/rmse", "cate/nrmse"]
+    expected_keys = ["po/nrmse_y0", "po/nrmse_y1", "cate/nrmse"]
     for key in expected_keys:
         assert key in metrics
 
     # Check basic math on the combined output
     assert metrics["po/nrmse_y0"] == pytest.approx(1.0)
     assert metrics["po/nrmse_y1"] == pytest.approx(2.0)
-    assert metrics["cate/rmse"] == pytest.approx(3.0)
     assert metrics["cate/nrmse"] == pytest.approx(3.0)
