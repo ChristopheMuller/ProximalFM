@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 from tqdm import tqdm
+import datetime
 import wandb
 import yaml
 
@@ -206,8 +207,8 @@ class Trainer:
                     with open(id_path, "r") as f:
                         self.config.wandb_id = f.read().strip()
 
-            current_time = timeit.default_timer()
-            name_with_time = f"{self.config.wandb_name}_{current_time:.0f}"
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            name_with_time = f"{self.config.wandb_name}_{current_time}"
 
             self.wandb_run = wandb.init(
                 dir=self.config.wandb_dir,
@@ -424,6 +425,13 @@ class Trainer:
             else "",
         )
 
+        def cycle(iterable):
+            while True:
+                for x in iterable:
+                    yield x
+
+        self.val_iterator = iter(cycle(self.val_dataloader))
+
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
 
@@ -626,9 +634,8 @@ class Trainer:
                         self.manage_checkpoint()
 
             # Must run on ALL processes to prevent DDP hangs during all_reduce
-            if (
-                self.val_dataloader is not None
-                and self.curr_step % self.config.val_interval == 0
+            if self.val_dataloader is not None and (
+                self.curr_step % self.config.val_interval == 0 or self.curr_step == 1
             ):
                 val_results = self.validate()
                 results.update(val_results)
@@ -1126,40 +1133,31 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self):
-        """Run a full validation pass over the val_dir."""
-        # Safety check if there are no batches for this rank
-        if self.val_dataloader is None or getattr(self, "val_batches_per_rank", 0) == 0:
+        """Run a rolling validation pass over a chunk of the val_dir."""
+        if self.val_dataloader is None:
             return {}
 
         self.model.eval()
-
-        # We will store the SUM of the metrics here, not the averages
         total_metrics_sum = {}
         global_valid_samples = 0
 
-        # We recreate the iterator to loop through the directory from the start
-        val_iterator = iter(self.val_dataloader)
+        # Pull how many batches we want to evaluate this time (e.g., 10 or 20)
+        # Default to 20 if not specified in config
+        eval_batches = getattr(self.config, "val_rolling_batches", 20)
 
-        # EXACTLY loop self.val_batches_per_rank times to prevent timeout
-        for _ in range(self.val_batches_per_rank):
-            try:
-                batch = next(val_iterator)
-                batch_results, batch_valid_samples = self.run_val_batch(batch)
+        for _ in range(eval_batches):
+            batch = next(self.val_iterator)
+            batch_results, batch_valid_samples = self.run_val_batch(batch)
 
-                if batch_valid_samples == 0:
-                    continue
+            if batch_valid_samples == 0:
+                continue
 
-                for k, v in batch_results.items():
-                    if k not in total_metrics_sum:
-                        total_metrics_sum[k] = 0.0
-                    # Reconstruct the sum for this batch and add it to the global sum
-                    total_metrics_sum[k] += v * batch_valid_samples
+            for k, v in batch_results.items():
+                if k not in total_metrics_sum:
+                    total_metrics_sum[k] = 0.0
+                total_metrics_sum[k] += v * batch_valid_samples
 
-                global_valid_samples += batch_valid_samples
-
-            except StopIteration:
-                # Fallback just in case the dataset does raise StopIteration
-                break
+            global_valid_samples += batch_valid_samples
 
         self.model.train()
 

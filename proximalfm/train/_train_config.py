@@ -483,4 +483,11 @@ def build_parser():
         help="Steps between validation checks",
     )
 
+    parser.add_argument(
+        "--val_rolling_batches",
+        default=10,
+        type=str2bool,
+        help="If True, uses a rolling batch iterator for validation instead of restarting from the beginning each time. This can be more efficient for large validation datasets.",
+    )
+
     return parser
