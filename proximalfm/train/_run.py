@@ -873,9 +873,9 @@ class Trainer:
                 self.last_results
                 if hasattr(self, "last_results")
                 else {
-                    "loss_total": 0.0,
-                    "loss_y0": 0.0,
-                    "loss_y1": 0.0,
+                    "loss/total": 0.0,
+                    "loss/y0": 0.0,
+                    "loss/y1": 0.0,
                 }
             )
 
@@ -928,9 +928,9 @@ class Trainer:
                     self.last_results
                     if hasattr(self, "last_results")
                     else {
-                        "loss_total": 0.0,
-                        "loss_y0": 0.0,
-                        "loss_y1": 0.0,
+                        "loss/total": 0.0,
+                        "loss/y0": 0.0,
+                        "loss/y1": 0.0,
                     }
                 )
 
@@ -979,11 +979,11 @@ class Trainer:
             pred_cate = pred_y1 - pred_y0
 
             micro_results = {
-                "loss_total": reported_loss_total if is_train else total_loss.item(),
-                "loss_y0": (loss_y0.item() / num_micro_batches)
+                "loss/total": reported_loss_total if is_train else total_loss.item(),
+                "loss/y0": (loss_y0.item() / num_micro_batches)
                 if is_train
                 else loss_y0.item(),
-                "loss_y1": (loss_y1.item() / num_micro_batches)
+                "loss/y1": (loss_y1.item() / num_micro_batches)
                 if is_train
                 else loss_y1.item(),
             }
@@ -1058,9 +1058,9 @@ class Trainer:
         micro_batches = list(zip(*micro_batches))
 
         results = {
-            "loss_total": 0.0,
-            "loss_y0": 0.0,
-            "loss_y1": 0.0,
+            "loss/total": 0.0,
+            "loss/y0": 0.0,
+            "loss/y1": 0.0,
         }  # Can leave this as is
         failed_batches = 0
 
