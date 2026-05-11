@@ -111,27 +111,69 @@ def ddp_cleanup(func):
     return wrapper
 
 
+class ExperimentLogger:
+    """Handles communication with wandb to abstract tracking away from the main loop."""
+
+    def __init__(self, config, is_master=True):
+        self.config = config
+        self.is_master = is_master
+        self.use_wandb = config.wandb_log and self.is_master
+        self.run = None
+        self.last_logged_step = -1
+
+        if self.use_wandb:
+            self._init_wandb()
+
+    def _init_wandb(self):
+        if hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
+            os.makedirs(self.config.checkpoint_dir, exist_ok=True)
+
+        id_path = os.path.join(self.config.checkpoint_dir, "wand_id.txt")
+        if self.config.wandb_id is None:
+            if os.path.exists(id_path):
+                with open(id_path, "r") as f:
+                    self.config.wandb_id = f.read().strip()
+
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        name_with_time = f"{self.config.wandb_name}_{current_time}"
+
+        self.run = wandb.init(
+            dir=self.config.wandb_dir,
+            project=self.config.wandb_project,
+            name=name_with_time,
+            id=self.config.wandb_id,
+            config=self.config,
+            resume="allow",
+            mode=self.config.wandb_mode,
+        )
+
+        with open(id_path, "w") as f:
+            f.write(self.run.id)
+
+    def log(self, metrics_dict: dict, step: int):
+        """Logs metrics to wandb if initialized."""
+        if self.use_wandb and self.run is not None:
+            if step > self.last_logged_step:
+                wandb.log(metrics_dict, step=step)
+                self.last_logged_step = step
+
+    def log_summary(self, summary_dict: dict):
+        """Logs static summary metrics (e.g., parameter counts)."""
+        if self.use_wandb and self.run is not None:
+            for k, v in summary_dict.items():
+                self.run.summary[k] = v
+
+
 class Trainer:
-    """This class handles the complete training lifecycle for TabICL, including:
-
-    - Environment setup and distributed training configuration
-    - Model building and initialization
-    - Optimizer, scheduler, and dataloader configuration
-    - Checkpoint management and recovery
-    - Training loop execution with gradient accumulation
-    - Metrics tracking and logging using wandb
-
-    Parameters
-    ----------
-    config : argparse.Namespace
-        Training configuration parameters containing all settings for model,
-        optimizer, distributed training, and data generation.
-    """
+    """This class handles the complete training lifecycle for TabICL."""
 
     def __init__(self, config):
         self.config = config
         self.configure_ddp()
-        self.configure_wandb()
+
+        # Initialize the dedicated logger
+        self.logger = ExperimentLogger(self.config, self.master_process)
+
         self.build_model()
         self.configure_prior()
         self.configure_validation_prior()
@@ -193,37 +235,6 @@ class Trainer:
         torch.manual_seed(self.config.torch_seed + seed_offset)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-
-    def configure_wandb(self):
-        """Set up Weights & Biases logging."""
-
-        if self.config.wandb_log and self.master_process:
-            if hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
-                os.makedirs(self.config.checkpoint_dir, exist_ok=True)
-
-            id_path = os.path.join(self.config.checkpoint_dir, "wand_id.txt")
-            if self.config.wandb_id is None:
-                if os.path.exists(id_path):
-                    with open(id_path, "r") as f:
-                        self.config.wandb_id = f.read().strip()
-
-            current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            name_with_time = f"{self.config.wandb_name}_{current_time}"
-
-            self.wandb_run = wandb.init(
-                dir=self.config.wandb_dir,
-                project=self.config.wandb_project,
-                name=name_with_time,
-                id=self.config.wandb_id,
-                config=self.config,
-                resume="allow",
-                mode=self.config.wandb_mode,
-            )
-
-            with open(id_path, "w") as f:
-                f.write(self.wandb_run.id)
-        else:
-            self.wandb_run = None
 
     def build_model(self):
         """Build and initialize the TabICL model."""
@@ -289,8 +300,6 @@ class Trainer:
             state = get_parameter_state(name, TRANSFER_RULES)
             if state == "freeze":
                 param.requires_grad = False
-                if self.master_process and self.config.wandb_log:
-                    pass
             else:
                 param.requires_grad = True
 
@@ -303,12 +312,15 @@ class Trainer:
                 f"Model built: {num_params:,} trainable params | {frozen_params:,} frozen params."
             )
 
-            if self.wandb_run is not None:
-                self.wandb_run.summary["trainable_params"] = num_params
-                self.wandb_run.summary["frozen_params"] = frozen_params
-                self.wandb_run.summary["total_params"] = num_params + frozen_params
+            # Route summary logging through the new Logger class
+            self.logger.log_summary(
+                {
+                    "trainable_params": num_params,
+                    "frozen_params": frozen_params,
+                    "total_params": num_params + frozen_params,
+                }
+            )
 
-        # Compile model if requested
         if self.config.model_compile:
             model = torch.compile(model, dynamic=True)
             if self.master_process:
@@ -655,11 +667,9 @@ class Trainer:
                         + " | ".join([f"{k}: {v:.4f}" for k, v in val_results.items()])
                     )
 
-            # Logging to Weights & Biases
-            if self.wandb_run is not None:
-                results["lr"] = self.scheduler.get_last_lr()[0]
-                if self.curr_step > wandb.run.step:
-                    wandb.log(results, step=self.curr_step)
+            # Route training logs through the new Logger class
+            results["lr"] = self.scheduler.get_last_lr()[0]
+            self.logger.log(results, step=self.curr_step)
 
     def validate_micro_batch(self, micro_seq_len, micro_train_size):
         """Validate consistent sequence length and train size within a micro batch.
