@@ -980,25 +980,30 @@ class Trainer:
                 else loss_y1.item(),
             }
 
-            if not is_train:
-                # Compute global std of the context outcome
-                y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
+            # Compute global std of the context outcome
+            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
+            y_obs_std = torch.where(
+                y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
+            )
 
-                y_obs_std = torch.where(
-                    y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
-                )
+            eval_metrics = self.evaluator.evaluate_all(
+                pred_y0=pred_y0,
+                pred_y1=pred_y1,
+                true_y0=y_test_0,
+                true_y1=y_test_1,
+                pred_cate=pred_cate,
+                true_cate=true_cate,
+                y0_scale=y0_scale,
+                y1_scale=y1_scale,
+                y_obs_std=y_obs_std,
+            )
 
-                eval_metrics = self.evaluator.evaluate_all(
-                    pred_y0=pred_y0,
-                    pred_y1=pred_y1,
-                    true_y0=y_test_0,
-                    true_y1=y_test_1,
-                    pred_cate=pred_cate,
-                    true_cate=true_cate,
-                    y0_scale=y0_scale,
-                    y1_scale=y1_scale,
-                    y_obs_std=y_obs_std,
-                )
+            if is_train:
+                # Prefix with 'train_' and scale down for gradient accumulation summation
+                for k, v in eval_metrics.items():
+                    micro_results[f"train_{k}"] = v / num_micro_batches
+            else:
+                # Leave un-prefixed; run_val_batch/validate will handle weighting and prefixing
                 micro_results.update(eval_metrics)
 
             self.last_results = micro_results
@@ -1044,7 +1049,11 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {"loss_total": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
+        results = {
+            "loss_total": 0.0,
+            "loss_y0": 0.0,
+            "loss_y1": 0.0,
+        }  # Can leave this as is
         failed_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):
@@ -1053,6 +1062,8 @@ class Trainer:
                     micro_batch, idx, num_micro_batches
                 )
                 for k, v in micro_results.items():
+                    if k not in results:
+                        results[k] = 0.0
                     results[k] += v
             except torch.cuda.OutOfMemoryError:
                 print(
