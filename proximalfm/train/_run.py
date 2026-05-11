@@ -27,6 +27,8 @@ from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
+from proximalfm.train._eval import CausalEvaluator
+
 
 warnings.filterwarnings(
     "ignore",
@@ -135,6 +137,8 @@ class Trainer:
         self.configure_optimizer()
         self.configure_amp()
         self.load_checkpoint()
+
+        self.evaluator = CausalEvaluator()
 
     def configure_ddp(self):
         """Set up distributed training and system configuration.
@@ -855,7 +859,6 @@ class Trainer:
                 if hasattr(self, "last_results")
                 else {
                     "loss_total": 0.0,
-                    "mse_cate": 0.0,
                     "loss_y0": 0.0,
                     "loss_y1": 0.0,
                 }
@@ -911,7 +914,6 @@ class Trainer:
                     if hasattr(self, "last_results")
                     else {
                         "loss_total": 0.0,
-                        "mse_cate": 0.0,
                         "loss_y0": 0.0,
                         "loss_y1": 0.0,
                     }
@@ -960,13 +962,9 @@ class Trainer:
             pred_y1 = (mean_y1_std * y1_scale) + y1_shift
 
             pred_cate = pred_y1 - pred_y0
-            mse_cate = F.mse_loss(pred_cate, true_cate)
 
             micro_results = {
                 "loss_total": reported_loss_total if is_train else total_loss.item(),
-                "mse_cate": (mse_cate.item() / num_micro_batches)
-                if is_train
-                else mse_cate.item(),
                 "loss_y0": (loss_y0.item() / num_micro_batches)
                 if is_train
                 else loss_y0.item(),
@@ -976,17 +974,25 @@ class Trainer:
             }
 
             if not is_train:
-                from proximalfm.train._eval import compute_po_metrics
+                # Compute global std of the context outcome
+                y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
 
-                po_metrics = compute_po_metrics(
+                y_obs_std = torch.where(
+                    y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
+                )
+
+                eval_metrics = self.evaluator.evaluate_all(
                     pred_y0=pred_y0,
                     pred_y1=pred_y1,
                     true_y0=y_test_0,
                     true_y1=y_test_1,
+                    pred_cate=pred_cate,
+                    true_cate=true_cate,
                     y0_scale=y0_scale,
                     y1_scale=y1_scale,
+                    y_obs_std=y_obs_std,
                 )
-                micro_results.update(po_metrics)
+                micro_results.update(eval_metrics)
 
             self.last_results = micro_results
 
@@ -1031,7 +1037,7 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {"loss_total": 0.0, "mse_cate": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
+        results = {"loss_total": 0.0, "loss_y0": 0.0, "loss_y1": 0.0}
         failed_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):
@@ -1086,29 +1092,37 @@ class Trainer:
         micro_batches = list(zip(*micro_batches))
 
         results = {}
-        valid_micro_batches = 0
+        total_valid_samples = 0
 
         for idx, micro_batch in enumerate(micro_batches):
             try:
+                # Get the actual number of datasets in this specific micro-batch
+                # micro_batch[0] is typically micro_U or micro_X, shape: (actual_size, T, H)
+                current_mb_size = micro_batch[0].shape[0]
+
                 with self.amp_ctx:
                     micro_results = self.run_micro_batch(
                         micro_batch, idx, num_micro_batches, is_train=False
                     )
+
                     for k, v in micro_results.items():
                         if k not in results:
                             results[k] = 0.0
-                        results[k] += v
-                valid_micro_batches += 1
+                        # Weight the metric by the number of samples in this micro-batch
+                        results[k] += v * current_mb_size
+
+                total_valid_samples += current_mb_size
+
             except torch.cuda.OutOfMemoryError:
                 torch.cuda.empty_cache()
                 continue
 
-        # Average across the valid micro-batches for this specific batch
-        if valid_micro_batches > 0:
+        # Compute the true weighted average across all valid samples processed
+        if total_valid_samples > 0:
             for k in results.keys():
-                results[k] /= valid_micro_batches
+                results[k] /= total_valid_samples
 
-        return results
+        return results, total_valid_samples
 
     @torch.no_grad()
     def validate(self):
@@ -1118,7 +1132,10 @@ class Trainer:
             return {}
 
         self.model.eval()
-        total_metrics = {}
+
+        # We will store the SUM of the metrics here, not the averages
+        total_metrics_sum = {}
+        global_valid_samples = 0
 
         # We recreate the iterator to loop through the directory from the start
         val_iterator = iter(self.val_dataloader)
@@ -1127,32 +1144,53 @@ class Trainer:
         for _ in range(self.val_batches_per_rank):
             try:
                 batch = next(val_iterator)
-                batch_results = self.run_val_batch(batch)
+                batch_results, batch_valid_samples = self.run_val_batch(batch)
+
+                if batch_valid_samples == 0:
+                    continue
+
                 for k, v in batch_results.items():
-                    if k not in total_metrics:
-                        total_metrics[k] = 0.0
-                    total_metrics[k] += v
+                    if k not in total_metrics_sum:
+                        total_metrics_sum[k] = 0.0
+                    # Reconstruct the sum for this batch and add it to the global sum
+                    total_metrics_sum[k] += v * batch_valid_samples
+
+                global_valid_samples += batch_valid_samples
+
             except StopIteration:
                 # Fallback just in case the dataset does raise StopIteration
                 break
 
         self.model.train()
 
-        # Average the metrics across the batches processed by this rank
-        for k in total_metrics.keys():
-            total_metrics[k] /= self.val_batches_per_rank
-
-        # If DDP, average the metrics across all GPUs
+        # If DDP, sum the metrics AND the sample counts across all GPUs
         if self.ddp:
-            for k, v in total_metrics.items():
-                tensor_v = torch.tensor(v, device=self.config.device)
-                torch.distributed.all_reduce(
-                    tensor_v, op=torch.distributed.ReduceOp.AVG
-                )
-                total_metrics[k] = tensor_v.item()
+            # 1. Sync the total sample count
+            samples_tensor = torch.tensor(
+                [global_valid_samples], dtype=torch.float32, device=self.config.device
+            )
+            torch.distributed.all_reduce(
+                samples_tensor, op=torch.distributed.ReduceOp.SUM
+            )
+            global_valid_samples = samples_tensor.item()
 
-        # Prefix keys with "val_" for clean logging
-        return {f"val_{k}": v for k, v in total_metrics.items()}
+            # 2. Sync the metric sums
+            for k, v in total_metrics_sum.items():
+                tensor_v = torch.tensor(
+                    [v], dtype=torch.float32, device=self.config.device
+                )
+                torch.distributed.all_reduce(
+                    tensor_v, op=torch.distributed.ReduceOp.SUM
+                )
+                total_metrics_sum[k] = tensor_v.item()
+
+        # Compute the final, mathematically perfect average
+        final_metrics = {}
+        if global_valid_samples > 0:
+            for k, v in total_metrics_sum.items():
+                final_metrics[f"val_{k}"] = v / global_valid_samples
+
+        return final_metrics
 
 
 if __name__ == "__main__":

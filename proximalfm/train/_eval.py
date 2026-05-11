@@ -2,33 +2,67 @@ import torch
 import torch.nn.functional as F
 
 
-def compute_po_metrics(
-    pred_y0: torch.Tensor,
-    pred_y1: torch.Tensor,
-    true_y0: torch.Tensor,
-    true_y1: torch.Tensor,
-    y0_scale: torch.Tensor,
-    y1_scale: torch.Tensor,
-) -> dict:
+class CausalEvaluator:
     """
-    Computes the Normalized Root Mean Square Error (NRMSE) for Y(0) and Y(1).
-    Normalizes by the standard deviation of the context outcomes.
+    Handles the computation and optional caching of causal evaluation metrics.
+    Separates Potential Outcomes (PO) and Conditional Average Treatment Effects (CATE).
     """
-    # 1. Compute raw MSE per dataset in the batch (dim=1 is the sequence dimension)
-    mse_y0 = F.mse_loss(pred_y0, true_y0, reduction="none").mean(dim=1)
-    mse_y1 = F.mse_loss(pred_y1, true_y1, reduction="none").mean(dim=1)
 
-    # 2. Convert to RMSE
-    rmse_y0 = torch.sqrt(mse_y0)
-    rmse_y1 = torch.sqrt(mse_y1)
+    def __init__(self):
+        # If you decide to cache static validation stats later,
+        # you can store them here (e.g., self.val_stats_cache = {}).
+        pass
 
-    # 3. Normalize using the context standard deviation
-    # y_scales have shape (B, 1), so we squeeze to (B,) to match rmse
-    nrmse_y0 = rmse_y0 / y0_scale.squeeze(-1)
-    nrmse_y1 = rmse_y1 / y1_scale.squeeze(-1)
+    def compute_po_metrics(
+        self,
+        pred_y0: torch.Tensor,
+        pred_y1: torch.Tensor,
+        true_y0: torch.Tensor,
+        true_y1: torch.Tensor,
+        y_obs_std: torch.Tensor,
+    ) -> dict:
+        """Computes NRMSE for Y(0) and Y(1)."""
+        mse_y0 = F.mse_loss(pred_y0, true_y0, reduction="none").mean(dim=1)
+        mse_y1 = F.mse_loss(pred_y1, true_y1, reduction="none").mean(dim=1)
 
-    # Return the mean NRMSE across the batch, mapped to the specific WandB folder
-    return {
-        "po/nrmse_y0": nrmse_y0.mean().item(),
-        "po/nrmse_y1": nrmse_y1.mean().item(),
-    }
+        nrmse_y0 = torch.sqrt(mse_y0) / y_obs_std.squeeze(-1)
+        nrmse_y1 = torch.sqrt(mse_y1) / y_obs_std.squeeze(-1)
+
+        return {
+            "po/nrmse_y0": nrmse_y0.mean().item(),
+            "po/nrmse_y1": nrmse_y1.mean().item(),
+        }
+
+    def compute_cate_metrics(
+        self, pred_cate: torch.Tensor, true_cate: torch.Tensor, y_obs_std: torch.Tensor
+    ) -> dict:
+        """Computes RMSE and NRMSE for the CATE."""
+        mse_cate = F.mse_loss(pred_cate, true_cate, reduction="none").mean(dim=1)
+        rmse_cate = torch.sqrt(mse_cate)
+
+        nrmse_cate = rmse_cate / y_obs_std.squeeze(-1)
+
+        return {
+            "cate/rmse": rmse_cate.mean().item(),
+            "cate/nrmse": nrmse_cate.mean().item(),
+        }
+
+    def evaluate_all(
+        self,
+        pred_y0: torch.Tensor,
+        pred_y1: torch.Tensor,
+        true_y0: torch.Tensor,
+        true_y1: torch.Tensor,
+        pred_cate: torch.Tensor,
+        true_cate: torch.Tensor,
+        y0_scale: torch.Tensor,
+        y1_scale: torch.Tensor,
+        y_obs_std: torch.Tensor,
+    ) -> dict:
+        """Aggregates all evaluation metrics into a single dictionary."""
+        results = {}
+        results.update(
+            self.compute_po_metrics(pred_y0, pred_y1, true_y0, true_y1, y_obs_std)
+        )
+        results.update(self.compute_cate_metrics(pred_cate, true_cate, y_obs_std))
+        return results
