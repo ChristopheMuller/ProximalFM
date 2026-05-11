@@ -517,9 +517,12 @@ class Trainer:
             checkpoint_path, map_location=self.config.device, weights_only=True
         )
 
-        self.optimizer.load_state_dict(checkpoint["optimizer_state"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state"])
-        self.curr_step = checkpoint["curr_step"]
+        if "optimizer_state" in checkpoint:
+            self.optimizer.load_state_dict(checkpoint["optimizer_state"])
+        if "scheduler_state" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state"])
+        if "curr_step" in checkpoint:
+            self.curr_step = checkpoint["curr_step"]
         print(f"Resuming optimizer state at step {self.curr_step}")
 
     def save_checkpoint(self, name: str):
