@@ -181,7 +181,9 @@ class Trainer:
         self.configure_amp()
         self.load_checkpoint()
 
-        self.evaluator = CausalEvaluator()
+        self.train_evaluator = CausalEvaluator()
+        self.val_evaluator = CausalEvaluator()
+        self.eval_buffer_episodes = getattr(self.config, "eval_buffer_episodes", 64)
 
     def configure_ddp(self):
         """Set up distributed training and system configuration.
@@ -628,6 +630,14 @@ class Trainer:
             if self.master_process:
                 # Add timing information to results
                 results.update({"prior_time": prior_time, "train_time": train_time})
+                if self.train_evaluator.ready(self.eval_buffer_episodes):
+                    buffered_train_metrics = self.train_evaluator.compute(
+                        prefix="train_",
+                        sync_ddp=False,
+                        include_count=True,
+                    )
+                    results.update(buffered_train_metrics)
+                    self.train_evaluator.reset()
 
                 # Update progress bar with rounded values for cleaner display
                 step_progress.set_postfix(
@@ -875,29 +885,30 @@ class Trainer:
         A_train = micro_A[:, :train_size].squeeze(-1)
         n0 = (A_train == 0).sum(dim=1)  # (B,)
         n1 = (A_train == 1).sum(dim=1)  # (B,)
-        if (n0 == 0).any() or (n1 == 0).any():
-            # print(
-            #     f"[Step {self.curr_step}] Skipping micro-batch: degenerate treatment groups"
-            # )
-            return (
-                self.last_results
-                if hasattr(self, "last_results")
-                else {
-                    "loss/total": 0.0,
-                    "loss/y0": 0.0,
-                    "loss/y1": 0.0,
-                }
+
+        local_valid = not ((n0 == 0).any() or (n1 == 0).any())
+
+        if self.ddp:
+            valid_tensor = torch.tensor(
+                [1 if local_valid else 0],
+                device=self.config.device,
+                dtype=torch.int32,
             )
+            torch.distributed.all_reduce(
+                valid_tensor,
+                op=torch.distributed.ReduceOp.MIN,
+            )
+            global_valid = bool(valid_tensor.item())
+        else:
+            global_valid = local_valid
+
+        if not global_valid:
+            return None
 
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
         y_test_1 = micro_Y1[:, train_size:]
         true_cate = y_test_1 - y_test_0
-
-        if self.ddp:
-            self.model.require_backward_grad_sync = (
-                micro_batch_idx == num_micro_batches - 1
-            )
 
         with self.amp_ctx:
             # 1. Get shift/scale from the context
@@ -929,20 +940,25 @@ class Trainer:
                 micro_d_Z,
                 micro_d_W,
             )
-            if pred_logits.isnan().any():
-                # skip this loop,
-                # print(
-                #     f"\n--- NaN detected in model predictions at step {self.curr_step} ---"
-                # )
-                return (
-                    self.last_results
-                    if hasattr(self, "last_results")
-                    else {
-                        "loss/total": 0.0,
-                        "loss/y0": 0.0,
-                        "loss/y1": 0.0,
-                    }
+
+            local_valid = not pred_logits.isnan().any()
+
+            if self.ddp:
+                valid_tensor = torch.tensor(
+                    [1 if local_valid else 0],
+                    device=self.config.device,
+                    dtype=torch.int32,
                 )
+                torch.distributed.all_reduce(
+                    valid_tensor,
+                    op=torch.distributed.ReduceOp.MIN,
+                )
+                global_valid = bool(valid_tensor.item())
+            else:
+                global_valid = local_valid
+
+            if not global_valid:
+                return None
 
             nbins = self.raw_model.nbins
             logits_y0 = pred_logits[..., :nbins]
@@ -973,23 +989,45 @@ class Trainer:
         else:
             reported_loss_total = total_loss.item()
 
-        # 6. Calculate Mean Squared Error of the CATE for WandB tracking (No Gradients)
         with torch.no_grad():
             probs_y0 = F.softmax(logits_y0, dim=-1)
             probs_y1 = F.softmax(logits_y1, dim=-1)
 
-            # Expected value in standardized space
             mean_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
             mean_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
 
-            # Unstandardize back to reality
             pred_y0 = (mean_y0_std * y0_scale) + y0_shift
             pred_y1 = (mean_y1_std * y1_scale) + y1_shift
 
             pred_cate = pred_y1 - pred_y0
 
+            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
+            y_obs_std = torch.where(
+                y_obs_std < 1e-5,
+                torch.ones_like(y_obs_std),
+                y_obs_std,
+            )
+
+            if is_train:
+                should_update_evaluator = self.master_process
+                evaluator = self.train_evaluator
+            else:
+                should_update_evaluator = True
+                evaluator = self.val_evaluator
+
+            if should_update_evaluator:
+                evaluator.update(
+                    pred_y0=pred_y0,
+                    pred_y1=pred_y1,
+                    true_y0=y_test_0,
+                    true_y1=y_test_1,
+                    pred_cate=pred_cate,
+                    true_cate=true_cate,
+                    y_obs_std=y_obs_std,
+                )
+
             micro_results = {
-                "loss/total": reported_loss_total if is_train else total_loss.item(),
+                "loss/total": reported_loss_total,
                 "loss/y0": (loss_y0.item() / num_micro_batches)
                 if is_train
                 else loss_y0.item(),
@@ -997,34 +1035,6 @@ class Trainer:
                 if is_train
                 else loss_y1.item(),
             }
-
-            # Compute global std of the context outcome
-            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
-            y_obs_std = torch.where(
-                y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
-            )
-
-            eval_metrics = self.evaluator.evaluate_all(
-                pred_y0=pred_y0,
-                pred_y1=pred_y1,
-                true_y0=y_test_0,
-                true_y1=y_test_1,
-                pred_cate=pred_cate,
-                true_cate=true_cate,
-                y0_scale=y0_scale,
-                y1_scale=y1_scale,
-                y_obs_std=y_obs_std,
-            )
-
-            if is_train:
-                # Prefix with 'train_' and scale down for gradient accumulation summation
-                for k, v in eval_metrics.items():
-                    micro_results[f"train_{k}"] = v / num_micro_batches
-            else:
-                # Leave un-prefixed; run_val_batch/validate will handle weighting and prefixing
-                micro_results.update(eval_metrics)
-
-            self.last_results = micro_results
 
         return micro_results
 
@@ -1072,17 +1082,26 @@ class Trainer:
             "loss/y0": 0.0,
             "loss/y1": 0.0,
         }  # Can leave this as is
+
         failed_batches = 0
+        successful_micro_batches = 0
 
         for idx, micro_batch in enumerate(micro_batches):
             try:
                 micro_results = self.run_micro_batch(
                     micro_batch, idx, num_micro_batches
                 )
+
+                if micro_results is None:
+                    continue
+
+                successful_micro_batches += 1
+
                 for k, v in micro_results.items():
                     if k not in results:
                         results[k] = 0.0
                     results[k] += v
+
             except torch.cuda.OutOfMemoryError:
                 print(
                     f"Warning: OOM error in micro-batch {idx+1}/{num_micro_batches} at step {self.curr_step}. Skipping."
@@ -1097,6 +1116,9 @@ class Trainer:
                 f"({failure_ratio:.1%}) of micro-batches failed due to OOM at step {self.curr_step}. "
                 f"Please check configuration to reduce memory consumption."
             )
+
+        if successful_micro_batches == 0:
+            return results
 
         # Clip the gradient
         if self.config.gradient_clipping > 0:
@@ -1127,25 +1149,22 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {}
         total_valid_samples = 0
 
         for idx, micro_batch in enumerate(micro_batches):
             try:
-                # Get the actual number of datasets in this specific micro-batch
-                # micro_batch[0] is typically micro_U or micro_X, shape: (actual_size, T, H)
                 current_mb_size = micro_batch[0].shape[0]
 
                 with self.amp_ctx:
                     micro_results = self.run_micro_batch(
-                        micro_batch, idx, num_micro_batches, is_train=False
+                        micro_batch,
+                        idx,
+                        num_micro_batches,
+                        is_train=False,
                     )
 
-                    for k, v in micro_results.items():
-                        if k not in results:
-                            results[k] = 0.0
-                        # Weight the metric by the number of samples in this micro-batch
-                        results[k] += v * current_mb_size
+                if micro_results is None:
+                    continue
 
                 total_valid_samples += current_mb_size
 
@@ -1153,12 +1172,7 @@ class Trainer:
                 torch.cuda.empty_cache()
                 continue
 
-        # Compute the true weighted average across all valid samples processed
-        if total_valid_samples > 0:
-            for k in results.keys():
-                results[k] /= total_valid_samples
-
-        return results, total_valid_samples
+        return total_valid_samples
 
     @torch.no_grad()
     def validate(self):
@@ -1167,55 +1181,23 @@ class Trainer:
             return {}
 
         self.model.eval()
-        total_metrics_sum = {}
-        global_valid_samples = 0
+        self.val_evaluator.reset()
 
-        # Pull how many batches we want to evaluate this time (e.g., 10 or 20)
-        # Default to 20 if not specified in config
         eval_batches = getattr(self.config, "val_rolling_batches", 20)
 
         for _ in range(eval_batches):
             batch = next(self.val_iterator)
-            batch_results, batch_valid_samples = self.run_val_batch(batch)
+            self.run_val_batch(batch)
 
-            if batch_valid_samples == 0:
-                continue
+        final_metrics = self.val_evaluator.compute(
+            prefix="val_",
+            sync_ddp=self.ddp,
+            device=self.config.device,
+            include_count=True,
+        )
 
-            for k, v in batch_results.items():
-                if k not in total_metrics_sum:
-                    total_metrics_sum[k] = 0.0
-                total_metrics_sum[k] += v * batch_valid_samples
-
-            global_valid_samples += batch_valid_samples
-
+        self.val_evaluator.reset()
         self.model.train()
-
-        # If DDP, sum the metrics AND the sample counts across all GPUs
-        if self.ddp:
-            # 1. Sync the total sample count
-            samples_tensor = torch.tensor(
-                [global_valid_samples], dtype=torch.float32, device=self.config.device
-            )
-            torch.distributed.all_reduce(
-                samples_tensor, op=torch.distributed.ReduceOp.SUM
-            )
-            global_valid_samples = samples_tensor.item()
-
-            # 2. Sync the metric sums
-            for k, v in total_metrics_sum.items():
-                tensor_v = torch.tensor(
-                    [v], dtype=torch.float32, device=self.config.device
-                )
-                torch.distributed.all_reduce(
-                    tensor_v, op=torch.distributed.ReduceOp.SUM
-                )
-                total_metrics_sum[k] = tensor_v.item()
-
-        # Compute the final, mathematically perfect average
-        final_metrics = {}
-        if global_valid_samples > 0:
-            for k, v in total_metrics_sum.items():
-                final_metrics[f"val_{k}"] = v / global_valid_samples
 
         return final_metrics
 

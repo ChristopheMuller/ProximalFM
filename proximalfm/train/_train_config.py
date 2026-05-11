@@ -489,5 +489,11 @@ def build_parser():
         type=str2bool,
         help="If True, uses a rolling batch iterator for validation instead of restarting from the beginning each time. This can be more efficient for large validation datasets.",
     )
+    parser.add_argument(
+        "--eval_buffer_episodes",
+        type=int,
+        default=128,
+        help="Number of episodes to aggregate before logging buffered train metrics.",
+    )
 
     return parser
