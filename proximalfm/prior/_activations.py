@@ -283,7 +283,7 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
         nn.Hardtanh,
         SignActivation,
         RBFActivation,
-        ExpActivation,
+        # ExpActivation,
         SqrtAbsActivation,
         UnitIntervalIndicator,
         SineActivation,
