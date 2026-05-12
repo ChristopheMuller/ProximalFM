@@ -492,7 +492,7 @@ def build_parser():
     parser.add_argument(
         "--eval_buffer_episodes",
         type=int,
-        default=128,
+        default=256,
         help="Number of episodes to aggregate before logging buffered train metrics.",
     )
 
