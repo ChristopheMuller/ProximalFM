@@ -171,7 +171,6 @@ class TabICL(nn.Module):
         vmin: float = -10.0,
         vmax: float = 10.0,
         joint_quantiles: bool = False,
-        sigma: float = 0.5,
         embed_dim: int = 128,
         col_num_blocks: int = 3,
         col_nhead: int = 8,
@@ -220,7 +219,6 @@ class TabICL(nn.Module):
         self.vmin = vmin
         self.vmax = vmax
         self.joint_quantiles = joint_quantiles
-        self.sigma = sigma  # used in the loss function, not here.
 
         self.embed_dim = embed_dim
         self.col_num_blocks = col_num_blocks

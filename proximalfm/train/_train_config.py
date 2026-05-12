@@ -420,13 +420,6 @@ def build_parser():
         help="Whether to freeze the ICL predictor",
     )
 
-    parser.add_argument(
-        "--sigma",
-        type=float,
-        default=0.5,
-        help="Sigma in the quantile loss",
-    )
-
     ###########################################################################
     ###### Checkpointing ######################################################
     ###########################################################################
