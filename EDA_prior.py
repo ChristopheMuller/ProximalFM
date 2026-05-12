@@ -20,7 +20,7 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="seaborn")  # S
 
 #%% --- 1. Instantiate the Prior Dataset ---
 dataset = PriorDataset(
-    batch_size=10,
+    batch_size=30,
     min_dim_U=1,
     max_dim_U=1,
     min_dim_W=1,
@@ -30,7 +30,7 @@ dataset = PriorDataset(
     min_dim_X=2,
     max_dim_X=2,
     seq_len_per_gp=False,
-    max_seq_len=300,
+    max_seq_len=100,
     prior_type="mlp_scm",
     device="cpu",
 )
@@ -254,7 +254,7 @@ plt.show()
 
 #%% --- 6. Plot Individual Datasets ---
 
-K_to_plot = 5
+K_to_plot = 10
 fig2, axes2 = plt.subplots(K_to_plot, 4, figsize=(24, 5 * K_to_plot))
 
 if K_to_plot == 1:
@@ -347,6 +347,18 @@ for idx, ds in enumerate(all_datasets[:K_to_plot]):
     ax_cate.legend()
 
 plt.tight_layout()
+plt.show()
+
+
+#%% -- plot distribution of ATE across all datasets --
+ate_values = metrics["True ATE"] / np.array(metrics["Std of Y_obs"])
+plt.figure(figsize=(10, 6))
+sns.histplot(ate_values, bins=20, kde=True, color="teal")
+plt.axvline(x=0, color="red", linestyle="--", alpha=0.7, label="Zero ATE")
+plt.title("Distribution of True ATE Across Datasets (normalized)", fontweight="bold")
+plt.xlabel("True ATE Value")
+plt.ylabel("Count")
+plt.legend()
 plt.show()
 
 #%% --- 7. Print Summary Reports & Visualizations ---
