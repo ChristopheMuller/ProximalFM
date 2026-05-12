@@ -979,8 +979,35 @@ class Trainer:
                 self.raw_model.bin_edges,
             )
 
-            total_loss = loss_y0 + loss_y1
+            # --- 6. CATE Consistency Term (Normalized) ---
+            # Get expected values in standardized space
+            probs_y0 = F.softmax(logits_y0, dim=-1)
+            probs_y1 = F.softmax(logits_y1, dim=-1)
 
+            mean_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
+            mean_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
+
+            # Un-standardize to get actual predicted expectations
+            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
+            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
+
+            pred_cate = pred_y1 - pred_y0
+
+            # Normalize the CATE error using the context's overall standard deviation
+            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
+            y_obs_std = torch.where(
+                y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
+            )
+
+            # The error is now unit-less (scaled to the variance of the episode)
+            cate_error_normalized = (pred_cate - true_cate) / y_obs_std
+            loss_cate = torch.mean(cate_error_normalized**2)
+
+            lambda_cate = getattr(self.config, "lambda_cate", 0.1)
+
+            total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
+
+        # Optimization step
         if is_train:
             scaled_loss = total_loss / num_micro_batches
             self.scaler.scale(scaled_loss).backward()
@@ -988,25 +1015,8 @@ class Trainer:
         else:
             reported_loss_total = total_loss.item()
 
+        # Evaluation block
         with torch.no_grad():
-            probs_y0 = F.softmax(logits_y0, dim=-1)
-            probs_y1 = F.softmax(logits_y1, dim=-1)
-
-            mean_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
-            mean_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
-
-            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
-            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
-
-            pred_cate = pred_y1 - pred_y0
-
-            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
-            y_obs_std = torch.where(
-                y_obs_std < 1e-5,
-                torch.ones_like(y_obs_std),
-                y_obs_std,
-            )
-
             if is_train:
                 should_update_evaluator = self.master_process
                 evaluator = self.train_evaluator
@@ -1033,6 +1043,9 @@ class Trainer:
                 "loss/y1": (loss_y1.item() / num_micro_batches)
                 if is_train
                 else loss_y1.item(),
+                "loss/cate": (loss_cate.item() / num_micro_batches)
+                if is_train
+                else loss_cate.item(),
             }
 
         return micro_results
@@ -1080,6 +1093,7 @@ class Trainer:
             "loss/total": 0.0,
             "loss/y0": 0.0,
             "loss/y1": 0.0,
+            "loss/cate": 0.0,
         }  # Can leave this as is
 
         failed_batches = 0

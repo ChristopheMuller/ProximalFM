@@ -489,4 +489,12 @@ def build_parser():
         help="Number of episodes to aggregate before logging buffered train metrics.",
     )
 
+    ####### lOSS
+    parser.add_argument(
+        "--lambda_cate",
+        type=float,
+        default=0.0,
+        help="Weight for the CATE loss term. If 0, CATE loss is not used.",
+    )
+
     return parser
