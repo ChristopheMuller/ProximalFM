@@ -2,12 +2,8 @@ transfer_rules:
   # 1. Default is scratch
   "default": "scratch"
 
-  # 2. Col and Row are scratch
-  "col_embedder.": "scratch"
-  "row_interactor.": "scratch"
-
   # 3. icl_predictor is mostly freeze, except first and last 2 blocks
-  "icl_predictor.": "scratch"
+  "icl_predictor.": "finetune"
   "icl_predictor.tf_icl.blocks.1.": "scratch"
   "icl_predictor.tf_icl.blocks.2.": "scratch"
   "icl_predictor.tf_icl.blocks.10.": "scratch"
