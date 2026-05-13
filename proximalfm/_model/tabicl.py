@@ -211,6 +211,7 @@ class TabICL(nn.Module):
         norm_first: bool = True,
         bias_free_ln: bool = False,
         recompute: bool = False,
+        **kwargs,  # capture old parameters that are no longer used to avoid breaking old configs
     ):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
