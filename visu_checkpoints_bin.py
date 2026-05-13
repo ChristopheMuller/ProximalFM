@@ -1,5 +1,4 @@
-#%%
-
+# %%
 import os
 import torch
 import numpy as np
@@ -9,11 +8,15 @@ import matplotlib.colors as mcolors
 from proximalfm.prior import PriorDataset
 from proximalfm._model import TabICL
 
-#%%
+# %%
 # 1. Configuration & Toggles
-CHECKPOINT_DIR = "check_2/"
+CHECKPOINT_DIR = "check_3/"
 TEST_SAMPLE_IDX = 0
 PLOT_MEAN = True
+PLOT_NORMALIZED = True
+
+# --- NEW PARAMETER ---
+Y_LIM = (-3.0, 3.0)
 
 prior = PriorDataset(
     batch_size=1,
@@ -37,7 +40,6 @@ prior = PriorDataset(
     device="cpu",
 )
 
-
 # Fetch a single batch
 batch = prior.get_batch(batch_size=2)
 U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
@@ -53,21 +55,45 @@ if len(Y_obs.shape) == 1:
     Y_obs = Y_obs.unsqueeze(0)
 
 split_idx = train_sizes[0].item()
-y_obs_train = Y_obs[:, :split_idx]
 A_input = A.unsqueeze(-1).float()
 
-# Extract Test Ground Truths
-y0_test = Y0[:, split_idx:]
-y1_test = Y1[:, split_idx:]
+# --- NEW NORMALIZATION STRATEGY ---
+y_obs_train_raw = Y_obs[:, :split_idx]
 
-# Extract the specific true values for the chosen sample
-true_y0_val = y0_test[0, TEST_SAMPLE_IDX].item()
-true_y1_val = y1_test[0, TEST_SAMPLE_IDX].item()
+# Calculate Context Stats
+y_context_mean = y_obs_train_raw.mean(dim=1, keepdim=True)
+y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
 
-# Compute the true CATE value
-true_cate_val = true_y1_val - true_y0_val
+# Standardize Context
+y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
 
-#%%
+# Extract Raw Test Ground Truths
+y0_test_raw = Y0[:, split_idx:]
+y1_test_raw = Y1[:, split_idx:]
+
+true_y0_val_raw = y0_test_raw[0, TEST_SAMPLE_IDX].item()
+true_y1_val_raw = y1_test_raw[0, TEST_SAMPLE_IDX].item()
+true_cate_val_raw = true_y1_val_raw - true_y0_val_raw
+
+# Route based on flag
+if PLOT_NORMALIZED:
+    y_obs_in = y_obs_train_norm
+
+    # Standardize the true values so the horizontal lines match the plot
+    mean_val = y_context_mean[0, 0].item()
+    std_val = y_context_std[0, 0].item()
+
+    true_y0_val = (true_y0_val_raw - mean_val) / std_val
+    true_y1_val = (true_y1_val_raw - mean_val) / std_val
+    true_cate_val = true_y1_val - true_y0_val
+else:
+    y_obs_in = y_obs_train_raw
+
+    true_y0_val = true_y0_val_raw
+    true_y1_val = true_y1_val_raw
+    true_cate_val = true_cate_val_raw
+
+# %%
 # 2. Gather All Checkpoints
 raw_checkpoints = [
     f
@@ -86,7 +112,7 @@ steps = [get_step(ckpt) for ckpt in raw_checkpoints]
 if not raw_checkpoints:
     raise ValueError(f"No checkpoints found in {CHECKPOINT_DIR}")
 
-#%%
+# %%
 # 3. Predict the Distribution Across All Checkpoints
 history_weights_y0 = []
 history_weights_y1 = []
@@ -112,12 +138,13 @@ for ckpt_name in raw_checkpoints:
     model.eval()
 
     with torch.inference_mode():
+        # Predict uses internal covariate scaling and tracks y_obs_in scale automatically
         out_dist = model.predict(
             X=X,
             Z=Z,
             W=W,
             A=A_input,
-            y_train=y_obs_train,
+            y_train=y_obs_in,
             output_type="distribution",
             target="cate",
         )
@@ -134,8 +161,6 @@ for ckpt_name in raw_checkpoints:
         vals_y1 = out_dist["y1"]["values"][0, 0].cpu().numpy()
 
         # Calculate the new value grid for CATE
-        # The minimum possible difference is min(Y1) - max(Y0)
-        # The maximum possible difference is max(Y1) - min(Y0)
         min_cate = vals_y1[0] - vals_y0[-1]
         max_cate = vals_y1[-1] - vals_y0[0]
         vals_cate = np.linspace(min_cate, max_cate, len(weights_cate))
@@ -148,29 +173,36 @@ heatmap_y0 = np.array(history_weights_y0).T
 heatmap_y1 = np.array(history_weights_y1).T
 heatmap_cate = np.array(history_weights_cate).T
 
-#%%
+# %%
 # 4. Plotting the Evolution Heatmaps
-# Expanded to 3 columns to fit the new CATE plot
 fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 6))
 
-keep_only_quartiles = True
 
+def plot_evolution(ax, heatmap, vals, step_arr, true_val, title, y_lim=None):
+    # IMPORTANT: Calculate the mathematical mean of the distribution BEFORE we
+    # truncate the heatmap arrays. Otherwise the mean will be wrong!
+    if PLOT_MEAN:
+        step_means = np.sum(heatmap * vals[:, None], axis=0) / np.sum(heatmap, axis=0)
 
-def plot_evolution(ax, heatmap, vals, step_arr, true_val, title):
+    # Clean dimension-safe slicing
+    if y_lim is not None:
+        # Find the bin indices that fall within our requested limits
+        valid_idx = np.where((vals >= y_lim[0]) & (vals <= y_lim[1]))[0]
+
+        if len(valid_idx) > 0:
+            start_idx = valid_idx[0]
+            end_idx = valid_idx[-1] + 1
+
+            # Slice BOTH the y-values and the heatmap to keep dimensions identical
+            vals = vals[start_idx:end_idx]
+            heatmap = heatmap[start_idx:end_idx, :]
+
+    # Now that the dims are safe and matched, create the meshgrid
     X_mesh, Y_mesh = np.meshgrid(step_arr, vals)
 
-    print(X_mesh.shape, Y_mesh.shape, heatmap.shape)
-
-    if keep_only_quartiles:
-        X_mesh = X_mesh[X_mesh.shape[0] // 4 : 3 * X_mesh.shape[0] // 4, :]
-        Y_mesh = Y_mesh[Y_mesh.shape[0] // 4 : 3 * Y_mesh.shape[0] // 4, :]
-        heatmap = heatmap[heatmap.shape[0] // 4 : 3 * heatmap.shape[0] // 4, :]
-        vals = vals[vals.shape[0] // 4 : 3 * vals.shape[0] // 4]
-
-    print(X_mesh.shape, Y_mesh.shape, heatmap.shape)
-
     # Log scale to make small probabilities visible
-    norm = mcolors.LogNorm(vmin=1e-4, vmax=heatmap.max())
+    # We add a tiny eps (1e-6) so we don't crash the LogNorm on truncated arrays
+    norm = mcolors.LogNorm(vmin=1e-4, vmax=max(heatmap.max(), 1e-3))
     c = ax.pcolormesh(
         X_mesh, Y_mesh, heatmap, cmap="viridis", shading="nearest", norm=norm
     )
@@ -185,9 +217,8 @@ def plot_evolution(ax, heatmap, vals, step_arr, true_val, title):
         label=f"True Value: {true_val:.2f}",
     )
 
-    # Calculate and plot the mean
+    # Plot the pre-calculated mean
     if PLOT_MEAN:
-        step_means = np.sum(heatmap * vals[:, None], axis=0) / np.sum(heatmap, axis=0)
         ax.plot(
             step_arr,
             step_means,
@@ -203,16 +234,14 @@ def plot_evolution(ax, heatmap, vals, step_arr, true_val, title):
     # Formatting
     ax.set_title(title, fontsize=14)
     ax.set_xlabel("Training Step")
-    ax.set_ylabel("Predicted Value")
-    ax.legend(loc="upper left")
+    unit = "Normalized Value" if PLOT_NORMALIZED else "Raw Value"
+    ax.set_ylabel(f"Predicted {unit}")
 
-    # Zoom in
-    active_bins = np.any(heatmap > 1e-4, axis=1)
-    if np.any(active_bins):
-        active_indices = np.where(active_bins)[0]
-        min_idx = max(0, active_indices[0] - 50)
-        max_idx = min(len(vals) - 1, active_indices[-1] + 50)
-        ax.set_ylim(vals[min_idx], vals[max_idx])
+    # Enforce the limits on the matplotlib axis visually
+    if y_lim is not None:
+        ax.set_ylim(y_lim[0], y_lim[1])
+
+    ax.legend(loc="upper left")
 
 
 # Plot Y0
@@ -223,6 +252,7 @@ plot_evolution(
     steps,
     true_y0_val,
     f"Y(0) Evolution\nSample {TEST_SAMPLE_IDX}",
+    y_lim=Y_LIM,
 )
 
 # Plot Y1
@@ -233,9 +263,12 @@ plot_evolution(
     steps,
     true_y1_val,
     f"Y(1) Evolution\nSample {TEST_SAMPLE_IDX}",
+    y_lim=Y_LIM,
 )
 
 # Plot CATE
+# Note: Because CATE is a convolution, its min/max domain is naturally twice as wide.
+# If you want to see the whole CATE distribution, you might want to multiply Y_LIM by 2 here.
 plot_evolution(
     ax3,
     heatmap_cate,
@@ -243,6 +276,7 @@ plot_evolution(
     steps,
     true_cate_val,
     f"CATE [Y(1) - Y(0)] Evolution\nSample {TEST_SAMPLE_IDX}",
+    y_lim=Y_LIM,
 )
 
 plt.tight_layout()

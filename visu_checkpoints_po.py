@@ -1,4 +1,4 @@
-#%%
+# %%
 import os
 import torch
 import numpy as np
@@ -7,10 +7,10 @@ import matplotlib.pyplot as plt
 from proximalfm.prior import PriorDataset
 from proximalfm._model import TabICL
 
-#%%
+# %%
 # 1. Configuration & Generation
 TARGET = "y1"
-checkpoint_path = "check_2/"
+checkpoint_path = "check_3/"
 
 KEEP_CHECK = None
 REMOVE_CHECK = None
@@ -53,17 +53,38 @@ if len(A.shape) == 1:
 if len(Y_obs.shape) == 1:
     Y_obs = Y_obs.unsqueeze(0)
 
-# Extract train and test splits
-train_idx = train_sizes[0].item()
-y_obs_train = Y_obs[:, :train_idx]
-A_context = A[:, :train_idx]
-A_input = A.unsqueeze(-1).float()  # Pre-process once
+split_idx = train_sizes[0].item()
+A_input = A.unsqueeze(-1).float()
 
-# Extract the True Potential Outcomes for the test set
-y0_test = Y0[:, train_idx:]
-y1_test = Y1[:, train_idx:]
+# --- NEW NORMALIZATION STRATEGY ---
+y_obs_train_raw = Y_obs[:, :split_idx]
 
-#%%
+# Calculate Context Stats
+y_context_mean = y_obs_train_raw.mean(dim=1, keepdim=True)
+y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
+
+# Standardize Context
+y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
+
+# Extract Raw Test Ground Truths
+y0_test_raw = Y0[:, split_idx:]
+y1_test_raw = Y1[:, split_idx:]
+
+true_test_target_raw = y0_test_raw[0] if TARGET == "y0" else y1_test_raw[0]
+
+# Route based on flag
+if PLOT_NORMALIZED:
+    y_obs_in = y_obs_train_norm
+
+    # Standardize the true values so the plot axes match
+    mean_val = y_context_mean[0, 0].item()
+    std_val = y_context_std[0, 0].item()
+    true_test_target = (true_test_target_raw - mean_val) / std_val
+else:
+    y_obs_in = y_obs_train_raw
+    true_test_target = true_test_target_raw
+
+# %%
 # 2. Locate and Filter Checkpoints
 raw_checkpoints = [
     f
@@ -75,7 +96,6 @@ all_checkpoints = []
 for ckpt in raw_checkpoints:
     step = int(ckpt.split("-")[1].split(".")[0])
 
-    # Apply filtering logic
     if REMOVE_CHECK and step in REMOVE_CHECK:
         continue
     if KEEP_CHECK is not None and step not in KEEP_CHECK:
@@ -83,14 +103,12 @@ for ckpt in raw_checkpoints:
 
     all_checkpoints.append((step, ckpt))
 
-# Sort by step number
 all_checkpoints.sort(key=lambda x: x[0])
 all_checkpoints = [ckpt for step, ckpt in all_checkpoints]
 
 if not all_checkpoints:
     raise ValueError("No checkpoints found after applying filters.")
 
-# Initialize model using the config from the first valid checkpoint
 first_checkpoint = torch.load(
     os.path.join(checkpoint_path, all_checkpoints[0]),
     map_location="cpu",
@@ -99,24 +117,8 @@ first_checkpoint = torch.load(
 model = TabICL(**first_checkpoint["config"])
 model.eval()
 
-#%%
-# 3. Setup Ground Truth & Standardization Stats
-true_test_target = y0_test[0] if TARGET == "y0" else y1_test[0]
-
-# If we need to plot normalized, we calculate the shift/scale directly from the context
-# exactly as TabICL does under the hood.
-if PLOT_NORMALIZED:
-    y0_shift, y0_scale, y1_shift, y1_scale = model._get_y0_y1_shift_scale(
-        y_obs_train, A_context
-    )
-
-    shift = y0_shift[0, 0].item() if TARGET == "y0" else y1_shift[0, 0].item()
-    scale = y0_scale[0, 0].item() if TARGET == "y0" else y1_scale[0, 0].item()
-
-    true_test_target = (true_test_target - shift) / scale
-
-#%%
-# 4. Setup Plotting Grid
+# %%
+# 3. Setup Plotting Grid
 num_checkpoints = len(all_checkpoints)
 num_cols = min(4, num_checkpoints)
 num_rows = (num_checkpoints + num_cols - 1) // num_cols
@@ -126,7 +128,7 @@ fig, axes = plt.subplots(
 )
 axes = axes.flatten()
 
-# 5. Evaluate and Plot
+# 4. Evaluate and Plot
 for i, checkp in enumerate(all_checkpoints):
     ckpt_full_path = os.path.join(checkpoint_path, checkp)
 
@@ -147,26 +149,29 @@ for i, checkp in enumerate(all_checkpoints):
     model.load_state_dict(state_dict)
 
     with torch.inference_mode():
+        # Predict natively dictates the output scale based on y_obs_in!
         out = model.predict(
-            X=X,
+            X=X,  # Handled internally by predict
             Z=Z,
             W=W,
             A=A_input,
-            y_train=y_obs_train,
+            y_train=y_obs_in,
             output_type="mean",
             target=TARGET,
         )[0]
-
-    # Normalize prediction if requested
-    if PLOT_NORMALIZED:
-        out = (out - shift) / scale
 
     # Convert to numpy
     true_np = true_test_target.cpu().numpy()
     out_np = out.cpu().numpy()
 
-    # Calculate MSE for the title
+    # Calculate R2 (and MSE for reference)
     mse = np.mean((true_np - out_np) ** 2)
+    variance = np.var(true_np)
+
+    if variance > 1e-8:
+        r2 = 1.0 - (mse / variance)
+    else:
+        r2 = 1.0 if mse < 1e-8 else 0.0
 
     ax = axes[i]
     ax.scatter(true_np, out_np, alpha=0.7, edgecolors="none")
@@ -183,7 +188,7 @@ for i, checkp in enumerate(all_checkpoints):
     ax.plot([line_min, line_max], [line_min, line_max], color="red", linestyle="--")
 
     # Formatting
-    ax.set_title(f"Step {step} | MSE: {mse:.3f}")
+    ax.set_title(f"Step {step} | R²: {r2:.3f}")
     unit_label = "(Normalized)" if PLOT_NORMALIZED else "(Raw)"
     ax.set_xlabel(f"True {TARGET.upper()} {unit_label}")
     ax.set_ylabel(f"Predicted {TARGET.upper()} {unit_label}")

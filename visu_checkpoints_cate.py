@@ -1,4 +1,4 @@
-#%%
+# %%
 import os
 import torch
 import numpy as np
@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 from proximalfm.prior import PriorDataset
 from proximalfm._model import TabICL
 
-#%%
+# %%
 # 1. Configuration & Generation
-checkpoint_path = "check_2/"
+checkpoint_path = "check_3/"
 
 KEEP_CHECK = None
 REMOVE_CHECK = []
@@ -52,17 +52,34 @@ if len(A.shape) == 1:
 if len(Y_obs.shape) == 1:
     Y_obs = Y_obs.unsqueeze(0)
 
-# Extract train split
+# Extract and Standardize Targets based ONLY on training context
 train_idx = train_sizes[0].item()
-y_obs_train = Y_obs[:, :train_idx]
 A_input = A.unsqueeze(-1).float()
 
-y0_test = Y0[:, train_idx:]
-y1_test = Y1[:, train_idx:]
-true_cate_test = y1_test - y0_test
-true_target = true_cate_test[0]  # Focus on the first batch item
+y_obs_train_raw = Y_obs[:, :train_idx]
+y_context_mean = y_obs_train_raw.mean(dim=1, keepdim=True)
+y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
 
-#%%
+y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
+
+# Calculate Raw and Normalized True CATE
+y0_test_raw = Y0[:, train_idx:]
+y1_test_raw = Y1[:, train_idx:]
+true_cate_test_raw = y1_test_raw - y0_test_raw
+
+y0_test_norm = (y0_test_raw - y_context_mean) / y_context_std
+y1_test_norm = (y1_test_raw - y_context_mean) / y_context_std
+true_cate_test_norm = y1_test_norm - y0_test_norm
+
+# Route the inputs based on PLOT_NORMALIZED flag
+if PLOT_NORMALIZED:
+    y_obs_in = y_obs_train_norm
+    true_target = true_cate_test_norm[0]  # Focus on the first batch item
+else:
+    y_obs_in = y_obs_train_raw
+    true_target = true_cate_test_raw[0]
+
+# %%
 # 2. Locate and Filter Checkpoints
 raw_checkpoints = [
     f
@@ -74,7 +91,6 @@ all_checkpoints = []
 for ckpt in raw_checkpoints:
     step = int(ckpt.split("-")[1].split(".")[0])
 
-    # Apply filtering logic
     if REMOVE_CHECK and step in REMOVE_CHECK:
         continue
     if KEEP_CHECK is not None and step not in KEEP_CHECK:
@@ -82,14 +98,12 @@ for ckpt in raw_checkpoints:
 
     all_checkpoints.append((step, ckpt))
 
-# Sort by step number
 all_checkpoints.sort(key=lambda x: x[0])
 all_checkpoints = [ckpt for step, ckpt in all_checkpoints]
 
 if not all_checkpoints:
     raise ValueError("No checkpoints found after applying filters.")
 
-# Initialize model using the config from the first valid checkpoint
 first_checkpoint = torch.load(
     os.path.join(checkpoint_path, all_checkpoints[0]),
     map_location="cpu",
@@ -98,30 +112,21 @@ first_checkpoint = torch.load(
 model = TabICL(**first_checkpoint["config"])
 model.eval()
 
-#%%
-# 3. Standardization (if requested)
-scale = 1.0
-if PLOT_NORMALIZED:
-    scale = y_obs_train.std().item() + 1e-8
-    true_target = true_target / scale
-
-#%%
-# 4. Setup Plotting Grids
+# %%
+# 3. Setup Plotting Grids
 num_checkpoints = len(all_checkpoints)
 num_cols = min(4, num_checkpoints)
 num_rows = (num_checkpoints + num_cols - 1) // num_cols
 
-# Figure 1: Scatter Plots (True CATE vs Predicted)
 fig1, axes1 = plt.subplots(
     num_rows, num_cols, figsize=(4 * num_cols, 4 * num_rows), squeeze=False
 )
 axes1 = axes1.flatten()
 
-# 5. Evaluate and Plot
+# 4. Evaluate and Plot
 for i, checkp in enumerate(all_checkpoints):
     ckpt_full_path = os.path.join(checkpoint_path, checkp)
 
-    # Catch Race Condition Errors
     try:
         checkpoint = torch.load(ckpt_full_path, map_location="cpu", weights_only=True)
     except RuntimeError:
@@ -131,38 +136,23 @@ for i, checkp in enumerate(all_checkpoints):
     step = checkpoint["curr_step"]
     print(f"Plotting Checkpoint: {checkp}, Step: {step}")
 
-    # Strip 'module.' prefix if saved via DDP
     state_dict = {
         k.replace("module.", ""): v for k, v in checkpoint["state_dict"].items()
     }
     model.load_state_dict(state_dict)
 
     with torch.inference_mode():
-        # 1. Get Mean CATE
+        # Because model.predict() now scales and un-scales internally,
+        # it natively returns the standardized outputs if y_obs_in is already standardized!
         out_mean = model.predict(
             X=X,
             Z=Z,
             W=W,
             A=A_input,
-            y_train=y_obs_train,
+            y_train=y_obs_in,
             output_type="mean",
             target="cate",
         )[0]
-
-        # 2. Get Distribution Weights
-        out_dist = model.predict(
-            X=X,
-            Z=Z,
-            W=W,
-            A=A_input,
-            y_train=y_obs_train,
-            output_type="distribution",
-            target="cate",
-        )
-
-    # Normalization check
-    if PLOT_NORMALIZED:
-        out_mean = out_mean / scale
 
     # Convert to numpy
     true_np = true_target.cpu().numpy()
@@ -189,8 +179,6 @@ for i, checkp in enumerate(all_checkpoints):
     ax1.set_ylabel(f"Predicted CATE {unit}")
     ax1.grid(True, alpha=0.3)
 
-
-# Clean up empty subplots on both grids
 for j in range(num_checkpoints, len(axes1)):
     fig1.delaxes(axes1[j])
 
