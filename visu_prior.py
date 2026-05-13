@@ -1,413 +1,415 @@
-#%% ── 0. Imports & Style ──────────────────────────────────────────────────────
+#%%
 
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import seaborn as sns
-import torch
-from scipy import stats
-
-# remove futurewarnings:
-import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
-
-# ── Use the new BNN prior ──────────────────────────────────────────────────
-from proximalfm.prior import BNNPriorComplete as ProximalPrior
-
-# ── Aesthetics ─────────────────────────────────────────────────────────────
-sns.set_theme(style="whitegrid", palette="muted", font_scale=1.1)
-PALETTE   = sns.color_palette("tab10")
-C_X       = PALETTE[0]
-C_Z       = PALETTE[1]
-C_W       = PALETTE[2]
-C_U       = PALETTE[4]
-C_A0      = PALETTE[7]
-C_A1      = PALETTE[3]
-C_ITE     = PALETTE[5]
-
-plt.rcParams.update({
-    "figure.dpi"        : 120,
-    "axes.spines.top"   : False,
-    "axes.spines.right" : False,
-    "figure.facecolor"  : "white",
-})
-
-print("✓ Imports OK")
-
-
-#%% ── 1. Configuration & Single-Episode Generation ───────────────────────────
-#
-#   We instantiate ProximalPriorConfig with explicit NetworkSpecs so you can
-#   control the complexity (depth/width) of the BNN generating the data.
-# ─────────────────────────────────────────────────────────────────────────────
-
-from proximalfm.Structure import ProximalPriorConfig, NetworkSpec
-
-# Define network complexity. Increase max_layers or hidden_size for wilder manifolds.
-default_spec = NetworkSpec(
-    # hidden_size=16, 
-    min_layers=2, 
-    max_layers=2, 
-    # weight_scale=1.0, 
-    # bias_scale=0.5,
-)
-
-cfg = ProximalPriorConfig(
-    d_x            = 5,
-    d_u            = 2,
-    d_z            = 3,
-    d_w            = 3,
-    noise_scale_w  = 1,
-    noise_scale_z  = 1,
-    noise_scale_x  = 1,
-    temperature    = 2,
-    confounding_strength=1,
-    
-    # Injecting the BNN specs
-    x_spec         = default_spec,
-    u_spec         = default_spec,
-    z_spec         = default_spec,
-    w_spec         = default_spec,
-    treatment_spec = default_spec,
-    outcome_spec   = default_spec,
-)
-
-prior = ProximalPrior(config=cfg, seed=42)
-
-N_OBS = 5_000   
-episode = prior.generate_episode(batch_size=N_OBS, episode_seed=100)
-
-print("Episode generated successfully.")
-print(f"  X  : {tuple(episode.X.shape)}")
-print(f"  Z  : {tuple(episode.Z.shape)}")
-print(f"  W  : {tuple(episode.W.shape)}")
-print(f"  U  : {tuple(episode.U.shape)}")
-print(f"  A  : {tuple(episode.A.shape)}")
-print(f"  Y  : {tuple(episode.Y.shape)}")
-print(f"  propensity: {tuple(episode.propensity.shape)}")
-
-
-#%% ── 2. Tensor-Level Inspection (dtypes, ranges, NaNs) ──────────────────────
-
-def describe_tensor(name: str, t: torch.Tensor) -> pd.Series:
-    arr = t.cpu().float().numpy().ravel()
-    return pd.Series({
-        "shape"  : str(tuple(t.shape)),
-        "NaN"    : int(np.isnan(arr).sum()),
-        "min"    : float(arr.min()),
-        "max"    : float(arr.max()),
-        "mean"   : float(arr.mean()),
-        "std"    : float(arr.std()),
-    }, name=name)
-
-tensors = {
-    "X": episode.X, "Z": episode.Z, "W": episode.W,
-    "U": episode.U, "A": episode.A, "Y": episode.Y,
-    "ITE": episode.Y1 - episode.Y0,
-}
-summary = pd.DataFrame([describe_tensor(k, v) for k, v in tensors.items()])
-print(summary.to_string())
-
-
-#%% ── 3. Univariate Distributions — Notice the Mixed Noise! ──────────────────
-#
-#   BNNPriorComplete uses a mix of Gaussian, Uniform, and Laplace noise.
-#   Look for sharp peaks (Laplace), bounded edges (Uniform), or standard bells.
-# ─────────────────────────────────────────────────────────────────────────────
-
-def plot_group_kde(ax, tensor: torch.Tensor, label: str, color):
-    arr = tensor.cpu().float().numpy()
-    for d in range(arr.shape[1]):
-        sns.kdeplot(arr[:, d], ax=ax, color=color, alpha=0.5, linewidth=1.6, label=f"{label}_{d}")
-    ax.set_title(label, fontweight="bold")
-    ax.set_ylabel("density")
-
-groups = [("X", episode.X, C_X), ("Z", episode.Z, C_Z),
-          ("W", episode.W, C_W), ("U", episode.U, C_U)]
-
-fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-for ax, (name, tensor, color) in zip(axes, groups):
-    plot_group_kde(ax, tensor, name, color)
-
-fig.suptitle("Univariate KDE — Mixed Noise Distributions (Laplace/Gaussian/Uniform)", y=1.02, fontweight="bold")
-plt.tight_layout()
-plt.show()
-
-
-#%% ── 3b. NEW: BNN Functional Diversity Across Episodes ──────────────────────
-#
-#   This is the defining feature of BNNPriorComplete. 
-#   Because it samples a NEW neural network for every episode, the manifold 
-#   mapping U to Z (or U to W) completely changes shape every time you call it.
-# ─────────────────────────────────────────────────────────────────────────────
-
-fig, axes = plt.subplots(1, 4, figsize=(16, 4), sharey=False, sharex=False)
-
-for i in range(4):
-    ep_temp = prior.generate_episode(batch_size=2000, episode_seed=999 + i)
-    u_vals = ep_temp.U.cpu().numpy()[:, 0]  # Just look at first dimension
-    z_vals = ep_temp.Z.cpu().numpy()[:, 0]
-    
-    axes[i].scatter(u_vals, z_vals, alpha=0.4, s=5, color=C_Z)
-    axes[i].set_title(f"Episode {999+i}", fontweight="bold")
-    axes[i].set_xlabel("Latent U_0")
-    if i == 0: axes[i].set_ylabel("Proxy Z_0")
-
-fig.suptitle("BNN Functional Diversity: Manifold shape completely changes per episode", y=1.05, fontweight="bold")
-plt.tight_layout()
-plt.show()
-
-
-#%% ── 4. Treatment Distribution & Propensity ─────────────────────────────────
-
-A_np   = episode.A.cpu().numpy()
-ps_np  = episode.propensity.cpu().numpy()
-
-fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-
-axes[0].hist(ps_np, bins=40, color=C_A1, edgecolor="white", alpha=0.8)
-axes[0].set_title("Propensity Score e(X, U, Z)", fontweight="bold")
-
-treat_counts = pd.Series(A_np).value_counts().sort_index()
-axes[1].bar(["Control (A=0)", "Treated (A=1)"], treat_counts.values, color=[C_A0, C_A1])
-axes[1].set_title("Treatment Assignment", fontweight="bold")
-
-for a_val, label, color in [(0, "A=0", C_A0), (1, "A=1", C_A1)]:
-    mask = A_np == a_val
-    sns.kdeplot(ps_np[mask], ax=axes[2], label=label, color=color, fill=True, alpha=0.3)
-axes[2].set_title("Propensity Overlap by Arm", fontweight="bold")
-axes[2].legend(frameon=False)
-
-fig.suptitle("Treatment & Propensity (BNN Logits)", y=1.02, fontweight="bold")
-plt.tight_layout()
-plt.show()
-
-
-#%% ── 5. Outcome Distributions ───────────────────────────────────────────────
-
-Y0_np  = episode.Y0.cpu().numpy()
-Y1_np  = episode.Y1.cpu().numpy()
-ITE_np = (episode.Y1 - episode.Y0).cpu().numpy()
-
-fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-
-for arr, label, color in [(Y0_np, "Y(0)", C_A0), (Y1_np, "Y(1)", C_A1)]:
-    sns.kdeplot(arr, ax=axes[0], label=label, color=color, fill=True, alpha=0.3)
-axes[0].set_title("Potential Outcomes Y(0) and Y(1)", fontweight="bold")
-axes[0].legend(frameon=False)
-
-sns.kdeplot(ITE_np, ax=axes[1], color=C_ITE, fill=True, alpha=0.5)
-axes[1].axvline(ITE_np.mean(), color="black", linestyle="--")
-axes[1].set_title("Individual Treatment Effect (ITE)", fontweight="bold")
-
-ite_sign = (ITE_np >= 0).astype(int)
-axes[2].scatter(Y0_np, Y1_np, c=ite_sign, cmap="bwr_r", alpha=0.3, s=8, rasterized=True)
-lims = [min(Y0_np.min(), Y1_np.min()), max(Y0_np.max(), Y1_np.max())]
-axes[2].plot(lims, lims, "k--", linewidth=1, alpha=0.5)
-axes[2].set_title("Y(0) vs Y(1)", fontweight="bold")
-
-fig.suptitle("Outcome Analysis (Complex BNN Structural Equations)", y=1.02, fontweight="bold")
-plt.tight_layout()
-plt.show()
-
-
-#%% ── 6 & 7. Pairwise Correlations & Proxy Quality ───────────────────────────
-#
-#   NOTE: Because BNNs create highly non-linear mappings, Pearson's r might 
-#   be close to 0 even if two variables are deterministically linked! 
-#   We rely more on the scatter plots here.
-# ─────────────────────────────────────────────────────────────────────────────
-
-U_np = episode.U.cpu().numpy()
-Z_np = episode.Z.cpu().numpy()
-W_np = episode.W.cpu().numpy()
-
-def scatter_panel(fig, gs_row, tensor_a, tensor_b, name_a, name_b, color):
-    d_a, d_b = tensor_a.shape[1], tensor_b.shape[1]
-    for i in range(d_a):
-        for j in range(d_b):
-            ax = fig.add_subplot(gs_row[i, j])
-            ax.scatter(tensor_a[:, i], tensor_b[:, j], alpha=0.25, s=6, color=color, rasterized=True)
-            r, _ = stats.pearsonr(tensor_a[:, i], tensor_b[:, j])
-            ax.set_title(f"Linear r={r:.2f}", fontsize=8) # Emphasize "Linear"
-            if j == 0: ax.set_ylabel(f"{name_a}_{i}", fontsize=8)
-            if i == d_a - 1: ax.set_xlabel(f"{name_b}_{j}", fontsize=8)
-            ax.tick_params(labelsize=6)
-
-fig = plt.figure(figsize=(15, 8))
-gs_top = gridspec.GridSpec(U_np.shape[1], Z_np.shape[1], figure=fig, top=0.9, bottom=0.55)
-gs_bot = gridspec.GridSpec(U_np.shape[1], W_np.shape[1], figure=fig, top=0.4, bottom=0.05)
-
-scatter_panel(fig, gs_top, U_np, Z_np, "U", "Z", C_Z)
-scatter_panel(fig, gs_bot, U_np, W_np, "U", "W", C_W)
-
-fig.text(0.5, 0.95, "Latent U vs Proxy Z (Notice non-linear clusters/curves)", fontweight="bold", fontsize=13, ha="center")
-fig.text(0.5, 0.45, "Latent U vs Proxy W (Notice non-linear clusters/curves)", fontweight="bold", fontsize=13, ha="center")
-plt.show()
-
-
-#%% ── 8. Causal Graph Empirical Checks (Non-Linear View) ─────────────────────
-
-def first_pc(arr: np.ndarray) -> np.ndarray:
-    centered = arr - arr.mean(axis=0)
-    _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-    return centered @ Vt[0]
-
-z_pc = first_pc(Z_np)
-w_pc = first_pc(W_np)
-u_pc = first_pc(U_np)
-Y_np = episode.Y.cpu().numpy()
-
-pairs = [
-    (z_pc,  ps_np, "Z (PC1)", "Prop", "Z ↔ Prop(A) [Proxy to Assignment]", C_Z),
-    (w_pc,  Y_np,  "W (PC1)", "Y",    "W ↔ Y [Proxy to Outcome]", C_W),
-    (u_pc,  ps_np, "U (PC1)", "Prop", "U ↔ Prop(A) [Confounder to Assignment]", C_U),
-    (u_pc,  Y_np,  "U (PC1)", "Y",    "U ↔ Y [Confounder to Outcome]", C_U),
-]
-
-fig, axes = plt.subplots(1, 4, figsize=(18, 4))
-for ax, (x, y, xlab, ylab, title, color) in zip(axes, pairs):
-    ax.scatter(x, y, alpha=0.3, s=5, color=color, rasterized=True)
-    
-    # Fit a simple polynomial instead of just a straight line to show BNN trends
-    try:
-        p = np.poly1d(np.polyfit(x, y.ravel(), 3))
-        xline = np.linspace(x.min(), x.max(), 100)
-        ax.plot(xline, p(xline), "k--", linewidth=2, alpha=0.8, label="Cubic Trend")
-    except:
-        pass
-        
-    ax.set_title(title, fontsize=10, fontweight="bold")
-    ax.set_xlabel(xlab); ax.set_ylabel(ylab)
-
-fig.suptitle("Causal Graph Checks (Curves indicate non-linear BNN leakage/dependency)", fontweight="bold", y=1.05)
-plt.tight_layout()
-plt.show()
-
-
-#%% ── 10. PRIOR CHARACTERIZATION ─────────────────────────────────────────────
-
-K        = 100
-N_SMALL  = 500   
-
-records = []
-for k in range(K):
-    ep = prior.generate_episode(batch_size=N_SMALL, episode_seed=k)
-    ite = (ep.Y1 - ep.Y0).cpu().numpy()
-    ps  = ep.propensity.cpu().numpy()
-    
-    records.append({
-        "treat_rate"   : float(ep.A.cpu().numpy().mean()),
-        "ps_std"       : float(ps.std()),
-        "ATE"          : float(ite.mean()),
-        "ITE_std"      : float(ite.std()),
-        "Y_std"        : float(ep.Y.cpu().numpy().std()),
-    })
-
-edf = pd.DataFrame(records)
-
-fig, axes = plt.subplots(1, 5, figsize=(18, 3))
-for ax, col, color, title in zip(
-    axes, 
-    ["treat_rate", "ps_std", "ATE", "ITE_std", "Y_std"],
-    ["#378ADD", "#378ADD", "#1D9E75", "#1D9E75", "#888780"],
-    ["Treatment Rate", "Propensity Spread", "ATE", "ITE Heterogeneity", "Outcome Std"]
-):
-    data = edf[col].dropna().values
-    ax.hist(data, bins=20, color=color, alpha=0.75, edgecolor="white", density=True)
-    mu, sd = data.mean(), data.std()
-    ax.axvline(mu, color="black", linestyle="--")
-    ax.set_title(title, fontsize=10, fontweight="bold")
-
-fig.suptitle(f"Prior Characterization over {K} Episodes (Tracking BNN Volatility)", y=1.1, fontweight="bold")
-plt.tight_layout()
-plt.show()
-print("✓ Prior Characterization Done")
-
-
-#%% ── 10. Predictability of CATE (Information Progression) ───────────────────
-#
-#   How "hard" is the causal inference task on this specific manifold?
-#   We evaluate predictability by progressively adding more information:
-#   1. Naive S-Learner (OLS): Predict Y from X and A, ignoring confounding.
-#   2. Oracle OLS (X): Linear limit of predicting True ITE.
-#   3. Oracle RF (X): Non-linear limit of predicting True ITE.
-#   4. Oracle RF (X, W, Z): Predictability when including proxies.
-#   5. Oracle RF (X, W, Z, U): The absolute upper bound including latents.
-# ─────────────────────────────────────────────────────────────────────────────
-from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import roc_auc_score
 from sklearn.metrics import r2_score
+from tqdm import tqdm
 
-# Extract all relevant tensors
-X_np = episode.X.cpu().numpy()
-W_np = episode.W.cpu().numpy()
-Z_np = episode.Z.cpu().numpy()
-U_np = episode.U.cpu().numpy()
-A_np = episode.A.cpu().numpy()
-Y_np = episode.Y.cpu().numpy()
-ITE_np = (episode.Y1 - episode.Y0).cpu().numpy()
+# Assuming proximalfm is in your path
+from proximalfm.prior import PriorDataset
 
-# ── 1. Naive S-Learner OLS (Predict Y from X and A)
-XA_np = np.column_stack((X_np, A_np))
-s_learner = LinearRegression().fit(XA_np, Y_np)
-XA1_np = np.column_stack((X_np, np.ones_like(A_np)))
-XA0_np = np.column_stack((X_np, np.zeros_like(A_np)))
-pred_slearner = s_learner.predict(XA1_np) - s_learner.predict(XA0_np)
-r2_slearner = r2_score(ITE_np, pred_slearner)
+import warnings
 
-# ── 2. Oracle Linear Model (X -> ITE)
-olin = LinearRegression().fit(X_np, ITE_np)
-pred_olin = olin.predict(X_np)
-r2_olin = r2_score(ITE_np, pred_olin)
+warnings.filterwarnings("ignore", category=FutureWarning, module="seaborn")  # Suppress
 
-# ── 3. Oracle Random Forest (X -> ITE)
-rf_x = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=42).fit(X_np, ITE_np)
-pred_x = rf_x.predict(X_np)
-r2_x = r2_score(ITE_np, pred_x)
+#%% --- 1. Instantiate the Prior Dataset ---
+dataset = PriorDataset(
+    batch_size=30,
+    min_dim_U=1,
+    max_dim_U=1,
+    min_dim_W=1,
+    max_dim_W=1,
+    min_dim_Z=1,
+    max_dim_Z=1,
+    min_dim_X=2,
+    max_dim_X=2,
+    seq_len_per_gp=False,
+    max_seq_len=100,
+    prior_type="mlp_scm",
+    device="cpu",
+)
 
-# ── 4. Oracle Random Forest with Proxies (X, W, Z -> ITE)
-XWZ_np = np.column_stack((X_np, W_np, Z_np))
-rf_xwz = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=42).fit(XWZ_np, ITE_np)
-pred_xwz = rf_xwz.predict(XWZ_np)
-r2_xwz = r2_score(ITE_np, pred_xwz)
+#%% --- 2. Generate and Store All Datasets (Flattened) ---
+n_batches = 10
+iterator = iter(dataset)
 
-# ── 5. Oracle Random Forest with Latents (X, W, Z, U -> ITE)
-XWZU_np = np.column_stack((X_np, W_np, Z_np, U_np))
-rf_xwzu = RandomForestRegressor(n_estimators=50, max_depth=6, random_state=42).fit(XWZU_np, ITE_np)
-pred_xwzu = rf_xwzu.predict(XWZU_np)
-r2_xwzu = r2_score(ITE_np, pred_xwzu)
+print(f"Generating {n_batches * dataset.batch_size} datasets...")
 
-# ── Plotting ──
-fig, axes = plt.subplots(1, 5, figsize=(22, 4.5), sharey=True, sharex=True)
+# Store flattened, individual datasets as numpy arrays
+all_datasets = []
+for _ in tqdm(range(n_batches), desc="Sampling Batches"):
+    batch = next(iterator)
 
-plots = [
-    (pred_slearner, r2_slearner, "1. Naive OLS S-Learner\n(Observed X, A → Y)", C_A1),
-    (pred_olin, r2_olin, "2. Oracle OLS\n(X → True ITE)", C_ITE),
-    (pred_x, r2_x, "3. Oracle RF\n(X → True ITE)", "#1D9E75"),
-    (pred_xwz, r2_xwz, "4. Oracle RF + Proxies\n(X, W, Z → True ITE)", "#7F77DD"),
-    (pred_xwzu, r2_xwzu, "5. Oracle RF + Latents\n(X, W, Z, U → True ITE)", "#D85A30")
-]
+    # Iterate through the batch dimension to extract individual datasets
+    for i in range(dataset.batch_size):
+        # We only need the first 8 tensors: U, X, W, Z, A, Y_obs, Y0, Y1
+        ds = tuple(tensor[i].cpu().numpy() for tensor in batch[:8])
+        all_datasets.append(ds)
 
-lims = [ITE_np.min(), ITE_np.max()]
+#%% --- 3. Helper Functions ---
+def safe_target(y):
+    """Safely ravel targets only if they are 1D to prevent sklearn warnings/errors."""
+    if y.ndim == 2 and y.shape[1] == 1:
+        return y.ravel()
+    return y
 
-for ax, (preds, r2, title, color) in zip(axes, plots):
-    ax.scatter(ITE_np, preds, alpha=0.3, s=10, color=color, rasterized=True)
-    ax.plot(lims, lims, "k--", alpha=0.5, label="Perfect Prediction")
-    ax.set_title(f"{title}\nCATE R² = {r2:.3f}", fontweight="bold", fontsize=11)
-    ax.set_xlabel("True ITE")
-    if ax == axes[0]:
-        ax.set_ylabel("Predicted ITE")
-    ax.legend(fontsize=9, frameon=False, loc="upper left")
 
-fig.suptitle("Predictability Progression: How much information is required to learn the CATE manifold?", fontweight="bold", fontsize=14, y=1.08)
+def test_conditional_independence(target, base_features, test_feature):
+    """
+    Fits a model with base features, then base + test feature.
+    Returns the difference in R^2. A negligible difference implies conditional independence.
+    """
+    rf = RandomForestRegressor(n_estimators=30, max_depth=5, n_jobs=-1, random_state=42)
+    target = safe_target(target)
+
+    # Model 1: Conditioned only on base
+    rf.fit(base_features, target)
+    score_base = r2_score(target, rf.predict(base_features))
+
+    # Model 2: Conditioned on base + test_feature
+    augmented_features = np.concatenate([base_features, test_feature], axis=1)
+    rf.fit(augmented_features, target)
+    score_aug = r2_score(target, rf.predict(augmented_features))
+
+    diff = score_aug - score_base
+    return score_base, score_aug, diff
+
+
+def print_summary_stats(name, values):
+    """Prints Mean, Min, Max, and Quartiles for a given list of metrics."""
+    values = np.array(values)
+    print(f"\n--- {name} ---")
+    print(f"  Mean : {np.mean(values): .4f}")
+    print(f"  Min  : {np.min(values): .4f}")
+    print(f"  25%  : {np.percentile(values, 25): .4f}")
+    print(f"  50%  : {np.median(values): .4f}")
+    print(f"  75%  : {np.percentile(values, 75): .4f}")
+    print(f"  Max  : {np.max(values): .4f}")
+
+
+#%% --- 4. Evaluate Per-Dataset Loop ---
+# Dictionaries to store our metrics across all datasets
+metrics = {
+    "Signal: U -> Z (R^2)": [],
+    "Signal: U -> W (R^2)": [],
+    "Marginal Signal: A -> Y (R^2)": [],
+    "Leakage Delta: Z _|_ W | (X, U)": [],
+    "Leakage Delta: Y _|_ Z | (A, X, U)": [],
+    "Leakage Delta: W _|_ (A, Z) | (X, U)": [],
+    "Confounding Bias (Naive ATE - True ATE)": [],
+    "Confounding Bias (Naive ATE - True ATE) Normalized": [],
+    "Outcome Variance Gap (Delta R^2_Y)": [],
+    "Treatment Selection Gap (Delta AUC_A)": [],
+    "True ATE": [],
+    "Naive ATE": [],
+    "Std of Y_obs": [],
+}
+
+print(
+    f"\nEvaluating structural integrity across {len(all_datasets)} stored datasets..."
+)
+
+for ds in tqdm(all_datasets, desc="Evaluating Datasets"):
+    # Unpack the pre-flattened numpy arrays
+    u, x, w, z, a, y_obs, y0, y1 = ds
+
+    # A and Y are often 1D, ensure they are properly reshaped for concatenation/features
+    a_2d = a.reshape(-1, 1) if a.ndim == 1 else a
+
+    # Force 2D for feature arrays
+    z_2d = z.reshape(-1, 1) if z.ndim == 1 else z
+
+    # --- 4.1: Targeted Signal Strength ---
+    rf_z = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(u, safe_target(z))
+    metrics["Signal: U -> Z (R^2)"].append(r2_score(safe_target(z), rf_z.predict(u)))
+
+    rf_w = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(u, safe_target(w))
+    metrics["Signal: U -> W (R^2)"].append(r2_score(safe_target(w), rf_w.predict(u)))
+
+    rf_y = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(a_2d, safe_target(y_obs))
+    metrics["Marginal Signal: A -> Y (R^2)"].append(
+        r2_score(safe_target(y_obs), rf_y.predict(a_2d))
+    )
+
+    # --- 4.2: Strict Proxy Exclusion (Leakage Deltas) ---
+    base_XU = np.concatenate([x, u], axis=1)
+    base_AXU = np.concatenate([a_2d, x, u], axis=1)
+
+    # Check 1: Z _|_ W | (X, U)
+    _, _, delta_zw = test_conditional_independence(
+        target=w, base_features=base_XU, test_feature=z_2d
+    )
+    metrics["Leakage Delta: Z _|_ W | (X, U)"].append(delta_zw)
+
+    # Check 2: Y _|_ Z | (A, X, U)
+    _, _, delta_yz = test_conditional_independence(
+        target=y_obs, base_features=base_AXU, test_feature=z_2d
+    )
+    metrics["Leakage Delta: Y _|_ Z | (A, X, U)"].append(delta_yz)
+
+    # Check 3: W _|_ (A, Z) | (X, U)
+    az_concat = np.concatenate([a_2d, z_2d], axis=1)
+    _, _, delta_waz = test_conditional_independence(
+        target=w, base_features=base_XU, test_feature=az_concat
+    )
+    metrics["Leakage Delta: W _|_ (A, Z) | (X, U)"].append(delta_waz)
+
+    # --- 4.3: Confounding Bias (ATE Gap) ---
+    true_ate = np.mean(y1 - y0)
+
+    features_AX = np.concatenate([a_2d, x], axis=1)
+    lr_naive = LinearRegression().fit(features_AX, y_obs)
+    naive_ate = lr_naive.coef_[0]
+
+    bias = naive_ate - true_ate
+    metrics["Confounding Bias (Naive ATE - True ATE)"].append(bias)
+    metrics["Confounding Bias (Naive ATE - True ATE) Normalized"].append(
+        bias / np.std(y_obs)
+    )
+
+    # --- 4.4: Outcome Variance Gap (Delta R^2_Y) ---
+    features_AXU = np.concatenate([a_2d, x, u], axis=1)
+
+    rf_y_naive = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_AX, y_obs)
+    r2_y_naive = r2_score(y_obs, rf_y_naive.predict(features_AX))
+
+    rf_y_oracle = RandomForestRegressor(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_AXU, y_obs)
+    r2_y_oracle = r2_score(y_obs, rf_y_oracle.predict(features_AXU))
+
+    metrics["Outcome Variance Gap (Delta R^2_Y)"].append(r2_y_oracle - r2_y_naive)
+
+    # --- 4.5: Treatment Selection Gap (Delta AUC_A) ---
+    features_XZ = np.concatenate([x, z_2d], axis=1)
+    features_XZU = np.concatenate([x, z_2d, u], axis=1)
+
+    clf_a_naive = RandomForestClassifier(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_XZ, a)
+    auc_a_naive = roc_auc_score(a, clf_a_naive.predict_proba(features_XZ)[:, 1])
+
+    clf_a_oracle = RandomForestClassifier(
+        n_estimators=30, max_depth=5, n_jobs=-1, random_state=42
+    ).fit(features_XZU, a)
+    auc_a_oracle = roc_auc_score(a, clf_a_oracle.predict_proba(features_XZU)[:, 1])
+
+    metrics["Treatment Selection Gap (Delta AUC_A)"].append(auc_a_oracle - auc_a_naive)
+    metrics["True ATE"].append(true_ate)
+    metrics["Naive ATE"].append(naive_ate)
+    metrics["Std of Y_obs"].append(np.std(y_obs))
+
+#%% --- 5. Print Summary Reports & Visualizations ---
+print("\n" + "=" * 50)
+print("  PROXIMAL PRIOR EVALUATION REPORT")
+print("  Total Datasets Evaluated:", len(all_datasets))
+print("=" * 50)
+
+for metric_name, values in metrics.items():
+    print_summary_stats(metric_name, values)
+
+# --- Plotting the Distributions ---
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+axes = axes.flatten()
+
+for idx, (metric_name, values) in enumerate(metrics.items()):
+    ax = axes[idx]
+
+    # Calculate the dynamic lower limit
+    lower_limit = max(-1, min(values) - 0.1)
+
+    # Change to histogram and optionally restrict the bins to the view area
+    sns.histplot(values, ax=ax, color="royalblue", binrange=(lower_limit, 1), bins=15)
+
+    # Vertical dashed lines for reference
+    ax.axvline(x=1, color="red", linestyle="--", alpha=0.6)
+    ax.axvline(x=0, color="red", linestyle="--", alpha=0.6)
+
+    ax.set_title(metric_name, fontsize=12, fontweight="bold")
+    ax.set_xlabel("R² Score" if "Signal" in metric_name else "R² Delta")
+    ax.set_ylabel("Count")
+
+    # Apply the requested x-axis limits
+    ax.set_xlim(lower_limit, 1.1)
+    if idx == 5:
+        break
+
 plt.tight_layout()
 plt.show()
 
-print("\n── CATE Predictability Progression (R²) ──")
-print(f"1. Naive S-Learner (X, A)     : {r2_slearner:.3f}  (Baseline biased by confounding)")
-print(f"2. Oracle OLS (X)             : {r2_olin:.3f}  (Best possible linear fit)")
-print(f"3. Oracle RF (X)              : {r2_x:.3f}  (Best possible non-linear fit on X alone)")
-print(f"4. Oracle RF (X, W, Z)        : {r2_xwz:.3f}  (Information gain from adding proxies)")
-print(f"5. Oracle RF (X, W, Z, U)     : {r2_xwzu:.3f}  (Absolute upper bound with latent U)")
+
+#%% --- 6. Plot Individual Datasets ---
+
+K_to_plot = 10
+fig2, axes2 = plt.subplots(K_to_plot, 4, figsize=(24, 5 * K_to_plot))
+
+if K_to_plot == 1:
+    axes2 = [axes2]
+
+# Because all_datasets is flattened, we can just slice the first K elements!
+for idx, ds in enumerate(all_datasets[:K_to_plot]):
+
+    u, x, w, z, a_samp, y_obs_samp, y0_samp, y1_samp = ds
+
+    ax_scatter = axes2[idx][0]
+    ax_true = axes2[idx][1]
+    ax_obs = axes2[idx][2]
+    ax_cate = axes2[idx][3]  # New axis for Y(1) - Y(0)
+
+    # Flatten just for the scatter and KDE plots (handles 1D variables gracefully)
+    y0_flat = y0_samp.ravel()
+    y1_flat = y1_samp.ravel()
+    y_obs_flat = y_obs_samp.ravel()
+    a_flat = a_samp.ravel()
+
+    # Calculate true Individual Treatment Effects (CATE)
+    cate_flat = y1_flat - y0_flat
+
+    # 1. Scatter of Y0 vs Y1
+    ax_scatter.scatter(y0_flat, y1_flat, alpha=0.5, color="purple", s=15)
+
+    # Plot the y=x line for reference (where treatment has zero effect)
+    min_val = min(min(y0_flat), min(y1_flat))
+    max_val = max(max(y0_flat), max(y1_flat))
+    ax_scatter.plot(
+        [min_val, max_val],
+        [min_val, max_val],
+        "r--",
+        alpha=0.7,
+        label="y = x (No Effect)",
+    )
+
+    ax_scatter.set_title(f"DGP {idx+1}: True Potential Outcomes")
+    ax_scatter.set_xlabel("Y(0)")
+    ax_scatter.set_ylabel("Y(1)")
+    ax_scatter.legend()
+
+    # 2. True Causal Shift (Marginal Y0 vs Y1)
+    sns.kdeplot(y0_flat, fill=True, ax=ax_true, label="Y(0)", color="blue")
+    sns.kdeplot(y1_flat, fill=True, ax=ax_true, label="Y(1)", color="orange")
+    ax_true.set_title(f"DGP {idx+1}: True Causal Marginals")
+    ax_true.set_xlabel("Potential Outcome Value")
+    ax_true.legend()
+
+    # 3. Observational Shift (Y_obs | A=0 vs Y_obs | A=1)
+    y_obs_a0 = y_obs_flat[a_flat == 0]
+    y_obs_a1 = y_obs_flat[a_flat == 1]
+
+    sns.kdeplot(
+        y_obs_a0,
+        fill=True,
+        ax=ax_obs,
+        label="Y_obs | A=0",
+        color="blue",
+        linestyle="--",
+    )
+    sns.kdeplot(
+        y_obs_a1,
+        fill=True,
+        ax=ax_obs,
+        label="Y_obs | A=1",
+        color="orange",
+        linestyle="--",
+    )
+    ax_obs.set_title(f"DGP {idx+1}: Confounded Observational Marginals")
+    ax_obs.set_xlabel("Observed Outcome Value")
+    ax_obs.legend()
+
+    # 4. True Treatment Effect Distribution (Y1 - Y0)
+    sns.kdeplot(cate_flat, fill=True, ax=ax_cate, color="mediumseagreen")
+
+    # Reference line for zero effect
+    ax_cate.axvline(x=0, color="red", linestyle="--", alpha=0.6, label="Zero Effect")
+
+    # Reference line for Average Treatment Effect (ATE)
+    ate = np.mean(cate_flat)
+    ax_cate.axvline(
+        x=ate, color="black", linestyle="-", alpha=0.8, label=f"ATE = {ate:.2f}"
+    )
+
+    ax_cate.set_title(f"DGP {idx+1}: True Treatment Effect (CATE)")
+    ax_cate.set_xlabel("Y(1) - Y(0)")
+    ax_cate.set_ylabel("Density")
+    ax_cate.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+#%% -- plot distribution of ATE across all datasets --
+ate_values = metrics["True ATE"] / np.array(metrics["Std of Y_obs"])
+plt.figure(figsize=(10, 6))
+sns.histplot(ate_values, bins=20, kde=True, color="teal")
+plt.axvline(x=0, color="red", linestyle="--", alpha=0.7, label="Zero ATE")
+plt.title("Distribution of True ATE Across Datasets (normalized)", fontweight="bold")
+plt.xlabel("True ATE Value")
+plt.ylabel("Count")
+plt.legend()
+plt.show()
+
+#%% --- 7. Print Summary Reports & Visualizations ---
+
+# --- Plotting the Confounding Metrics ---
+fig3, axes3 = plt.subplots(1, 3, figsize=(18, 5))
+
+# 1. Confounding Bias
+sns.histplot(
+    metrics["Confounding Bias (Naive ATE - True ATE) Normalized"],
+    ax=axes3[0],
+    color="crimson",
+    bins=20,
+    kde=True,
+)
+axes3[0].axvline(x=0, color="black", linestyle="--", alpha=0.8, label="Zero Bias")
+axes3[0].set_title(
+    "Confounding Bias (Normalized)\n(Naive ATE - True ATE)", fontweight="bold"
+)
+axes3[0].set_xlabel("Bias Magnitude")
+axes3[0].legend()
+
+# 2. Outcome Variance Gap
+sns.histplot(
+    metrics["Outcome Variance Gap (Delta R^2_Y)"],
+    ax=axes3[1],
+    color="darkorange",
+    bins=20,
+    kde=True,
+)
+axes3[1].axvline(x=0, color="black", linestyle="--", alpha=0.8)
+axes3[1].set_title(
+    "Outcome Variance Gap\n($\\Delta R^2$ when exposing U)", fontweight="bold"
+)
+axes3[1].set_xlabel("Additional $R^2$ from U")
+
+# 3. Treatment Selection Gap
+sns.histplot(
+    metrics["Treatment Selection Gap (Delta AUC_A)"],
+    ax=axes3[2],
+    color="darkviolet",
+    bins=20,
+    kde=True,
+)
+axes3[2].axvline(x=0, color="black", linestyle="--", alpha=0.8)
+axes3[2].set_title(
+    "Treatment Selection Gap\n($\\Delta$ AUC when exposing U)", fontweight="bold"
+)
+axes3[2].set_xlabel("Additional AUC from U")
+
+plt.tight_layout()
+plt.show()
+
+
+#%%

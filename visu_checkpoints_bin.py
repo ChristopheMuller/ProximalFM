@@ -11,7 +11,7 @@ from proximalfm._model import TabICL
 
 #%%
 # 1. Configuration & Toggles
-CHECKPOINT_DIR = "check_1/"
+CHECKPOINT_DIR = "check_2/"
 TEST_SAMPLE_IDX = 0
 PLOT_MEAN = True
 
@@ -153,9 +153,21 @@ heatmap_cate = np.array(history_weights_cate).T
 # Expanded to 3 columns to fit the new CATE plot
 fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 6))
 
+keep_only_quartiles = True
+
 
 def plot_evolution(ax, heatmap, vals, step_arr, true_val, title):
     X_mesh, Y_mesh = np.meshgrid(step_arr, vals)
+
+    print(X_mesh.shape, Y_mesh.shape, heatmap.shape)
+
+    if keep_only_quartiles:
+        X_mesh = X_mesh[X_mesh.shape[0] // 4 : 3 * X_mesh.shape[0] // 4, :]
+        Y_mesh = Y_mesh[Y_mesh.shape[0] // 4 : 3 * Y_mesh.shape[0] // 4, :]
+        heatmap = heatmap[heatmap.shape[0] // 4 : 3 * heatmap.shape[0] // 4, :]
+        vals = vals[vals.shape[0] // 4 : 3 * vals.shape[0] // 4]
+
+    print(X_mesh.shape, Y_mesh.shape, heatmap.shape)
 
     # Log scale to make small probabilities visible
     norm = mcolors.LogNorm(vmin=1e-4, vmax=heatmap.max())

@@ -9,7 +9,7 @@ from proximalfm._model import TabICL
 
 #%%
 # 1. Configuration & Toggles
-checkpoint_path = "check_1/"
+checkpoint_path = "check_2/"
 
 KEEP_CHECK = None
 REMOVE_CHECK = []
