@@ -60,12 +60,14 @@ except ImportError:
 # --- CausalPFN Setup (with FAISS Monkeypatch) ---
 try:
     import os
+
     # Prevent PyTorch/FAISS thread collisions (crucial for benchmark stability)
     for k in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]:
         os.environ[k] = "1"
     os.environ["KMP_DUPLICATE_OK"] = "True"
 
     from causalpfn import CATEEstimator as CausalPFN_Model
+
     _CAUSALPFN_AVAILABLE = True
 except ImportError:
     _CAUSALPFN_AVAILABLE = False
@@ -95,9 +97,10 @@ def silent():
                 sys.stdout = old_stdout
                 sys.stderr = old_stderr
 
+
 def _switch_src_context(target_repo_name: str, competitor_repo_name: str):
     """
-    Forces Python to forget the competitor's 'src' folder and strictly 
+    Forces Python to forget the competitor's 'src' folder and strictly
     bind 'src' to the target repository.
     """
     import importlib
@@ -515,12 +518,12 @@ class P2SLS(CATEEstimator):
 
 class NMMR_Wrappers(CATEEstimator):
     def __init__(self, model_type: str, estimate_cate: bool, **kwargs):
-
         _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
 
         from src.data.ate.data_class import PVTrainDataSet
         from src.models.PMMR.model import PMMRModel
         from src.models.kernelPV.model import KernelPVModel
+
         self.model_type = model_type
         self.estimate_cate = estimate_cate
 
@@ -545,7 +548,7 @@ class NMMR_Wrappers(CATEEstimator):
             raise ValueError("NMMR methods require both W and Z proxies.")
 
         train_data = self._PVTrainDataSet(
-            treatment=np.asarray(A).reshape(-1, 1),
+            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
             treatment_proxy=np.asarray(Z),
             outcome_proxy=np.asarray(W),
             outcome=np.asarray(Y),
@@ -743,7 +746,6 @@ _CAUSALPFN_CACHE = {}
 
 class CausalFM_Estimator(CATEEstimator):
     def __init__(self, checkpoint_path: str, use_W: bool = True, use_Z: bool = True):
-        
         # Lock in CausalFM, kick out NMMR
         _switch_src_context(target_repo_name="CausalFM", competitor_repo_name="NMMR")
 
@@ -853,11 +855,14 @@ class CausalPFN_Estimator(CATEEstimator):
             raise ImportError("causalpfn is not installed.")
 
         import torch
+
         torch.set_num_threads(1)
 
         if "default" not in _CAUSALPFN_CACHE:
             with silent():
-                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(device="cpu", verbose=False)
+                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
+                    device="cpu", verbose=False
+                )
 
         self.model = _CAUSALPFN_CACHE["default"]
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)

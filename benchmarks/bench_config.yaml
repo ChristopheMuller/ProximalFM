@@ -8,22 +8,30 @@ data:
   output_dir: results/test
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_train: 256    # context samples shown to each estimator
-  n_test:  500     # query samples for evaluation  (n_test > 1 enables CATE R²)
-  n_batch: 50    # number of independent datasets (episodes)
+  n_rows: 512    # context samples shown to each estimator
+  n_batch: 20    # number of independent datasets (episodes)
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
-    confounding_strength: 1
-    d_u: 3
-    d_w: 4
-    d_x: 5
-    d_z: 4
-    noise_scale_w: 1
-    noise_scale_x: 1
-    noise_scale_z: 1
-    temperature: 2
-    type: bnn_complete
+    batch_size: 1
+    batch_size_per_gp: 1
+    min_dim_U: 1
+    max_dim_U: 1
+    min_dim_W: 1
+    max_dim_W: 1
+    min_dim_Z: 1
+    max_dim_Z: 1
+    min_dim_X: 2
+    max_dim_X: 2
+    min_seq_len: None
+    max_seq_len: 512
+    log_seq_len: False
+    seq_len_per_gp: False
+    min_train_size: 0.8
+    max_train_size: 0.95
+    replay_small: False
+    prior_type: "mlp_scm"
+    device: "cpu"
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -57,11 +65,11 @@ methods:
     use_W: true
     use_Z: true
 
-  # - name: S-TabICL
-  #   cls:   S_Learner
-  #   base:  tabicl
-  #   use_W: true
-  #   use_Z: true
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    use_W: true
+    use_Z: true
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS
@@ -76,11 +84,11 @@ methods:
     use_W: true
     use_Z: true
 
-  # - name: T-TabICL
-  #   cls:   T_Learner
-  #   base:  tabicl
-  #   use_W: true
-  #   use_Z: true
+  - name: T-TabICL
+    cls:   T_Learner
+    base:  tabicl
+    use_W: true
+    use_Z: true
 
   # ── X-Learner baselines ──────────────────────────────────────────────────
   - name: X-OLS
@@ -100,6 +108,13 @@ methods:
   - name: X-RF
     cls:   X_Learner
     base:  rf
+    use_W: true
+    use_Z: true
+    interactions: false
+
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
     use_W: true
     use_Z: true
     interactions: false
@@ -172,11 +187,5 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  # - name:       ProximalFM_small
-  #   checkpoint: checkpoints/bnn__small
-
   - name:       ProximalFM
-    checkpoint: checkpoints/bnn__medium
-
-  # - name:       ate_small
-  #   checkpoint: checkpoints/ate_small
+    checkpoint: check_2/

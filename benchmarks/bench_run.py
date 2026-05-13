@@ -56,6 +56,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import yaml
 
 from rich.console import Console
@@ -70,7 +71,7 @@ from rich.progress import (
 )
 from rich.rule import Rule
 
-# Ensure project root is in sys.path so 'proximalfm' and 'benchmarks' are resolvable.
+# Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.bench_methods import build_method
@@ -79,11 +80,11 @@ from benchmarks.bench_metrics import (
     build_summary_tables,
     make_combined_rich_table,
 )
-# ── Optional: neural model support (may not be installed) ─────────────────────
+
+# ── Optional: neural model support ───────────────────────────────────────────
 try:
-    from proximalfm.Structure import ProximalPriorConfig, ModelConfig
-    from proximalfm.PriorDataLoader import create_causal_data_loaders
-    from proximalfm.models.gmm import ProximalGMM
+    from proximalfm._model.tabicl import TabICL
+    from proximalfm.prior._dataset import PriorDataset
 
     _PROXFM_AVAILABLE = True
 except ImportError:
@@ -93,18 +94,25 @@ console = Console()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Config
+# Utils & Config
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
-    # Validate required top-level keys
     for key in ("data", "run"):
         if key not in cfg:
             raise KeyError(f"bench_config.yaml is missing required section '{key}'.")
     return cfg
+
+
+def safe_standardize(x: torch.Tensor) -> torch.Tensor:
+    """Standardize features for the model forward pass."""
+    mu = x.mean(dim=1, keepdim=True)
+    std = x.std(dim=1, keepdim=True)
+    std = torch.where(std < 1e-5, torch.ones_like(std), std)
+    return (x - mu) / std
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,46 +128,58 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
             "existing data file, or install proximalfm to generate new data."
         )
 
-    n_train = data_cfg["n_train"]
-    n_test = data_cfg["n_test"]
+    n_rows = data_cfg["n_rows"]
     n_batch = data_cfg["n_batch"]
-    prior_kw = data_cfg["prior"].copy()
+    prior_kw = data_cfg.get("prior", {}).copy()
     seed = run_cfg.get("seed", 42)
 
-    prior_kw["dtype"] = torch.float32
-    prior_config = ProximalPriorConfig(**prior_kw)
+    # Force dimensions for the benchmark chunk
+    prior_kw.update(
+        {
+            "batch_size": n_batch,
+            "min_seq_len": None,
+            "max_seq_len": n_rows,
+            "min_train_size": 0.5,
+            "max_train_size": 0.95,
+            "device": "cpu",
+        }
+    )
 
     console.print(
         f"    Generating [bold]{n_batch}[/] datasets "
-        f"(n_train={n_train}, n_test={n_test}, seed={seed})…"
+        f"(n_rows={n_rows}, seed={seed})…"
     )
-    loaders = create_causal_data_loaders(
-        prior_config=prior_config,
-        batch_size=n_batch,
-        min_episode_size=n_train + n_test,
-        max_episode_size=n_train + n_test,
-        train_episodes=1,
-        val_episodes=n_batch,
-        num_workers=0,
-        seed=seed,
-    )
-    batch = next(iter(loaders["val"]))
 
+    # Generate reproducible batch
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    dataset = PriorDataset(**prior_kw)
+    batch = next(iter(dataset))
+
+    # Prior dataset yields 14 elements
+    (U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_size) = batch
+    train_size = train_size[0]
+
+    # Compute explicit ITE for the test segment
+    true_ITEs = (Y1[:, train_size:] - Y0[:, train_size:]).numpy()
     data = {
-        "X": batch["X"].cpu(),
-        "Z": batch["Z"].cpu(),
-        "W": batch["W"].cpu(),
-        "A": batch["A"].cpu(),
-        "Y": batch["Y"].cpu(),
-        # true_ITEs: (n_batch, n_test) — test-set ground truth
-        "true_ITEs": batch["ITE"][:, n_train:, 0].cpu().numpy(),
-        "N_TRAIN": n_train,
-        "N_TEST": n_test,
+        "X": X.cpu(),
+        "Z": Z.cpu(),
+        "W": W.cpu(),
+        "A": A.cpu(),
+        "Y": Y_obs.cpu(),
+        "d_X": d_X.cpu(),
+        "d_Z": d_Z.cpu(),
+        "d_W": d_W.cpu(),
+        "true_ITEs": true_ITEs,
+        "N_TRAIN": train_size,
+        "N_TEST": n_rows - train_size,
         "N_BATCH": n_batch,
     }
+
     torch.save(data, output_dir / "data.pt")
     with open(output_dir / "prior_config.yaml", "w") as f:
-        yaml.dump(data_cfg["prior"], f)
+        yaml.dump(data_cfg.get("prior", {}), f)
 
     console.print(f"    [green]✓[/] Saved → {output_dir / 'data.pt'}")
     return data
@@ -184,12 +204,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 
 
 def build_batches(data: dict) -> list[dict]:
-    """Slice the full data tensor into a list of per-batch numpy dicts.
-
-    WHY pre-slice here?
-        Workers receive only the arrays they need — not the full (n_batch, ...)
-        tensor.  Smaller pickle payloads = faster inter-process transfers.
-    """
+    """Slice the full data tensor into a list of per-batch numpy dicts."""
     N_TRAIN = data["N_TRAIN"]
     X_np = data["X"].numpy()
     Z_np = data["Z"].numpy()
@@ -197,22 +212,32 @@ def build_batches(data: dict) -> list[dict]:
     A_np = data["A"].numpy()
     Y_np = data["Y"].numpy()
 
-    return [
-        {
-            "b": b,
-            # Training context (seen by the estimator during fit)
-            "X_ctx": X_np[b, :N_TRAIN],
-            "W_ctx": W_np[b, :N_TRAIN],
-            "Z_ctx": Z_np[b, :N_TRAIN],
-            "A_ctx": A_np[b, :N_TRAIN, 0],  # squeeze feature dim; A is scalar
-            "Y_ctx": Y_np[b, :N_TRAIN, 0],
-            # Query points (held-out test set)
-            "X_q": X_np[b, N_TRAIN:],
-            "W_q": W_np[b, N_TRAIN:],
-            "Z_q": Z_np[b, N_TRAIN:],
-        }
-        for b in range(data["N_BATCH"])
-    ]
+    batches = []
+    for b in range(data["N_BATCH"]):
+        A_ctx = A_np[b, :N_TRAIN]
+        Y_ctx = Y_np[b, :N_TRAIN]
+
+        # Squeeze trailing dimension if prior yielded (B, T, 1)
+        if A_ctx.ndim > 1:
+            A_ctx = A_ctx.squeeze(-1)
+        if Y_ctx.ndim > 1:
+            Y_ctx = Y_ctx.squeeze(-1)
+
+        batches.append(
+            {
+                "b": b,
+                "X_ctx": X_np[b, :N_TRAIN],
+                "W_ctx": W_np[b, :N_TRAIN],
+                "Z_ctx": Z_np[b, :N_TRAIN],
+                "A_ctx": A_ctx,
+                "Y_ctx": Y_ctx,
+                "X_q": X_np[b, N_TRAIN:],
+                "W_q": W_np[b, N_TRAIN:],
+                "Z_q": Z_np[b, N_TRAIN:],
+            }
+        )
+
+    return batches
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,15 +246,6 @@ def build_batches(data: dict) -> list[dict]:
 
 
 def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
-    """Worker function: fit one method on one batch and return predictions.
-
-    Receives plain numpy arrays + a config dict.
-    Reconstructs the estimator from the config dict (avoids pickling sklearn
-    objects, which behaves differently across fork/spawn start methods).
-
-    Returns:
-        (batch_index, predictions, elapsed_time, error_message_or_None)
-    """
     b, method_cfg, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, X_q, W_q, Z_q = args
     try:
         t0 = time.perf_counter()
@@ -249,29 +265,12 @@ def run_method_parallel(
     n_workers: int,
     progress: Progress,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Fit + predict one method across all batches using a process pool.
-
-    Args:
-        method_cfg : one entry from config["methods"].
-        batches    : list of per-batch dicts from build_batches().
-        n_test     : number of test points per batch.
-        n_workers  : max parallel worker processes.
-        progress   : Rich Progress instance (must already be started).
-
-    Returns:
-        (preds, times) arrays of shape (n_batch, n_test) and (n_batch,).
-        preds contains NaN where a batch failed.
-    """
     n_batch = len(batches)
     preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
     times = np.zeros(n_batch, dtype=np.float32)
     n_errors = 0
 
-    task = progress.add_task(
-        f"  [cyan]{method_cfg['name']:<28}[/]",
-        total=n_batch,
-    )
-
+    task = progress.add_task(f"  [cyan]{method_cfg['name']:<28}[/]", total=n_batch)
     args_list = [
         (
             b["b"],
@@ -301,8 +300,7 @@ def run_method_parallel(
 
     if n_errors:
         console.print(
-            f"    [yellow]⚠[/] {method_cfg['name']}: "
-            f"{n_errors}/{n_batch} batches failed (NaN filled)."
+            f"    [yellow]⚠[/] {method_cfg['name']}: {n_errors}/{n_batch} batches failed (NaN filled)."
         )
     return preds, times
 
@@ -313,14 +311,12 @@ def run_method_sequential(
     n_test: int,
     progress: Progress,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Single-process fallback — useful for debugging."""
     n_batch = len(batches)
     preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
     times = np.zeros(n_batch, dtype=np.float32)
 
     task = progress.add_task(
-        f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]",
-        total=n_batch,
+        f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]", total=n_batch
     )
 
     for b_dict in batches:
@@ -355,16 +351,11 @@ def run_method_sequential(
 def run_neural_model(
     model_cfg: dict,
     data: dict,
-    prior_cfg: dict,
     device_str: str,
     preds_dir: Path,
     force: bool,
 ) -> tuple[str, np.ndarray, np.ndarray] | None:
-    """Load a ProximalGMM checkpoint and run inference.
-
-    Returns:
-        (name, preds, times) or None if skipped / failed.
-    """
+    """Load a TabICL checkpoint and run inference."""
     if not _PROXFM_AVAILABLE:
         console.print(
             "    [yellow]⚠[/] proximalfm not installed — skipping neural models."
@@ -382,35 +373,47 @@ def run_neural_model(
         times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
         return name, preds, times
 
-    config_path = ckpt_dir / "model_config.yaml"
-    best_path = ckpt_dir / "best_model.pth"
-
+    # Handle standard torch saves
+    best_path = ckpt_dir if ckpt_dir.is_file() else (ckpt_dir / "best_model.ckpt")
     if not best_path.exists():
         console.print(f"    [red]✗[/] Checkpoint not found: {best_path}")
         return None
 
-    with open(config_path) as f:
-        mcfg = yaml.safe_load(f)
-
     device = torch.device(device_str)
-    dtype = getattr(torch, mcfg.get("dtype", "float32"))
-
-    model_config = ModelConfig(**mcfg)
-    model = ProximalGMM(config=model_config).to(device, dtype=dtype)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+
+    # Initialize model using config stashed inside the checkpoint or config file
+    mcfg = ckpt.get("config", {})
+    model = TabICL(**mcfg).to(device)
+
+    # Load weights safely (clean up DDP 'module.' prefixes if present)
+    state_dict = ckpt.get("state_dict", ckpt)
+    clean_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    model.load_state_dict(clean_state_dict, strict=False)
     model.eval()
-    console.print(f"    [green]✓[/] Loaded {name!r} (epoch {ckpt.get('epoch', '?')})")
+
+    console.print(
+        f"    [green]✓[/] Loaded {name!r} (step {ckpt.get('curr_step', '?')})"
+    )
 
     N_TRAIN = data["N_TRAIN"]
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
 
-    x_t = data["X"].to(device, dtype=dtype)
-    z_t = data["Z"].to(device, dtype=dtype)
-    w_t = data["W"].to(device, dtype=dtype)
-    a_t = data["A"].to(device, dtype=dtype)
-    y_t = data["Y"].to(device, dtype=dtype)
+    x_t = data["X"].to(device)
+    z_t = data["Z"].to(device)
+    w_t = data["W"].to(device)
+    a_t = data["A"].to(device)
+    y_t = data["Y"].to(device)
+    d_x = data["d_X"].to(device, dtype=torch.long)
+    d_z = data["d_Z"].to(device, dtype=torch.long)
+    d_w = data["d_W"].to(device, dtype=torch.long)
+
+    # Squeeze if necessary to match expected logic
+    if a_t.ndim == 3:
+        a_t = a_t.squeeze(-1)
+    if y_t.ndim == 3:
+        y_t = y_t.squeeze(-1)
 
     preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
     times = np.zeros(N_BATCH, dtype=np.float32)
@@ -420,60 +423,115 @@ def run_neural_model(
         for start in range(0, N_BATCH, chunk):
             end = min(start + chunk, N_BATCH)
             t0 = time.perf_counter()
-            preds_ = (
-                model.estimate_CATE(
-                    x=x_t[start:end],
-                    a_train=a_t[start:end, :N_TRAIN, 0],
-                    w=w_t[start:end],
-                    z=z_t[start:end],
-                    y_train=y_t[start:end, :N_TRAIN, 0],
-                    return_log_variance=False,
-                )
-                .cpu()
-                .numpy()[:, :]
+
+            micro_X = x_t[start:end]
+            micro_Z = z_t[start:end]
+            micro_W = w_t[start:end]
+            micro_A = a_t[start:end]
+            micro_Y_obs = y_t[start:end]
+            micro_d_X = d_x[start:end]
+            micro_d_Z = d_z[start:end]
+            micro_d_W = d_w[start:end]
+
+            # Truncate feature dimensions for optimization
+            max_X = micro_d_X.max().item()
+            if micro_X.shape[-1] > max_X:
+                micro_X = micro_X[..., :max_X]
+
+            max_W = micro_d_W.max().item()
+            if micro_W.shape[-1] > max_W:
+                micro_W = micro_W[..., :max_W]
+
+            max_Z = micro_d_Z.max().item()
+            if micro_Z.shape[-1] > max_Z:
+                micro_Z = micro_Z[..., :max_Z]
+
+            # Standardize variables prior to forward pass
+            micro_X = safe_standardize(micro_X)
+            micro_W = safe_standardize(micro_W)
+            micro_Z = safe_standardize(micro_Z)
+
+            y_train_obs = micro_Y_obs[:, :N_TRAIN]
+            A_train = micro_A[:, :N_TRAIN]
+
+            # Obtain shift/scale to build the standardized target Context
+            y0_shift, y0_scale, y1_shift, y1_scale = model._get_y0_y1_shift_scale(
+                y_train_obs, A_train
             )
+            y0_scale = torch.where(y0_scale < 1e-7, torch.ones_like(y0_scale), y0_scale)
+            y1_scale = torch.where(y1_scale < 1e-7, torch.ones_like(y1_scale), y1_scale)
+
+            y_train_obs_std = torch.where(
+                A_train == 1,
+                (y_train_obs - y1_shift) / y1_scale,
+                (y_train_obs - y0_shift) / y0_scale,
+            )
+
+            # TabICL forward pass
+            pred_logits = model(
+                micro_X,
+                micro_Z,
+                micro_W,
+                micro_A,
+                y_train_obs_std,
+                micro_d_X,
+                micro_d_Z,
+                micro_d_W,
+            )
+
+            nbins = model.nbins
+            logits_y0 = pred_logits[..., :nbins]
+            logits_y1 = pred_logits[..., nbins:]
+
+            probs_y0 = F.softmax(logits_y0, dim=-1)
+            probs_y1 = F.softmax(logits_y1, dim=-1)
+
+            mean_y0_std = torch.sum(probs_y0 * model.bin_centers, dim=-1)
+            mean_y1_std = torch.sum(probs_y1 * model.bin_centers, dim=-1)
+
+            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
+            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
+
+            pred_cate = pred_y1 - pred_y0
+
             t1 = time.perf_counter()
 
             chunk_size = end - start
             avg_time = (t1 - t0) / chunk_size
             times[start:end] = avg_time
+            preds[start:end] = pred_cate.cpu().numpy()
 
-            if len(preds_.shape) == 3:
-                preds[start:end] = preds_[:, :, 0]
-            else:
-                preds[start:end] = preds_
     np.savez(pred_file, preds=preds, times=times)
     console.print(f"    [green]✓[/] {name} → {pred_file}")
     return name, preds, times
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Partial results printer (called after each method completes)
+# Results presentation
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def print_partial_results(
-    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
-    true_ites: np.ndarray,
+    accumulated: dict[str, tuple[np.ndarray, np.ndarray]], true_ites: np.ndarray
 ) -> None:
     if not accumulated:
         return
-
     frames = [
         compute_all_metrics(preds, true_ites, times, name)
         for name, (preds, times) in accumulated.items()
     ]
     all_df = pd.concat(frames, ignore_index=True)
-    
-    # We now unpack both ATE and CATE DataFrames during the live step
     ate_df, cate_df = build_summary_tables(all_df)
-
     console.print(
-        Padding(make_combined_rich_table(ate_df, cate_df, title="Live Results So Far"), (1, 4))
+        Padding(
+            make_combined_rich_table(ate_df, cate_df, title="Live Results So Far"),
+            (1, 4),
+        )
     )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Main
+# Main Loop
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -483,20 +541,14 @@ def main() -> None:
     )
     default_config = Path(__file__).resolve().parent / "bench_config.yaml"
     parser.add_argument(
-        "--config",
-        default=str(default_config),
-        help=f"Path to the YAML config file (default: {default_config.name}).",
+        "--config", default=str(default_config), help=f"Path to the YAML config file."
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help="Recompute predictions even if they are already saved.",
     )
-    parser.add_argument(
-        "--no-parallel",
-        action="store_true",
-        help="Run sequentially (useful for debugging / profiling).",
-    )
+    parser.add_argument("--no-parallel", action="store_true", help="Run sequentially.")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -504,9 +556,8 @@ def main() -> None:
     preds_dir = output_dir / "preds"
     results_dir = output_dir / "results"
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    preds_dir.mkdir(parents=True, exist_ok=True)
-    results_dir.mkdir(parents=True, exist_ok=True)
+    for d in [output_dir, preds_dir, results_dir]:
+        d.mkdir(parents=True, exist_ok=True)
 
     force = args.force or cfg["run"].get("force_rerun", False)
     n_workers = cfg["run"].get("n_workers", max(1, (os.cpu_count() or 4) - 2))
@@ -515,7 +566,6 @@ def main() -> None:
     console.print(f"  Config   : [cyan]{args.config}[/]")
     console.print(f"  Output   : [cyan]{output_dir}[/]")
     console.print(f"  Workers  : [cyan]{n_workers}[/]")
-    console.print(f"  Force    : [cyan]{force}[/]")
     console.print()
 
     # ── Step 1: Data ─────────────────────────────────────────────────────────
@@ -524,28 +574,15 @@ def main() -> None:
 
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
-    true_ITEs = data["true_ITEs"]  # (N_BATCH, N_TEST)
+    true_ITEs = data["true_ITEs"]
 
     console.print(
-        f"    [green]✓[/] Loaded: "
-        f"{N_BATCH} episodes × "
-        f"(n_train={data['N_TRAIN']}, n_test={N_TEST})"
+        f"    [green]✓[/] Loaded: {N_BATCH} episodes × (n_train={data['N_TRAIN']}, n_test={N_TEST})"
     )
+    batches = build_batches(data)
 
-    # Warn if no ITE variance across any episode
-    global_ite_var = true_ITEs.var(axis=1)  # variance per episode
-    frac_homogeneous = (global_ite_var < 1e-6).mean()
-    if frac_homogeneous > 0.5:
-        console.print(
-            f"    [yellow]⚠[/] {frac_homogeneous:.0%} of episodes have near-zero "
-            "ITE variance — CATE R² will be skipped for those episodes."
-        )
-
-    batches = build_batches(data)  # make N_BATCH dicts
-
-    # ── Step 2: Baseline methods ──────────────────────────────────────────────
+    # ── Step 2: Baseline methods ─────────────────────────────────────────────
     method_cfgs: list[dict] = cfg.get("methods", [])
-
     if not method_cfgs:
         console.print("    [yellow]No methods configured.[/]")
     else:
@@ -554,7 +591,6 @@ def main() -> None:
 
     accumulated: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
-    # Progress bars rendered via Rich; one task per method
     progress = Progress(
         SpinnerColumn(),
         TextColumn("{task.description}"),
@@ -563,7 +599,7 @@ def main() -> None:
         TextColumn("·"),
         TimeElapsedColumn(),
         console=console,
-        transient=False,  # keep finished bars visible
+        transient=False,
     )
 
     with progress:
@@ -588,29 +624,25 @@ def main() -> None:
                 )
 
             elapsed = time.perf_counter() - t0
-
-            # Incremental save
             np.savez(pred_file, preds=preds, times=times)
             console.print(f"  [green]✓[/] {name:<28} saved  [dim]({elapsed:.1f}s)[/]")
             accumulated[name] = (preds, times)
 
-            # Show partial results after each method completes
             print_partial_results(accumulated, true_ITEs)
 
-    # ── Step 3 (optional): Neural model checkpoints ───────────────────────────
+    # ── Step 3 (optional): Neural model checkpoints ──────────────────────────
     model_cfgs = cfg.get("models", [])
     if model_cfgs:
         console.print(Rule(f"[bold]Step 3  Neural Models ({len(model_cfgs)})[/]"))
-        prior_cfg = cfg["data"]["prior"]
         device = cfg["run"].get("device", "cpu")
 
         for mcfg in model_cfgs:
-            result = run_neural_model(mcfg, data, prior_cfg, device, preds_dir, force)
+            result = run_neural_model(mcfg, data, device, preds_dir, force)
             if result is not None:
                 name, preds, times = result
                 accumulated[name] = (preds, times)
 
-    # ── Step 4: Final evaluation ──────────────────────────────────────────────
+    # ── Step 4: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 4  Evaluation[/]"))
     console.print()
 
@@ -627,11 +659,15 @@ def main() -> None:
     )
 
     ate_summary, cate_summary = build_summary_tables(all_results)
+    console.print(
+        Padding(
+            make_combined_rich_table(
+                ate_summary, cate_summary, title="Final Evaluation"
+            ),
+            (1, 4),
+        )
+    )
 
-    # REPLACE THE TWO SEPARATE PRINTS WITH THIS:
-    console.print(Padding(make_combined_rich_table(ate_summary, cate_summary, title="Final Evaluation"), (1, 4)))
-
-    # Save full episode-level results for further analysis
     results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)
     ate_summary.to_csv(results_dir / "ate_summary.csv")
@@ -641,10 +677,7 @@ def main() -> None:
     console.print(Rule("[bold green]Done[/]"))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     if sys.platform != "win32":
         multiprocessing.set_start_method("spawn", force=True)
-
     main()

@@ -320,7 +320,9 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
 
     mean_mae_n = round(mae_n_vals.mean(), 4) if len(mae_n_vals) > 0 else float("nan")
     mean_rmse_n = round(rmse_n_vals.mean(), 4) if len(rmse_n_vals) > 0 else float("nan")
-    mean_medae_n = (round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan"))
+    mean_medae_n = (
+        round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan")
+    )
     mean_rmedse_n = (
         round(rmedse_n_vals.mean(), 4) if len(rmedse_n_vals) > 0 else float("nan")
     )
@@ -538,11 +540,12 @@ def make_cate_rich_table(
 
     return tbl
 
+
 def make_combined_rich_table(
-    ate_summary: pd.DataFrame, 
-    cate_summary: pd.DataFrame, 
-    title: str = "Benchmark Results"
-) -> "Table":  
+    ate_summary: pd.DataFrame,
+    cate_summary: pd.DataFrame,
+    title: str = "Benchmark Results",
+) -> "Table":
     from rich.table import Table
     from rich import box
 
@@ -567,12 +570,14 @@ def make_combined_rich_table(
         "ATE R²": _get_column_styles(ate_summary["ATE R²"], "ATE R²"),
         "NormRMSE": _get_column_styles(ate_summary["NormRMSE"], "NormRMSE"),
         "NormRMedSE": _get_column_styles(ate_summary["NormRMedSE"], "NormRMedSE"),
-        "Time (s)": _get_column_styles(ate_summary["Time (s)"], "Time (s)")
+        "Time (s)": _get_column_styles(ate_summary["Time (s)"], "Time (s)"),
     }
 
     cate_styles = {
         "Mean R²": _get_column_styles(cate_summary["Mean R²"], "Mean R²"),
-        "Mean R²(shape)": _get_column_styles(cate_summary["Mean R²(shape)"], "Mean R²(shape)"),
+        "Mean R²(shape)": _get_column_styles(
+            cate_summary["Mean R²(shape)"], "Mean R²(shape)"
+        ),
         "NormRMSE": _get_column_styles(cate_summary["NormRMSE"], "NormRMSE"),
         "NormRMedSE": _get_column_styles(cate_summary["NormRMedSE"], "NormRMedSE"),
     }
@@ -580,7 +585,11 @@ def make_combined_rich_table(
     for method in ate_summary.index:
         ate_row = ate_summary.loc[method]
         # Handle cases where a method failed or isn't in cate_summary yet
-        cate_row = cate_summary.loc[method] if method in cate_summary.index else pd.Series(dtype=float)
+        cate_row = (
+            cate_summary.loc[method]
+            if method in cate_summary.index
+            else pd.Series(dtype=float)
+        )
 
         def get_styled(row, col_key, styles, format_str="{}"):
             val = row.get(col_key, float("nan"))
@@ -594,15 +603,13 @@ def make_combined_rich_table(
             get_styled(ate_row, "ATE R²", ate_styles),
             get_styled(ate_row, "NormRMSE", ate_styles),
             get_styled(ate_row, "NormRMedSE", ate_styles),
-
             get_styled(cate_row, "Mean R²", cate_styles),
             get_styled(cate_row, "Mean R²(shape)", cate_styles),
             get_styled(cate_row, "NormRMSE", cate_styles),
             get_styled(cate_row, "NormRMedSE", cate_styles),
-
-            get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}")
+            get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}"),
         ]
-        
+
         tbl.add_row(str(method), *cells)
 
     return tbl
