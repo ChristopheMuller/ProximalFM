@@ -624,65 +624,51 @@ class TabICL(nn.Module):
         d_W: Optional[Tensor] = None,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Union[Tensor, dict]:
-        """
-        Predicts potential outcomes or CATE given query features alongside context.
-        Handles both batched sequences and single instances.
-
-        Parameters
-        ----------
-        X, Z, W, A: Tensor
-            The full sequence tensors (context + queries). Shapes should be (B, T, D).
-        y_train: Tensor
-            The context labels of shape (B, train_size).
-        target: Literal["y0", "y1", "cate"]
-            The causal estimand to extract.
-        output_type: Literal["mean", "quantiles", "distribution"]
-            The type of prediction output.
-        quantiles: Optional[list[float]]
-            List of quantiles to evaluate if output_type="quantiles". Default is [0.1, 0.5, 0.9].
-
-        Returns
-        -------
-        Tensor or dict
-            Depends on output_type.
-        """
-        # Ensure evaluation mode
         was_training = self.training
         self.eval()
 
-        # 1. Forward pass to get logits for queries
-        # Output shape: (B, test_size, nbins * 2)
+        # 1. Standardize Covariates (MATCHING TRAINING EXACTLY)
+        def safe_standardize(x):
+            mu = x.mean(dim=1, keepdim=True)
+            std = x.std(dim=1, keepdim=True)
+            std = torch.where(std < 1e-5, torch.ones_like(std), std)
+            return (x - mu) / std
+
+        X_std = safe_standardize(X)
+        Z_std = safe_standardize(Z)
+        W_std = safe_standardize(W)
+
+        # 2. Compute stats strictly from context
+        y_context_mean = y_train.mean(dim=1, keepdim=True)
+        y_context_std = y_train.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
+
+        # 3. Standardize context BEFORE forward pass
+        y_train_std = (y_train - y_context_mean) / y_context_std
+
+        # 4. Forward pass (now receiving properly scaled data for BOTH features and targets)
         logits = self._inference_forward(
-            X=X,
-            Z=Z,
-            W=W,
+            X=X_std,
+            Z=Z_std,
+            W=W_std,
             A=A,
-            y_train=y_train,
+            y_train=y_train_std,
             d_X=d_X,
             d_Z=d_Z,
             d_W=d_W,
             inference_config=inference_config,
         )
 
-        train_size = y_train.shape[1]
-        A_context = A[:, :train_size]
-
-        # 2. Extract standardisation stats from context to map bins back to the original scale
-        y0_shift, y0_scale, y1_shift, y1_scale = self._get_y0_y1_shift_scale(
-            y_train, A_context
-        )
-
-        # Reshape to (B, 1, 1) for broadcasting over test_size and nbins
-        y0_shift, y0_scale = y0_shift.unsqueeze(-1), y0_scale.unsqueeze(-1)
-        y1_shift, y1_scale = y1_shift.unsqueeze(-1), y1_scale.unsqueeze(-1)
-
-        # 3. Separate logits and convert to probabilities
+        # 5. Separate logits and convert to probabilities
         probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
         probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
 
-        # 4. Un-standardize bin centers: (B, 1, nbins)
-        vals_y0 = self.bin_centers.view(1, 1, -1) * y0_scale + y0_shift
-        vals_y1 = self.bin_centers.view(1, 1, -1) * y1_scale + y1_shift
+        # 6. Un-standardize bin centers back to original space
+        # Reshape stats to (B, 1, 1) to broadcast over test_size and nbins
+        y_mean_view = y_context_mean.unsqueeze(-1)
+        y_std_view = y_context_std.unsqueeze(-1)
+
+        # Both potential outcomes now share the same inverse-scaling
+        vals = self.bin_centers.view(1, 1, -1) * y_std_view + y_mean_view
 
         self.train(was_training)
 
@@ -695,7 +681,6 @@ class TabICL(nn.Module):
             cdf = torch.cumsum(probs, dim=-1)
             results = []
             for q in q_list:
-                # Find bin indices where CDF crosses the quantile threshold
                 idx = torch.searchsorted(cdf, q).clamp(max=self.nbins - 1)
                 q_vals = torch.gather(vals, -1, idx.unsqueeze(-1)).squeeze(-1)
                 results.append(q_vals)
@@ -704,18 +689,18 @@ class TabICL(nn.Module):
         # --- Output Routing ---
         if output_type == "distribution":
             if target == "y0":
-                return {"values": vals_y0, "weights": probs_y0}
+                return {"values": vals, "weights": probs_y0}
             elif target == "y1":
-                return {"values": vals_y1, "weights": probs_y1}
+                return {"values": vals, "weights": probs_y1}
             elif target == "cate":
                 return {
-                    "y0": {"values": vals_y0, "weights": probs_y0},
-                    "y1": {"values": vals_y1, "weights": probs_y1},
+                    "y0": {"values": vals, "weights": probs_y0},
+                    "y1": {"values": vals, "weights": probs_y1},
                 }
 
         elif output_type == "mean":
-            mean_y0 = _get_mean(probs_y0, vals_y0)
-            mean_y1 = _get_mean(probs_y1, vals_y1)
+            mean_y0 = _get_mean(probs_y0, vals)
+            mean_y1 = _get_mean(probs_y1, vals)
 
             if target == "y0":
                 return mean_y0
@@ -729,8 +714,10 @@ class TabICL(nn.Module):
                 quantiles = [0.1, 0.5, 0.9]
 
             q_tensor = torch.tensor(quantiles, device=logits.device, dtype=logits.dtype)
-            q_y0 = _get_quantiles(probs_y0, vals_y0, q_tensor)
-            q_y1 = _get_quantiles(probs_y1, vals_y1, q_tensor)
+
+            # FIX: Use 'vals' instead of the deprecated 'vals_y0' and 'vals_y1'
+            q_y0 = _get_quantiles(probs_y0, vals, q_tensor)
+            q_y1 = _get_quantiles(probs_y1, vals, q_tensor)
 
             if target == "y0":
                 return q_y0

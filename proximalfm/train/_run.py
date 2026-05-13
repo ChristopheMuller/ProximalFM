@@ -874,11 +874,29 @@ class Trainer:
             std = torch.where(std < 1e-5, torch.ones_like(std), std)
             return (x - mu) / std
 
+        # 1. Standardize Covariates
         micro_X = safe_standardize(micro_X)
         micro_W = safe_standardize(micro_W)
         micro_Z = safe_standardize(micro_Z)
 
+        # 2. Standardize Targets based ONLY on the observed training context
         y_train_obs = micro_Y_obs[:, :train_size]
+        y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
+        y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
+            min=1e-5
+        )
+
+        # Scale context
+        y_train_obs_std = (y_train_obs - y_context_mean) / y_context_std
+
+        # Test targets for loss
+        y_test_0 = micro_Y0[:, train_size:]
+        y_test_1 = micro_Y1[:, train_size:]
+        true_cate = y_test_1 - y_test_0
+
+        # Scale test targets for CRPS loss
+        y_test_0_std = (y_test_0 - y_context_mean) / y_context_std
+        y_test_1_std = (y_test_1 - y_context_mean) / y_context_std
 
         # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
@@ -904,30 +922,7 @@ class Trainer:
         if not global_valid:
             return None
 
-        # Test targets for loss
-        y_test_0 = micro_Y0[:, train_size:]
-        y_test_1 = micro_Y1[:, train_size:]
-        true_cate = y_test_1 - y_test_0
-
         with self.amp_ctx:
-            # 1. Get shift/scale from the context
-            (
-                y0_shift,
-                y0_scale,
-                y1_shift,
-                y1_scale,
-            ) = self.raw_model._get_y0_y1_shift_scale(y_train_obs, A_train)
-
-            y0_scale = torch.where(y0_scale < 1e-7, torch.ones_like(y0_scale), y0_scale)
-            y1_scale = torch.where(y1_scale < 1e-7, torch.ones_like(y1_scale), y1_scale)
-
-            # 2. Standardize Context Y BEFORE feeding it to the model
-            y_train_obs_std = torch.where(
-                A_train == 1,
-                (y_train_obs - y1_shift) / y1_scale,
-                (y_train_obs - y0_shift) / y0_scale,
-            )
-
             # 3. Model predicts logits of shape (B, test_size, nbins * 2)
             pred_logits = self.model(
                 micro_X,
@@ -963,10 +958,6 @@ class Trainer:
             logits_y0 = pred_logits[..., :nbins]
             logits_y1 = pred_logits[..., nbins:]
 
-            # 4. Standardize Ground Truth targets using context statistics
-            y_test_0_std = (y_test_0 - y0_shift) / y0_scale
-            y_test_1_std = (y_test_1 - y1_shift) / y1_scale
-
             # 5. Compute CRPS Loss for BOTH potential outcomes
             loss_y0 = compute_crps_loss(
                 logits_y0,
@@ -984,24 +975,15 @@ class Trainer:
             probs_y0 = F.softmax(logits_y0, dim=-1)
             probs_y1 = F.softmax(logits_y1, dim=-1)
 
-            mean_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
-            mean_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
+            mean_pred_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
+            mean_pred_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
 
-            # Un-standardize to get actual predicted expectations
-            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
-            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
+            pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
+            true_cate_std = y_test_1_std - y_test_0_std
 
-            pred_cate = pred_y1 - pred_y0
-
-            # Normalize the CATE error using the context's overall standard deviation
-            y_obs_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True)
-            y_obs_std = torch.where(
-                y_obs_std < 1e-5, torch.ones_like(y_obs_std), y_obs_std
-            )
-
-            # The error is now unit-less (scaled to the variance of the episode)
-            cate_error_normalized = (pred_cate - true_cate) / y_obs_std
-            loss_cate = torch.mean(cate_error_normalized**2)
+            # The error is naturally unit-less and scaled to the variance of the episode
+            cate_error_std = pred_cate_std - true_cate_std
+            loss_cate = torch.mean(cate_error_std**2)
 
             lambda_cate = getattr(self.config, "lambda_cate", 0.1)
 
@@ -1026,13 +1008,12 @@ class Trainer:
 
             if should_update_evaluator:
                 evaluator.update(
-                    pred_y0=pred_y0,
-                    pred_y1=pred_y1,
-                    true_y0=y_test_0,
-                    true_y1=y_test_1,
-                    pred_cate=pred_cate,
-                    true_cate=true_cate,
-                    y_obs_std=y_obs_std,
+                    pred_y0=mean_pred_y0_std,
+                    pred_y1=mean_pred_y1_std,
+                    true_y0=y_test_0_std,
+                    true_y1=y_test_1_std,
+                    pred_cate=pred_cate_std,
+                    true_cate=true_cate_std,
                 )
 
             micro_results = {
