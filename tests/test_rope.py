@@ -1,6 +1,16 @@
 import torch
 import pytest
-from proximalfm._model.rope import exists, default, broadcat, rotate_half_interleaved, rotate_half_contiguous, apply_rotary_emb, apply_learned_rotations, RotaryEmbedding
+from proximalfm._model.rope import (
+    exists,
+    default,
+    broadcat,
+    rotate_half_interleaved,
+    rotate_half_contiguous,
+    apply_rotary_emb,
+    apply_learned_rotations,
+    RotaryEmbedding,
+)
+
 
 def test_exists():
     assert exists(1) is True
@@ -9,10 +19,12 @@ def test_exists():
     assert exists(False) is True
     assert exists(None) is False
 
+
 def test_default():
     assert default(1, 2) == 1
     assert default(None, 2) == 2
     assert default(0, 2) == 0
+
 
 def test_broadcat():
     t1 = torch.randn(1, 10)
@@ -26,6 +38,7 @@ def test_broadcat():
     expected = torch.cat((t1_expanded, t2_expanded), dim=-1)
     assert torch.allclose(out, expected)
 
+
 def test_rotate_half_interleaved():
     # Input: [1, 2, 3, 4]
     # rearrange to [..., d, 2] -> [[1, 2], [3, 4]]
@@ -37,6 +50,7 @@ def test_rotate_half_interleaved():
     out = rotate_half_interleaved(x)
     assert torch.allclose(out, expected)
 
+
 def test_rotate_half_contiguous():
     # Input: [1, 2, 3, 4]
     # half = 2
@@ -47,13 +61,14 @@ def test_rotate_half_contiguous():
     out = rotate_half_contiguous(x)
     assert torch.allclose(out, expected)
 
+
 def test_apply_rotary_emb_interleaved():
     # freqs shape (seq_len, dim)
     # t shape (batch, seq_len, dim)
     seq_len = 4
     dim = 4
     t = torch.ones(1, seq_len, dim)
-    freqs = torch.zeros(seq_len, dim) # cos=1, sin=0
+    freqs = torch.zeros(seq_len, dim)  # cos=1, sin=0
 
     # Formula: x * cos + rotate(x) * sin
     # with cos=1, sin=0, out should be t
@@ -61,16 +76,17 @@ def test_apply_rotary_emb_interleaved():
     assert torch.allclose(out, t)
 
     # With cos=0, sin=1
-    freqs = torch.full((seq_len, dim), 1.57079632679) # approx pi/2
+    freqs = torch.full((seq_len, dim), 1.57079632679)  # approx pi/2
     out = apply_rotary_emb(freqs, t, interleaved=True)
     expected = rotate_half_interleaved(t)
     assert torch.allclose(out, expected, atol=1e-5)
 
+
 def test_apply_rotary_emb_non_interleaved():
     seq_len = 4
-    dim = 4 # half_dim = 2
+    dim = 4  # half_dim = 2
     t = torch.ones(1, seq_len, dim)
-    freqs = torch.zeros(seq_len, dim // 2) # cos=1, sin=0
+    freqs = torch.zeros(seq_len, dim // 2)  # cos=1, sin=0
 
     out = apply_rotary_emb(freqs, t, interleaved=False)
     assert torch.allclose(out, t)
@@ -80,6 +96,7 @@ def test_apply_rotary_emb_non_interleaved():
     out = apply_rotary_emb(freqs, t, interleaved=False)
     expected = rotate_half_contiguous(t)
     assert torch.allclose(out, expected, atol=1e-5)
+
 
 def test_apply_rotary_emb_start_index():
     seq_len = 2
@@ -91,23 +108,26 @@ def test_apply_rotary_emb_start_index():
     assert torch.allclose(out, t)
     assert out.shape == t.shape
 
+
 def test_apply_learned_rotations():
     t = torch.ones(1, 4, 4)
-    rotations = torch.zeros(1, 4, 2) # cos=1, sin=0 after repeat
+    rotations = torch.zeros(1, 4, 2)  # cos=1, sin=0 after repeat
     out = apply_learned_rotations(rotations, t)
     assert torch.allclose(out, t)
+
 
 def test_rotary_embedding_init():
     dim = 16
     # Test different freqs_for
-    rope_lang = RotaryEmbedding(dim=dim, freqs_for='lang')
+    rope_lang = RotaryEmbedding(dim=dim, freqs_for="lang")
     assert rope_lang.freqs.shape == (dim // 2,)
 
-    rope_pixel = RotaryEmbedding(dim=dim, freqs_for='pixel')
+    rope_pixel = RotaryEmbedding(dim=dim, freqs_for="pixel")
     assert rope_pixel.freqs.shape == (dim // 2,)
 
-    rope_const = RotaryEmbedding(dim=dim, freqs_for='constant', num_freqs=8)
+    rope_const = RotaryEmbedding(dim=dim, freqs_for="constant", num_freqs=8)
     assert rope_const.freqs.shape == (8,)
+
 
 def test_rotary_embedding_forward_caching():
     dim = 16
@@ -123,13 +143,15 @@ def test_rotary_embedding_forward_caching():
     freqs2 = rope(t, seq_len=10)
     assert freqs1 is freqs2 or torch.allclose(freqs1, freqs2)
 
+
 def test_rotary_embedding_get_seq_pos():
     dim = 16
     rope = RotaryEmbedding(dim=dim, interpolate_factor=2.0)
     seq_len = 10
-    pos = rope.get_seq_pos(seq_len, device='cpu', dtype=torch.float)
+    pos = rope.get_seq_pos(seq_len, device="cpu", dtype=torch.float)
     expected = torch.arange(seq_len).float() / 2.0
     assert torch.allclose(pos, expected)
+
 
 def test_rotary_embedding_get_scale_xpos():
     dim = 16
@@ -138,6 +160,7 @@ def test_rotary_embedding_get_scale_xpos():
     scale = rope.get_scale(t, seq_len=10)
     assert scale.shape == (10, dim)
     assert rope.cached_scales is not None
+
 
 def test_rotary_embedding_rotate_queries_or_keys():
     dim = 16
@@ -153,6 +176,7 @@ def test_rotary_embedding_rotate_queries_or_keys():
     out_ni = rope_ni.rotate_queries_or_keys(q)
     assert out_ni.shape == q.shape
 
+
 def test_rotary_embedding_rotate_queries_and_keys_xpos():
     dim = 16
     rope = RotaryEmbedding(dim=dim, use_xpos=True)
@@ -163,6 +187,7 @@ def test_rotary_embedding_rotate_queries_and_keys_xpos():
     assert rq.shape == q.shape
     assert rk.shape == k.shape
 
+
 def test_rotary_embedding_rotate_queries_with_cached_keys():
     dim = 16
     rope = RotaryEmbedding(dim=dim, use_xpos=True)
@@ -172,6 +197,7 @@ def test_rotary_embedding_rotate_queries_with_cached_keys():
     rq, rk = rope.rotate_queries_with_cached_keys(q, k)
     assert rq.shape == q.shape
     assert rk.shape == k.shape
+
 
 def test_rotary_embedding_get_axial_freqs():
     dim = 16

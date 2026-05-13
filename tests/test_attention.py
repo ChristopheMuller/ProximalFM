@@ -2,6 +2,7 @@ import pytest
 import proximalfm._model.attention as attention
 from proximalfm._model.attention import flash_attn3_toggle
 
+
 def test_flash_attn3_toggle_enables():
     original_value = attention._use_flash_attn3
 
@@ -9,6 +10,7 @@ def test_flash_attn3_toggle_enables():
         assert attention._use_flash_attn3 is True
 
     assert attention._use_flash_attn3 == original_value
+
 
 def test_flash_attn3_toggle_disables():
     original_value = attention._use_flash_attn3
@@ -23,6 +25,7 @@ def test_flash_attn3_toggle_disables():
 
     # Restore original value
     attention._use_flash_attn3 = original_value
+
 
 def test_flash_attn3_toggle_exception_restores():
     original_value = attention._use_flash_attn3

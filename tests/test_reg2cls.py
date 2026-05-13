@@ -6,12 +6,7 @@ from proximalfm.prior._reg2cls import standard_scaling, torch_nanstd
 
 def test_standard_scaling_basic():
     # Shape (T, H)
-    input_tensor = torch.tensor([
-        [1.0, 2.0],
-        [3.0, 4.0],
-        [5.0, 6.0],
-        [7.0, 8.0]
-    ])
+    input_tensor = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
 
     scaled = standard_scaling(input_tensor)
 
@@ -25,12 +20,9 @@ def test_standard_scaling_basic():
 
 
 def test_standard_scaling_with_nans():
-    input_tensor = torch.tensor([
-        [1.0, float('nan')],
-        [3.0, 4.0],
-        [5.0, 6.0],
-        [float('nan'), 8.0]
-    ])
+    input_tensor = torch.tensor(
+        [[1.0, float("nan")], [3.0, 4.0], [5.0, 6.0], [float("nan"), 8.0]]
+    )
 
     scaled = standard_scaling(input_tensor)
 
@@ -51,12 +43,7 @@ def test_standard_scaling_with_nans():
 
 def test_standard_scaling_clipping():
     # Large outlier to trigger clipping
-    input_tensor = torch.tensor([
-        [1.0],
-        [2.0],
-        [3.0],
-        [1000.0]
-    ])
+    input_tensor = torch.tensor([[1.0], [2.0], [3.0], [1000.0]])
 
     # Using a small clip value
     clip_val = 1.5
@@ -85,11 +72,7 @@ def test_standard_scaling_single_element():
 
 def test_standard_scaling_zero_variance():
     # Input with zero variance
-    input_tensor = torch.tensor([
-        [5.0],
-        [5.0],
-        [5.0]
-    ])
+    input_tensor = torch.tensor([[5.0], [5.0], [5.0]])
 
     scaled = standard_scaling(input_tensor)
 

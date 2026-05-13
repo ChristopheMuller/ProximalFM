@@ -10,6 +10,7 @@ from proximalfm._model.ssmax import (
     create_ssmax_layer,
 )
 
+
 def test_logn():
     device = torch.device("cpu")
     dtype = torch.float32
@@ -77,7 +78,9 @@ def test_ssmax_mlp():
     assert out.shape == q.shape
 
     # Verify ValueError if elementwise=True but head_dim=None
-    with pytest.raises(ValueError, match="head_dim must be provided when elementwise=True"):
+    with pytest.raises(
+        ValueError, match="head_dim must be provided when elementwise=True"
+    ):
         SSMaxMLP(num_heads, elementwise=True, head_dim=None)
 
 

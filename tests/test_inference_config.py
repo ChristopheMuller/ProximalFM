@@ -2,6 +2,7 @@ import pytest
 import torch
 from proximalfm._model.inference_config import MgrConfig, InferenceConfig
 
+
 class TestMgrConfig:
     def test_init_valid(self):
         config = MgrConfig(use_amp=True, min_batch_size=2)
@@ -87,7 +88,7 @@ class TestInferenceConfig:
     def test_init_with_dicts(self):
         config = InferenceConfig(
             COL_CONFIG={"use_amp": False, "min_batch_size": 2},
-            ROW_CONFIG={"offload": "cpu"}
+            ROW_CONFIG={"offload": "cpu"},
         )
         assert config.COL_CONFIG.use_amp is False
         assert config.COL_CONFIG.min_batch_size == 2
@@ -118,7 +119,7 @@ class TestInferenceConfig:
         config = InferenceConfig()
         update_dict = {
             "COL_CONFIG": {"use_amp": False, "min_batch_size": 4},
-            "ROW_CONFIG": {"offload": "cpu"}
+            "ROW_CONFIG": {"offload": "cpu"},
         }
         config.update_from_dict(update_dict)
 
@@ -128,16 +129,12 @@ class TestInferenceConfig:
 
     def test_update_from_dict_invalid_key(self):
         config = InferenceConfig()
-        update_dict = {
-            "INVALID_CONFIG": {"use_amp": False}
-        }
+        update_dict = {"INVALID_CONFIG": {"use_amp": False}}
         with pytest.raises(KeyError, match="Invalid config key"):
             config.update_from_dict(update_dict)
 
     def test_update_from_dict_invalid_mgr_key(self):
         config = InferenceConfig()
-        update_dict = {
-            "COL_CONFIG": {"invalid_key": False}
-        }
+        update_dict = {"COL_CONFIG": {"invalid_key": False}}
         with pytest.raises(KeyError, match="Invalid config key"):
             config.update_from_dict(update_dict)

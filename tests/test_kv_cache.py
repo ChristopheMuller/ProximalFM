@@ -3,6 +3,7 @@ import pytest
 
 from proximalfm._model.kv_cache import KVCacheEntry
 
+
 def test_is_valid():
     entry_empty = KVCacheEntry()
     assert not entry_empty.is_valid()
@@ -15,6 +16,7 @@ def test_is_valid():
 
     entry_valid = KVCacheEntry(key=torch.randn(2, 4), value=torch.randn(2, 4))
     assert entry_valid.is_valid()
+
 
 def test_getitem():
     k = torch.arange(10).view(5, 2)
@@ -31,6 +33,7 @@ def test_getitem():
     assert not sliced_empty.is_valid()
     assert sliced_empty.key is None
     assert sliced_empty.value is None
+
 
 def test_setitem():
     k = torch.zeros(5, 2)
@@ -51,21 +54,23 @@ def test_setitem():
     assert torch.equal(entry.key, expected_k)
     assert torch.equal(entry.value, expected_v)
 
+
 def test_to():
     k = torch.randn(2, 2, dtype=torch.float32)
     v = torch.randn(2, 2, dtype=torch.float32)
     entry = KVCacheEntry(key=k, value=v)
 
-    new_entry = entry.to(device='cpu', dtype=torch.float16)
+    new_entry = entry.to(device="cpu", dtype=torch.float16)
 
     assert new_entry.is_valid()
     assert new_entry.key.dtype == torch.float16
     assert new_entry.value.dtype == torch.float16
-    assert new_entry.key.device.type == 'cpu'
+    assert new_entry.key.device.type == "cpu"
 
     empty_entry = KVCacheEntry()
-    new_empty = empty_entry.to('cpu')
+    new_empty = empty_entry.to("cpu")
     assert not new_empty.is_valid()
+
 
 def test_concat():
     k1 = torch.ones(2, 3)
@@ -76,7 +81,7 @@ def test_concat():
     v2 = torch.ones(3, 3) * 4
     entry2 = KVCacheEntry(key=k2, value=v2)
 
-    entry3 = KVCacheEntry() # Invalid entry should be ignored
+    entry3 = KVCacheEntry()  # Invalid entry should be ignored
 
     concatenated = KVCacheEntry.concat([entry1, entry2, entry3], dim=0)
 

@@ -13,6 +13,7 @@ from proximalfm.prior._genload import (
 
 import pytest
 
+
 class ArgsMock:
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -349,23 +350,18 @@ def test_disable_printing(capsys):
     assert "This should be hidden" not in captured.out
     assert "This should be visible" in captured.out
 
+
 def test_sparse2dense():
     # 1. Happy path (max_len=None)
     sparse = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
     row_lengths = torch.tensor([2, 3])
     dense = sparse2dense(sparse, row_lengths)
-    expected = torch.tensor([
-        [1.0, 2.0, 0.0],
-        [3.0, 4.0, 5.0]
-    ])
+    expected = torch.tensor([[1.0, 2.0, 0.0], [3.0, 4.0, 5.0]])
     assert torch.equal(dense, expected)
 
     # 2. max_len provided
     dense_padded = sparse2dense(sparse, row_lengths, max_len=4)
-    expected_padded = torch.tensor([
-        [1.0, 2.0, 0.0, 0.0],
-        [3.0, 4.0, 5.0, 0.0]
-    ])
+    expected_padded = torch.tensor([[1.0, 2.0, 0.0, 0.0], [3.0, 4.0, 5.0, 0.0]])
     assert torch.equal(dense_padded, expected_padded)
 
     # 3. Empty tensor
@@ -380,5 +376,7 @@ def test_sparse2dense():
         sparse2dense(torch.tensor([[1.0, 2.0]]), row_lengths)
 
     # Length mismatch
-    with pytest.raises(AssertionError, match="data length must match sum of row_lengths"):
+    with pytest.raises(
+        AssertionError, match="data length must match sum of row_lengths"
+    ):
         sparse2dense(sparse, torch.tensor([2, 2]))
