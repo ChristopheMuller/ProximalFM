@@ -54,61 +54,29 @@ _EPS = 1e-8
 
 @dataclass
 class EpisodeMetrics:
-    """Metrics for one (method, episode) pair.
-
-    Using a dataclass (rather than a plain dict) gives IDE auto-complete and
-    makes it easy to convert to a DataFrame row via asdict().
-
-    ATE fields
-    ──────────
-    ate_error      : signed error in raw units (pred − true).
-    ate_error_norm : ate_error ÷ SD(τ).  Scale-free; comparable across
-                     episodes with different outcome magnitudes.
-
-    CATE absolute fields  (always computed when pred is not all-NaN)
-    ────────────────────
-    cate_mae / cate_rmse          : raw units.
-    cate_mae_norm / cate_rmse_norm: divided by SD(τ), scale-free.
-                                    None for homogeneous episodes.
-
-    CATE R² fields  (None when homogeneous or all-NaN)
-    ─────────────
-    cate_r2             : standard R² — penalises both level shift and shape.
-    cate_r2_shape       : R² after removing the ATE bias term.  Measures
-                          pure heterogeneity recovery.
-    cate_r2_ate_penalty : bias² / Var(τ).  The fraction of variance explained
-                          that is lost purely due to ATE mis-estimation.
-                          Identity: cate_r2 = cate_r2_shape − cate_r2_ate_penalty
-    """
-
     method: str
     episode: int
 
     # ── ATE ──────────────────────────────────────────────────────────────────
     ate_true: float
     ate_pred: float
-    ate_error: float  # signed: pred − true
-    ate_error_norm: float  # ate_error / (SD(τ) + ε)
+    ate_error: float
 
     # ── CATE absolute ────────────────────────────────────────────────────────
-    cate_mae: Optional[float]  # None when all_nan
+    cate_mae: Optional[float]
     cate_rmse: Optional[float]
-    cate_medae: Optional[float]  # <-- NEW
-    cate_rmedse: Optional[float]  # <-- NEW
+    cate_medae: Optional[float]
+    cate_rmedse: Optional[float]
 
-    cate_mae_norm: Optional[float]  # None when all_nan or homogeneous
-    cate_rmse_norm: Optional[float]
-    cate_medae_norm: Optional[float]  # <-- NEW
-    cate_rmedse_norm: Optional[float]  # <-- NEW
     # ── CATE R² ──────────────────────────────────────────────────────────────
-    cate_r2: Optional[float]  # None when homogeneous or all_nan
-    cate_r2_shape: Optional[float]  # None when homogeneous or all_nan
-    cate_r2_ate_penalty: Optional[float]  # None when homogeneous or all_nan
+    cate_r2: Optional[float]
+    cate_r2_shape: Optional[float]
+    cate_r2_ate_penalty: Optional[float]
 
-    homogeneous: bool  # True when Var(τ) < threshold
-    ite_var: float  # actual variance (useful for debugging)
+    homogeneous: bool
+    ite_var: float
     n_test: int
-    time: float  # execution time
+    time: float
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -146,29 +114,18 @@ def compute_episode_metrics(
 
     # ── ATE ──────────────────────────────────────────────────────────────────
     ate_error = ate_pred - ate_true
-    ate_error_norm = ate_error / (ite_std + _EPS)
 
-    # ── CATE absolute ────────────────────────────────────────────────────────
     # ── CATE absolute ────────────────────────────────────────────────────────
     if all_nan:
         cate_mae = cate_rmse = cate_medae = cate_rmedse = None
-        cate_mae_norm = cate_rmse_norm = cate_medae_norm = cate_rmedse_norm = None
     else:
         pred_clean = np.where(np.isnan(pred), ate_pred, pred)
         residuals = pred_clean - true_ite
 
         cate_mae = float(np.abs(residuals).mean())
         cate_rmse = float(np.sqrt((residuals**2).mean()))
-        cate_medae = float(np.median(np.abs(residuals)))  # <-- NEW
-        cate_rmedse = float(np.sqrt(np.median(residuals**2)))  # <-- NEW
-
-        if homogeneous:
-            cate_mae_norm = cate_rmse_norm = cate_medae_norm = cate_rmedse_norm = None
-        else:
-            cate_mae_norm = cate_mae / (ite_std + _EPS)
-            cate_rmse_norm = cate_rmse / (ite_std + _EPS)
-            cate_medae_norm = cate_medae / (ite_std + _EPS)  # <-- NEW
-            cate_rmedse_norm = cate_rmedse / (ite_std + _EPS)  # <-- NEW
+        cate_medae = float(np.median(np.abs(residuals)))
+        cate_rmedse = float(np.sqrt(np.median(residuals**2)))
 
     # ── CATE R² family ───────────────────────────────────────────────────────
     # R² is only meaningful when the true effect has non-trivial variance.
@@ -193,15 +150,10 @@ def compute_episode_metrics(
         ate_true=ate_true,
         ate_pred=ate_pred,
         ate_error=ate_error,
-        ate_error_norm=ate_error_norm,
         cate_mae=cate_mae,
         cate_rmse=cate_rmse,
         cate_medae=cate_medae,  # <-- NEW
         cate_rmedse=cate_rmedse,  # <-- NEW
-        cate_mae_norm=cate_mae_norm,
-        cate_rmse_norm=cate_rmse_norm,
-        cate_medae_norm=cate_medae_norm,  # <-- NEW
-        cate_rmedse_norm=cate_rmedse_norm,  # <-- NEW
         cate_r2=cate_r2,
         cate_r2_shape=cate_r2_shape,
         cate_r2_ate_penalty=cate_r2_ate_penalty,
@@ -264,7 +216,6 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
     even if its absolute errors are large.
     """
     e = df["ate_error"]
-    e_norm = df["ate_error_norm"]
 
     # Cross-episode ATE R²: does τ̂_mean correlate with τ_mean across episodes?
     try:
@@ -281,12 +232,6 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
             "MedAE": round(e.abs().median(), 4),
             "RMSE": round(np.sqrt((e**2).mean()), 4),
             "RMedSE": round(np.sqrt(np.median(e**2)), 4),
-            # ── Normalised (÷ SD(τ)) ─────────────────────────────────────────
-            "NormBias": round(e_norm.mean(), 4),
-            "NormMAE": round(e_norm.abs().mean(), 4),
-            "NormMedAE": round(e_norm.abs().median(), 4),
-            "NormRMSE": round(np.sqrt((e_norm**2).mean()), 4),
-            "NormRMedSE": round(np.sqrt(np.median(e_norm**2)), 4),
             # ── Cross-episode R² ─────────────────────────────────────────────
             "ATE R²": ate_r2,
             # ── Time ─────────────────────────────────────────────────────────
@@ -312,21 +257,6 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
     mean_medae = round(medae_vals.mean(), 4) if len(medae_vals) > 0 else float("nan")
     mean_rmedse = round(rmedse_vals.mean(), 4) if len(rmedse_vals) > 0 else float("nan")
 
-    # Normalised absolute (heterogeneous episodes only)
-    mae_n_vals = heterogeneous["cate_mae_norm"].dropna()
-    rmse_n_vals = heterogeneous["cate_rmse_norm"].dropna()
-    medae_n_vals = heterogeneous["cate_medae_norm"].dropna()
-    rmedse_n_vals = heterogeneous["cate_rmedse_norm"].dropna()
-
-    mean_mae_n = round(mae_n_vals.mean(), 4) if len(mae_n_vals) > 0 else float("nan")
-    mean_rmse_n = round(rmse_n_vals.mean(), 4) if len(rmse_n_vals) > 0 else float("nan")
-    mean_medae_n = (
-        round(medae_n_vals.mean(), 4) if len(medae_n_vals) > 0 else float("nan")
-    )
-    mean_rmedse_n = (
-        round(rmedse_n_vals.mean(), 4) if len(rmedse_n_vals) > 0 else float("nan")
-    )
-
     if n_valid == 0:
         return pd.Series(
             {
@@ -334,10 +264,6 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
                 "MedAE": mean_medae,
                 "RMSE": mean_rmse,
                 "RMedSE": mean_rmedse,
-                "NormMAE": float("nan"),
-                "NormMedAE": float("nan"),
-                "NormRMSE": float("nan"),
-                "NormRMedSE": float("nan"),
                 "Mean R²": float("nan"),
                 "Median R²": float("nan"),
                 "Mean R²(shape)": float("nan"),
@@ -359,10 +285,6 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
             "MedAE": mean_medae,
             "RMSE": mean_rmse,
             "RMedSE": mean_rmedse,
-            "NormMAE": mean_mae_n,
-            "NormMedAE": mean_medae_n,
-            "NormRMSE": mean_rmse_n,
-            "NormRMedSE": mean_rmedse_n,
             # ── Standard R² ──────────────────────────────────────────────────
             "Mean R²": round(r2_vals.mean(), 4),
             "Median R²": round(r2_vals.median(), 4),
@@ -553,60 +475,64 @@ def make_combined_rich_table(
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
 
     # ── ATE Columns ──
-    tbl.add_column("ATE: R²", justify="right")
-    tbl.add_column("ATE: NRMSE", justify="right")
-    tbl.add_column("ATE: NRMedSE", justify="right")
+    tbl.add_column("ATE R²", justify="right")
+    tbl.add_column("ATE RMSE", justify="right")
 
     # ── CATE Columns ──
-    tbl.add_column("CATE: R² mean", justify="right")
-    tbl.add_column("CATE: R²(shape)", justify="right")
-    tbl.add_column("CATE: NRMSE", justify="right")
-    tbl.add_column("CATE: NRMedSE", justify="right")
+    tbl.add_column("CATE R²", justify="right")
+    tbl.add_column("CATE R²(shape)", justify="right")
+    tbl.add_column("CATE RMSE", justify="right")
 
     tbl.add_column("Time (s)", justify="right")
 
-    # Pre-calculate column styles universally using the existing rich color logic
+    # Pre-calculate column styles using safely accessed Series
     ate_styles = {
-        "ATE R²": _get_column_styles(ate_summary["ATE R²"], "ATE R²"),
-        "NormRMSE": _get_column_styles(ate_summary["NormRMSE"], "NormRMSE"),
-        "NormRMedSE": _get_column_styles(ate_summary["NormRMedSE"], "NormRMedSE"),
-        "Time (s)": _get_column_styles(ate_summary["Time (s)"], "Time (s)"),
+        "ATE R²": _get_column_styles(
+            ate_summary.get("ATE R²", pd.Series(dtype=float)), "ATE R²"
+        ),
+        "RMSE": _get_column_styles(
+            ate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
+        ),
+        "Time (s)": _get_column_styles(
+            ate_summary.get("Time (s)", pd.Series(dtype=float)), "Time (s)"
+        ),
     }
 
     cate_styles = {
-        "Mean R²": _get_column_styles(cate_summary["Mean R²"], "Mean R²"),
-        "Mean R²(shape)": _get_column_styles(
-            cate_summary["Mean R²(shape)"], "Mean R²(shape)"
+        "Mean R²": _get_column_styles(
+            cate_summary.get("Mean R²", pd.Series(dtype=float)), "Mean R²"
         ),
-        "NormRMSE": _get_column_styles(cate_summary["NormRMSE"], "NormRMSE"),
-        "NormRMedSE": _get_column_styles(cate_summary["NormRMedSE"], "NormRMedSE"),
+        "Mean R²(shape)": _get_column_styles(
+            cate_summary.get("Mean R²(shape)", pd.Series(dtype=float)), "Mean R²(shape)"
+        ),
+        "RMSE": _get_column_styles(
+            cate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
+        ),
     }
 
     for method in ate_summary.index:
         ate_row = ate_summary.loc[method]
-        # Handle cases where a method failed or isn't in cate_summary yet
         cate_row = (
             cate_summary.loc[method]
             if method in cate_summary.index
             else pd.Series(dtype=float)
         )
 
-        def get_styled(row, col_key, styles, format_str="{}"):
+        def get_styled(row, col_key, styles, format_str="{:.4f}"):
             val = row.get(col_key, float("nan"))
             if pd.isna(val):
                 return "-"
-            style = styles[col_key].get(method, "")
+            style = styles.get(col_key, {}).get(method, "")
             formatted_val = format_str.format(val)
             return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
 
+        # Align exactly with the 6 metric columns added above
         cells = [
             get_styled(ate_row, "ATE R²", ate_styles),
-            get_styled(ate_row, "NormRMSE", ate_styles),
-            get_styled(ate_row, "NormRMedSE", ate_styles),
+            get_styled(ate_row, "RMSE", ate_styles),
             get_styled(cate_row, "Mean R²", cate_styles),
             get_styled(cate_row, "Mean R²(shape)", cate_styles),
-            get_styled(cate_row, "NormRMSE", cate_styles),
-            get_styled(cate_row, "NormRMedSE", cate_styles),
+            get_styled(cate_row, "RMSE", cate_styles),
             get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}"),
         ]
 

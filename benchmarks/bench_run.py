@@ -107,14 +107,6 @@ def load_config(path: str) -> dict:
     return cfg
 
 
-def safe_standardize(x: torch.Tensor) -> torch.Tensor:
-    """Standardize features for the model forward pass."""
-    mu = x.mean(dim=1, keepdim=True)
-    std = x.std(dim=1, keepdim=True)
-    std = torch.where(std < 1e-5, torch.ones_like(std), std)
-    return (x - mu) / std
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Data
 # ─────────────────────────────────────────────────────────────────────────────
@@ -211,6 +203,7 @@ def build_batches(data: dict) -> list[dict]:
     W_np = data["W"].numpy()
     A_np = data["A"].numpy()
     Y_np = data["Y"].numpy()
+    true_ITEs_np = data["true_ITEs"]
 
     batches = []
     for b in range(data["N_BATCH"]):
@@ -223,6 +216,19 @@ def build_batches(data: dict) -> list[dict]:
         if Y_ctx.ndim > 1:
             Y_ctx = Y_ctx.squeeze(-1)
 
+        # --- UNIVERSAL Y STANDARDIZATION ---
+        y_mean = Y_ctx.mean()
+        y_std = Y_ctx.std()
+        if y_std < 1e-5:
+            y_std = 1.0
+
+        # Standardize Context Y
+        Y_ctx_std = (Y_ctx - y_mean) / y_std
+
+        # Scale True ITEs for this specific batch
+        # Mean shift cancels out: ((Y1-mu)/std) - ((Y0-mu)/std) = (Y1-Y0)/std
+        true_ITE_std = true_ITEs_np[b] / y_std
+
         batches.append(
             {
                 "b": b,
@@ -230,10 +236,11 @@ def build_batches(data: dict) -> list[dict]:
                 "W_ctx": W_np[b, :N_TRAIN],
                 "Z_ctx": Z_np[b, :N_TRAIN],
                 "A_ctx": A_ctx,
-                "Y_ctx": Y_ctx,
+                "Y_ctx": Y_ctx_std,  # Methods now train on standardized Y
                 "X_q": X_np[b, N_TRAIN:],
                 "W_q": W_np[b, N_TRAIN:],
                 "Z_q": Z_np[b, N_TRAIN:],
+                "true_ITE_std": true_ITE_std,  # We will pass this to the metric evaluator
             }
         )
 
@@ -446,53 +453,21 @@ def run_neural_model(
             if micro_Z.shape[-1] > max_Z:
                 micro_Z = micro_Z[..., :max_Z]
 
-            # Standardize variables prior to forward pass
-            micro_X = safe_standardize(micro_X)
-            micro_W = safe_standardize(micro_W)
-            micro_Z = safe_standardize(micro_Z)
-
+            # Extract the raw context targets (y_train)
             y_train_obs = micro_Y_obs[:, :N_TRAIN]
-            A_train = micro_A[:, :N_TRAIN]
 
-            # Obtain shift/scale to build the standardized target Context
-            y0_shift, y0_scale, y1_shift, y1_scale = model._get_y0_y1_shift_scale(
-                y_train_obs, A_train
+            pred_cate = model.predict(
+                X=micro_X,
+                Z=micro_Z,
+                W=micro_W,
+                A=micro_A,
+                y_train=y_train_obs,
+                d_X=micro_d_X,
+                d_Z=micro_d_Z,
+                d_W=micro_d_W,
+                target="cate",
+                output_type="mean",
             )
-            y0_scale = torch.where(y0_scale < 1e-7, torch.ones_like(y0_scale), y0_scale)
-            y1_scale = torch.where(y1_scale < 1e-7, torch.ones_like(y1_scale), y1_scale)
-
-            y_train_obs_std = torch.where(
-                A_train == 1,
-                (y_train_obs - y1_shift) / y1_scale,
-                (y_train_obs - y0_shift) / y0_scale,
-            )
-
-            # TabICL forward pass
-            pred_logits = model(
-                micro_X,
-                micro_Z,
-                micro_W,
-                micro_A,
-                y_train_obs_std,
-                micro_d_X,
-                micro_d_Z,
-                micro_d_W,
-            )
-
-            nbins = model.nbins
-            logits_y0 = pred_logits[..., :nbins]
-            logits_y1 = pred_logits[..., nbins:]
-
-            probs_y0 = F.softmax(logits_y0, dim=-1)
-            probs_y1 = F.softmax(logits_y1, dim=-1)
-
-            mean_y0_std = torch.sum(probs_y0 * model.bin_centers, dim=-1)
-            mean_y1_std = torch.sum(probs_y1 * model.bin_centers, dim=-1)
-
-            pred_y0 = (mean_y0_std * y0_scale) + y0_shift
-            pred_y1 = (mean_y1_std * y1_scale) + y1_shift
-
-            pred_cate = pred_y1 - pred_y0
 
             t1 = time.perf_counter()
 
@@ -574,12 +549,14 @@ def main() -> None:
 
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
-    true_ITEs = data["true_ITEs"]
 
     console.print(
         f"    [green]✓[/] Loaded: {N_BATCH} episodes × (n_train={data['N_TRAIN']}, n_test={N_TEST})"
     )
     batches = build_batches(data)
+    true_ITEs = np.stack(
+        [np.asarray(b["true_ITE_std"]).squeeze() for b in batches]
+    ).astype(np.float32)
 
     # ── Step 2: Baseline methods ─────────────────────────────────────────────
     method_cfgs: list[dict] = cfg.get("methods", [])
