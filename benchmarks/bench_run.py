@@ -454,7 +454,13 @@ def run_neural_model(
                 micro_Z = micro_Z[..., :max_Z]
 
             # Extract the raw context targets (y_train)
-            y_train_obs = micro_Y_obs[:, :N_TRAIN]
+            y_ctx = micro_Y_obs[:, :N_TRAIN]
+
+            y_mean = y_ctx.mean(dim=1, keepdim=True)
+            y_std = y_ctx.std(dim=1, keepdim=True)
+            y_std = torch.where(y_std < 1e-5, torch.ones_like(y_std), y_std)
+
+            y_train_obs = (y_ctx - y_mean) / y_std
 
             pred_cate = model.predict(
                 X=micro_X,
