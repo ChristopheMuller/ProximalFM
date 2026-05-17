@@ -1025,7 +1025,7 @@ class Trainer:
                 "loss/y1": (loss_y1.item() / num_micro_batches)
                 if is_train
                 else loss_y1.item(),
-                "loss/cate": (loss_cate.item() / num_micro_batches)
+                "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
                 if is_train
                 else loss_cate.item(),
             }
