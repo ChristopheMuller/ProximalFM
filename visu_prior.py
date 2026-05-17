@@ -6,14 +6,16 @@ warnings.filterwarnings("ignore", category=FutureWarning, module="seaborn")
 
 import numpy as np
 import pandas as pd
+
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score
+
+
 import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
-
 from tqdm import tqdm
-
-from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
-from sklearn.metrics import r2_score, roc_auc_score
 
 from proximalfm.prior import PriorDataset
 
@@ -21,9 +23,11 @@ from proximalfm.prior import PriorDataset
 #%% ---------------------------------------------------------------------
 # 1. Instantiate Prior Dataset
 # ----------------------------------------------------------------------
+n_batches = 10
+batch_size = 5
 
 dataset = PriorDataset(
-    batch_size=5,
+    batch_size=batch_size,
     batch_size_per_gp=1,
     min_dim_U=1,
     max_dim_U=1,
@@ -34,7 +38,7 @@ dataset = PriorDataset(
     min_dim_X=2,
     max_dim_X=2,
     min_seq_len=None,
-    max_seq_len=512,
+    max_seq_len=2048,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.5,
@@ -44,238 +48,19 @@ dataset = PriorDataset(
     device="cpu",
 )
 
-
 #%% ---------------------------------------------------------------------
-# 2. Helper Functions
+# 2. Generate and Normalize Datasets
 # ----------------------------------------------------------------------
 
 
-def as_2d(v):
-    v = np.asarray(v)
-    if v.ndim == 1:
-        return v.reshape(-1, 1)
-    return v
-
-
-def safe_target(y):
-    y = np.asarray(y)
-    if y.ndim == 2 and y.shape[1] == 1:
-        return y.ravel()
-    return y
-
-
-def safe_standardize_np(x, eps=1e-5):
-    x = as_2d(x)
-    mu = x.mean(axis=0, keepdims=True)
-    std = x.std(axis=0, keepdims=True)
-    std = np.where(std < eps, 1.0, std)
+def safe_standardize(x):
+    mu = x.mean(dim=1, keepdim=True)
+    std = x.std(dim=1, keepdim=True)
+    # Prevent division by zero for zero-variance or zero-padded features
+    std = torch.where(std < 1e-5, torch.ones_like(std), std)
     return (x - mu) / std
 
 
-def standardize_targets_from_context(y_obs, y0, y1, train_size, eps=1e-5):
-    y_obs = as_2d(y_obs)
-    y0 = as_2d(y0)
-    y1 = as_2d(y1)
-
-    train_size = max(1, min(int(train_size), len(y_obs)))
-
-    mu = y_obs[:train_size].mean(axis=0, keepdims=True)
-    std = y_obs[:train_size].std(axis=0, keepdims=True)
-    std = np.where(std < eps, 1.0, std)
-
-    return (y_obs - mu) / std, (y0 - mu) / std, (y1 - mu) / std
-
-
-def safe_corr(x, y, eps=1e-8):
-    x = np.asarray(x).ravel()
-    y = np.asarray(y).ravel()
-
-    if len(x) != len(y):
-        return np.nan
-    if np.std(x) < eps or np.std(y) < eps:
-        return np.nan
-
-    return float(np.corrcoef(x, y)[0, 1])
-
-
-def print_summary_stats(name, values):
-    values = np.asarray(values, dtype=float)
-    values = values[np.isfinite(values)]
-
-    print(f"\n--- {name} ---")
-
-    if len(values) == 0:
-        print("  No finite values.")
-        return
-
-    print(f"  Mean : {np.mean(values): .4f}")
-    print(f"  Min  : {np.min(values): .4f}")
-    print(f"  25%  : {np.percentile(values, 25): .4f}")
-    print(f"  50%  : {np.median(values): .4f}")
-    print(f"  75%  : {np.percentile(values, 75): .4f}")
-    print(f"  Max  : {np.max(values): .4f}")
-
-
-def rf_r2(features, target, random_state=42):
-    features = as_2d(features)
-    target = safe_target(target)
-
-    rf = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=5,
-        n_jobs=-1,
-        random_state=random_state,
-    )
-
-    rf.fit(features, target)
-    pred = rf.predict(features)
-
-    return r2_score(target, pred), pred
-
-
-def delta_r2(target, base_features, extra_features, random_state=42):
-    base_features = as_2d(base_features)
-    extra_features = as_2d(extra_features)
-
-    full_features = np.concatenate([base_features, extra_features], axis=1)
-
-    r2_base, pred_base = rf_r2(base_features, target, random_state=random_state)
-    r2_full, pred_full = rf_r2(full_features, target, random_state=random_state)
-
-    return r2_base, r2_full, r2_full - r2_base, pred_base, pred_full
-
-
-def rf_auc(features, a, random_state=42):
-    features = as_2d(features)
-    a = np.asarray(a).ravel().astype(int)
-
-    if len(np.unique(a)) < 2:
-        return np.nan, np.full(len(a), np.nan)
-
-    clf = RandomForestClassifier(
-        n_estimators=50,
-        max_depth=5,
-        n_jobs=-1,
-        random_state=random_state,
-    )
-
-    clf.fit(features, a.ravel())
-
-    if clf.predict_proba(features).shape[1] < 2:
-        return np.nan, np.full(len(a), np.nan)
-
-    p = clf.predict_proba(features)[:, 1]
-    auc = roc_auc_score(a, p)
-
-    return auc, p
-
-
-def delta_auc(a, base_features, extra_features, random_state=42):
-    base_features = as_2d(base_features)
-    extra_features = as_2d(extra_features)
-
-    full_features = np.concatenate([base_features, extra_features], axis=1)
-
-    auc_base, p_base = rf_auc(base_features, a, random_state=random_state)
-    auc_full, p_full = rf_auc(full_features, a, random_state=random_state)
-
-    return auc_base, auc_full, auc_full - auc_base, p_base, p_full
-
-
-def smd_by_treatment(values, a, eps=1e-8):
-    """
-    Standardized mean difference of values between A=1 and A=0.
-    For multidimensional values, returns RMS SMD across dimensions.
-    """
-    values = as_2d(values)
-    a = np.asarray(a).ravel().astype(int)
-
-    v1 = values[a == 1]
-    v0 = values[a == 0]
-
-    if len(v1) < 2 or len(v0) < 2:
-        return np.nan
-
-    pooled_sd = np.sqrt(0.5 * (v1.var(axis=0, ddof=1) + v0.var(axis=0, ddof=1)) + eps)
-
-    smd = (v1.mean(axis=0) - v0.mean(axis=0)) / pooled_sd
-
-    return float(np.sqrt(np.mean(smd**2)))
-
-
-def residualize(target, features, random_state=42):
-    target = as_2d(target)
-    features = as_2d(features)
-
-    rf = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=5,
-        n_jobs=-1,
-        random_state=random_state,
-    )
-
-    rf.fit(features, target.ravel())
-    pred = as_2d(rf.predict(features))
-
-    return target - pred
-
-
-def estimate_backdoor_ate(y_obs, a_1d, x_2d, u_2d=None, random_state=42):
-    """
-    Estimate ATE by fitting E[Y | A, X] or E[Y | A, X, U],
-    then predicting under A=1 and A=0.
-    """
-    y_obs = safe_target(y_obs)
-    a_2d = a_1d.reshape(-1, 1)
-
-    if u_2d is None:
-        features = np.concatenate([a_2d, x_2d], axis=1)
-        features_1 = np.concatenate([np.ones_like(a_2d), x_2d], axis=1)
-        features_0 = np.concatenate([np.zeros_like(a_2d), x_2d], axis=1)
-    else:
-        features = np.concatenate([a_2d, x_2d, u_2d], axis=1)
-        features_1 = np.concatenate([np.ones_like(a_2d), x_2d, u_2d], axis=1)
-        features_0 = np.concatenate([np.zeros_like(a_2d), x_2d, u_2d], axis=1)
-
-    rf = RandomForestRegressor(
-        n_estimators=50,
-        max_depth=5,
-        n_jobs=-1,
-        random_state=random_state,
-    )
-
-    rf.fit(features, y_obs)
-
-    mu1 = rf.predict(features_1)
-    mu0 = rf.predict(features_0)
-
-    return float(np.mean(mu1 - mu0))
-
-
-def safe_kdeplot(values, ax, label=None, color=None, linestyle="-", fill=True):
-    values = np.asarray(values).ravel()
-    values = values[np.isfinite(values)]
-
-    if len(values) < 3 or np.std(values) < 1e-8:
-        if len(values) > 0:
-            ax.axvline(np.mean(values), label=label, color=color, linestyle=linestyle)
-        return
-
-    sns.kdeplot(
-        values,
-        ax=ax,
-        label=label,
-        color=color,
-        linestyle=linestyle,
-        fill=fill,
-    )
-
-
-#%% ---------------------------------------------------------------------
-# 3. Generate and Normalize Datasets
-# ----------------------------------------------------------------------
-
-n_batches = 10
 iterator = iter(dataset)
 
 print(f"Generating {n_batches * dataset.batch_size} datasets...")
@@ -285,8 +70,25 @@ all_datasets = []
 for _ in tqdm(range(n_batches), desc="Sampling Batches"):
     batch = next(iterator)
 
-    U, X, W, Z, A, A_probs, Y_obs, Y0, Y1 = batch[:9]
+    U, X, W, Z, A, A_probs, y_obs, y0, y1 = batch[:9]
     seq_lens, train_sizes = batch[-2:]
+
+    U = safe_standardize(U)
+    X = safe_standardize(X)
+    W = safe_standardize(W)
+    Z = safe_standardize(Z)
+
+    assert (
+        len(np.unique(train_sizes.cpu().numpy())) == 1
+    ), "Expected all train sizes in the batch to be the same for this code."
+    y_obs_ctx = y_obs[:, : train_sizes[0]]
+    y_obs_ctx_mean = y_obs_ctx.mean(dim=1, keepdim=True)
+    y_obs_ctx_std = y_obs_ctx.std(dim=1, keepdim=True)
+    y_obs_ctx_std = y_obs_ctx.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
+
+    y_obs_std = (y_obs - y_obs_ctx_mean) / y_obs_ctx_std
+    y0_std = (y0 - y_obs_ctx_mean) / y_obs_ctx_std
+    y1_std = (y1 - y_obs_ctx_mean) / y_obs_ctx_std
 
     for i in range(dataset.batch_size):
         seq_len = int(seq_lens[i].item())
@@ -298,724 +100,575 @@ for _ in tqdm(range(n_batches), desc="Sampling Batches"):
         w_raw = W[i, :seq_len].cpu().numpy()
         z_raw = Z[i, :seq_len].cpu().numpy()
         a_raw = A[i, :seq_len].cpu().numpy()
-        y_obs_raw = Y_obs[i, :seq_len].cpu().numpy()
-        y0_raw = Y0[i, :seq_len].cpu().numpy()
-        y1_raw = Y1[i, :seq_len].cpu().numpy()
+        a_probs_raw = A_probs[i, :seq_len].cpu().numpy()
+        y_obs_raw = y_obs_std[i, :seq_len].cpu().numpy()
+        y0_raw = y0_std[i, :seq_len].cpu().numpy()
+        y1_raw = y1_std[i, :seq_len].cpu().numpy()
 
-        u = safe_standardize_np(u_raw)
-        x = safe_standardize_np(x_raw)
-        w = safe_standardize_np(w_raw)
-        z = safe_standardize_np(z_raw)
+        sample_data = {
+            "is_train": np.arange(seq_len) < train_size,
+            "A": a_raw.flatten(),
+            "A_probs": a_probs_raw.flatten(),
+            "Y_obs": y_obs_raw.flatten(),
+            "Y0": y0_raw.flatten(),
+            "Y1": y1_raw.flatten(),
+        }
 
-        y_obs_std, y0_std, y1_std = standardize_targets_from_context(
-            y_obs_raw,
-            y0_raw,
-            y1_raw,
-            train_size=train_size,
-        )
+        for var_name, data in [("U", u_raw), ("X", x_raw), ("W", w_raw), ("Z", z_raw)]:
+            if data.ndim == 1:
+                sample_data[var_name] = data
+            else:
+                for col in range(data.shape[1]):
+                    sample_data[f"{var_name}_{col}"] = data[:, col]
 
-        ds = (
-            u,
-            x,
-            w,
-            z,
-            a_raw,
-            y_obs_std,
-            y0_std,
-            y1_std,
-            seq_len,
-            train_size,
-        )
+        df_sample = pd.DataFrame(sample_data)
 
-        all_datasets.append(ds)
+        df_sample.attrs["train_size"] = train_size
+        df_sample.attrs["seq_len"] = seq_len
 
+        all_datasets.append(df_sample)
 
 #%% ---------------------------------------------------------------------
-# 4. Metrics
+# 3. Marginal Unique Datasets
 # ----------------------------------------------------------------------
 
-metrics = {
-    # Structural signals
-    "Signal: U -> Z (R2)": [],
-    "Signal: U -> W (R2)": [],
-    "Signal: U -> A (AUC)": [],
-    "Marginal Signal: A -> Y (R2)": [],
-    # Proxy leakage / exclusion checks
-    "Leakage Delta: Z _|_ W | (X, U)": [],
-    "Leakage Delta: Y _|_ Z | (A, X, U)": [],
-    "Leakage Delta: W _|_ (A, Z) | (X, U)": [],
-    # ATE diagnostics
-    "True ATE": [],
-    "Naive ATE": [],
-    "Oracle ATE": [],
-    "Std of Y_obs": [],
-    "Confounding Bias (Naive ATE - True ATE)": [],
-    "Oracle Bias (Oracle ATE - True ATE)": [],
-    "Confounding Bias (Naive ATE - True ATE) Normalized": [],
-    "Oracle Bias (Oracle ATE - True ATE) Normalized": [],
-    "Abs Bias Reduction from U": [],
-    "Relative Abs Bias Reduction from U": [],
-    # Main weak-confounding diagnostics
-    "Outcome Variance Gap (Delta R2_Y)": [],
-    "Treatment Selection Gap (Delta AUC_A)": [],
-    "Treatment U Gap over X (Delta AUC)": [],
-    "Treatment U Gap over X,Z (Delta AUC)": [],
-    "Raw U Imbalance by A (SMD)": [],
-    "Residual U Imbalance by A after X (SMD)": [],
-    "Outcome U Gap over A,X (Delta R2)": [],
-    # Potential-outcome diagnostics
-    "Y0 U Gap over X (Delta R2)": [],
-    "Y1 U Gap over X (Delta R2)": [],
-    "Tau U Gap over X (Delta R2)": [],
-    # Ground-truth decomposition
-    "GT Observed Contrast Bias Normalized": [],
-    "GT Baseline Imbalance Bias Normalized": [],
-    "GT Effect-Selection Bias Normalized": [],
-    # Is U really hidden?
-    "U Predictable from X (R2)": [],
-    "U Predictable from X,Z,W (R2)": [],
-    "U Added Predictability from Z,W over X (Delta R2)": [],
-    # Alignment diagnostics
-    "Confounding Alignment Corr": [],
-    "Confounding Alignment Product": [],
-}
-
-
-#%% ---------------------------------------------------------------------
-# 5. Evaluate Per Dataset
-# ----------------------------------------------------------------------
-
-print(f"\nEvaluating {len(all_datasets)} stored datasets...")
-
-for ds in tqdm(all_datasets, desc="Evaluating Datasets"):
-    u, x, w, z, a, y_obs, y0, y1, seq_len, train_size = ds
-
-    u_2d = as_2d(u)
-    x_2d = as_2d(x)
-    w_2d = as_2d(w)
-    z_2d = as_2d(z)
-
-    a_1d = np.asarray(a).ravel().astype(int)
-    a_2d = a_1d.reshape(-1, 1)
-
-    y_obs_flat = safe_target(y_obs).ravel()
-    y0_flat = safe_target(y0).ravel()
-    y1_flat = safe_target(y1).ravel()
-    tau_flat = y1_flat - y0_flat
-
-    features_X = x_2d
-    features_XU = np.concatenate([x_2d, u_2d], axis=1)
-    features_AX = np.concatenate([a_2d, x_2d], axis=1)
-    features_AXU = np.concatenate([a_2d, x_2d, u_2d], axis=1)
-    features_XZ = np.concatenate([x_2d, z_2d], axis=1)
-    features_XZU = np.concatenate([x_2d, z_2d, u_2d], axis=1)
-    features_XZW = np.concatenate([x_2d, z_2d, w_2d], axis=1)
-    features_XZUW = np.concatenate([x_2d, z_2d, u_2d, w_2d], axis=1)
-
-    # ------------------------------------------------------------
-    # 5.1 Structural signal strength
-    # ------------------------------------------------------------
-
-    r2_u_z, _ = rf_r2(u_2d, z_2d)
-    r2_u_w, _ = rf_r2(u_2d, w_2d)
-    auc_u_a, _ = rf_auc(u_2d, a_1d)
-    r2_a_y, _ = rf_r2(a_2d, y_obs_flat)
-
-    metrics["Signal: U -> Z (R2)"].append(r2_u_z)
-    metrics["Signal: U -> W (R2)"].append(r2_u_w)
-    metrics["Signal: U -> A (AUC)"].append(auc_u_a)
-    metrics["Marginal Signal: A -> Y (R2)"].append(r2_a_y)
-
-    # ------------------------------------------------------------
-    # 5.2 Proxy leakage / exclusion diagnostics
-    # ------------------------------------------------------------
-
-    base_XU = np.concatenate([x_2d, u_2d], axis=1)
-    base_AXU = np.concatenate([a_2d, x_2d, u_2d], axis=1)
-
-    _, _, delta_zw, _, _ = delta_r2(
-        target=w_2d,
-        base_features=base_XU,
-        extra_features=z_2d,
-    )
-    metrics["Leakage Delta: Z _|_ W | (X, U)"].append(delta_zw)
-
-    _, _, delta_yz, _, _ = delta_r2(
-        target=y_obs_flat,
-        base_features=base_AXU,
-        extra_features=z_2d,
-    )
-    metrics["Leakage Delta: Y _|_ Z | (A, X, U)"].append(delta_yz)
-
-    az_concat = np.concatenate([a_2d, z_2d], axis=1)
-    _, _, delta_waz, _, _ = delta_r2(
-        target=w_2d,
-        base_features=base_XU,
-        extra_features=az_concat,
-    )
-    metrics["Leakage Delta: W _|_ (A, Z) | (X, U)"].append(delta_waz)
-
-    # ------------------------------------------------------------
-    # 5.3 ATE estimation
-    # ------------------------------------------------------------
-
-    true_ate = float(np.mean(tau_flat))
-
-    naive_ate = estimate_backdoor_ate(
-        y_obs=y_obs_flat,
-        a_1d=a_1d,
-        x_2d=x_2d,
-        u_2d=None,
-    )
-
-    oracle_ate = estimate_backdoor_ate(
-        y_obs=y_obs_flat,
-        a_1d=a_1d,
-        x_2d=x_2d,
-        u_2d=u_2d,
-    )
-
-    y_std = float(np.std(y_obs_flat) + 1e-8)
-
-    naive_bias = naive_ate - true_ate
-    oracle_bias = oracle_ate - true_ate
-
-    naive_bias_norm = naive_bias / y_std
-    oracle_bias_norm = oracle_bias / y_std
-
-    abs_bias_reduction = np.abs(naive_bias_norm) - np.abs(oracle_bias_norm)
-    relative_abs_bias_reduction = abs_bias_reduction / (np.abs(naive_bias_norm) + 1e-8)
-
-    metrics["True ATE"].append(true_ate)
-    metrics["Naive ATE"].append(naive_ate)
-    metrics["Oracle ATE"].append(oracle_ate)
-    metrics["Std of Y_obs"].append(y_std)
-
-    metrics["Confounding Bias (Naive ATE - True ATE)"].append(naive_bias)
-    metrics["Oracle Bias (Oracle ATE - True ATE)"].append(oracle_bias)
-    metrics["Confounding Bias (Naive ATE - True ATE) Normalized"].append(
-        naive_bias_norm
-    )
-    metrics["Oracle Bias (Oracle ATE - True ATE) Normalized"].append(oracle_bias_norm)
-    metrics["Abs Bias Reduction from U"].append(abs_bias_reduction)
-    metrics["Relative Abs Bias Reduction from U"].append(relative_abs_bias_reduction)
-
-    # ------------------------------------------------------------
-    # 5.4 Treatment-side confounding strength
-    # ------------------------------------------------------------
-
-    auc_x, auc_xu, delta_auc_xu, p_x, p_xu = delta_auc(
-        a=a_1d,
-        base_features=x_2d,
-        extra_features=u_2d,
-    )
-
-    auc_xz, auc_xzu, delta_auc_xzu, p_xz, p_xzu = delta_auc(
-        a=a_1d,
-        base_features=features_XZ,
-        extra_features=u_2d,
-    )
-
-    metrics["Treatment U Gap over X (Delta AUC)"].append(delta_auc_xu)
-    metrics["Treatment U Gap over X,Z (Delta AUC)"].append(delta_auc_xzu)
-    metrics["Treatment Selection Gap (Delta AUC_A)"].append(delta_auc_xzu)
-
-    metrics["Raw U Imbalance by A (SMD)"].append(smd_by_treatment(u_2d, a_1d))
-
-    u_resid_x = residualize(u_2d, x_2d)
-
-    metrics["Residual U Imbalance by A after X (SMD)"].append(
-        smd_by_treatment(u_resid_x, a_1d)
-    )
-
-    # ------------------------------------------------------------
-    # 5.5 Outcome-side confounding strength
-    # ------------------------------------------------------------
-
-    r2_y_ax, r2_y_axu, delta_r2_y_axu, yhat_ax, yhat_axu = delta_r2(
-        target=y_obs_flat,
-        base_features=features_AX,
-        extra_features=u_2d,
-    )
-
-    metrics["Outcome U Gap over A,X (Delta R2)"].append(delta_r2_y_axu)
-    metrics["Outcome Variance Gap (Delta R2_Y)"].append(delta_r2_y_axu)
-
-    _, _, delta_r2_y0_xu, _, _ = delta_r2(
-        target=y0_flat,
-        base_features=x_2d,
-        extra_features=u_2d,
-    )
-
-    _, _, delta_r2_y1_xu, _, _ = delta_r2(
-        target=y1_flat,
-        base_features=x_2d,
-        extra_features=u_2d,
-    )
-
-    _, _, delta_r2_tau_xu, _, _ = delta_r2(
-        target=tau_flat,
-        base_features=x_2d,
-        extra_features=u_2d,
-    )
-
-    metrics["Y0 U Gap over X (Delta R2)"].append(delta_r2_y0_xu)
-    metrics["Y1 U Gap over X (Delta R2)"].append(delta_r2_y1_xu)
-    metrics["Tau U Gap over X (Delta R2)"].append(delta_r2_tau_xu)
-
-    # ------------------------------------------------------------
-    # 5.6 Ground-truth confounding decomposition
-    # ------------------------------------------------------------
-
-    if np.sum(a_1d == 1) > 0 and np.sum(a_1d == 0) > 0:
-        obs_contrast = y_obs_flat[a_1d == 1].mean() - y_obs_flat[a_1d == 0].mean()
-
-        gt_obs_bias = obs_contrast - true_ate
-
-        baseline_imbalance_bias = y0_flat[a_1d == 1].mean() - y0_flat[a_1d == 0].mean()
-
-        effect_selection_bias = tau_flat[a_1d == 1].mean() - tau_flat.mean()
-
-        metrics["GT Observed Contrast Bias Normalized"].append(gt_obs_bias / y_std)
-        metrics["GT Baseline Imbalance Bias Normalized"].append(
-            baseline_imbalance_bias / y_std
-        )
-        metrics["GT Effect-Selection Bias Normalized"].append(
-            effect_selection_bias / y_std
-        )
-    else:
-        metrics["GT Observed Contrast Bias Normalized"].append(np.nan)
-        metrics["GT Baseline Imbalance Bias Normalized"].append(np.nan)
-        metrics["GT Effect-Selection Bias Normalized"].append(np.nan)
-
-    # ------------------------------------------------------------
-    # 5.7 Is U really hidden?
-    # ------------------------------------------------------------
-
-    r2_u_x, _ = rf_r2(x_2d, u_2d)
-    r2_u_xzw, _ = rf_r2(features_XZW, u_2d)
-
-    metrics["U Predictable from X (R2)"].append(r2_u_x)
-    metrics["U Predictable from X,Z,W (R2)"].append(r2_u_xzw)
-    metrics["U Added Predictability from Z,W over X (Delta R2)"].append(
-        r2_u_xzw - r2_u_x
-    )
-
-    # ------------------------------------------------------------
-    # 5.8 Alignment of omitted treatment and outcome components
-    # ------------------------------------------------------------
-
-    delta_propensity_u = np.asarray(p_xu).ravel() - np.asarray(p_x).ravel()
-    delta_outcome_u = np.asarray(yhat_axu).ravel() - np.asarray(yhat_ax).ravel()
-
-    metrics["Confounding Alignment Corr"].append(
-        safe_corr(delta_propensity_u, delta_outcome_u)
-    )
-
-    metrics["Confounding Alignment Product"].append(
-        np.nanmean(delta_propensity_u * delta_outcome_u) / y_std
-    )
-
-
-#%% ---------------------------------------------------------------------
-# 6. Summary Report
-# ----------------------------------------------------------------------
-
-print("\n" + "=" * 70)
-print("  PROXIMAL PRIOR EVALUATION REPORT")
-print("  Total Datasets Evaluated:", len(all_datasets))
-print("=" * 70)
-
-for metric_name, values in metrics.items():
-    print_summary_stats(metric_name, values)
-
-df_metrics = pd.DataFrame(metrics)
-
-
-#%% ---------------------------------------------------------------------
-# 7. Core Diagnostic Plots
-# ----------------------------------------------------------------------
-
-fig, axes = plt.subplots(1, 4, figsize=(22, 5))
-
-sns.kdeplot(
-    df_metrics["Confounding Bias (Naive ATE - True ATE) Normalized"],
-    ax=axes[0],
-    color="crimson",
-    fill=True,
-    label="Naive Bias, missing U",
-)
-
-sns.kdeplot(
-    df_metrics["Oracle Bias (Oracle ATE - True ATE) Normalized"],
-    ax=axes[0],
-    color="mediumseagreen",
-    fill=True,
-    label="Oracle Bias, with U",
-)
-
-axes[0].axvline(x=0, color="black", linestyle="--", alpha=0.8)
-axes[0].set_title(
-    "Backdoor Adjustment Effect\nStandardized ATE Error",
-    fontweight="bold",
-)
-axes[0].set_xlabel("Bias Magnitude, Standard Deviations")
-axes[0].legend()
-
-
-sns.kdeplot(
-    np.abs(df_metrics["Confounding Bias (Naive ATE - True ATE) Normalized"]),
-    ax=axes[1],
-    color="crimson",
-    fill=True,
-    label="Abs Naive Bias",
-)
-
-sns.kdeplot(
-    np.abs(df_metrics["Oracle Bias (Oracle ATE - True ATE) Normalized"]),
-    ax=axes[1],
-    color="mediumseagreen",
-    fill=True,
-    label="Abs Oracle Bias",
-)
-
-axes[1].axvline(x=0, color="black", linestyle="--", alpha=0.8)
-axes[1].set_title(
-    "Absolute Backdoor Adjustment Effect\nStandardized ATE Error",
-    fontweight="bold",
-)
-axes[1].set_xlabel("Absolute Bias Magnitude, Standard Deviations")
-axes[1].set_xlim(0, None)
-axes[1].legend()
-
-
-sns.histplot(
-    df_metrics["Outcome U Gap over A,X (Delta R2)"],
-    ax=axes[2],
-    color="darkorange",
-    bins=20,
-    kde=True,
-)
-
-axes[2].axvline(x=0, color="black", linestyle="--", alpha=0.8)
-axes[2].set_title(
-    "Outcome Variance Gap\nAdditional $R^2$ from U over A,X",
-    fontweight="bold",
-)
-axes[2].set_xlabel("Additional $R^2$ from U")
-
-
-sns.histplot(
-    df_metrics["Treatment U Gap over X (Delta AUC)"],
-    ax=axes[3],
-    color="darkviolet",
-    bins=20,
-    kde=True,
-)
-
-axes[3].axvline(x=0, color="black", linestyle="--", alpha=0.8)
-axes[3].set_title(
-    "Treatment Selection Gap\nAdditional AUC from U over X",
-    fontweight="bold",
-)
-axes[3].set_xlabel("Additional AUC from U")
+k = 5
+vars_to_plot = ["U", "Z", "X", "W", "A_probs", "Y_obs"]
+
+# Create a k x 6 grid
+fig, axes = plt.subplots(k, 6, figsize=(20, 3 * k), sharex=False, sharey=False)
+
+a_prob_bins = np.linspace(0, 1, 21)
+palette = sns.color_palette("viridis", k)
+
+for i in range(min(k, len(all_datasets))):
+    df = all_datasets[i]
+
+    for j, var in enumerate(vars_to_plot):
+        ax = axes[i, j]
+
+        # 1. Extract data (handling multi-dimensional columns like X_0, X_1)
+        if var in df.columns:
+            data = df[var].values
+        else:
+            # Flatten dynamic columns (e.g., X_0, X_1 -> one distribution)
+            data = df.filter(like=f"{var}_").values.flatten()
+
+        # 2. Plotting Logic
+        if var == "A_probs":
+            # Histogram for treatment probabilities
+            sns.histplot(
+                data,
+                bins=a_prob_bins,
+                ax=ax,
+                color=palette[i],
+                kde=False,
+                element="step",
+            )
+            ax.set_xlim(0, 1)
+        else:
+            # KDE for continuous features
+            sns.kdeplot(data, ax=ax, color=palette[i], fill=True, alpha=0.2)
+            # Center the view around zero for standardized features
+            ax.set_xlim(-4, 4)
+
+        # 3. Labeling
+        if i == 0:
+            ax.set_title(f"Marginal {var}", fontweight="bold")
+        if j == 0:
+            ax.set_ylabel(f"Dataset {i}", fontweight="bold")
+        else:
+            ax.set_ylabel("")
+
+        ax.grid(axis="y", alpha=0.3)
 
 plt.tight_layout()
 plt.show()
 
-
 #%% ---------------------------------------------------------------------
-# 8. Why Is Confounding Weak? Scatter Diagnostics
-# ----------------------------------------------------------------------
+# 4. Global Statistics Distribution across all Datasets
+# ---------------------------------------------------------------------
 
-bias_abs = np.abs(
-    df_metrics["Confounding Bias (Naive ATE - True ATE) Normalized"].to_numpy()
+vars_to_analyze = ["U", "Z", "X", "W", "A_probs", "Y_obs"]
+stats_to_compute = ["mean", "median", "std", "min", "max"]
+
+stats_records = []
+
+for i, df in enumerate(all_datasets):
+    for var in vars_to_analyze:
+        if var in df.columns:
+            cols = [var]
+        else:
+            cols = [c for c in df.columns if c.startswith(f"{var}_")]
+
+        for col in cols:
+            series = df[col]
+            stats_records.append(
+                {
+                    "dataset_idx": i,
+                    "variable": var,
+                    "column": col,
+                    "mean": series.mean(),
+                    "median": series.median(),
+                    "std": series.std(),
+                    "min": series.min(),
+                    "max": series.max(),
+                }
+            )
+
+stats_df = pd.DataFrame(stats_records)
+
+# sharex=False allows each subplot to find its own optimal range
+fig, axes = plt.subplots(
+    len(stats_to_compute),
+    len(vars_to_analyze),
+    figsize=(20, 3 * len(stats_to_compute)),
+    sharex=False,
+    sharey=False,
 )
 
-diagnostic_xs = [
-    "Treatment U Gap over X (Delta AUC)",
-    "Residual U Imbalance by A after X (SMD)",
-    "Outcome U Gap over A,X (Delta R2)",
-    "GT Baseline Imbalance Bias Normalized",
-    "GT Effect-Selection Bias Normalized",
-    "U Predictable from X (R2)",
-    "U Predictable from X,Z,W (R2)",
-    "Confounding Alignment Corr",
-]
+for row_idx, stat in enumerate(stats_to_compute):
+    for col_idx, var in enumerate(vars_to_analyze):
+        ax = axes[row_idx, col_idx]
 
-fig, axes = plt.subplots(2, 4, figsize=(24, 11))
-axes = axes.flatten()
+        data_subset = stats_df[stats_df["variable"] == var][stat]
 
-for ax, name in zip(axes, diagnostic_xs):
-    xvals = df_metrics[name].to_numpy(dtype=float)
+        if np.std(data_subset) < 1e-4:
+            ax.text(
+                0.5,
+                0.5,
+                f"Constant: {data_subset.iloc[0]:.2f}",
+                horizontalalignment="center",
+                verticalalignment="center",
+                transform=ax.transAxes,
+                fontsize=12,
+            )
+            ax.set_xlim(-1, 1)
+            ax.set_ylim(0, 1)
+            ax.grid(False)
 
-    mask = np.isfinite(xvals) & np.isfinite(bias_abs)
+        else:
 
-    sns.scatterplot(
-        x=xvals[mask],
-        y=bias_abs[mask],
-        ax=ax,
-        alpha=0.8,
-    )
+            sns.histplot(data_subset, ax=ax, kde=True, color="royalblue", alpha=0.6)
 
-    ax.set_title(name, fontweight="bold")
-    ax.set_xlabel(name)
-    ax.set_ylabel("|Naive ATE Error|, normalized")
-    ax.axhline(0, color="black", linestyle="--", alpha=0.4)
+            # Row-specific logic for A_probs range
+            if var == "A_probs" and stat in ["mean", "median", "min", "max"]:
+                ax.set_xlim(0, 1)
 
-plt.tight_layout()
-plt.show()
+        if row_idx == 0:
+            ax.set_title(f"Variable: {var}", fontweight="bold", fontsize=14)
+        if col_idx == 0:
+            ax.set_ylabel(f"Stat: {stat.upper()}", fontweight="bold", fontsize=12)
+        else:
+            ax.set_ylabel("")
 
-
-#%% ---------------------------------------------------------------------
-# 9. Metric Histograms
-# ----------------------------------------------------------------------
-
-hist_metrics = [
-    "Signal: U -> Z (R2)",
-    "Signal: U -> W (R2)",
-    "Signal: U -> A (AUC)",
-    "Marginal Signal: A -> Y (R2)",
-    "Treatment U Gap over X (Delta AUC)",
-    "Treatment U Gap over X,Z (Delta AUC)",
-    "Raw U Imbalance by A (SMD)",
-    "Residual U Imbalance by A after X (SMD)",
-    "Outcome U Gap over A,X (Delta R2)",
-    "Y0 U Gap over X (Delta R2)",
-    "Y1 U Gap over X (Delta R2)",
-    "Tau U Gap over X (Delta R2)",
-    "U Predictable from X (R2)",
-    "U Predictable from X,Z,W (R2)",
-    "Confounding Alignment Corr",
-]
-
-ncols = 3
-nrows = int(np.ceil(len(hist_metrics) / ncols))
-
-fig, axes = plt.subplots(nrows, ncols, figsize=(18, 4 * nrows))
-axes = axes.flatten()
-
-for ax, name in zip(axes, hist_metrics):
-    values = df_metrics[name].to_numpy(dtype=float)
-    values = values[np.isfinite(values)]
-
-    sns.histplot(values, ax=ax, bins=20, kde=True, color="royalblue")
-    ax.axvline(x=0, color="black", linestyle="--", alpha=0.5)
-
-    if "R2" in name or "AUC" in name:
-        ax.axvline(x=1, color="red", linestyle="--", alpha=0.4)
-
-    ax.set_title(name, fontweight="bold")
-    ax.set_ylabel("Count")
-
-for j in range(len(hist_metrics), len(axes)):
-    axes[j].axis("off")
+        ax.tick_params(axis="x", rotation=45)
+        ax.grid(axis="y", alpha=0.2)
 
 plt.tight_layout()
 plt.show()
 
-
 #%% ---------------------------------------------------------------------
-# 10. Distribution of True ATE
-# ----------------------------------------------------------------------
+# 5. Potential Outcomes & CATE (One Row per Dataset)
+# ---------------------------------------------------------------------
+k = 10
+fig, axes = plt.subplots(k, 4, figsize=(20, 4 * k))
 
-ate_values = df_metrics["True ATE"].to_numpy(dtype=float) / (
-    df_metrics["Std of Y_obs"].to_numpy(dtype=float) + 1e-8
-)
+for i in range(min(k, len(all_datasets))):
+    df = all_datasets[i]
 
-plt.figure(figsize=(10, 6))
-sns.histplot(ate_values, bins=20, kde=True, color="teal")
-plt.axvline(x=0, color="red", linestyle="--", alpha=0.7, label="Zero ATE")
-plt.title("Distribution of True ATE Across Datasets, normalized", fontweight="bold")
-plt.xlabel("True ATE / SD(Y_obs)")
-plt.ylabel("Count")
-plt.legend()
-plt.tight_layout()
-plt.show()
+    # Calculate Individual Treatment Effect (ITE/CATE)
+    # Using Y1 - Y0 (Standard convention)
+    cate = df["Y1"] - df["Y0"]
 
-
-#%% ---------------------------------------------------------------------
-# 11. Plot Individual Datasets
-# ----------------------------------------------------------------------
-
-K_to_plot = min(10, len(all_datasets))
-
-fig, axes = plt.subplots(K_to_plot, 4, figsize=(24, 5 * K_to_plot))
-
-if K_to_plot == 1:
-    axes = np.asarray([axes])
-
-for idx, ds in enumerate(all_datasets[:K_to_plot]):
-    u, x, w, z, a_samp, y_obs_samp, y0_samp, y1_samp, seq_len, train_size = ds
-
-    ax_scatter = axes[idx][0]
-    ax_true = axes[idx][1]
-    ax_obs = axes[idx][2]
-    ax_cate = axes[idx][3]
-
-    y0_flat = safe_target(y0_samp).ravel()
-    y1_flat = safe_target(y1_samp).ravel()
-    y_obs_flat = safe_target(y_obs_samp).ravel()
-    a_flat = np.asarray(a_samp).ravel().astype(int)
-
-    cate_flat = y1_flat - y0_flat
-
-    # 1. Y0 vs Y1
-    ax_scatter.scatter(y0_flat, y1_flat, alpha=0.5, color="purple", s=15)
-
-    min_val = min(np.min(y0_flat), np.min(y1_flat))
-    max_val = max(np.max(y0_flat), np.max(y1_flat))
-
-    ax_scatter.plot(
-        [min_val, max_val],
-        [min_val, max_val],
-        "r--",
-        alpha=0.7,
-        label="y = x, no effect",
-    )
-
-    ax_scatter.set_title(f"DGP {idx + 1}: True Potential Outcomes")
-    ax_scatter.set_xlabel("Y(0)")
-    ax_scatter.set_ylabel("Y(1)")
-    ax_scatter.legend()
-
-    # 2. True causal marginals
-    safe_kdeplot(y0_flat, ax=ax_true, label="Y(0)", color="blue")
-    safe_kdeplot(y1_flat, ax=ax_true, label="Y(1)", color="orange")
-
-    ax_true.set_title(f"DGP {idx + 1}: True Causal Marginals")
-    ax_true.set_xlabel("Potential Outcome Value")
-    ax_true.legend()
-
-    # 3. Observed marginals by treatment
-    y_obs_a0 = y_obs_flat[a_flat == 0]
-    y_obs_a1 = y_obs_flat[a_flat == 1]
-
-    safe_kdeplot(
-        y_obs_a0,
-        ax=ax_obs,
-        label="Y_obs | A=0",
-        color="blue",
-        linestyle="--",
-    )
-
-    safe_kdeplot(
-        y_obs_a1,
-        ax=ax_obs,
-        label="Y_obs | A=1",
-        color="orange",
-        linestyle="--",
-    )
-
-    ax_obs.set_title(f"DGP {idx + 1}: Observed Marginals")
-    ax_obs.set_xlabel("Observed Outcome Value")
-    ax_obs.legend()
-
-    # 4. CATE distribution
-    safe_kdeplot(cate_flat, ax=ax_cate, color="mediumseagreen")
-
-    ate = np.mean(cate_flat)
-
-    ax_cate.axvline(
-        x=0,
-        color="red",
-        linestyle="--",
-        alpha=0.6,
-        label="Zero Effect",
-    )
-
-    ax_cate.axvline(
-        x=ate,
-        color="black",
-        linestyle="-",
-        alpha=0.8,
-        label=f"ATE = {ate:.2f}",
-    )
-
-    ax_cate.set_title(f"DGP {idx + 1}: True Treatment Effect")
-    ax_cate.set_xlabel("Y(1) - Y(0)")
-    ax_cate.set_ylabel("Density")
-    ax_cate.legend()
-
-plt.tight_layout()
-plt.show()
-
-
-#%% ---------------------------------------------------------------------
-# 12. Optional: Rejection Filter for Stronger Confounding
-# ----------------------------------------------------------------------
-
-strong = df_metrics[
-    (df_metrics["Treatment U Gap over X (Delta AUC)"] > 0.05)
-    & (df_metrics["Outcome U Gap over A,X (Delta R2)"] > 0.05)
-    & (np.abs(df_metrics["GT Observed Contrast Bias Normalized"]) > 0.15)
-    & (df_metrics["Residual U Imbalance by A after X (SMD)"] > 0.20)
-].copy()
-
-print("\n" + "=" * 70)
-print("  STRONG CONFOUNDING FILTER")
-print("=" * 70)
-print(f"Kept {len(strong)} / {len(df_metrics)} DGPs")
-
-if len(strong) > 0:
-    print("\nStrong-confounding subset summary:")
-
-    subset_metrics = [
-        "Confounding Bias (Naive ATE - True ATE) Normalized",
-        "Oracle Bias (Oracle ATE - True ATE) Normalized",
-        "Abs Bias Reduction from U",
-        "Treatment U Gap over X (Delta AUC)",
-        "Outcome U Gap over A,X (Delta R2)",
-        "Residual U Imbalance by A after X (SMD)",
-        "GT Observed Contrast Bias Normalized",
-        "GT Baseline Imbalance Bias Normalized",
-        "GT Effect-Selection Bias Normalized",
-        "Confounding Alignment Corr",
+    # --- Column 1: Y0 vs Y1 Scatter ---
+    ax0 = axes[i, 0]
+    sns.scatterplot(data=df, x="Y0", y="Y1", ax=ax0, alpha=0.4, color="purple", s=15)
+    # Add identity line to see if Y1 is generally higher/lower than Y0
+    lims = [
+        min(ax0.get_xlim()[0], ax0.get_ylim()[0]),
+        max(ax0.get_xlim()[1], ax0.get_ylim()[1]),
     ]
+    ax0.plot(lims, lims, "k--", alpha=0.5, zorder=0)
+    ax0.set_title(f"DS {i}: $Y_0$ vs $Y_1$")
 
-    for name in subset_metrics:
-        print_summary_stats(name, strong[name].values)
+    # --- Column 2: Distribution of Y0 and Y1 ---
+    ax1 = axes[i, 1]
+    sns.kdeplot(df["Y0"], ax=ax1, label="$Y_0$", fill=True, alpha=0.2, color="blue")
+    sns.kdeplot(df["Y1"], ax=ax1, label="$Y_1$", fill=True, alpha=0.2, color="orange")
+    ax1.set_title("Potential Outcomes Dist.")
+    ax1.legend()
 
+    # --- Column 3: Y_obs for A=0 and A=1 ---
+    ax2 = axes[i, 2]
+    # Check if both groups exist to avoid KDE errors
+    if len(df[df["A"] == 0]) > 1:
+        sns.kdeplot(
+            df[df["A"] == 0]["Y_obs"],
+            ax=ax2,
+            label="$Y_{obs} | A=0$",
+            fill=True,
+            alpha=0.2,
+            color="blue",
+        )
+    if len(df[df["A"] == 1]) > 1:
+        sns.kdeplot(
+            df[df["A"] == 1]["Y_obs"],
+            ax=ax2,
+            label="$Y_{obs} | A=1$",
+            fill=True,
+            alpha=0.2,
+            color="orange",
+        )
+    ax2.set_title("Observed Outcomes by Group")
+    ax2.legend()
+
+    # --- Column 4: Distribution of CATE (Y1 - Y0) ---
+    ax3 = axes[i, 3]
+    sns.histplot(cate, ax=ax3, kde=True, color="green", alpha=0.3, element="step")
+    ax3.axvline(0, color="red", linestyle="--", linewidth=2)
+    ax3.set_title(f"CATE Distribution ($\\mu={cate.mean():.2f}$)")
+    ax3.set_xlabel("$Y1 - Y0$")
+
+# Global formatting
+for ax in axes.flatten():
+    ax.grid(True, alpha=0.2)
+
+plt.tight_layout()
+plt.show()
 
 #%% ---------------------------------------------------------------------
-# 13. Quick Interpretation Flags
-# ----------------------------------------------------------------------
+# 6. Global CATE Statistics across all Datasets
+# ---------------------------------------------------------------------
 
-print("\n" + "=" * 70)
-print("  QUICK INTERPRETATION")
-print("=" * 70)
+cate_stats_records = []
 
-print_summary_stats(
-    "Naive abs error",
-    np.abs(df_metrics["Confounding Bias (Naive ATE - True ATE) Normalized"]),
+for i, df in enumerate(all_datasets):
+    # Calculate Individual Treatment Effect
+    cate = df["Y1"] - df["Y0"]
+
+    cate_stats_records.append(
+        {
+            "dataset_idx": i,
+            "ATE": cate.mean(),
+            "CATE_std": cate.std(),
+            "CATE_median": cate.median(),
+            "CATE_min": cate.min(),
+            "CATE_max": cate.max(),
+        }
+    )
+
+cate_summary_df = pd.DataFrame(cate_stats_records)
+
+# We'll plot 1 row x 5 columns for the different CATE summary stats
+stats_to_plot = ["ATE", "CATE_std", "CATE_median", "CATE_min", "CATE_max"]
+fig, axes = plt.subplots(1, 5, figsize=(22, 5))
+
+colors = ["crimson", "darkslateblue", "forestgreen", "darkorange", "darkcyan"]
+
+for j, stat in enumerate(stats_to_plot):
+    ax = axes[j]
+    data = cate_summary_df[stat]
+
+    sns.histplot(data, kde=True, ax=ax, color=colors[j], alpha=0.6)
+
+    # Add a vertical line at 0 for positional context (especially for ATE/Median)
+    if stat in ["ATE", "CATE_median", "CATE_min", "CATE_max"]:
+        ax.axvline(0, color="black", linestyle="--", alpha=0.5)
+
+    ax.set_title(f"Dist. of {stat}", fontweight="bold")
+    ax.set_xlabel("Value")
+    ax.set_ylabel("Frequency" if j == 0 else "")
+    ax.grid(axis="y", alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+#%% ---------------------------------------------------------------------
+# 7. Signal Propagation & DAG Verification (Non-linear R2)
+# ---------------------------------------------------------------------
+
+
+def get_nl_r2(df, target_cols, predictor_cols):
+    """Calculates non-linear R2 using a Random Forest."""
+    X = df[predictor_cols]
+    # Handle multi-dimensional targets by averaging R2 or flattening
+    y = df[target_cols]
+    if y.shape[1] == 1:
+        y = y.values.flatten()
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    return r2_score(y_test, preds)
+
+
+dag_stats = []
+
+for i, df in tqdm(
+    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing DAG Flow"
+):
+
+    cols_u = [c for c in df.columns if c.startswith("U")]
+    cols_x = [c for c in df.columns if c.startswith("X")]
+    cols_w = [c for c in df.columns if c.startswith("W")]
+    cols_z = [c for c in df.columns if c.startswith("Z")]
+
+    r2_u_to_z = get_nl_r2(df, cols_z, cols_u)
+    r2_u_to_w = get_nl_r2(df, cols_w, cols_u)
+    r2_u_to_x = get_nl_r2(df, cols_x, cols_u)
+    r2_uxz_to_a = get_nl_r2(df, ["A_probs"], cols_u + cols_x + cols_z)
+    r2_uaxw_to_y = get_nl_r2(df, ["Y_obs"], cols_u + ["A_probs"] + cols_w + cols_x)
+
+    dag_stats.append(
+        {
+            "U -> Z": r2_u_to_z,
+            "U -> W": r2_u_to_w,
+            "U -> X": r2_u_to_x,
+            "U+X+Z -> A-probs": r2_uxz_to_a,
+            "U+A+W+X -> Y": r2_uaxw_to_y,
+        }
+    )
+
+dag_df = pd.DataFrame(dag_stats)
+
+#%%
+
+plt.figure(figsize=(14, 7))
+dag_df_long = dag_df.melt(var_name="DAG Path", value_name="Non-linear R2")
+
+sns.violinplot(
+    data=dag_df_long,
+    x="DAG Path",
+    y="Non-linear R2",
+    palette="Spectral",
+    inner=None,  # Remove the inner boxplot to keep it clean
+    alpha=0.4,
 )
 
-print_summary_stats(
-    "Oracle abs error",
-    np.abs(df_metrics["Oracle Bias (Oracle ATE - True ATE) Normalized"]),
+sns.stripplot(
+    data=dag_df_long,
+    x="DAG Path",
+    y="Non-linear R2",
+    color="black",
+    size=3,
+    alpha=0.3,
+    jitter=True,
 )
 
-print_summary_stats(
-    "Abs bias reduction from adding U",
-    df_metrics["Abs Bias Reduction from U"],
+plt.title(
+    "Distribution of Signal Propagation ($R^2$) Across 50 Datasets",
+    fontweight="bold",
+    fontsize=15,
+)
+plt.ylabel("Non-linear $R^2$ (Variance Explained)", fontsize=12)
+plt.xlabel("Causal Relationship Path", fontsize=12)
+plt.xticks(rotation=30, ha="right")
+plt.grid(axis="y", linestyle="--", alpha=0.4)
+
+plt.axhline(0.5, color="gray", linestyle=":", alpha=0.5, label="Moderate Signal")
+plt.axhline(0.1, color="red", linestyle=":", alpha=0.5, label="Noise Floor")
+
+plt.tight_layout()
+plt.show()
+
+#%% ---------------------------------------------------------------------
+# 8. Bias Analysis: How much of the selection bias can be explained by adjusting for X, W, Z (Proximal) vs. X,U (Oracle)?
+# ---------------------------------------------------------------------
+
+# Y1
+
+bias_records = []
+
+for i, df in tqdm(
+    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing Confounding"
+):
+    # Identify column groups
+    cols_u = [c for c in df.columns if c.startswith("U")]
+    cols_x = [c for c in df.columns if c.startswith("X")]
+    cols_proxies = [c for c in df.columns if c.startswith(("W", "Z", "X"))]
+    cols_oracle = cols_x + cols_u
+
+    # 1. Ground Truth: True ATE and Potential Outcome Means
+    true_mu1 = df["Y1"].mean()
+
+    # 2. Raw Observed Mean (The biased estimate)
+    raw_mu1 = df[df["A"] == 1]["Y_obs"].mean()
+    raw_bias = abs(raw_mu1 - true_mu1)
+
+    def get_adjusted_bias(features):
+        # Train on observed data
+        train_df = df[df["A"] == 1]
+        model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
+        model.fit(train_df[features], train_df["Y_obs"])
+
+        # Predict for the whole population (Counterfactual)
+        pred_y1 = model.predict(df[features])
+        return abs(pred_y1.mean() - true_mu1)
+
+    bias_records.append(
+        {
+            "Raw Selection Bias": raw_bias,
+            "Adjusted by X": get_adjusted_bias(cols_x),
+            "Adjusted by X,W,Z (Proximal)": get_adjusted_bias(cols_proxies),
+            "Adjusted by X,U (Oracle)": get_adjusted_bias(cols_oracle),
+        }
+    )
+
+bias_df = pd.DataFrame(bias_records)
+
+plt.figure(figsize=(12, 6))
+bias_df_long = bias_df.melt(
+    var_name="Adjustment Set", value_name="Absolute Bias (Error)"
 )
 
-print_summary_stats(
-    "Treatment-side missing-U signal",
-    df_metrics["Treatment U Gap over X (Delta AUC)"],
+sns.violinplot(
+    data=bias_df_long,
+    x="Adjustment Set",
+    y="Absolute Bias (Error)",
+    palette="Reds",
+    inner="quartile",
+    alpha=0.6,
+)
+sns.stripplot(
+    data=bias_df_long,
+    x="Adjustment Set",
+    y="Absolute Bias (Error)",
+    color="black",
+    size=3,
+    alpha=0.3,
+    jitter=True,
 )
 
-print_summary_stats(
-    "Outcome-side missing-U signal",
-    df_metrics["Outcome U Gap over A,X (Delta R2)"],
+plt.title(
+    "How Covariates Explain Selection Bias ($|\\hat{\\mu}_1 - \\mu_1|$)",
+    fontweight="bold",
+    fontsize=15,
+)
+plt.ylabel("Absolute Error in Mean Outcome", fontsize=12)
+plt.grid(axis="y", alpha=0.3)
+plt.show()
+
+# Define the metrics we want to see
+metrics = ["mean", "median", "std", "min", "max"]
+
+# Calculate statistics for each adjustment scenario
+bias_summary = bias_df.agg(metrics).T
+
+# Rename columns for a professional look in the output
+bias_summary.columns = [m.capitalize() for m in metrics]
+
+# Display the table
+print("### Confounding & Bias Reduction Metrics ###")
+print(bias_summary.to_markdown(floatfmt=".4f"))
+
+# Optional: Percentage of Bias Removed (relative to Raw)
+# This helps quantify the "Value Add" of Proxies vs X alone
+avg_raw_bias = bias_summary.loc["Raw Selection Bias", "Mean"]
+proximal_improvement = (
+    1 - (bias_summary.loc["Adjusted by X,W,Z (Proximal)", "Mean"] / avg_raw_bias)
+) * 100
+
+print(
+    f"\n> **Key Insight:** The Proximal set (X, W, Z) reduced average bias by **{proximal_improvement:.2f}%** compared to the Raw data."
 )
 
-print_summary_stats(
-    "Ground-truth observed contrast bias",
-    df_metrics["GT Observed Contrast Bias Normalized"],
+# Y0
+
+bias_records = []
+
+for i, df in tqdm(
+    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing Confounding"
+):
+    # Identify column groups
+    cols_u = [c for c in df.columns if c.startswith("U")]
+    cols_x = [c for c in df.columns if c.startswith("X")]
+    cols_proxies = [c for c in df.columns if c.startswith(("W", "Z", "X"))]
+    cols_oracle = cols_x + cols_u
+
+    # 1. Ground Truth: True ATE and Potential Outcome Means
+    true_mu1 = df["Y0"].mean()
+
+    # 2. Raw Observed Mean (The biased estimate)
+    raw_mu1 = df[df["A"] == 0]["Y_obs"].mean()
+    raw_bias = abs(raw_mu1 - true_mu1)
+
+    def get_adjusted_bias(features):
+        # Train on observed data
+        train_df = df[df["A"] == 0]
+        model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
+        model.fit(train_df[features], train_df["Y_obs"])
+
+        # Predict for the whole population (Counterfactual)
+        pred_y1 = model.predict(df[features])
+        return abs(pred_y1.mean() - true_mu1)
+
+    bias_records.append(
+        {
+            "Raw Selection Bias": raw_bias,
+            "Adjusted by X": get_adjusted_bias(cols_x),
+            "Adjusted by X,W,Z (Proximal)": get_adjusted_bias(cols_proxies),
+            "Adjusted by X,U (Oracle)": get_adjusted_bias(cols_oracle),
+        }
+    )
+
+bias_df = pd.DataFrame(bias_records)
+
+plt.figure(figsize=(12, 6))
+bias_df_long = bias_df.melt(
+    var_name="Adjustment Set", value_name="Absolute Bias (Error)"
 )
 
-print_summary_stats(
-    "U predictability from observed X",
-    df_metrics["U Predictable from X (R2)"],
+sns.violinplot(
+    data=bias_df_long,
+    x="Adjustment Set",
+    y="Absolute Bias (Error)",
+    palette="Reds",
+    inner="quartile",
+    alpha=0.6,
+)
+sns.stripplot(
+    data=bias_df_long,
+    x="Adjustment Set",
+    y="Absolute Bias (Error)",
+    color="black",
+    size=3,
+    alpha=0.3,
+    jitter=True,
+)
+
+plt.title(
+    "How Covariates Explain Selection Bias ($|\\hat{\\mu}_0 - \\mu_0|$)",
+    fontweight="bold",
+    fontsize=15,
+)
+plt.ylabel("Absolute Error in Mean Outcome", fontsize=12)
+plt.grid(axis="y", alpha=0.3)
+plt.show()
+
+# Define the metrics we want to see
+metrics = ["mean", "median", "std", "min", "max"]
+
+# Calculate statistics for each adjustment scenario
+bias_summary = bias_df.agg(metrics).T
+
+# Rename columns for a professional look in the output
+bias_summary.columns = [m.capitalize() for m in metrics]
+
+# Display the table
+print("### Confounding & Bias Reduction Metrics ###")
+print(bias_summary.to_markdown(floatfmt=".4f"))
+
+# Optional: Percentage of Bias Removed (relative to Raw)
+# This helps quantify the "Value Add" of Proxies vs X alone
+avg_raw_bias = bias_summary.loc["Raw Selection Bias", "Mean"]
+proximal_improvement = (
+    1 - (bias_summary.loc["Adjusted by X,W,Z (Proximal)", "Mean"] / avg_raw_bias)
+) * 100
+
+print(
+    f"\n> **Key Insight:** The Proximal set (X, W, Z) reduced average bias by **{proximal_improvement:.2f}%** compared to the Raw data."
 )
