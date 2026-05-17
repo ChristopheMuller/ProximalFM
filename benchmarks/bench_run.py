@@ -113,7 +113,7 @@ def load_config(path: str) -> dict:
 
 
 def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
-    """Generate synthetic datasets from the prior and save to disk."""
+    """Generate synthetic datasets from the prior, standardize, and save to disk."""
     if not _PROXFM_AVAILABLE:
         raise RuntimeError(
             "proximalfm is not installed. Set data.source: load to use an "
@@ -123,6 +123,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     n_rows = data_cfg["n_rows"]
     n_batch = data_cfg["n_batch"]
     prior_kw = data_cfg.get("prior", {}).copy()
+    prop_train = data_cfg.get("prop_train", 0.75)
     seed = run_cfg.get("seed", 42)
 
     # Force dimensions for the benchmark chunk
@@ -131,8 +132,8 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
             "batch_size": n_batch,
             "min_seq_len": None,
             "max_seq_len": n_rows,
-            "min_train_size": 0.5,
-            "max_train_size": 0.95,
+            "min_train_size": prop_train,
+            "max_train_size": prop_train + 0.001,
             "device": "cpu",
         }
     )
@@ -150,20 +151,45 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
 
     # Prior dataset yields 14 elements
     (U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_size) = batch
-    train_size = train_size[0]
 
-    # Compute explicit ITE for the test segment
-    true_ITEs = (Y1[:, train_size:] - Y0[:, train_size:]).numpy()
+    # Ensure train_size is a standard integer for clean slicing
+    train_size = int(train_size[0].item())
+
+    # --- 1. Standardize Covariates ---
+    def safe_standardize(x: torch.Tensor) -> torch.Tensor:
+        mu = x.mean(dim=1, keepdim=True)
+        std = x.std(dim=1, keepdim=True)
+        # Prevent division by zero for zero-variance or zero-padded features
+        std = torch.where(std < 1e-5, torch.ones_like(std), std)
+        return (x - mu) / std
+
+    X_std = safe_standardize(X)
+    W_std = safe_standardize(W)
+    Z_std = safe_standardize(Z)
+
+    # --- 2. Standardize Targets based ONLY on the observed training context ---
+    y_train_obs = Y_obs[:, :train_size]
+    y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
+    y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
+
+    # Scale the full Y_obs array (methods will slice their context off this later)
+    Y_obs_std = (Y_obs - y_context_mean) / y_context_std
+
+    # Compute explicit ITE for the test segment in the standardized space
+    y_test_0 = Y0[:, train_size:]
+    y_test_1 = Y1[:, train_size:]
+    true_ITEs_std = ((y_test_1 - y_test_0) / y_context_std).numpy()
+
     data = {
-        "X": X.cpu(),
-        "Z": Z.cpu(),
-        "W": W.cpu(),
-        "A": A.cpu(),
-        "Y": Y_obs.cpu(),
+        "X": X_std.cpu(),
+        "Z": Z_std.cpu(),
+        "W": W_std.cpu(),
+        "A": A.cpu(),  # Treatment is not standardized
+        "Y": Y_obs_std.cpu(),
         "d_X": d_X.cpu(),
         "d_Z": d_Z.cpu(),
         "d_W": d_W.cpu(),
-        "true_ITEs": true_ITEs,
+        "true_ITEs": true_ITEs_std,
         "N_TRAIN": train_size,
         "N_TEST": n_rows - train_size,
         "N_BATCH": n_batch,
@@ -173,7 +199,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     with open(output_dir / "prior_config.yaml", "w") as f:
         yaml.dump(data_cfg.get("prior", {}), f)
 
-    console.print(f"    [green]✓[/] Saved → {output_dir / 'data.pt'}")
+    console.print(f"    [green]✓[/] Saved (Normalized) → {output_dir / 'data.pt'}")
     return data
 
 
@@ -216,19 +242,6 @@ def build_batches(data: dict) -> list[dict]:
         if Y_ctx.ndim > 1:
             Y_ctx = Y_ctx.squeeze(-1)
 
-        # --- UNIVERSAL Y STANDARDIZATION ---
-        y_mean = Y_ctx.mean()
-        y_std = Y_ctx.std()
-        if y_std < 1e-5:
-            y_std = 1.0
-
-        # Standardize Context Y
-        Y_ctx_std = (Y_ctx - y_mean) / y_std
-
-        # Scale True ITEs for this specific batch
-        # Mean shift cancels out: ((Y1-mu)/std) - ((Y0-mu)/std) = (Y1-Y0)/std
-        true_ITE_std = true_ITEs_np[b] / y_std
-
         batches.append(
             {
                 "b": b,
@@ -236,11 +249,11 @@ def build_batches(data: dict) -> list[dict]:
                 "W_ctx": W_np[b, :N_TRAIN],
                 "Z_ctx": Z_np[b, :N_TRAIN],
                 "A_ctx": A_ctx,
-                "Y_ctx": Y_ctx_std,  # Methods now train on standardized Y
+                "Y_ctx": Y_ctx,
                 "X_q": X_np[b, N_TRAIN:],
                 "W_q": W_np[b, N_TRAIN:],
                 "Z_q": Z_np[b, N_TRAIN:],
-                "true_ITE_std": true_ITE_std,  # We will pass this to the metric evaluator
+                "true_ITE_std": true_ITEs_np[b],
             }
         )
 
@@ -453,21 +466,14 @@ def run_neural_model(
             if micro_Z.shape[-1] > max_Z:
                 micro_Z = micro_Z[..., :max_Z]
 
-            # Extract the raw context targets (y_train)
             y_ctx = micro_Y_obs[:, :N_TRAIN]
-
-            y_mean = y_ctx.mean(dim=1, keepdim=True)
-            y_std = y_ctx.std(dim=1, keepdim=True)
-            y_std = torch.where(y_std < 1e-5, torch.ones_like(y_std), y_std)
-
-            y_train_obs = (y_ctx - y_mean) / y_std
 
             pred_cate = model.predict(
                 X=micro_X,
                 Z=micro_Z,
                 W=micro_W,
                 A=micro_A,
-                y_train=y_train_obs,
+                y_train=y_ctx,
                 d_X=micro_d_X,
                 d_Z=micro_d_Z,
                 d_W=micro_d_W,

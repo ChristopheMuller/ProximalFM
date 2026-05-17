@@ -477,11 +477,13 @@ def make_combined_rich_table(
     # ── ATE Columns ──
     tbl.add_column("ATE R²", justify="right")
     tbl.add_column("ATE RMSE", justify="right")
+    tbl.add_column("ATE RMedSE", justify="right")
 
     # ── CATE Columns ──
     tbl.add_column("CATE R²", justify="right")
     tbl.add_column("CATE R²(shape)", justify="right")
     tbl.add_column("CATE RMSE", justify="right")
+    tbl.add_column("CATE RMedSE", justify="right")
 
     tbl.add_column("Time (s)", justify="right")
 
@@ -492,6 +494,9 @@ def make_combined_rich_table(
         ),
         "RMSE": _get_column_styles(
             ate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
+        ),
+        "RMedSE": _get_column_styles(
+            ate_summary.get("RMedSE", pd.Series(dtype=float)), "RMedSE"
         ),
         "Time (s)": _get_column_styles(
             ate_summary.get("Time (s)", pd.Series(dtype=float)), "Time (s)"
@@ -507,6 +512,9 @@ def make_combined_rich_table(
         ),
         "RMSE": _get_column_styles(
             cate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
+        ),
+        "RMedSE": _get_column_styles(
+            cate_summary.get("RMedSE", pd.Series(dtype=float)), "RMedSE"
         ),
     }
 
@@ -526,13 +534,15 @@ def make_combined_rich_table(
             formatted_val = format_str.format(val)
             return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
 
-        # Align exactly with the 6 metric columns added above
+        # Align exactly with the 8 metric columns added above
         cells = [
             get_styled(ate_row, "ATE R²", ate_styles),
             get_styled(ate_row, "RMSE", ate_styles),
+            get_styled(ate_row, "RMedSE", ate_styles),
             get_styled(cate_row, "Mean R²", cate_styles),
             get_styled(cate_row, "Mean R²(shape)", cate_styles),
             get_styled(cate_row, "RMSE", cate_styles),
+            get_styled(cate_row, "RMedSE", cate_styles),
             get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}"),
         ]
 
