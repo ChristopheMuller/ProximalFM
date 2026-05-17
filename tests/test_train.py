@@ -69,6 +69,7 @@ def test_trainer_run_one_epoch(dummy_args):
         W = torch.randn(2, 20, dummy_args.max_dim_W)
         Z = torch.randn(2, 20, dummy_args.max_dim_Z)
         A = torch.randint(0, 2, (2, 20, 1)).float()
+        A_probs = torch.rand(2, 20, 1)
         Y_obs = torch.randn(2, 20)
         Y0 = torch.randn(2, 20)
         Y1 = torch.randn(2, 20)
@@ -85,6 +86,7 @@ def test_trainer_run_one_epoch(dummy_args):
             W,
             Z,
             A,
+            A_probs,
             Y_obs,
             Y0,
             Y1,

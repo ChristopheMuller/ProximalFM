@@ -51,6 +51,7 @@ def test_scm_prior_get_batch():
         W,
         Z,
         A,
+        A_probs,
         Y_obs,
         Y0,
         Y1,
@@ -102,6 +103,7 @@ def test_scm_prior_mix_scm():
         W,
         Z,
         A,
+        A_probs,
         Y_obs,
         Y0,
         Y1,
@@ -139,6 +141,7 @@ def test_scm_prior_tree_scm():
         W,
         Z,
         A,
+        A_probs,
         Y_obs,
         Y0,
         Y1,
@@ -177,6 +180,7 @@ def test_scm_prior_seq_len_per_gp():
         W,
         Z,
         A,
+        A_probs,
         Y_obs,
         Y0,
         Y1,
@@ -217,9 +221,23 @@ def test_prior_dataset():
         prior_type="mlp_scm",
     )
 
-    U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes = next(
-        iter(dataset)
-    )
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        A_probs,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = next(iter(dataset))
 
     assert X.shape[0] == 2
 
