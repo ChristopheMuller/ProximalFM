@@ -820,6 +820,7 @@ class Trainer:
             micro_W,
             micro_Z,
             micro_A,
+            micro_A_probs,
             micro_Y_obs,
             micro_Y0,
             micro_Y1,

@@ -621,7 +621,7 @@ class SCMPrior(Prior):
                 **params,
             ).to(self.device)
             A_logits = f_A(input_A).squeeze(-1)
-            A = self.sample_A(
+            A, A_probs = self.sample_A(
                 A_logits,
                 epsilon=params["propensity_epsilon"],
                 temperature=params["propensity_temperature"],
@@ -708,12 +708,13 @@ class SCMPrior(Prior):
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
             if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
-                U, X, W, Z, A, y, y0, y1, d_U, d_X, d_W, d_Z = (
+                U, X, W, Z, A, A_probs, y, y0, y1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
                     W.squeeze(0),
                     Z.squeeze(0),
                     A.squeeze(0),
+                    A_probs.squeeze(0),
                     y.squeeze(0),
                     y0.squeeze(0),
                     y1.squeeze(0),
@@ -728,6 +729,7 @@ class SCMPrior(Prior):
                     W,
                     Z,
                     A,
+                    A_probs,
                     y,
                     y0,
                     y1,
@@ -742,7 +744,7 @@ class SCMPrior(Prior):
     ) -> Tensor:
         probs = torch.sigmoid(logits / temperature)
         probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
-        return torch.bernoulli(probs).long()
+        return torch.bernoulli(probs).long(), probs
 
     @torch.no_grad()
     def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
@@ -894,6 +896,7 @@ class SCMPrior(Prior):
             W_list,
             Z_list,
             A_list,
+            A_probs_list,
             Y_obs_list,
             Y0_list,
             Y1_list,
@@ -910,6 +913,9 @@ class SCMPrior(Prior):
             W = nested_tensor([t.to(self.device) for t in W_list], device=self.device)
             Z = nested_tensor([t.to(self.device) for t in Z_list], device=self.device)
             A = nested_tensor([t.to(self.device) for t in A_list], device=self.device)
+            A_probs = nested_tensor(
+                [t.to(self.device) for t in A_probs_list], device=self.device
+            )
             Y_obs = nested_tensor(
                 [t.to(self.device) for t in Y_obs_list], device=self.device
             )
@@ -921,6 +927,7 @@ class SCMPrior(Prior):
             W = torch.stack(W_list).to(self.device)
             Z = torch.stack(Z_list).to(self.device)
             A = torch.stack(A_list).to(self.device)
+            A_probs = torch.stack(A_probs_list).to(self.device)
             Y_obs = torch.stack(Y_obs_list).to(self.device)
             Y0 = torch.stack(Y0_list).to(self.device)
             Y1 = torch.stack(Y1_list).to(self.device)
@@ -942,7 +949,23 @@ class SCMPrior(Prior):
             dtype=torch.long,
         )
 
-        return U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes
+        return (
+            U,
+            X,
+            W,
+            Z,
+            A,
+            A_probs,
+            Y_obs,
+            Y0,
+            Y1,
+            d_U,
+            d_X,
+            d_W,
+            d_Z,
+            seq_lens,
+            train_sizes,
+        )
 
     def get_prior(self) -> str:
         """Determine which prior type to use for generation.

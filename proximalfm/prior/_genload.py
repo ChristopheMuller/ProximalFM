@@ -793,6 +793,7 @@ class SavePriorDataset:
                 W,
                 Z,
                 A,
+                A_probs,
                 Y_obs,
                 Y0,
                 Y1,
@@ -805,7 +806,7 @@ class SavePriorDataset:
             ) = self.prior.get_batch()
 
             # Move tensors to CPU before saving
-            X, W, Z, A = X.cpu(), W.cpu(), Z.cpu(), A.cpu()
+            X, W, Z, A, A_probs = X.cpu(), W.cpu(), Z.cpu(), A.cpu(), A_probs.cpu()
             Y_obs, Y0, Y1 = Y_obs.cpu(), Y0.cpu(), Y1.cpu()
             d_X, d_W, d_Z = d_X.cpu(), d_W.cpu(), d_Z.cpu()
             seq_lens = seq_lens.cpu()
@@ -818,6 +819,7 @@ class SavePriorDataset:
                 W,
                 Z,
                 A,
+                A_probs,
                 Y_obs,
                 Y0,
                 Y1,

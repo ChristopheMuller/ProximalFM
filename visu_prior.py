@@ -285,7 +285,7 @@ all_datasets = []
 for _ in tqdm(range(n_batches), desc="Sampling Batches"):
     batch = next(iterator)
 
-    U, X, W, Z, A, Y_obs, Y0, Y1 = batch[:8]
+    U, X, W, Z, A, A_probs, Y_obs, Y0, Y1 = batch[:9]
     seq_lens, train_sizes = batch[-2:]
 
     for i in range(dataset.batch_size):

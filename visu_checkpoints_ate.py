@@ -42,7 +42,7 @@ prior = PriorDataset(
 
 num_datasets = 50
 batch = prior.get_batch(batch_size=num_datasets)
-U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
+U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
 
 # Ensure batch dimension exists
 if len(Y0.shape) == 1:
