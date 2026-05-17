@@ -150,7 +150,23 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     batch = next(iter(dataset))
 
     # Prior dataset yields 14 elements
-    (U, X, W, Z, A, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_size) = batch
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        A_probs,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_len,
+        train_size,
+    ) = batch
 
     # Ensure train_size is a standard integer for clean slicing
     train_size = int(train_size[0].item())
