@@ -635,7 +635,7 @@ class Trainer:
             train_time = train_timer.elapsed
 
             # Clear CUDA cache to free memory
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
 
             self.curr_step = step + 1
             if self.master_process:
@@ -1017,7 +1017,9 @@ class Trainer:
                 # Heterogeneous effect is the residual structural shift isolated from ATE
                 true_he_std = true_cate_std - true_ate_std
 
-                loss_ate_nll = compute_gaussian_nll(ate_mu, ate_logvar, true_ate_std)
+                loss_ate_nll = (
+                    compute_gaussian_nll(ate_mu, ate_logvar, true_ate_std) / 10
+                )
                 loss_he_crps = compute_crps_loss(
                     he_logits,
                     true_he_std,
