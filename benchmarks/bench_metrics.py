@@ -63,9 +63,7 @@ class EpisodeMetrics:
     ate_error: float
 
     # ── CATE absolute ────────────────────────────────────────────────────────
-    cate_mae: Optional[float]
     cate_rmse: Optional[float]
-    cate_medae: Optional[float]
     cate_rmedse: Optional[float]
 
     # ── CATE R² ──────────────────────────────────────────────────────────────
@@ -92,54 +90,29 @@ def compute_episode_metrics(
     time: float,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> EpisodeMetrics:
-    """Compute all metrics for one (method, episode) pair.
 
-    Args:
-        method    : display name of the estimator.
-        episode   : episode index (0-based).
-        pred      : predicted ITEs, shape (n_test,).  May contain NaN.
-        true_ite  : ground-truth ITEs, shape (n_test,).
-        ite_var_threshold : episodes with Var(τ) below this skip R²-family metrics.
-
-    Returns:
-        EpisodeMetrics dataclass instance.
-    """
     ate_pred = float(np.nanmean(pred))
     ate_true = float(true_ite.mean())
     ite_var = float(true_ite.var())
-    ite_std = float(np.sqrt(ite_var))
 
     homogeneous = ite_var < ite_var_threshold
     all_nan = bool(np.all(np.isnan(pred)))
 
-    # ── ATE ──────────────────────────────────────────────────────────────────
     ate_error = ate_pred - ate_true
 
-    # ── CATE absolute ────────────────────────────────────────────────────────
     if all_nan:
-        cate_mae = cate_rmse = cate_medae = cate_rmedse = None
+        cate_rmse = cate_rmedse = None
     else:
         pred_clean = np.where(np.isnan(pred), ate_pred, pred)
         residuals = pred_clean - true_ite
 
-        cate_mae = float(np.abs(residuals).mean())
         cate_rmse = float(np.sqrt((residuals**2).mean()))
-        cate_medae = float(np.median(np.abs(residuals)))
         cate_rmedse = float(np.sqrt(np.median(residuals**2)))
 
-    # ── CATE R² family ───────────────────────────────────────────────────────
-    # R² is only meaningful when the true effect has non-trivial variance.
-    # Skipped entirely when all predictions are NaN.
     if homogeneous or all_nan:
         cate_r2 = cate_r2_shape = cate_r2_ate_penalty = None
     else:
-        # pred_clean already computed above
         cate_r2 = float(r2_score(true_ite, pred_clean))
-
-        # Decompose: MSE = Var(τ̂ − τ) + (mean(τ̂) − mean(τ))²
-        # R²_shape       = 1 − Var(τ̂ − τ) / Var(τ)
-        # R²_ate_penalty = bias² / Var(τ)
-        # => R² = R²_shape − R²_ate_penalty
         bias_sq = ate_error**2
         cate_r2_ate_penalty = float(bias_sq / (ite_var + _EPS))
         cate_r2_shape = float(cate_r2 + cate_r2_ate_penalty)
@@ -150,10 +123,8 @@ def compute_episode_metrics(
         ate_true=ate_true,
         ate_pred=ate_pred,
         ate_error=ate_error,
-        cate_mae=cate_mae,
         cate_rmse=cate_rmse,
-        cate_medae=cate_medae,  # <-- NEW
-        cate_rmedse=cate_rmedse,  # <-- NEW
+        cate_rmedse=cate_rmedse,
         cate_r2=cate_r2,
         cate_r2_shape=cate_r2_shape,
         cate_r2_ate_penalty=cate_r2_ate_penalty,
@@ -176,17 +147,7 @@ def compute_all_metrics(
     method: str,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> pd.DataFrame:
-    """Compute per-episode metrics for all episodes of one method.
 
-    Args:
-        preds      : shape (n_batch, n_test).
-        true_ites  : shape (n_batch, n_test).
-        times      : shape (n_batch,). Execution time per episode.
-        method     : display name.
-
-    Returns:
-        DataFrame with one row per episode, columns = EpisodeMetrics fields.
-    """
     rows = [
         asdict(
             compute_episode_metrics(
@@ -204,20 +165,8 @@ def compute_all_metrics(
 
 
 def _summarise_ate(df: pd.DataFrame) -> pd.Series:
-    """ATE error summary for one method's episodes.
-
-    Raw errors (Bias, MAE, RMSE …) are supplemented by normalised equivalents
-    (NormBias, NormMAE, NormRMSE) computed from ate_error_norm, which divides
-    each episode's error by SD(τ) so that high-variance episodes do not dominate.
-
-    ATE R² measures how well the predicted ATEs track the true ATEs *across*
-    the episode batch (treating each episode as one observation).  A method
-    that always predicts the right direction/ranking of ATEs scores well here
-    even if its absolute errors are large.
-    """
     e = df["ate_error"]
 
-    # Cross-episode ATE R²: does τ̂_mean correlate with τ_mean across episodes?
     try:
         ate_r2 = round(float(r2_score(df["ate_true"], df["ate_pred"])), 4)
     except Exception:
@@ -225,16 +174,13 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
 
     return pd.Series(
         {
-            # ── Raw ──────────────────────────────────────────────────────────
             "Bias": round(e.mean(), 4),
-            "Std": round(e.std(), 4),
-            "MAE": round(e.abs().mean(), 4),
-            "MedAE": round(e.abs().median(), 4),
             "RMSE": round(np.sqrt((e**2).mean()), 4),
             "RMedSE": round(np.sqrt(np.median(e**2)), 4),
-            # ── Cross-episode R² ─────────────────────────────────────────────
             "ATE R²": ate_r2,
-            # ── Time ─────────────────────────────────────────────────────────
+            "Median Regret": round(df["ate_sq_regret"].median(), 4)
+            if "ate_sq_regret" in df
+            else float("nan"),
             "Time (s)": round(df["time"].mean(), 4),
         }
     )
@@ -242,35 +188,35 @@ def _summarise_ate(df: pd.DataFrame) -> pd.Series:
 
 def _summarise_cate(df: pd.DataFrame) -> pd.Series:
     heterogeneous = df.loc[~df["homogeneous"]]
-    n_total = len(df)
     n_valid = len(heterogeneous)
-    frac_used = n_valid / n_total if n_total > 0 else 0.0
 
-    # ── Absolute CATE metrics (all non-all-NaN episodes) ─────────────────────
-    mae_vals = df["cate_mae"].dropna()
     rmse_vals = df["cate_rmse"].dropna()
-    medae_vals = df["cate_medae"].dropna()
     rmedse_vals = df["cate_rmedse"].dropna()
 
-    mean_mae = round(mae_vals.mean(), 4) if len(mae_vals) > 0 else float("nan")
     mean_rmse = round(rmse_vals.mean(), 4) if len(rmse_vals) > 0 else float("nan")
-    mean_medae = round(medae_vals.mean(), 4) if len(medae_vals) > 0 else float("nan")
     mean_rmedse = round(rmedse_vals.mean(), 4) if len(rmedse_vals) > 0 else float("nan")
+
+    med_rmse_regret = (
+        round(df["cate_rmse_regret"].median(), 4)
+        if "cate_rmse_regret" in df
+        else float("nan")
+    )
+    med_rmedse_regret = (
+        round(df["cate_rmedse_regret"].median(), 4)
+        if "cate_rmedse_regret" in df
+        else float("nan")
+    )
 
     if n_valid == 0:
         return pd.Series(
             {
-                "MAE": mean_mae,
-                "MedAE": mean_medae,
                 "RMSE": mean_rmse,
                 "RMedSE": mean_rmedse,
-                "Mean R²": float("nan"),
+                "RMSE Regret": med_rmse_regret,
+                "RMedSE Regret": med_rmedse_regret,
                 "Median R²": float("nan"),
-                "Mean R²(shape)": float("nan"),
+                "Median R²(shape)": float("nan"),
                 "Mean ATE penalty": float("nan"),
-                "Episodes used": 0,
-                "Time (s)": round(df["time"].mean(), 4),
-                "⚠ note": "All episodes homogeneous — R² not defined",
             }
         )
 
@@ -280,26 +226,13 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
 
     return pd.Series(
         {
-            # ── Absolute ─────────────────────────────────────────────────────
-            "MAE": mean_mae,
-            "MedAE": mean_medae,
             "RMSE": mean_rmse,
             "RMedSE": mean_rmedse,
-            # ── Standard R² ──────────────────────────────────────────────────
-            "Mean R²": round(r2_vals.mean(), 4),
+            "RMSE Regret": med_rmse_regret,
+            "RMedSE Regret": med_rmedse_regret,
             "Median R²": round(r2_vals.median(), 4),
-            "Std R²": round(r2_vals.std(), 4),
-            # ── R² decomposition ─────────────────────────────────────────────
-            "Mean R²(shape)": round(r2s_vals.mean(), 4),
             "Median R²(shape)": round(r2s_vals.median(), 4),
             "Mean ATE penalty": round(r2pen_vals.mean(), 4),
-            # ── Coverage ─────────────────────────────────────────────────────
-            "Episodes used": n_valid,
-            # ── Time ─────────────────────────────────────────────────────────
-            "Time (s)": round(df["time"].mean(), 4),
-            "⚠ note": (
-                "" if frac_used > 0.9 else f"Only {frac_used:.0%} of episodes used"
-            ),
         }
     )
 
@@ -307,15 +240,22 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
 def build_summary_tables(
     all_results: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build ATE and CATE summary tables from concatenated episode results.
 
-    Args:
-        all_results : DataFrame returned by concatenating compute_all_metrics()
-                      across all methods.  Must contain a 'method' column.
+    # 1. Compute base errors needed for regret ratios
+    all_results["ate_sq_error"] = all_results["ate_error"] ** 2
 
-    Returns:
-        (ate_summary, cate_summary) — both indexed by method name.
-    """
+    # 2. Find the minimum error per episode across all methods (The empirical "Oracle")
+    min_ate_sq = all_results.groupby("episode")["ate_sq_error"].transform("min")
+    min_cate_rmse = all_results.groupby("episode")["cate_rmse"].transform("min")
+    min_cate_rmedse = all_results.groupby("episode")["cate_rmedse"].transform("min")
+
+    # 3. Calculate the Regret Ratios (Method Error / Best Error)
+    all_results["ate_sq_regret"] = all_results["ate_sq_error"] / (min_ate_sq + _EPS)
+    all_results["cate_rmse_regret"] = all_results["cate_rmse"] / (min_cate_rmse + _EPS)
+    all_results["cate_rmedse_regret"] = all_results["cate_rmedse"] / (
+        min_cate_rmedse + _EPS
+    )
+
     ate_summary = all_results.groupby("method", sort=False).apply(_summarise_ate)
     cate_summary = all_results.groupby("method", sort=False).apply(_summarise_cate)
     return ate_summary, cate_summary
@@ -327,21 +267,27 @@ def build_summary_tables(
 
 
 def _get_column_styles(series: pd.Series, col_name: str) -> dict:
-    """Returns a dict mapping dataframe index to a rich color string.
-    Dynamically infers whether higher/lower/closer to 0 is better based on the col name.
-    """
     styles = {}
 
-    if col_name in ["⚠ note", "Episodes used"]:
-        return {k: "" for k in series.index}
-
-    # Convert to numeric to safely compute quantiles
     valid = pd.to_numeric(series, errors="coerce").dropna()
     if len(valid) == 0:
         return {k: "" for k in series.index}
 
-    # 1. R² Metrics: Higher is better (Fixed absolute thresholds)
-    if "R²" in col_name and "Std" not in col_name:
+    # Regret Metrics: Closer to 1.0 is better
+    if "Regret" in col_name:
+        for k, v in series.items():
+            if pd.isna(v) or isinstance(v, str):
+                styles[k] = ""
+            elif v <= 1.25:  # Within 25% of the oracle
+                styles[k] = "green"
+            elif v <= 2.5:
+                styles[k] = "yellow"
+            else:
+                styles[k] = "red"
+        return styles
+
+    # R² Metrics: Higher is better
+    if "R²" in col_name:
         for k, v in series.items():
             if pd.isna(v) or isinstance(v, str):
                 styles[k] = ""
@@ -354,113 +300,26 @@ def _get_column_styles(series: pd.Series, col_name: str) -> dict:
         return styles
 
     if "Time" in col_name:
-        for k, v in series.items():
-            styles[k] = ""
-        return styles
+        return {k: "" for k in series.index}
 
-    # 2. Penalty Metric: Lower is better (Fixed absolute thresholds)
-    if "penalty" in col_name.lower():
-        for k, v in series.items():
-            if pd.isna(v) or isinstance(v, str):
-                styles[k] = ""
-            elif v < 0.1:
-                styles[k] = "green"
-            elif v < 0.5:
-                styles[k] = "yellow"
-            else:
-                styles[k] = "red"
-        return styles
+    # Error Metrics (RMSE, Bias, Penalty): Lower is better (Relative quantiles)
+    abs_valid = valid.abs() if "Bias" in col_name else valid
+    q_green = abs_valid.quantile(0.33)
+    q_yellow = abs_valid.quantile(0.66)
 
-    # 3. Bias Metrics: Closer to 0 is better (Relative quantiles)
-    if "Bias" in col_name:
-        abs_valid = valid.abs()
-        q_green = abs_valid.quantile(0.33)
-        q_yellow = abs_valid.quantile(0.66)
-        for k, v in series.items():
-            if pd.isna(v) or isinstance(v, str):
-                styles[k] = ""
-            else:
-                v_abs = abs(v)
-                if v_abs <= q_green:
-                    styles[k] = "green"
-                elif v_abs <= q_yellow:
-                    styles[k] = "yellow"
-                else:
-                    styles[k] = "red"
-        return styles
-
-    # 4. Error Metrics (MAE, RMSE, Std, etc.): Lower is better (Relative quantiles)
-    q_green = valid.quantile(0.33)
-    q_yellow = valid.quantile(0.66)
     for k, v in series.items():
         if pd.isna(v) or isinstance(v, str):
             styles[k] = ""
-        elif v <= q_green:
-            styles[k] = "green"
-        elif v <= q_yellow:
-            styles[k] = "yellow"
         else:
-            styles[k] = "red"
+            val_to_check = abs(v) if "Bias" in col_name else v
+            if val_to_check <= q_green:
+                styles[k] = "green"
+            elif val_to_check <= q_yellow:
+                styles[k] = "yellow"
+            else:
+                styles[k] = "red"
 
     return styles
-
-
-def make_ate_rich_table(
-    ate_summary: pd.DataFrame, title: str = "ATE Estimation"
-) -> "Table":  # noqa: F821
-    """Build a Rich Table for the ATE summary."""
-    from rich.table import Table
-    from rich import box
-
-    tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
-    tbl.add_column("Method", style="bold cyan", no_wrap=True)
-
-    # Add columns right-aligned
-    for col in ate_summary.columns:
-        tbl.add_column(col, justify="right")
-
-    # Pre-calculate column styles universally
-    col_styles = {
-        col: _get_column_styles(ate_summary[col], col) for col in ate_summary.columns
-    }
-
-    for method, row in ate_summary.iterrows():
-        cells = []
-        for col_name, val in row.items():
-            style = col_styles[col_name].get(method, "")
-            cells.append(f"[{style}]{val}[/{style}]" if style else str(val))
-        tbl.add_row(str(method), *cells)
-
-    return tbl
-
-
-def make_cate_rich_table(
-    cate_summary: pd.DataFrame, title: str = "CATE Estimation"
-) -> "Table":  # noqa: F821
-    """Build a Rich Table for the CATE summary."""
-    from rich.table import Table
-    from rich import box
-
-    tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
-    tbl.add_column("Method", style="bold cyan", no_wrap=True)
-
-    # Add columns right-aligned
-    for col in cate_summary.columns:
-        tbl.add_column(col, justify="right")
-
-    # Pre-calculate column styles universally
-    col_styles = {
-        col: _get_column_styles(cate_summary[col], col) for col in cate_summary.columns
-    }
-
-    for method, row in cate_summary.iterrows():
-        cells = []
-        for col_name, val in row.items():
-            style = col_styles[col_name].get(method, "")
-            cells.append(f"[{style}]{val}[/{style}]" if style else str(val))
-        tbl.add_row(str(method), *cells)
-
-    return tbl
 
 
 def make_combined_rich_table(
@@ -477,17 +336,16 @@ def make_combined_rich_table(
     # ── ATE Columns ──
     tbl.add_column("ATE R²", justify="right")
     tbl.add_column("ATE RMSE", justify="right")
-    tbl.add_column("ATE RMedSE", justify="right")
+    tbl.add_column("ATE Regret", justify="right")
 
     # ── CATE Columns ──
     tbl.add_column("CATE R²", justify="right")
     tbl.add_column("CATE R²(shape)", justify="right")
     tbl.add_column("CATE RMSE", justify="right")
-    tbl.add_column("CATE RMedSE", justify="right")
+    tbl.add_column("CATE Regret", justify="right")
 
     tbl.add_column("Time (s)", justify="right")
 
-    # Pre-calculate column styles using safely accessed Series
     ate_styles = {
         "ATE R²": _get_column_styles(
             ate_summary.get("ATE R²", pd.Series(dtype=float)), "ATE R²"
@@ -495,8 +353,8 @@ def make_combined_rich_table(
         "RMSE": _get_column_styles(
             ate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
         ),
-        "RMedSE": _get_column_styles(
-            ate_summary.get("RMedSE", pd.Series(dtype=float)), "RMedSE"
+        "Median Regret": _get_column_styles(
+            ate_summary.get("Median Regret", pd.Series(dtype=float)), "Median Regret"
         ),
         "Time (s)": _get_column_styles(
             ate_summary.get("Time (s)", pd.Series(dtype=float)), "Time (s)"
@@ -504,17 +362,18 @@ def make_combined_rich_table(
     }
 
     cate_styles = {
-        "Mean R²": _get_column_styles(
-            cate_summary.get("Mean R²", pd.Series(dtype=float)), "Mean R²"
+        "Median R²": _get_column_styles(
+            cate_summary.get("Median R²", pd.Series(dtype=float)), "Median R²"
         ),
-        "Mean R²(shape)": _get_column_styles(
-            cate_summary.get("Mean R²(shape)", pd.Series(dtype=float)), "Mean R²(shape)"
+        "Median R²(shape)": _get_column_styles(
+            cate_summary.get("Median R²(shape)", pd.Series(dtype=float)),
+            "Median R²(shape)",
         ),
         "RMSE": _get_column_styles(
             cate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
         ),
-        "RMedSE": _get_column_styles(
-            cate_summary.get("RMedSE", pd.Series(dtype=float)), "RMedSE"
+        "RMSE Regret": _get_column_styles(
+            cate_summary.get("RMSE Regret", pd.Series(dtype=float)), "RMSE Regret"
         ),
     }
 
@@ -534,15 +393,14 @@ def make_combined_rich_table(
             formatted_val = format_str.format(val)
             return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
 
-        # Align exactly with the 8 metric columns added above
         cells = [
             get_styled(ate_row, "ATE R²", ate_styles),
             get_styled(ate_row, "RMSE", ate_styles),
-            get_styled(ate_row, "RMedSE", ate_styles),
-            get_styled(cate_row, "Mean R²", cate_styles),
-            get_styled(cate_row, "Mean R²(shape)", cate_styles),
+            get_styled(ate_row, "Median Regret", ate_styles, "{:.2f}x"),
+            get_styled(cate_row, "Median R²", cate_styles),
+            get_styled(cate_row, "Median R²(shape)", cate_styles),
             get_styled(cate_row, "RMSE", cate_styles),
-            get_styled(cate_row, "RMedSE", cate_styles),
+            get_styled(cate_row, "RMSE Regret", cate_styles, "{:.2f}x"),
             get_styled(ate_row, "Time (s)", ate_styles, "{:.2f}"),
         ]
 

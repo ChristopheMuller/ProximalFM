@@ -125,23 +125,21 @@ def plot_ate_vs_cate_r2(results_dir: Path):
 
 def plot_ate_vs_cate_normrmse(results_dir: Path):
     """
-    Plots a scatter comparing Cross-Episode ATE NormRMSE vs Average CATE NormRMSE.
+    Plots a scatter comparing Cross-Episode ATE RMSE vs Average CATE RMSE.
     Ideal performance is at the origin (0, 0).
     """
     ate_csv = results_dir / "ate_summary.csv"
     cate_csv = results_dir / "cate_summary.csv"
 
     if not ate_csv.exists() or not cate_csv.exists():
-        warnings.warn(
-            f"Summary CSVs not found in {results_dir}. Skipping NormRMSE plot."
-        )
+        warnings.warn(f"Summary CSVs not found in {results_dir}. Skipping RMSE plot.")
         return
 
     df_ate = pd.read_csv(ate_csv, index_col="method")
     df_cate = pd.read_csv(cate_csv, index_col="method")
 
     df = pd.DataFrame(
-        {"ATE_NormRMSE": df_ate["NormRMSE"], "CATE_NormRMSE": df_cate["NormRMSE"]}
+        {"ATE_RMSE": df_ate["RMSE"], "CATE_RMSE": df_cate["RMSE"]}
     ).dropna()
 
     plt.figure(figsize=(7, 7))
@@ -153,8 +151,8 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
         style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
 
         plt.scatter(
-            row.ATE_NormRMSE,
-            row.CATE_NormRMSE,
+            row.ATE_RMSE,
+            row.CATE_RMSE,
             color=style.get("color"),
             marker=style.get("marker"),
             s=style.get("s", 120),  # default size 120
@@ -165,7 +163,7 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
         )
 
     # Calculate dynamic limits to frame the data properly
-    max_val = max(df["ATE_NormRMSE"].max(), df["CATE_NormRMSE"].max())
+    max_val = max(df["ATE_RMSE"].max(), df["CATE_RMSE"].max())
     pad = max_val * 0.1
 
     # Add reference line y=x (Where ATE error = CATE error)
@@ -184,7 +182,7 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
     plt.axvline(0, color="black", linestyle="-", alpha=0.4, zorder=0)
 
     # Set limits starting slightly below 0 so the origin is clearly visible
-    min_limit = min(df["ATE_NormRMSE"].min(), df["CATE_NormRMSE"].min()) - 0.03
+    min_limit = min(df["ATE_RMSE"].min(), df["CATE_RMSE"].min()) - 0.03
     plt.xlim(min_limit, max_val + pad)
     plt.ylim(min_limit, max_val + pad)
 
@@ -193,13 +191,13 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
     plt.yscale("log")
 
     plt.title(
-        "ATE vs CATE Estimation Error (NormRMSE)\n[Closer to Origin is Better]",
+        "ATE vs CATE Estimation Error (RMSE)\n[Closer to Origin is Better]",
         fontsize=14,
         fontweight="bold",
         pad=15,
     )
-    plt.xlabel("ATE NormRMSE (Cross-Episode)")
-    plt.ylabel("CATE NormRMSE (Average per Episode)")
+    plt.xlabel("ATE RMSE (Cross-Episode)")
+    plt.ylabel("CATE RMSE (Average per Episode)")
 
     # Legend formatting
     plt.legend(
@@ -210,7 +208,7 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
         frameon=False,
     )
 
-    output_file = results_dir / "plot_ate_vs_cate_normrmse.png"
+    output_file = results_dir / "plot_ate_vs_cate_rmse.png"
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()

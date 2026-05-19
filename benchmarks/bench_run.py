@@ -182,6 +182,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     X_std = safe_standardize(X)
     W_std = safe_standardize(W)
     Z_std = safe_standardize(Z)
+    U_std = safe_standardize(U)
 
     # --- 2. Standardize Targets based ONLY on the observed training context ---
     y_train_obs = Y_obs[:, :train_size]
@@ -197,6 +198,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     true_ITEs_std = ((y_test_1 - y_test_0) / y_context_std).numpy()
 
     data = {
+        "U": U_std.cpu(),
         "X": X_std.cpu(),
         "Z": Z_std.cpu(),
         "W": W_std.cpu(),
@@ -240,6 +242,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 def build_batches(data: dict) -> list[dict]:
     """Slice the full data tensor into a list of per-batch numpy dicts."""
     N_TRAIN = data["N_TRAIN"]
+    U_np = data["U"].numpy()
     X_np = data["X"].numpy()
     Z_np = data["Z"].numpy()
     W_np = data["W"].numpy()
@@ -261,11 +264,13 @@ def build_batches(data: dict) -> list[dict]:
         batches.append(
             {
                 "b": b,
+                "U_ctx": U_np[b, :N_TRAIN],
                 "X_ctx": X_np[b, :N_TRAIN],
                 "W_ctx": W_np[b, :N_TRAIN],
                 "Z_ctx": Z_np[b, :N_TRAIN],
                 "A_ctx": A_ctx,
                 "Y_ctx": Y_ctx,
+                "U_q": U_np[b, N_TRAIN:],
                 "X_q": X_np[b, N_TRAIN:],
                 "W_q": W_np[b, N_TRAIN:],
                 "Z_q": Z_np[b, N_TRAIN:],
@@ -282,10 +287,17 @@ def build_batches(data: dict) -> list[dict]:
 
 
 def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
-    b, method_cfg, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, X_q, W_q, Z_q = args
+    b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
     try:
         t0 = time.perf_counter()
         _, method = build_method(method_cfg)
+
+        # --- ORACLE INJECTION ---
+        if method_cfg.get("is_oracle", False):
+            X_ctx = np.concatenate([X_ctx, U_ctx], axis=-1)
+            X_q = np.concatenate([X_q, U_q], axis=-1)
+        # ------------------------
+
         method.fit(X_ctx, A_ctx, Y_ctx, W=W_ctx, Z=Z_ctx)
         preds = method.predict(X_q, W=W_q, Z=Z_q)
         t1 = time.perf_counter()
@@ -311,11 +323,13 @@ def run_method_parallel(
         (
             b["b"],
             method_cfg,
+            b["U_ctx"],
             b["X_ctx"],
             b["A_ctx"],
             b["Y_ctx"],
             b["W_ctx"],
             b["Z_ctx"],
+            b["U_q"],
             b["X_q"],
             b["W_q"],
             b["Z_q"],
