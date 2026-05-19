@@ -58,6 +58,14 @@ class TabICL(nn.Module):
 
     Parameters
     ----------
+    loss_type : Literal["bins_po", "cate_decomposition"], default="bins_po"
+        Determines the output space and learning objective:
+        - "bins_po": Predicts binned distributions for both potential outcomes (y0, y1).
+          Output dimension is `nbins * 2`.
+        - "cate_decomposition": Predicts ATE as a Gaussian likelihood (mean, log-var)
+          and the heterogeneous effect (CATE - ATE) as a binned distribution.
+          Output dimension is `nbins + 2`.
+
     max_classes : int, default=10
         Determines the task type and output behavior:
         - If max_classes=0: The model performs regression using quantile prediction.
@@ -167,6 +175,7 @@ class TabICL(nn.Module):
 
     def __init__(
         self,
+        loss_type: Literal["bins_po", "cate_decomposition"] = "bins_po",
         nbins: int = 1000,
         vmin: float = -10.0,
         vmax: float = 10.0,
@@ -207,7 +216,7 @@ class TabICL(nn.Module):
         ] = "qassmax-mlp-elementwise",
         ff_factor: int = 2,
         dropout: float = 0.0,
-        activation: str | callable = "gelu",
+        activation: Union[str, callable] = "gelu",
         norm_first: bool = True,
         bias_free_ln: bool = False,
         recompute: bool = False,
@@ -216,6 +225,9 @@ class TabICL(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
+        if loss_type not in ["bins_po", "cate_decomposition"]:
+            raise ValueError(f"Unsupported loss_type: {loss_type}")
+        self.loss_type = loss_type
         self.nbins = nbins
         self.vmin = vmin
         self.vmax = vmax
@@ -279,6 +291,11 @@ class TabICL(nn.Module):
         self.register_buffer("bin_width", bin_width)
         self.register_buffer("bin_centers", bin_centers)
 
+        if self.loss_type == "bins_po":
+            out_dim = nbins * 2
+        else:  # self.loss_type == "cate_decomposition"
+            out_dim = nbins + 2
+
         self.icl_predictor = ICLearning(
             d_model=icl_dim,
             num_blocks=icl_num_blocks,
@@ -290,7 +307,7 @@ class TabICL(nn.Module):
             bias_free_ln=bias_free_ln,
             ssmax=icl_ssmax,
             recompute=recompute,
-            out_dim=nbins * 2,
+            out_dim=out_dim,
         )
 
         # KV cache for efficient inference
@@ -658,19 +675,10 @@ class TabICL(nn.Module):
             inference_config=inference_config,
         )
 
-        # 5. Separate logits and convert to probabilities
-        probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
-        probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
+        self.train(was_training)
 
-        # 6. Un-standardize bin centers back to original space
-        # Reshape stats to (B, 1, 1) to broadcast over test_size and nbins
         y_mean_view = y_context_mean.unsqueeze(-1)
         y_std_view = y_context_std.unsqueeze(-1)
-
-        # Both potential outcomes now share the same inverse-scaling
-        vals = self.bin_centers.view(1, 1, -1) * y_std_view + y_mean_view
-
-        self.train(was_training)
 
         # --- Helper: Mean ---
         def _get_mean(probs, vals):
@@ -678,54 +686,108 @@ class TabICL(nn.Module):
 
         # --- Helper: Quantiles ---
         def _get_quantiles(probs, vals, q_list):
+            # Assumes that vals and probs can be correctly gathered/expanded
             cdf = torch.cumsum(probs, dim=-1)
             results = []
+
+            # Ensures vals dimension matches before gathering
+            # if dynamically broadcasted from shape (B, 1, nbins)
+            if vals.shape[1] == 1 and probs.shape[1] > 1:
+                vals = vals.expand(-1, probs.shape[1], -1)
+
             for q in q_list:
                 idx = torch.searchsorted(cdf, q).clamp(max=self.nbins - 1)
                 q_vals = torch.gather(vals, -1, idx.unsqueeze(-1)).squeeze(-1)
                 results.append(q_vals)
             return torch.stack(results, dim=-1)
 
-        # --- Output Routing ---
-        if output_type == "distribution":
-            if target == "y0":
-                return {"values": vals, "weights": probs_y0}
-            elif target == "y1":
-                return {"values": vals, "weights": probs_y1}
-            elif target == "cate":
-                return {
-                    "y0": {"values": vals, "weights": probs_y0},
-                    "y1": {"values": vals, "weights": probs_y1},
-                }
+        # ==========================================
+        # ROUTING: Original architecture (Bins PO)
+        # ==========================================
+        if self.loss_type == "bins_po":
+            probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
+            probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
 
-        elif output_type == "mean":
-            mean_y0 = _get_mean(probs_y0, vals)
-            mean_y1 = _get_mean(probs_y1, vals)
+            vals = self.bin_centers.view(1, 1, -1) * y_std_view + y_mean_view
 
-            if target == "y0":
-                return mean_y0
-            elif target == "y1":
-                return mean_y1
-            elif target == "cate":
-                return mean_y1 - mean_y0
+            if output_type == "distribution":
+                if target == "y0":
+                    return {"values": vals, "weights": probs_y0}
+                elif target == "y1":
+                    return {"values": vals, "weights": probs_y1}
+                elif target == "cate":
+                    return {
+                        "y0": {"values": vals, "weights": probs_y0},
+                        "y1": {"values": vals, "weights": probs_y1},
+                    }
 
-        elif output_type == "quantiles":
-            if quantiles is None:
-                quantiles = [0.1, 0.5, 0.9]
+            elif output_type == "mean":
+                mean_y0 = _get_mean(probs_y0, vals)
+                mean_y1 = _get_mean(probs_y1, vals)
 
-            q_tensor = torch.tensor(quantiles, device=logits.device, dtype=logits.dtype)
+                if target == "y0":
+                    return mean_y0
+                elif target == "y1":
+                    return mean_y1
+                elif target == "cate":
+                    return mean_y1 - mean_y0
 
-            # FIX: Use 'vals' instead of the deprecated 'vals_y0' and 'vals_y1'
-            q_y0 = _get_quantiles(probs_y0, vals, q_tensor)
-            q_y1 = _get_quantiles(probs_y1, vals, q_tensor)
+            elif output_type == "quantiles":
+                if quantiles is None:
+                    quantiles = [0.1, 0.5, 0.9]
+                q_tensor = torch.tensor(
+                    quantiles, device=logits.device, dtype=logits.dtype
+                )
 
-            if target == "y0":
-                return q_y0
-            elif target == "y1":
-                return q_y1
-            elif target == "cate":
-                # Returns difference of marginal quantiles.
-                return q_y1 - q_y0
+                q_y0 = _get_quantiles(probs_y0, vals, q_tensor)
+                q_y1 = _get_quantiles(probs_y1, vals, q_tensor)
 
-        else:
-            raise ValueError(f"Unknown output_type: {output_type}")
+                if target == "y0":
+                    return q_y0
+                elif target == "y1":
+                    return q_y1
+                elif target == "cate":
+                    return q_y1 - q_y0
+
+            else:
+                raise ValueError(f"Unknown output_type: {output_type}")
+
+        # ==========================================
+        # ROUTING: Additive CATE Decomposition
+        # ==========================================
+        elif self.loss_type == "cate_decomposition":
+            if target not in ["cate"]:
+                raise ValueError(
+                    f"loss_type 'cate_decomposition' directly estimates treatment effects "
+                    f"and does not support predicting target='{target}'."
+                )
+
+            # Dim 0: ATE Mean, Dim 1: ATE log_var (used in loss, skipped here), Dim 2+: Heterogeneous Effect Logits
+            ate_mu_scaled = logits[..., 0]
+            probs_he = torch.softmax(logits[..., 2:], dim=-1)
+
+            # CATE is a difference, so contextual scaling applies (multiply by std)
+            # but standardizing mean shifts cancel out entirely: (y1 - y0) = (y1_scaled - y0_scaled) * y_std
+            ate_mu = ate_mu_scaled * y_context_std.squeeze(-1)
+            vals_he = self.bin_centers.view(1, 1, -1) * y_std_view
+
+            # CATE Distribution = Heterogeneous effect distribution anchored on the predicted ATE
+            vals_cate = vals_he + ate_mu.unsqueeze(-1)
+
+            if output_type == "distribution":
+                return {"values": vals_cate, "weights": probs_he}
+
+            elif output_type == "mean":
+                return _get_mean(probs_he, vals_cate)
+
+            elif output_type == "quantiles":
+                if quantiles is None:
+                    quantiles = [0.1, 0.5, 0.9]
+                q_tensor = torch.tensor(
+                    quantiles, device=logits.device, dtype=logits.dtype
+                )
+
+                return _get_quantiles(probs_he, vals_cate, q_tensor)
+
+            else:
+                raise ValueError(f"Unknown output_type: {output_type}")

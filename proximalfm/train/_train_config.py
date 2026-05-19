@@ -497,4 +497,11 @@ def build_parser():
         help="Weight for the CATE loss term. If 0, CATE loss is not used.",
     )
 
+    parser.add_argument(
+        "--loss_type",
+        type=str,
+        default="bins_po",
+        help="Type of loss to use for training. Options: bins_po (bin-based potential outcomes), or cate_decomposition (estimate ATE and heterogeneous decomposition of CATE).",
+    )
+
     return parser

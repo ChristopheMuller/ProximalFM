@@ -81,6 +81,17 @@ def compute_crps_loss(
     return crps.mean()
 
 
+def compute_gaussian_nll(
+    mean: torch.Tensor, log_var: torch.Tensor, target: torch.Tensor
+) -> torch.Tensor:
+    """
+    Computes the Negative Log-Likelihood for a Gaussian distribution.
+    Assumes isotropic gaussian (used here for ATE modeling).
+    """
+    nll = 0.5 * torch.exp(-log_var) * (target - mean) ** 2 + 0.5 * log_var
+    return nll.mean()
+
+
 class Timer:
     """Context manager for timing code execution."""
 
@@ -229,7 +240,7 @@ class Trainer:
             self.ddp_local_rank = 0
             print("No DDP training")
 
-        self.curr_step = 0  # Initialize current step for training
+        self.curr_step = 0
 
         # Set random seeds
         seed_offset = self.ddp_rank if self.ddp else 0
@@ -242,6 +253,7 @@ class Trainer:
         """Build and initialize the TabICL model."""
 
         self.model_config = {
+            "loss_type": getattr(self.config, "loss_type", "bins_po"),
             "embed_dim": self.config.embed_dim,
             "col_num_blocks": self.config.col_num_blocks,
             "col_nhead": self.config.col_nhead,
@@ -360,7 +372,7 @@ class Trainer:
                 replay_small=self.config.replay_small,
                 prior_type=self.config.prior_type,
                 device=self.config.prior_device,
-                n_jobs=1,  # Set to 1 to avoid nested parallelism during DDP
+                n_jobs=1,
             )
         else:
             # Load pre-generated prior data from disk
@@ -380,7 +392,7 @@ class Trainer:
         # Create dataloader for efficient loading and prefetching
         self.dataloader = DataLoader(
             dataset,
-            batch_size=None,  # No additional batching since PriorDataset handles batching internally
+            batch_size=None,
             shuffle=False,
             num_workers=8,
             prefetch_factor=16,
@@ -435,7 +447,7 @@ class Trainer:
             val_dataset,
             batch_size=None,
             shuffle=False,
-            num_workers=1,  # Keep this at 1 for static validation to avoid worker deadlock
+            num_workers=1,
             prefetch_factor=2,
             pin_memory=True if self.config.prior_device == "cpu" else False,
             pin_memory_device=self.config.device
@@ -893,11 +905,11 @@ class Trainer:
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
         y_test_1 = micro_Y1[:, train_size:]
-        true_cate = y_test_1 - y_test_0
 
         # Scale test targets for CRPS loss
         y_test_0_std = (y_test_0 - y_context_mean) / y_context_std
         y_test_1_std = (y_test_1 - y_context_mean) / y_context_std
+        true_cate_std = y_test_1_std - y_test_0_std
 
         # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
@@ -955,40 +967,82 @@ class Trainer:
             if not global_valid:
                 return None
 
-            nbins = self.raw_model.nbins
-            logits_y0 = pred_logits[..., :nbins]
-            logits_y1 = pred_logits[..., nbins:]
+            # Loss configuration routing
+            loss_type = getattr(self.raw_model, "loss_type", "bins_po")
 
-            # 5. Compute CRPS Loss for BOTH potential outcomes
-            loss_y0 = compute_crps_loss(
-                logits_y0,
-                y_test_0_std,
-                self.raw_model.bin_edges,
-            )
-            loss_y1 = compute_crps_loss(
-                logits_y1,
-                y_test_1_std,
-                self.raw_model.bin_edges,
-            )
+            if loss_type == "bins_po":
+                nbins = self.raw_model.nbins
+                logits_y0 = pred_logits[..., :nbins]
+                logits_y1 = pred_logits[..., nbins:]
 
-            # --- 6. CATE Consistency Term (Normalized) ---
-            # Get expected values in standardized space
-            probs_y0 = F.softmax(logits_y0, dim=-1)
-            probs_y1 = F.softmax(logits_y1, dim=-1)
+                loss_y0 = compute_crps_loss(
+                    logits_y0,
+                    y_test_0_std,
+                    self.raw_model.bin_edges,
+                )
+                loss_y1 = compute_crps_loss(
+                    logits_y1,
+                    y_test_1_std,
+                    self.raw_model.bin_edges,
+                )
 
-            mean_pred_y0_std = torch.sum(probs_y0 * self.raw_model.bin_centers, dim=-1)
-            mean_pred_y1_std = torch.sum(probs_y1 * self.raw_model.bin_centers, dim=-1)
+                probs_y0 = F.softmax(logits_y0, dim=-1)
+                probs_y1 = F.softmax(logits_y1, dim=-1)
 
-            pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
-            true_cate_std = y_test_1_std - y_test_0_std
+                mean_pred_y0_std = torch.sum(
+                    probs_y0 * self.raw_model.bin_centers, dim=-1
+                )
+                mean_pred_y1_std = torch.sum(
+                    probs_y1 * self.raw_model.bin_centers, dim=-1
+                )
 
-            # The error is naturally unit-less and scaled to the variance of the episode
-            cate_error_std = pred_cate_std - true_cate_std
-            loss_cate = torch.mean(cate_error_std**2)
+                pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
 
-            lambda_cate = getattr(self.config, "lambda_cate", 0.1)
+                cate_error_std = pred_cate_std - true_cate_std
+                loss_cate = torch.mean(cate_error_std**2)
 
-            total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
+                lambda_cate = getattr(self.config, "lambda_cate", 0.1)
+
+                total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
+
+            elif loss_type == "cate_decomposition":
+                # Network outputs: [ATE_mean, ATE_logvar, HE_bin_0, ..., HE_bin_N]
+                ate_mu = pred_logits[..., 0]
+                ate_logvar = pred_logits[..., 1]
+                he_logits = pred_logits[..., 2:]
+
+                # ATE is estimated via the average testing ITE per episode/batch element
+                true_ate_std = true_cate_std.mean(dim=1, keepdim=True)
+
+                # Heterogeneous effect is the residual structural shift isolated from ATE
+                true_he_std = true_cate_std - true_ate_std
+
+                loss_ate_nll = compute_gaussian_nll(ate_mu, ate_logvar, true_ate_std)
+                loss_he_crps = compute_crps_loss(
+                    he_logits,
+                    true_he_std,
+                    self.raw_model.bin_edges,
+                )
+
+                lambda_ate = getattr(self.config, "lambda_ate", 1.0)
+                lambda_he = getattr(self.config, "lambda_he", 1.0)
+
+                total_loss = (lambda_ate * loss_ate_nll) + (lambda_he * loss_he_crps)
+
+                probs_he = F.softmax(he_logits, dim=-1)
+                mean_he_pred_std = torch.sum(
+                    probs_he * self.raw_model.bin_centers, dim=-1
+                )
+
+                # CATE prediction synthesizes the additive ATE and HE predictions
+                pred_cate_std = ate_mu + mean_he_pred_std
+
+                # Evaluator requirements zero-padding to avoid crash (MSE will be ignored)
+                mean_pred_y0_std = torch.zeros_like(y_test_0_std)
+                mean_pred_y1_std = torch.zeros_like(y_test_1_std)
+
+            else:
+                raise ValueError(f"Unknown loss_type: {loss_type}")
 
         # Optimization step
         if is_train:
@@ -998,7 +1052,7 @@ class Trainer:
         else:
             reported_loss_total = total_loss.item()
 
-        # Evaluation block
+        # Evaluation & Metric extraction block
         with torch.no_grad():
             if is_train:
                 should_update_evaluator = self.master_process
@@ -1017,18 +1071,34 @@ class Trainer:
                     true_cate=true_cate_std,
                 )
 
-            micro_results = {
-                "loss/total": reported_loss_total,
-                "loss/y0": (loss_y0.item() / num_micro_batches)
-                if is_train
-                else loss_y0.item(),
-                "loss/y1": (loss_y1.item() / num_micro_batches)
-                if is_train
-                else loss_y1.item(),
-                "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
-                if is_train
-                else loss_cate.item(),
-            }
+            # Dictionary structure routes cleanly back to log aggregation
+            if loss_type == "bins_po":
+                micro_results = {
+                    "loss/total": reported_loss_total,
+                    "loss/y0": (loss_y0.item() / num_micro_batches)
+                    if is_train
+                    else loss_y0.item(),
+                    "loss/y1": (loss_y1.item() / num_micro_batches)
+                    if is_train
+                    else loss_y1.item(),
+                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
+                    if is_train
+                    else loss_cate.item(),
+                }
+            elif loss_type == "cate_decomposition":
+                micro_results = {
+                    "loss/total": reported_loss_total,
+                    "loss/ate_nll": (
+                        (lambda_ate * loss_ate_nll).item() / num_micro_batches
+                    )
+                    if is_train
+                    else (lambda_ate * loss_ate_nll).item(),
+                    "loss/he_crps": (
+                        (lambda_he * loss_he_crps).item() / num_micro_batches
+                    )
+                    if is_train
+                    else (lambda_he * loss_he_crps).item(),
+                }
 
         return micro_results
 
@@ -1071,13 +1141,8 @@ class Trainer:
         ]
         micro_batches = list(zip(*micro_batches))
 
-        results = {
-            "loss/total": 0.0,
-            "loss/y0": 0.0,
-            "loss/y1": 0.0,
-            "loss/cate": 0.0,
-        }  # Can leave this as is
-
+        # Dynamically build up results dictated by loss routing mode
+        results = {}
         failed_batches = 0
         successful_micro_batches = 0
 
