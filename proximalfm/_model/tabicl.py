@@ -766,9 +766,7 @@ class TabICL(nn.Module):
             ate_mu_scaled = logits[..., 0]
             probs_he = torch.softmax(logits[..., 2:], dim=-1)
 
-            # CATE is a difference, so contextual scaling applies (multiply by std)
-            # but standardizing mean shifts cancel out entirely: (y1 - y0) = (y1_scaled - y0_scaled) * y_std
-            ate_mu = ate_mu_scaled * y_context_std.squeeze(-1)
+            ate_mu = ate_mu_scaled * y_context_std
             vals_he = self.bin_centers.view(1, 1, -1) * y_std_view
 
             # CATE Distribution = Heterogeneous effect distribution anchored on the predicted ATE
