@@ -9,11 +9,10 @@ eval_data/*
 results/*
 benchmarks/results/*
 synthetic/*
+wandb/*
 
 *.pdf
 *.pt
 *.json
 *.ckpt
 *.txt
-
-wandb
