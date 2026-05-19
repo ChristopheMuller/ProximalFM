@@ -455,7 +455,7 @@ def build_parser():
     )
     parser.add_argument(
         "--only_load_model",
-        default=False,
+        default=True,
         type=str2bool,
         help="Whether to only load model weights",
     )
