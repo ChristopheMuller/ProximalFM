@@ -16,8 +16,7 @@ DEFAULT_FIXED_HP = {
     "scale_by_max_features": False,
     "permute_features": True,
     "permute_labels": True,
-    # Propensity
-    "propensity_epsilon": 0.05,
+    "propensity_epsilon": 1e-3,
 }
 
 DEFAULT_SAMPLED_HP = {
@@ -82,7 +81,6 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
-    "propensity_temperature": {"distribution": "uniform", "min": 0.5, "max": 2.0},
     "cate_strength": {
         "distribution": "meta_trunc_norm_log_scaled",
         "min_mean": 0.05,
@@ -97,6 +95,18 @@ DEFAULT_SAMPLED_HP = {
         "max_alpha": 2.5,
         "max_scale": 1.0,
         "lower_bound": 0.0,
+        "round": False,
+    },
+    "propensity_shift": {
+        "distribution": "uniform",
+        "min": -2.5,
+        "max": 2.5,
+    },
+    "propensity_scale": {
+        "distribution": "meta_trunc_norm_log_scaled",
+        "min_mean": 0.5,
+        "max_mean": 3.0,
+        "lower_bound": 0.1,
         "round": False,
     },
 }

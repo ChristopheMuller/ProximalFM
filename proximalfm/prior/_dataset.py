@@ -623,8 +623,9 @@ class SCMPrior(Prior):
             A_logits = f_A(input_A).squeeze(-1)
             A, A_probs = self.sample_A(
                 A_logits,
-                epsilon=params["propensity_epsilon"],
-                temperature=params["propensity_temperature"],
+                shift=params.get("propensity_shift", 0.0),
+                scale=params.get("propensity_scale", 1.0),
+                epsilon=params.get("propensity_epsilon", 1e-3),
             )
             a_mean = A.float().mean().item()
             if a_mean < 0.05 or a_mean > 0.95:
@@ -740,9 +741,17 @@ class SCMPrior(Prior):
                 )
 
     def sample_A(
-        self, logits: Tensor, epsilon: float = 0.05, temperature: float = 1.0
+        self,
+        logits: Tensor,
+        shift: float = 0.0,
+        scale: float = 1.0,
+        epsilon: float = 1e-3,
     ) -> Tensor:
-        probs = torch.sigmoid(logits / temperature)
+
+        logits = (logits - logits.mean()) / (logits.std() + 1e-8)
+        logits = logits * scale + shift
+
+        probs = torch.sigmoid(logits)
         probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
         return torch.bernoulli(probs).long(), probs
 
