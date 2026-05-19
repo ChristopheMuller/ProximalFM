@@ -8,6 +8,7 @@ runs/*
 eval_data/*
 results/*
 benchmarks/results/*
+synthetic/*
 
 *.pdf
 *.pt
