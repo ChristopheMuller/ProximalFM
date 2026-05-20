@@ -42,87 +42,6 @@ METHOD_STYLES = {
 }
 
 
-def plot_ate_vs_cate_r2(results_dir: Path):
-    """
-    Plots a unit square comparing Cross-Episode ATE R² vs Average CATE R².
-    """
-    ate_csv = results_dir / "ate_summary.csv"
-    cate_csv = results_dir / "cate_summary.csv"
-
-    if not ate_csv.exists() or not cate_csv.exists():
-        warnings.warn(
-            f"Summary CSVs not found in {results_dir}. Skipping ATE vs CATE R² plot."
-        )
-        return
-
-    df_ate = pd.read_csv(ate_csv, index_col="method")
-    df_cate = pd.read_csv(cate_csv, index_col="method")
-
-    # We use standard "Mean R²" for CATE. You could change this to "Mean R²(shape)" if preferred.
-    df = pd.DataFrame(
-        {"ATE_R2": df_ate["ATE R²"], "CATE_R2": df_cate["Mean R²"]}
-    ).dropna()
-
-    plt.figure(figsize=(7, 7))
-    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
-
-    # Add reference quadrants & target lines
-    plt.axhline(0, color="black", linestyle="-", alpha=0.2, zorder=0)
-    plt.axvline(0, color="black", linestyle="-", alpha=0.2, zorder=0)
-    plt.plot(
-        [-1, 1], [-1, 1], ls="--", color="gray", alpha=0.4, zorder=0, label="y = x"
-    )
-
-    # Unit square boundaries
-    plt.axhline(1, color="green", linestyle=":", alpha=0.5, zorder=0)
-    plt.axvline(1, color="green", linestyle=":", alpha=0.5, zorder=0)
-
-    # Plot each method
-    for row in df.itertuples():
-        method = row.Index
-        style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
-
-        plt.scatter(
-            row.ATE_R2,
-            row.CATE_R2,
-            color=style.get("color"),
-            marker=style.get("marker"),
-            s=style.get("s", 120),  # default size 120
-            label=method,
-            edgecolors="white",
-            linewidths=0.8,
-            zorder=5,
-        )
-
-    # Formatting the Unit Square
-    # We clip the lower bound slightly below 0 so bad models are visible, but the focus is [0, 1]
-    plt.xlim(-0.2, 1.05)
-    plt.ylim(-0.2, 1.05)
-
-    plt.title(
-        "ATE vs CATE Estimation Performance ($R^2$)",
-        fontsize=14,
-        fontweight="bold",
-        pad=15,
-    )
-    plt.xlabel("ATE $R^2$ (Cross-Episode Tracking)")
-    plt.ylabel("CATE $R^2$ (Average per Episode)")
-
-    # Legend formatting (put it outside the unit square if it gets crowded)
-    plt.legend(
-        bbox_to_anchor=(1.05, 1),
-        loc="upper left",
-        borderaxespad=0.0,
-        title="Methods",
-        frameon=False,
-    )
-
-    output_file = results_dir / "plot_ate_vs_cate_r2.png"
-    plt.savefig(output_file, dpi=300, bbox_inches="tight")
-    print(f"Plot saved successfully to: {output_file}")
-    plt.close()
-
-
 def plot_ate_vs_cate_normrmse(results_dir: Path):
     """
     Plots a scatter comparing Cross-Episode ATE RMSE vs Average CATE RMSE.
@@ -394,7 +313,6 @@ if __name__ == "__main__":
     # Existing Plots
     plot_true_vs_pred_ate(full_csv_path)
     plot_cate_r2_boxplot(full_csv_path)
-    plot_ate_vs_cate_r2(results_dir)
     plot_ate_vs_cate_normrmse(results_dir)
 
     for i in range(5):
