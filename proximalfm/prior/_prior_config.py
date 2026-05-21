@@ -109,4 +109,14 @@ DEFAULT_SAMPLED_HP = {
         "lower_bound": 0.1,
         "round": False,
     },
+    "confounding_duplication_of_U_in_Y": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "confounding_duplication_of_U_in_A": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
 }

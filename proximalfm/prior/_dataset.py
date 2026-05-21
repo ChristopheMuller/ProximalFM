@@ -485,13 +485,13 @@ class SCMPrior(Prior):
         batch_size_per_gp: int = 4,
         batch_size_per_subgp: Optional[int] = None,
         min_dim_U: int = 3,
-        max_dim_U: int = 10,
+        max_dim_U: int = 5,
         min_dim_W: int = 3,
-        max_dim_W: int = 10,
+        max_dim_W: int = 5,
         min_dim_Z: int = 3,
-        max_dim_Z: int = 10,
+        max_dim_Z: int = 5,
         min_dim_X: int = 5,
-        max_dim_X: int = 20,
+        max_dim_X: int = 10,
         min_seq_len: Optional[int] = None,
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
@@ -584,41 +584,138 @@ class SCMPrior(Prior):
         else:
             raise ValueError(f"Unknown prior type {params['prior_type']}")
 
+        def safe_normalize(tensor: Tensor) -> Tensor:
+            """Normalize a tensor while avoiding division by zero."""
+            mean = tensor.mean(dim=0, keepdim=True)
+            std = tensor.std(dim=0, keepdim=True) + 1e-8
+            return (tensor - mean) / std
+
         while True:
-            u_sampler = XSampler(
+            eps_sampler = XSampler(
                 seq_len=params["seq_len"],
-                num_features=params["dim_U"],
+                num_features=params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"]
+                + params["dim_Z"]
+                + 2,
                 pre_stats=params.get("pre_sample_cause_stats", False),
                 sampling=params.get("sampling", "mixed"),
                 device=self.device,
             )
-            U = u_sampler.sample()
+            eps = eps_sampler.sample()
+            eps_U = eps[:, : params["dim_U"]]
+            eps_X = eps[:, params["dim_U"] : params["dim_U"] + params["dim_X"]]
+            eps_W = eps[
+                :,
+                params["dim_U"]
+                + params["dim_X"] : params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"],
+            ]
+            eps_Z = eps[
+                :,
+                params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"] : params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"]
+                + params["dim_Z"],
+            ]
+            eps_A = eps[
+                :,
+                params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"]
+                + params["dim_Z"] : params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"]
+                + params["dim_Z"]
+                + 1,
+            ]
+            eps_Y = eps[
+                :,
+                params["dim_U"]
+                + params["dim_X"]
+                + params["dim_W"]
+                + params["dim_Z"]
+                + 1 :,
+            ]
 
+            f_U = prior_cls(
+                in_dim=eps_U.shape[-1],
+                num_outputs=params["dim_U"],
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+            ).to(self.device)
+            U = f_U(eps_U)
+            U_ = safe_normalize(U)
+
+            input_X = torch.cat([U_, eps_X], dim=-1)
             f_X = prior_cls(
-                in_dim=params["dim_U"], num_outputs=params["dim_X"], **params
+                in_dim=input_X.shape[-1],
+                num_outputs=params["dim_X"],
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            X = f_X(U)
+            X = f_X(input_X)
+            X_ = safe_normalize(X)
 
-            input_WZ = torch.cat([U, X], dim=-1)
+            input_W = torch.cat([U_, X_, eps_W * 5], dim=-1)
             f_W = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"],
+                in_dim=input_W.shape[-1],
                 num_outputs=params["dim_W"],
-                **params,
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            W = f_W(input_WZ)
+            W = f_W(input_W)
+            W_ = safe_normalize(W)
 
+            input_Z = torch.cat([U_, X_, eps_Z * 5], dim=-1)
             f_Z = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"],
+                in_dim=input_Z.shape[-1],
                 num_outputs=params["dim_Z"],
-                **params,
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            Z = f_Z(input_WZ)
+            Z = f_Z(input_Z)
+            Z_ = safe_normalize(Z)
 
-            input_A = torch.cat([U, X, Z], dim=-1)
+            p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)
+            p_dim_u_augment_A = params.get("confounding_duplication_of_U_in_A", 0.5)
+
+            dim_u_augment_Y = (
+                torch.distributions.binomial.Binomial(
+                    total_count=params["dim_U"] + params["dim_X"] + params["dim_W"],
+                    probs=p_dim_u_augment_Y,
+                )
+                .sample()
+                .long()
+            )
+            dim_u_augment_A = (
+                torch.distributions.binomial.Binomial(
+                    total_count=params["dim_U"] + params["dim_X"] + params["dim_Z"],
+                    probs=p_dim_u_augment_A,
+                )
+                .sample()
+                .long()
+            )
+
+            f_u_augment_out_dim = torch.max(dim_u_augment_Y, dim_u_augment_A)
+            f_u_augment = prior_cls(
+                in_dim=U_.shape[-1],
+                num_outputs=int(f_u_augment_out_dim),
+                num_layers=3,
+                hidden_dim=max(10, int(f_u_augment_out_dim)),
+            ).to(self.device)
+            u_aug = f_u_augment(U_)
+
+            u_aug_y = u_aug[:, :dim_u_augment_Y]
+            u_aug_a = u_aug[:, :dim_u_augment_A]
+
+            input_y = torch.cat([U_, X_, W_, eps_Y, u_aug_y], dim=-1)
+            input_A = torch.cat([U_, X_, Z_, eps_A, u_aug_a], dim=-1)
+
             f_A = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_Z"],
+                in_dim=input_A.shape[-1],
                 num_outputs=1,
-                **params,
+                u_skip=0,
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
             A_logits = f_A(input_A).squeeze(-1)
             A, A_probs = self.sample_A(
@@ -627,65 +724,33 @@ class SCMPrior(Prior):
                 scale=params.get("propensity_scale", 1.0),
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
-            a_mean = A.float().mean().item()
-            if a_mean < 0.05 or a_mean > 0.95:
-                # print(
-                #     f"Degenerate treatment distribution: mean A={a_mean:.3f}, "
-                #     f"train_size={params['train_size']}, seq_len={params['seq_len']}, "
-                #     f"A_dist_full={A_logits.float().sigmoid().mean().item():.3f}"
-                # )
-                continue
 
-            input_y = torch.cat([U, X, W], dim=-1)
-
-            # 1. Generate Baseline Outcome: Y(0)
-            f_y_base = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                num_outputs=1,
+            f_y = prior_cls(
+                in_dim=input_y.shape[-1],
+                num_outputs=2,
+                u_skip=0,
                 **params,
             ).to(self.device)
-            y_base = f_y_base(input_y).squeeze(-1)
-            y_base_std = y_base.std() + 1e-8
 
-            # 2. Generate Raw Heterogeneous Treatment Effect
-            f_cate = prior_cls(
-                in_dim=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                num_outputs=1,
-                **params,
-            ).to(self.device)
-            raw_cate = f_cate(input_y).squeeze(-1)
+            y_joint_raw = f_y(input_y)
+            y0_raw = y_joint_raw[:, 0]
+            y1_raw = y_joint_raw[:, 1]
 
-            # 3. Standardize to isolate pure heterogeneity (mean=0, std=1)
-            normalized_cate = (raw_cate - raw_cate.mean()) / (raw_cate.std() + 1e-8)
+            # --- CausalPFN - RealCause Std ---
+            gamma_hetero = torch.rand(1, device=self.device)
+            alphas = torch.rand(params["seq_len"], device=self.device)
 
-            # 4. Define ATE and HTE
-            cate_hte = normalized_cate * y_base_std * params.get("cate_strength", 1.0)
+            cate_raw = y1_raw - y0_raw
+            ate_raw = cate_raw.mean()
 
-            random_magnitude = torch.rand(1, device=self.device).squeeze()
-            random_sign = (
-                torch.randint(0, 2, (1,), device=self.device).squeeze().float() * 2 - 1
-            )
+            y1 = (alphas + (1 - alphas) * gamma_hetero) * y1_raw + (
+                1 - gamma_hetero
+            ) * (1 - alphas) * (y0_raw + ate_raw)
+            y0 = ((1 - alphas) + alphas * gamma_hetero) * y0_raw + (
+                1 - gamma_hetero
+            ) * alphas * (y1_raw - ate_raw)
 
-            ate = (
-                y_base_std
-                * params.get("ate_strength", 1.0)
-                * random_magnitude
-                * random_sign
-            )
-            cate = ate + cate_hte
-
-            # 5. Compute the shifted outcome
-            y_shifted = y_base + cate
-
-            # 6. Randomly allocate to Y(0) and Y(1) to balance variance asymmetry
-            if torch.rand(1).item() > 0.5:
-                y0 = y_base
-                y1 = y_shifted
-            else:
-                y0 = y_shifted
-                y1 = y_base
-
-            # 7. Compute observed Y
+            # --- Compute Factual Observed Y ---
             y = torch.where(A == 1, y1, y0)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
