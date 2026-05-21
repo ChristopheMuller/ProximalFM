@@ -373,11 +373,13 @@ def run_method_sequential(
         args = (
             b_dict["b"],
             method_cfg,
+            b_dict["U_ctx"],
             b_dict["X_ctx"],
             b_dict["A_ctx"],
             b_dict["Y_ctx"],
             b_dict["W_ctx"],
             b_dict["Z_ctx"],
+            b_dict["U_q"],
             b_dict["X_q"],
             b_dict["W_q"],
             b_dict["Z_q"],
@@ -541,7 +543,12 @@ def print_partial_results(
     ate_df, cate_df = build_summary_tables(all_df)
     console.print(
         Padding(
-            make_combined_rich_table(ate_df, cate_df, title="Live Results So Far"),
+            make_combined_rich_table(
+                all_results=all_df,
+                ate_summary=ate_df,
+                cate_summary=cate_df,
+                title="Live Results So Far",
+            ),
             (1, 4),
         )
     )
@@ -681,7 +688,7 @@ def main() -> None:
     console.print(
         Padding(
             make_combined_rich_table(
-                ate_summary, cate_summary, title="Final Evaluation"
+                all_results, ate_summary, cate_summary, title="Final Evaluation"
             ),
             (1, 4),
         )

@@ -323,6 +323,7 @@ def _get_column_styles(series: pd.Series, col_name: str) -> dict:
 
 
 def make_combined_rich_table(
+    all_results: pd.DataFrame,
     ate_summary: pd.DataFrame,
     cate_summary: pd.DataFrame,
     title: str = "Benchmark Results",
@@ -330,11 +331,18 @@ def make_combined_rich_table(
     from rich.table import Table
     from rich import box
 
+    # 1. Compute average ranking per episode (dataset) based on CATE RMSE
+    ranks = all_results.groupby("episode")["cate_rmse"].rank(method="min")
+    avg_ranks = all_results.assign(rank=ranks).groupby("method")["rank"].mean()
+
+    # 2. Sort methods by average rank (lowest/best rank first)
+    avg_ranks = avg_ranks.sort_values(ascending=True)
+
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
 
     # ── ATE Columns ──
-    tbl.add_column("ATE R²", justify="right")
+    tbl.add_column("Avg Rank", justify="right")
     tbl.add_column("ATE RMSE", justify="right")
     tbl.add_column("ATE Regret", justify="right")
 
@@ -346,10 +354,10 @@ def make_combined_rich_table(
 
     tbl.add_column("Time (s)", justify="right")
 
+    # Get styles
+    avg_rank_styles = _get_column_styles(avg_ranks, "Avg Rank")
+
     ate_styles = {
-        "ATE R²": _get_column_styles(
-            ate_summary.get("ATE R²", pd.Series(dtype=float)), "ATE R²"
-        ),
         "RMSE": _get_column_styles(
             ate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
         ),
@@ -377,8 +385,14 @@ def make_combined_rich_table(
         ),
     }
 
-    for method in ate_summary.index:
-        ate_row = ate_summary.loc[method]
+    # 3. Iterate over the sorted index instead of ate_summary.index
+    for method in avg_ranks.index:
+        # Fallback to empty series if a method is somehow missing from the summaries
+        ate_row = (
+            ate_summary.loc[method]
+            if method in ate_summary.index
+            else pd.Series(dtype=float)
+        )
         cate_row = (
             cate_summary.loc[method]
             if method in cate_summary.index
@@ -393,8 +407,18 @@ def make_combined_rich_table(
             formatted_val = format_str.format(val)
             return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
 
+        # Format rank specifically
+        rank_val = avg_ranks.get(method, float("nan"))
+        rank_style = avg_rank_styles.get(method, "")
+        formatted_rank = f"{rank_val:.2f}" if not pd.isna(rank_val) else "-"
+        styled_rank = (
+            f"[{rank_style}]{formatted_rank}[/{rank_style}]"
+            if rank_style
+            else formatted_rank
+        )
+
         cells = [
-            get_styled(ate_row, "ATE R²", ate_styles),
+            styled_rank,
             get_styled(ate_row, "RMSE", ate_styles),
             get_styled(ate_row, "Median Regret", ate_styles, "{:.2f}x"),
             get_styled(cate_row, "Median R²", cate_styles),
