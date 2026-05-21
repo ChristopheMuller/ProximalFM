@@ -8,14 +8,15 @@ import numpy as np
 import pandas as pd
 
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
-
 
 import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 from proximalfm.prior import PriorDataset
 
@@ -23,22 +24,22 @@ from proximalfm.prior import PriorDataset
 #%% ---------------------------------------------------------------------
 # 1. Instantiate Prior Dataset
 # ----------------------------------------------------------------------
-n_batches = 10
-batch_size = 5
+n_batches = 2
+batch_size = 60
 
 dataset = PriorDataset(
     batch_size=batch_size,
     batch_size_per_gp=1,
     min_dim_U=1,
-    max_dim_U=1,
+    max_dim_U=10,
     min_dim_W=1,
-    max_dim_W=1,
+    max_dim_W=10,
     min_dim_Z=1,
-    max_dim_Z=1,
-    min_dim_X=2,
-    max_dim_X=2,
+    max_dim_Z=10,
+    min_dim_X=1,
+    max_dim_X=10,
     min_seq_len=None,
-    max_seq_len=2048,
+    max_seq_len=1024,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.5,
@@ -56,7 +57,6 @@ dataset = PriorDataset(
 def safe_standardize(x):
     mu = x.mean(dim=1, keepdim=True)
     std = x.std(dim=1, keepdim=True)
-    # Prevent division by zero for zero-variance or zero-padded features
     std = torch.where(std < 1e-5, torch.ones_like(std), std)
     return (x - mu) / std
 
@@ -135,7 +135,6 @@ for _ in tqdm(range(n_batches), desc="Sampling Batches"):
 k = 5
 vars_to_plot = ["U", "Z", "X", "W", "A_probs", "Y_obs"]
 
-# Create a k x 6 grid
 fig, axes = plt.subplots(k, 6, figsize=(20, 3 * k), sharex=False, sharey=False)
 
 a_prob_bins = np.linspace(0, 1, 21)
@@ -147,32 +146,37 @@ for i in range(min(k, len(all_datasets))):
     for j, var in enumerate(vars_to_plot):
         ax = axes[i, j]
 
-        # 1. Extract data (handling multi-dimensional columns like X_0, X_1)
         if var in df.columns:
-            data = df[var].values
+            cols = [var]
         else:
-            # Flatten dynamic columns (e.g., X_0, X_1 -> one distribution)
-            data = df.filter(like=f"{var}_").values.flatten()
+            cols = sorted([c for c in df.columns if c.startswith(f"{var}_")])
 
-        # 2. Plotting Logic
         if var == "A_probs":
-            # Histogram for treatment probabilities
-            sns.histplot(
-                data,
-                bins=a_prob_bins,
-                ax=ax,
-                color=palette[i],
-                kde=False,
-                element="step",
-            )
+            for col in cols:
+                sns.histplot(
+                    df[col].values,
+                    bins=a_prob_bins,
+                    ax=ax,
+                    color=palette[i],
+                    kde=False,
+                    element="step",
+                )
             ax.set_xlim(0, 1)
         else:
-            # KDE for continuous features
-            sns.kdeplot(data, ax=ax, color=palette[i], fill=True, alpha=0.2)
-            # Center the view around zero for standardized features
+            dim_palette = sns.color_palette("tab10", len(cols))
+            for idx, col in enumerate(cols):
+                sns.kdeplot(
+                    df[col].values,
+                    ax=ax,
+                    color=dim_palette[idx] if len(cols) > 1 else palette[i],
+                    label=col if len(cols) > 1 else None,
+                    fill=True,
+                    alpha=0.15,
+                )
+            if len(cols) > 1:
+                ax.legend(fontsize=8, loc="upper right")
             ax.set_xlim(-4, 4)
 
-        # 3. Labeling
         if i == 0:
             ax.set_title(f"Marginal {var}", fontweight="bold")
         if j == 0:
@@ -186,7 +190,7 @@ plt.tight_layout()
 plt.show()
 
 #%% ---------------------------------------------------------------------
-# 4. Global Statistics Distribution across all Datasets
+# 4. Global Statistics Distribution across all Datasets (Fixed)
 # ---------------------------------------------------------------------
 
 vars_to_analyze = ["U", "Z", "X", "W", "A_probs", "Y_obs"]
@@ -218,7 +222,6 @@ for i, df in enumerate(all_datasets):
 
 stats_df = pd.DataFrame(stats_records)
 
-# sharex=False allows each subplot to find its own optimal range
 fig, axes = plt.subplots(
     len(stats_to_compute),
     len(vars_to_analyze),
@@ -231,27 +234,72 @@ for row_idx, stat in enumerate(stats_to_compute):
     for col_idx, var in enumerate(vars_to_analyze):
         ax = axes[row_idx, col_idx]
 
-        data_subset = stats_df[stats_df["variable"] == var][stat]
+        data_subset = stats_df[stats_df["variable"] == var]
+        cols = data_subset["column"].unique()
 
-        if np.std(data_subset) < 1e-4:
+        all_constant = True
+        constant_vals = []
+        for col in cols:
+            col_vals = data_subset[data_subset["column"] == col][stat].values
+            if len(col_vals) == 0 or (np.max(col_vals) - np.min(col_vals)) >= 1e-3:
+                all_constant = False
+                break
+            else:
+                if len(col_vals) > 0:
+                    constant_vals.append(f"{col}: {col_vals[0]:.2f}")
+
+        if all_constant:
             ax.text(
                 0.5,
                 0.5,
-                f"Constant: {data_subset.iloc[0]:.2f}",
+                "\n".join(constant_vals),
                 horizontalalignment="center",
                 verticalalignment="center",
                 transform=ax.transAxes,
-                fontsize=12,
+                fontsize=10,
             )
             ax.set_xlim(-1, 1)
             ax.set_ylim(0, 1)
             ax.grid(False)
-
         else:
+            use_kde = False
+            for col in cols:
+                col_vals = data_subset[data_subset["column"] == col][stat].values
+                if np.std(col_vals) < 1e-2 or len(np.unique(col_vals)) <= 5:
+                    use_kde = False
+                    break
 
-            sns.histplot(data_subset, ax=ax, kde=True, color="royalblue", alpha=0.6)
+            if len(cols) > 1:
+                sns.histplot(
+                    data=data_subset,
+                    x=stat,
+                    hue="column",
+                    palette="tab10",
+                    ax=ax,
+                    bins=20,
+                    kde=use_kde,
+                    alpha=0.4,
+                    element="step",
+                    legend=False,
+                )
+                from matplotlib.patches import Patch
 
-            # Row-specific logic for A_probs range
+                colors = sns.color_palette("tab10", len(cols))
+                handles = [
+                    Patch(color=colors[idx], label=col) for idx, col in enumerate(cols)
+                ]
+                ax.legend(handles=handles, loc="upper right", fontsize=8)
+            else:
+                sns.histplot(
+                    data=data_subset,
+                    x=stat,
+                    ax=ax,
+                    bins=20,  # Hardcoded bins avoids zero-variance division crashes
+                    kde=use_kde,
+                    color="royalblue",
+                    alpha=0.6,
+                )
+
             if var == "A_probs" and stat in ["mean", "median", "min", "max"]:
                 ax.set_xlim(0, 1)
 
@@ -271,7 +319,7 @@ plt.show()
 #%% ---------------------------------------------------------------------
 # 5. Potential Outcomes & CATE (One Row per Dataset)
 # ---------------------------------------------------------------------
-k = 10
+k = 15
 fig, axes = plt.subplots(k, 4, figsize=(20, 4 * k))
 
 for i in range(min(k, len(all_datasets))):
@@ -337,6 +385,17 @@ for ax in axes.flatten():
 plt.tight_layout()
 plt.show()
 
+#%%
+
+target_proportions = [0.1, 0.3, 0.5]
+
+abs_ates = [abs((df["Y1"] - df["Y0"]).mean()) for df in all_datasets]
+ate_thresholds = np.quantile(abs_ates, target_proportions)
+
+for prop, t in zip(target_proportions, ate_thresholds):
+    print(f"Threshold for the bottom {prop:.0%}: |ATE| < {t:.4f}")
+
+
 #%% ---------------------------------------------------------------------
 # 6. Global CATE Statistics across all Datasets
 # ---------------------------------------------------------------------
@@ -384,291 +443,193 @@ for j, stat in enumerate(stats_to_plot):
 plt.tight_layout()
 plt.show()
 
-#%% ---------------------------------------------------------------------
-# 7. Signal Propagation & DAG Verification (Non-linear R2)
-# ---------------------------------------------------------------------
-
-
-def get_nl_r2(df, target_cols, predictor_cols):
-    """Calculates non-linear R2 using a Random Forest."""
-    X = df[predictor_cols]
-    # Handle multi-dimensional targets by averaging R2 or flattening
-    y = df[target_cols]
-    if y.shape[1] == 1:
-        y = y.values.flatten()
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
-    model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
-    return r2_score(y_test, preds)
-
-
-dag_stats = []
-
-for i, df in tqdm(
-    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing DAG Flow"
-):
-
-    cols_u = [c for c in df.columns if c.startswith("U")]
-    cols_x = [c for c in df.columns if c.startswith("X")]
-    cols_w = [c for c in df.columns if c.startswith("W")]
-    cols_z = [c for c in df.columns if c.startswith("Z")]
-
-    r2_u_to_z = get_nl_r2(df, cols_z, cols_u)
-    r2_u_to_w = get_nl_r2(df, cols_w, cols_u)
-    r2_u_to_x = get_nl_r2(df, cols_x, cols_u)
-    r2_uxz_to_a = get_nl_r2(df, ["A_probs"], cols_u + cols_x + cols_z)
-    r2_uaxw_to_y = get_nl_r2(df, ["Y_obs"], cols_u + ["A_probs"] + cols_w + cols_x)
-
-    dag_stats.append(
-        {
-            "U -> Z": r2_u_to_z,
-            "U -> W": r2_u_to_w,
-            "U -> X": r2_u_to_x,
-            "U+X+Z -> A-probs": r2_uxz_to_a,
-            "U+A+W+X -> Y": r2_uaxw_to_y,
-        }
-    )
-
-dag_df = pd.DataFrame(dag_stats)
-
 #%%
+def estimate_ate_t_learner(df, cov_cols):
+    from sklearn.model_selection import StratifiedKFold
 
-plt.figure(figsize=(14, 7))
-dag_df_long = dag_df.melt(var_name="DAG Path", value_name="Non-linear R2")
+    a_values = df["A"].values
+    y_values = df["Y_obs"].values
+    x_values = df[cov_cols].values
+    n_samples = len(df)
+    n_0 = np.sum(a_values == 0)
+    n_1 = np.sum(a_values == 1)
+    if n_0 < 5 or n_1 < 5:
+        return np.nan
+    n_splits = min(5, n_0, n_1)
+    if n_splits < 2:
+        return np.nan
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    pred_0 = np.zeros(n_samples)
+    pred_1 = np.zeros(n_samples)
+    for train_idx, val_idx in skf.split(x_values, a_values):
+        x_train, a_train, y_train = (
+            x_values[train_idx],
+            a_values[train_idx],
+            y_values[train_idx],
+        )
+        x_val = x_values[val_idx]
+        idx_0 = a_train == 0
+        idx_1 = a_train == 1
+        if np.sum(idx_0) < 2 or np.sum(idx_1) < 2:
+            return np.nan
+        m0 = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=1)
+        m1 = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=1)
+        m0.fit(x_train[idx_0], y_train[idx_0])
+        m1.fit(x_train[idx_1], y_train[idx_1])
+        pred_0[val_idx] = m0.predict(x_val)
+        pred_1[val_idx] = m1.predict(x_val)
+    return (pred_1 - pred_0).mean()
 
-sns.violinplot(
-    data=dag_df_long,
-    x="DAG Path",
-    y="Non-linear R2",
-    palette="Spectral",
-    inner=None,  # Remove the inner boxplot to keep it clean
-    alpha=0.4,
+
+from joblib import Parallel, delayed
+
+
+def process_single_dataset(df):
+    t_ate = (df["Y1"] - df["Y0"]).mean()
+    a1 = df[df["A"] == 1]
+    a0 = df[df["A"] == 0]
+    if len(a1) > 0 and len(a0) > 0:
+        n_ate = a1["Y_obs"].mean() - a0["Y_obs"].mean()
+    else:
+        n_ate = np.nan
+    x_cols = [c for c in df.columns if c.startswith("X_")]
+    if not x_cols and "X" in df.columns:
+        x_cols = ["X"]
+    w_cols = [c for c in df.columns if c.startswith("W_")]
+    if not w_cols and "W" in df.columns:
+        w_cols = ["W"]
+    z_cols = [c for c in df.columns if c.startswith("Z_")]
+    if not z_cols and "Z" in df.columns:
+        z_cols = ["Z"]
+    u_cols = [c for c in df.columns if c.startswith("U_")]
+    if not u_cols and "U" in df.columns:
+        u_cols = ["U"]
+    covs_xa = x_cols
+    covs_xaw = x_cols + w_cols
+    covs_xawu = x_cols + w_cols + u_cols
+    xa_ate = estimate_ate_t_learner(df, covs_xa)
+    xaw_ate = estimate_ate_t_learner(df, covs_xaw)
+    xawu_ate = estimate_ate_t_learner(df, covs_xawu)
+    return t_ate, n_ate, xa_ate, xaw_ate, xawu_ate
+
+
+results = Parallel(n_jobs=-1)(
+    delayed(process_single_dataset)(df)
+    for df in tqdm(all_datasets, desc="Calculating ATEs")
 )
 
-sns.stripplot(
-    data=dag_df_long,
-    x="DAG Path",
-    y="Non-linear R2",
-    color="black",
-    size=3,
-    alpha=0.3,
-    jitter=True,
+true_ates = np.array([r[0] for r in results])
+naive_ates = np.array([r[1] for r in results])
+pred_xa_ates = np.array([r[2] for r in results])
+pred_xaw_ates = np.array([r[3] for r in results])
+pred_xawu_ates = np.array([r[4] for r in results])
+
+fig, axes = plt.subplots(1, 3, figsize=(21, 6))
+
+ax = axes[0]
+sns.scatterplot(
+    x=true_ates,
+    y=naive_ates,
+    color="#2c7bb6",
+    label="Naive ATE",
+    alpha=0.8,
+    s=50,
+    ax=ax,
+)
+sns.scatterplot(
+    x=true_ates,
+    y=pred_xa_ates,
+    color="#fdae61",
+    label="Predicted from X, A",
+    alpha=0.8,
+    s=50,
+    ax=ax,
+)
+sns.scatterplot(
+    x=true_ates,
+    y=pred_xaw_ates,
+    color="#d7191c",
+    label="Predicted from X, A, W",
+    alpha=0.8,
+    s=50,
+    ax=ax,
+)
+sns.scatterplot(
+    x=true_ates,
+    y=pred_xawu_ates,
+    color="#2ca02c",
+    label="Predicted from X, A, W, U (Oracle)",
+    alpha=0.8,
+    s=50,
+    ax=ax,
 )
 
-plt.title(
-    "Distribution of Signal Propagation ($R^2$) Across 50 Datasets",
-    fontweight="bold",
-    fontsize=15,
+min_val = min(
+    true_ates.min(),
+    naive_ates.min(),
+    pred_xa_ates.min(),
+    pred_xaw_ates.min(),
+    pred_xawu_ates.min(),
 )
-plt.ylabel("Non-linear $R^2$ (Variance Explained)", fontsize=12)
-plt.xlabel("Causal Relationship Path", fontsize=12)
-plt.xticks(rotation=30, ha="right")
-plt.grid(axis="y", linestyle="--", alpha=0.4)
+max_val = max(
+    true_ates.max(),
+    naive_ates.max(),
+    pred_xa_ates.max(),
+    pred_xaw_ates.max(),
+    pred_xawu_ates.max(),
+)
+ax.plot([min_val, max_val], [min_val, max_val], "k--", alpha=0.6)
+ax.set_title("Estimated vs True ATE", fontweight="bold", fontsize=14)
+ax.set_xlabel("True ATE", fontsize=12)
+ax.set_ylabel("Estimated ATE", fontsize=12)
+ax.legend(fontsize=10)
+ax.grid(True, alpha=0.3)
 
-plt.axhline(0.5, color="gray", linestyle=":", alpha=0.5, label="Moderate Signal")
-plt.axhline(0.1, color="red", linestyle=":", alpha=0.5, label="Noise Floor")
+err_data = pd.DataFrame(
+    {
+        "Naive": np.abs(naive_ates - true_ates),
+        "X, A": np.abs(pred_xa_ates - true_ates),
+        "X, A, W": np.abs(pred_xaw_ates - true_ates),
+        "X, A, W, U": np.abs(pred_xawu_ates - true_ates),
+    }
+)
+ax = axes[1]
+sns.boxplot(data=err_data, palette=["#2c7bb6", "#fdae61", "#d7191c", "#2ca02c"], ax=ax)
+ax.set_title("Absolute Error Distribution", fontweight="bold", fontsize=14)
+ax.set_ylabel("Absolute Error", fontsize=12)
+ax.grid(True, alpha=0.3)
+
+bias_data = pd.DataFrame(
+    {
+        "Naive": naive_ates - true_ates,
+        "X, A": pred_xa_ates - true_ates,
+        "X, A, W": pred_xaw_ates - true_ates,
+        "X, A, W, U": pred_xawu_ates - true_ates,
+    }
+)
+ax = axes[2]
+sns.boxplot(data=bias_data, palette=["#2c7bb6", "#fdae61", "#d7191c", "#2ca02c"], ax=ax)
+ax.axhline(0, color="black", linestyle="--", alpha=0.6)
+ax.set_title("Signed Bias Distribution", fontweight="bold", fontsize=14)
+ax.set_ylabel("Signed Bias", fontsize=12)
+ax.grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.show()
 
-#%% ---------------------------------------------------------------------
-# 8. Bias Analysis: How much of the selection bias can be explained by adjusting for X, W, Z (Proximal) vs. X,U (Oracle)?
-# ---------------------------------------------------------------------
-
-# Y1
-
-bias_records = []
-
-for i, df in tqdm(
-    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing Confounding"
-):
-    # Identify column groups
-    cols_u = [c for c in df.columns if c.startswith("U")]
-    cols_x = [c for c in df.columns if c.startswith("X")]
-    cols_proxies = [c for c in df.columns if c.startswith(("W", "Z", "X"))]
-    cols_oracle = cols_x + cols_u
-
-    # 1. Ground Truth: True ATE and Potential Outcome Means
-    true_mu1 = df["Y1"].mean()
-
-    # 2. Raw Observed Mean (The biased estimate)
-    raw_mu1 = df[df["A"] == 1]["Y_obs"].mean()
-    raw_bias = abs(raw_mu1 - true_mu1)
-
-    def get_adjusted_bias(features):
-        # Train on observed data
-        train_df = df[df["A"] == 1]
-        model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
-        model.fit(train_df[features], train_df["Y_obs"])
-
-        # Predict for the whole population (Counterfactual)
-        pred_y1 = model.predict(df[features])
-        return abs(pred_y1.mean() - true_mu1)
-
-    bias_records.append(
-        {
-            "Raw Selection Bias": raw_bias,
-            "Adjusted by X": get_adjusted_bias(cols_x),
-            "Adjusted by X,W,Z (Proximal)": get_adjusted_bias(cols_proxies),
-            "Adjusted by X,U (Oracle)": get_adjusted_bias(cols_oracle),
-        }
-    )
-
-bias_df = pd.DataFrame(bias_records)
-
-plt.figure(figsize=(12, 6))
-bias_df_long = bias_df.melt(
-    var_name="Adjustment Set", value_name="Absolute Bias (Error)"
-)
-
-sns.violinplot(
-    data=bias_df_long,
-    x="Adjustment Set",
-    y="Absolute Bias (Error)",
-    palette="Reds",
-    inner="quartile",
-    alpha=0.6,
-)
-sns.stripplot(
-    data=bias_df_long,
-    x="Adjustment Set",
-    y="Absolute Bias (Error)",
-    color="black",
-    size=3,
-    alpha=0.3,
-    jitter=True,
-)
-
-plt.title(
-    "How Covariates Explain Selection Bias ($|\\hat{\\mu}_1 - \\mu_1|$)",
-    fontweight="bold",
-    fontsize=15,
-)
-plt.ylabel("Absolute Error in Mean Outcome", fontsize=12)
-plt.grid(axis="y", alpha=0.3)
-plt.show()
-
-# Define the metrics we want to see
-metrics = ["mean", "median", "std", "min", "max"]
-
-# Calculate statistics for each adjustment scenario
-bias_summary = bias_df.agg(metrics).T
-
-# Rename columns for a professional look in the output
-bias_summary.columns = [m.capitalize() for m in metrics]
-
-# Display the table
-print("### Confounding & Bias Reduction Metrics ###")
-print(bias_summary.to_markdown(floatfmt=".4f"))
-
-# Optional: Percentage of Bias Removed (relative to Raw)
-# This helps quantify the "Value Add" of Proxies vs X alone
-avg_raw_bias = bias_summary.loc["Raw Selection Bias", "Mean"]
-proximal_improvement = (
-    1 - (bias_summary.loc["Adjusted by X,W,Z (Proximal)", "Mean"] / avg_raw_bias)
-) * 100
-
+# print average results:
+print(f"Average True ATE: {true_ates.mean():.3f}")
 print(
-    f"\n> **Key Insight:** The Proximal set (X, W, Z) reduced average bias by **{proximal_improvement:.2f}%** compared to the Raw data."
+    f"Average Naive ATE: {naive_ates.mean():.3f} (Error: {np.abs(naive_ates - true_ates).mean():.3f})"
 )
-
-# Y0
-
-bias_records = []
-
-for i, df in tqdm(
-    enumerate(all_datasets), total=len(all_datasets), desc="Analyzing Confounding"
-):
-    # Identify column groups
-    cols_u = [c for c in df.columns if c.startswith("U")]
-    cols_x = [c for c in df.columns if c.startswith("X")]
-    cols_proxies = [c for c in df.columns if c.startswith(("W", "Z", "X"))]
-    cols_oracle = cols_x + cols_u
-
-    # 1. Ground Truth: True ATE and Potential Outcome Means
-    true_mu1 = df["Y0"].mean()
-
-    # 2. Raw Observed Mean (The biased estimate)
-    raw_mu1 = df[df["A"] == 0]["Y_obs"].mean()
-    raw_bias = abs(raw_mu1 - true_mu1)
-
-    def get_adjusted_bias(features):
-        # Train on observed data
-        train_df = df[df["A"] == 0]
-        model = RandomForestRegressor(n_estimators=50, max_depth=5, random_state=42)
-        model.fit(train_df[features], train_df["Y_obs"])
-
-        # Predict for the whole population (Counterfactual)
-        pred_y1 = model.predict(df[features])
-        return abs(pred_y1.mean() - true_mu1)
-
-    bias_records.append(
-        {
-            "Raw Selection Bias": raw_bias,
-            "Adjusted by X": get_adjusted_bias(cols_x),
-            "Adjusted by X,W,Z (Proximal)": get_adjusted_bias(cols_proxies),
-            "Adjusted by X,U (Oracle)": get_adjusted_bias(cols_oracle),
-        }
-    )
-
-bias_df = pd.DataFrame(bias_records)
-
-plt.figure(figsize=(12, 6))
-bias_df_long = bias_df.melt(
-    var_name="Adjustment Set", value_name="Absolute Bias (Error)"
-)
-
-sns.violinplot(
-    data=bias_df_long,
-    x="Adjustment Set",
-    y="Absolute Bias (Error)",
-    palette="Reds",
-    inner="quartile",
-    alpha=0.6,
-)
-sns.stripplot(
-    data=bias_df_long,
-    x="Adjustment Set",
-    y="Absolute Bias (Error)",
-    color="black",
-    size=3,
-    alpha=0.3,
-    jitter=True,
-)
-
-plt.title(
-    "How Covariates Explain Selection Bias ($|\\hat{\\mu}_0 - \\mu_0|$)",
-    fontweight="bold",
-    fontsize=15,
-)
-plt.ylabel("Absolute Error in Mean Outcome", fontsize=12)
-plt.grid(axis="y", alpha=0.3)
-plt.show()
-
-# Define the metrics we want to see
-metrics = ["mean", "median", "std", "min", "max"]
-
-# Calculate statistics for each adjustment scenario
-bias_summary = bias_df.agg(metrics).T
-
-# Rename columns for a professional look in the output
-bias_summary.columns = [m.capitalize() for m in metrics]
-
-# Display the table
-print("### Confounding & Bias Reduction Metrics ###")
-print(bias_summary.to_markdown(floatfmt=".4f"))
-
-# Optional: Percentage of Bias Removed (relative to Raw)
-# This helps quantify the "Value Add" of Proxies vs X alone
-avg_raw_bias = bias_summary.loc["Raw Selection Bias", "Mean"]
-proximal_improvement = (
-    1 - (bias_summary.loc["Adjusted by X,W,Z (Proximal)", "Mean"] / avg_raw_bias)
-) * 100
-
 print(
-    f"\n> **Key Insight:** The Proximal set (X, W, Z) reduced average bias by **{proximal_improvement:.2f}%** compared to the Raw data."
+    f"Average Predicted ATE (X, A): {pred_xa_ates.mean():.3f} (Error: {np.abs(pred_xa_ates - true_ates).mean():.3f})"
 )
+print(
+    f"Average Predicted ATE (X, A, W): {pred_xaw_ates.mean():.3f} (Error: {np.abs(pred_xaw_ates - true_ates).mean():.3f})"
+)
+print(
+    f"Average Predicted ATE (X, A, W, U): {pred_xawu_ates.mean():.3f} (Error: {np.abs(pred_xawu_ates - true_ates).mean():.3f})"
+)
+
+#%%
