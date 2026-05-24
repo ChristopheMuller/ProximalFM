@@ -565,7 +565,7 @@ def main() -> None:
     )
     default_config = Path(__file__).resolve().parent / "bench_config.yaml"
     parser.add_argument(
-        "--config", default=str(default_config), help=f"Path to the YAML config file."
+        "--config", default=str(default_config), help="Path to the YAML config file."
     )
     parser.add_argument(
         "--force",
