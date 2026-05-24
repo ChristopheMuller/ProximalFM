@@ -479,7 +479,7 @@ class Trainer:
         self.scaler = torch.GradScaler("cuda", enabled=self.amp)
         if self.amp:
             if self.master_process:
-                print(f"Automatic Mixed Precision is enabled.")
+                print("Automatic Mixed Precision is enabled.")
             self.amp_ctx = torch.autocast(
                 device_type="cuda",
                 dtype=torch.float16
