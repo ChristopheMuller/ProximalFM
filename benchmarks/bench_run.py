@@ -58,6 +58,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import yaml
+import re
 
 from rich.console import Console
 from rich.padding import Padding
@@ -416,20 +417,47 @@ def run_neural_model(
 
     name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
-    pred_file = preds_dir / f"{name}_preds.npz"
+
+    if ckpt_dir.is_file():
+        best_path = ckpt_dir
+        step_suffix = ""
+    else:
+        best_path = ckpt_dir / "best_model.ckpt"
+        step_suffix = ""
+
+        if not best_path.exists():
+            # Look for step-XXXX.ckpt files
+            ckpt_files = list(ckpt_dir.glob("*.ckpt"))
+            valid_ckpts = []
+
+            for f in ckpt_files:
+                # Extracts numbers from patterns like 'step-1700.ckpt' or '1700.ckpt'
+                match = re.search(r"(\d+)", f.name)
+                if match:
+                    valid_ckpts.append((int(match.group(1)), f))
+
+            if valid_ckpts:
+                # Sort by step number descending and pick the highest
+                highest_step, best_path = max(valid_ckpts, key=lambda x: x[0])
+                step_suffix = f"_{highest_step}"
+                console.print(
+                    f"    [dim]best_model.ckpt not found. Selected highest step: {best_path.name}[/]"
+                )
+            else:
+                console.print(f"    [red]✗[/] No checkpoints found in: {ckpt_dir}")
+                return None
+
+    # Append the step number to the name/file if using a step checkpoint
+    output_name = f"{name}{step_suffix}"
+    pred_file = preds_dir / f"{output_name}_preds.npz"
+    # ─────────────────────────────────────────────────────────────────────────
 
     if pred_file.exists() and not force:
-        console.print(f"    [dim]Skip {name!r} — predictions already saved.[/]")
+        console.print(f"    [dim]Skip {output_name!r} — predictions already saved.[/]")
         loaded = np.load(pred_file)
         preds = loaded["preds"]
         times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
-        return name, preds, times
-
-    # Handle standard torch saves
-    best_path = ckpt_dir if ckpt_dir.is_file() else (ckpt_dir / "best_model.ckpt")
-    if not best_path.exists():
-        console.print(f"    [red]✗[/] Checkpoint not found: {best_path}")
-        return None
+        return output_name, preds, times
 
     device = torch.device(device_str)
     ckpt = torch.load(best_path, map_location=device, weights_only=False)
@@ -445,7 +473,7 @@ def run_neural_model(
     model.eval()
 
     console.print(
-        f"    [green]✓[/] Loaded {name!r} (step {ckpt.get('curr_step', '?')})"
+        f"    [green]✓[/] Loaded {output_name!r} (step {ckpt.get('curr_step', '?')})"
     )
 
     N_TRAIN = data["N_TRAIN"]
@@ -521,8 +549,8 @@ def run_neural_model(
             preds[start:end] = pred_cate.cpu().numpy()
 
     np.savez(pred_file, preds=preds, times=times)
-    console.print(f"    [green]✓[/] {name} → {pred_file}")
-    return name, preds, times
+    console.print(f"    [green]✓[/] {output_name} → {pred_file}")
+    return output_name, preds, times
 
 
 # ─────────────────────────────────────────────────────────────────────────────
