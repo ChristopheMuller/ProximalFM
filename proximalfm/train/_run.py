@@ -81,6 +81,84 @@ def compute_crps_loss(
     return crps.mean()
 
 
+def compute_hl_gaussian_cross_entropy_loss(
+    logits: torch.Tensor,
+    y_target: torch.Tensor,
+    bin_edges: torch.Tensor,
+    sigma: float,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    """
+    Histogram Loss with Gaussian soft targets.
+
+    For each scalar target y_i, constructs a discrete target distribution p_i
+    by integrating N(y_i, sigma^2) over the histogram bins, then computes
+
+        HL = - sum_l p_l log q_l
+
+    where q_l = softmax(logits)_l.
+
+    Args:
+        logits:
+            Tensor of shape (..., nbins).
+        y_target:
+            Tensor of shape (...).
+        bin_edges:
+            Tensor of shape (nbins + 1,).
+        sigma:
+            Standard deviation of the Gaussian target on the standardized target scale.
+        eps:
+            Numerical stability constant.
+
+    Returns:
+        Scalar tensor.
+    """
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}")
+
+    if y_target.shape != logits.shape[:-1]:
+        raise ValueError(
+            f"y_target shape {y_target.shape} must match logits shape "
+            f"{logits.shape[:-1]} except for the last dimension."
+        )
+
+    # Compute target probabilities in fp32 for numerical stability,
+    # especially under AMP.
+    logits_fp32 = logits.float()
+    y_target_fp32 = y_target.float()
+    bin_edges_fp32 = bin_edges.to(device=logits.device, dtype=torch.float32)
+
+    lower_edges = bin_edges_fp32[:-1]
+    upper_edges = bin_edges_fp32[1:]
+
+    # Shape for broadcasting edges against y_target:
+    # y_target: (...), edges: (nbins,) -> (..., nbins)
+    edge_shape = (1,) * y_target_fp32.ndim + (-1,)
+    lower_edges = lower_edges.view(edge_shape)
+    upper_edges = upper_edges.view(edge_shape)
+
+    y = y_target_fp32.unsqueeze(-1)
+
+    normalizer = math.sqrt(2.0) * sigma
+
+    cdf_upper = 0.5 * (1.0 + torch.erf((upper_edges - y) / normalizer))
+    cdf_lower = 0.5 * (1.0 + torch.erf((lower_edges - y) / normalizer))
+
+    p = cdf_upper - cdf_lower
+
+    # Numerical safety.
+    p = p.clamp_min(0.0)
+
+    # Truncated-and-renormalized Gaussian over the available bin support.
+    p = p / (p.sum(dim=-1, keepdim=True) + eps)
+
+    log_probs = F.log_softmax(logits_fp32, dim=-1)
+
+    loss = -torch.sum(p * log_probs, dim=-1)
+
+    return loss.mean()
+
+
 def compute_gaussian_nll(
     mean: torch.Tensor, log_var: torch.Tensor, target: torch.Tensor
 ) -> torch.Tensor:
@@ -180,6 +258,15 @@ class Trainer:
 
     def __init__(self, config):
         self.config = config
+
+        self.loss_type = getattr(self.config, "loss_type", "bins_po")
+
+        # HL-Gaussian sigma schedule.
+        self.hl_start_sigma = getattr(self.config, "hl_start_sigma", 0.3)
+        self.hl_warmup_sigma_steps = getattr(self.config, "hl_warmup_sigma_steps", 1000)
+        self.hl_linear_decay_steps = getattr(self.config, "hl_linear_decay_steps", 5000)
+        self.hl_final_sigma = getattr(self.config, "hl_final_sigma", 0.01)
+
         self.configure_ddp()
 
         # Initialize the dedicated logger
@@ -253,7 +340,7 @@ class Trainer:
         """Build and initialize the TabICL model."""
 
         self.model_config = {
-            "loss_type": getattr(self.config, "loss_type", "bins_po"),
+            "loss_type": self.loss_type,
             "embed_dim": self.config.embed_dim,
             "col_num_blocks": self.config.col_num_blocks,
             "col_nhead": self.config.col_nhead,
@@ -968,7 +1055,7 @@ class Trainer:
                 return None
 
             # Loss configuration routing
-            loss_type = getattr(self.raw_model, "loss_type", "bins_po")
+            loss_type = self.loss_type
 
             if loss_type == "bins_po":
                 nbins = self.raw_model.nbins
@@ -1043,6 +1130,45 @@ class Trainer:
                 mean_pred_y0_std = torch.zeros_like(y_test_0_std)
                 mean_pred_y1_std = torch.zeros_like(y_test_1_std)
 
+            elif loss_type == "hl":
+                nbins = self.raw_model.nbins
+                logits_y0 = pred_logits[..., :nbins]
+                logits_y1 = pred_logits[..., nbins:]
+
+                hl_sigma = self.get_hl_sigma()
+
+                loss_y0 = compute_hl_gaussian_cross_entropy_loss(
+                    logits_y0,
+                    y_test_0_std,
+                    self.raw_model.bin_edges,
+                    sigma=hl_sigma,
+                )
+                loss_y1 = compute_hl_gaussian_cross_entropy_loss(
+                    logits_y1,
+                    y_test_1_std,
+                    self.raw_model.bin_edges,
+                    sigma=hl_sigma,
+                )
+
+                probs_y0 = F.softmax(logits_y0, dim=-1)
+                probs_y1 = F.softmax(logits_y1, dim=-1)
+
+                mean_pred_y0_std = torch.sum(
+                    probs_y0 * self.raw_model.bin_centers, dim=-1
+                )
+                mean_pred_y1_std = torch.sum(
+                    probs_y1 * self.raw_model.bin_centers, dim=-1
+                )
+
+                pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
+
+                cate_error_std = pred_cate_std - true_cate_std
+                loss_cate = torch.mean(cate_error_std**2)
+
+                lambda_cate = getattr(self.config, "lambda_cate", 0.1)
+
+                total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
+
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -1085,7 +1211,7 @@ class Trainer:
                     else loss_y1.item(),
                     "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
                     if is_train
-                    else loss_cate.item(),
+                    else (lambda_cate * loss_cate).item(),
                 }
             elif loss_type == "cate_decomposition":
                 micro_results = {
@@ -1101,7 +1227,22 @@ class Trainer:
                     if is_train
                     else (lambda_he * loss_he_crps).item(),
                 }
-
+            elif loss_type == "hl":
+                micro_results = {
+                    "loss/total": reported_loss_total,
+                    "loss/y0_hl": (loss_y0.item() / num_micro_batches)
+                    if is_train
+                    else loss_y0.item(),
+                    "loss/y1_hl": (loss_y1.item() / num_micro_batches)
+                    if is_train
+                    else loss_y1.item(),
+                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
+                    if is_train
+                    else (lambda_cate * loss_cate).item(),
+                    "loss/hl_sigma": (hl_sigma / num_micro_batches)
+                    if is_train
+                    else hl_sigma,
+                }
         return micro_results
 
     def run_batch(self, batch):
@@ -1262,6 +1403,43 @@ class Trainer:
         self.model.train()
 
         return final_metrics
+
+    def get_hl_sigma(self) -> float:
+        """
+        Returns the current sigma for HL-Gaussian loss.
+
+        Schedule:
+        - use start_sigma for warmup_sigma_steps
+        - linearly decay to final_sigma over linear_decay_steps
+        - then stay at final_sigma
+
+        If start_sigma == final_sigma, this returns a constant sigma.
+        """
+        start_sigma = float(self.hl_start_sigma)
+        final_sigma = float(self.hl_final_sigma)
+        warmup_steps = int(self.hl_warmup_sigma_steps)
+        decay_steps = int(self.hl_linear_decay_steps)
+
+        if start_sigma <= 0 or final_sigma <= 0:
+            raise ValueError(
+                f"HL sigmas must be positive, got start={start_sigma}, final={final_sigma}"
+            )
+
+        if start_sigma == final_sigma:
+            return start_sigma
+
+        if self.curr_step < warmup_steps:
+            return start_sigma
+
+        if decay_steps <= 0:
+            return final_sigma
+
+        decay_progress = (self.curr_step - warmup_steps) / decay_steps
+        decay_progress = min(max(decay_progress, 0.0), 1.0)
+
+        sigma = start_sigma + decay_progress * (final_sigma - start_sigma)
+
+        return float(sigma)
 
 
 if __name__ == "__main__":

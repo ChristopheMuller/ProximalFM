@@ -175,7 +175,7 @@ class TabICL(nn.Module):
 
     def __init__(
         self,
-        loss_type: Literal["bins_po", "cate_decomposition"] = "bins_po",
+        loss_type: Literal["bins_po", "cate_decomposition", "hl"] = "bins_po",
         nbins: int = 1000,
         vmin: float = -10.0,
         vmax: float = 10.0,
@@ -225,7 +225,7 @@ class TabICL(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
-        if loss_type not in ["bins_po", "cate_decomposition"]:
+        if loss_type not in ["bins_po", "cate_decomposition", "hl"]:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
         self.loss_type = loss_type
         self.nbins = nbins
@@ -291,7 +291,7 @@ class TabICL(nn.Module):
         self.register_buffer("bin_width", bin_width)
         self.register_buffer("bin_centers", bin_centers)
 
-        if self.loss_type == "bins_po":
+        if self.loss_type == "bins_po" or self.loss_type == "hl":
             out_dim = nbins * 2
         else:  # self.loss_type == "cate_decomposition"
             out_dim = nbins + 2

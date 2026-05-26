@@ -489,7 +489,9 @@ def build_parser():
         help="Number of episodes to aggregate before logging buffered train metrics.",
     )
 
-    ####### lOSS
+    ###########################################################################
+    ###### LOSS ###############################################################
+    ###########################################################################
     parser.add_argument(
         "--lambda_cate",
         type=float,
@@ -501,7 +503,31 @@ def build_parser():
         "--loss_type",
         type=str,
         default="bins_po",
-        help="Type of loss to use for training. Options: bins_po (bin-based potential outcomes), or cate_decomposition (estimate ATE and heterogeneous decomposition of CATE).",
+        choices=["bins_po", "hl", "cate_decomposition"],
+    )
+
+    parser.add_argument(
+        "--hl_start_sigma",
+        type=float,
+        default=1.0,
+    )
+
+    parser.add_argument(
+        "--hl_warmup_sigma_steps",
+        type=int,
+        default=1000,
+    )
+
+    parser.add_argument(
+        "--hl_linear_decay_steps",
+        type=int,
+        default=5000,
+    )
+
+    parser.add_argument(
+        "--hl_final_sigma",
+        type=float,
+        default=0.01,
     )
 
     return parser
