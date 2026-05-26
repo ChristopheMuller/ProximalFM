@@ -704,7 +704,7 @@ class TabICL(nn.Module):
         # ==========================================
         # ROUTING: Original architecture (Bins PO)
         # ==========================================
-        if self.loss_type == "bins_po":
+        if self.loss_type == "bins_po" or self.loss_type == "hl":
             probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
             probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
 
