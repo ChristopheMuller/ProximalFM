@@ -34,7 +34,7 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
 Because this repository contains submodules (`NMMR`, `DoPFN`, `CausalFM`) relevant for benchmarking, you must use the `--recurse-submodules` flag when cloning:
 
 ```bash
-git clone --recurse-submodules [https://github.com/ChristopheMuller/ProximalFM.git](https://github.com/ChristopheMuller/ProximalFM.git)
+git clone --recurse-submodules https://github.com/ChristopheMuller/ProximalFM.git
 cd ProximalFM
 uv sync
 ```
