@@ -520,6 +520,7 @@ class Trainer:
             ddp_world_size=self.ddp_world_size,
             ddp_rank=self.ddp_rank,
             start_from=0,
+            max_batches=total_val_files,
             delete_after_load=False,
             device=self.config.prior_device,
         )

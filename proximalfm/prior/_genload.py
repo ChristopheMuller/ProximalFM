@@ -260,6 +260,7 @@ class LoadPriorDataset(IterableDataset):
         device="cpu",
     ):
         super().__init__()
+        self.start_from = start_from
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
         self.ddp_world_size = ddp_world_size
@@ -296,6 +297,8 @@ class LoadPriorDataset(IterableDataset):
         self.buffer_size = 0
 
     def __iter__(self):
+        self.current_idx = self.ddp_rank + self.start_from
+        self.buffer_size = 0
         return self
 
     def _load_batch_file(self):
@@ -317,7 +320,14 @@ class LoadPriorDataset(IterableDataset):
             wait_time += 5
 
         batch = torch.load(batch_file, map_location=self.device, weights_only=True)
-        U, X, W, Z, A = batch["U"], batch["X"], batch["W"], batch["Z"], batch["A"]
+        U, X, W, Z, A, A_probs = (
+            batch["U"],
+            batch["X"],
+            batch["W"],
+            batch["Z"],
+            batch["A"],
+            batch["A_probs"],
+        )
         Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
         d_U, d_X, d_W, d_Z = batch["d_U"], batch["d_X"], batch["d_W"], batch["d_Z"]
         seq_lens = batch["seq_lens"]
@@ -331,6 +341,7 @@ class LoadPriorDataset(IterableDataset):
             W = SliceNestedTensor(W)
             Z = SliceNestedTensor(Z)
             A = SliceNestedTensor(A)
+            A_probs = SliceNestedTensor(A_probs)
             Y_obs = SliceNestedTensor(Y_obs)
             Y0 = SliceNestedTensor(Y0)
             Y1 = SliceNestedTensor(Y1)
@@ -363,6 +374,7 @@ class LoadPriorDataset(IterableDataset):
             W,
             Z,
             A,
+            A_probs,
             Y_obs,
             Y0,
             Y1,
@@ -394,6 +406,7 @@ class LoadPriorDataset(IterableDataset):
                 W,
                 Z,
                 A,
+                A_probs,
                 Y_obs,
                 Y0,
                 Y1,
@@ -411,6 +424,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_W = W
             self.buffer_Z = Z
             self.buffer_A = A
+            self.buffer_A_probs = A_probs
             self.buffer_Y_obs = Y_obs
             self.buffer_Y0 = Y0
             self.buffer_Y1 = Y1
@@ -437,6 +451,7 @@ class LoadPriorDataset(IterableDataset):
                     W,
                     Z,
                     A,
+                    A_probs,
                     Y_obs,
                     Y0,
                     Y1,
@@ -457,6 +472,7 @@ class LoadPriorDataset(IterableDataset):
                     self.buffer_W = W
                     self.buffer_Z = Z
                     self.buffer_A = A
+                    self.buffer_A_probs = A_probs
                     self.buffer_Y_obs = Y_obs
                     self.buffer_Y0 = Y0
                     self.buffer_Y1 = Y1
@@ -485,6 +501,9 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_A = cat_slice_nested_tensors(
                             [self.buffer_A, A], dim=0
                         )
+                        self.buffer_A_probs = cat_slice_nested_tensors(
+                            [self.buffer_A_probs, A_probs], dim=0
+                        )
                         self.buffer_Y_obs = cat_slice_nested_tensors(
                             [self.buffer_Y_obs, Y_obs], dim=0
                         )
@@ -500,6 +519,9 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_W = torch.cat([self.buffer_W, W], dim=0)
                         self.buffer_Z = torch.cat([self.buffer_Z, Z], dim=0)
                         self.buffer_A = torch.cat([self.buffer_A, A], dim=0)
+                        self.buffer_A_probs = torch.cat(
+                            [self.buffer_A_probs, A_probs], dim=0
+                        )
                         self.buffer_Y_obs = torch.cat([self.buffer_Y_obs, Y_obs], dim=0)
                         self.buffer_Y0 = torch.cat([self.buffer_Y0, Y0], dim=0)
                         self.buffer_Y1 = torch.cat([self.buffer_Y1, Y1], dim=0)
@@ -529,6 +551,7 @@ class LoadPriorDataset(IterableDataset):
         W_out = self.buffer_W[:output_size]
         Z_out = self.buffer_Z[:output_size]
         A_out = self.buffer_A[:output_size]
+        A_probs_out = self.buffer_A_probs[:output_size]
         Y_obs_out = self.buffer_Y_obs[:output_size]
         Y0_out = self.buffer_Y0[:output_size]
         Y1_out = self.buffer_Y1[:output_size]
@@ -546,6 +569,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_W = self.buffer_W[output_size:]
             self.buffer_Z = self.buffer_Z[output_size:]
             self.buffer_A = self.buffer_A[output_size:]
+            self.buffer_A_probs = self.buffer_A_probs[output_size:]
             self.buffer_Y_obs = self.buffer_Y_obs[output_size:]
             self.buffer_Y0 = self.buffer_Y0[output_size:]
             self.buffer_Y1 = self.buffer_Y1[output_size:]
@@ -563,6 +587,7 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_W = None
             self.buffer_Z = None
             self.buffer_A = None
+            self.buffer_A_probs = None
             self.buffer_Y_obs = None
             self.buffer_Y0 = None
             self.buffer_Y1 = None
@@ -580,6 +605,7 @@ class LoadPriorDataset(IterableDataset):
             W_out = W_out.nested_tensor
             Z_out = Z_out.nested_tensor
             A_out = A_out.nested_tensor
+            A_probs_out = A_probs_out.nested_tensor
             Y_obs_out = Y_obs_out.nested_tensor
             Y0_out = Y0_out.nested_tensor
             Y1_out = Y1_out.nested_tensor
@@ -590,6 +616,7 @@ class LoadPriorDataset(IterableDataset):
             W_out,
             Z_out,
             A_out,
+            A_probs_out,
             Y_obs_out,
             Y0_out,
             Y1_out,
