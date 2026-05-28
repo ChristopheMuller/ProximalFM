@@ -481,8 +481,8 @@ class Trainer:
             dataset,
             batch_size=None,
             shuffle=False,
-            num_workers=8,
-            prefetch_factor=16,
+            num_workers=4,
+            prefetch_factor=8,
             pin_memory=True if self.config.prior_device == "cpu" else False,
             pin_memory_device=self.config.device
             if self.config.prior_device == "cpu"
@@ -712,15 +712,24 @@ class Trainer:
 
         dataloader = iter(self.dataloader)
         for step in step_progress:
-            # Get the next batch
-            with Timer() as prior_timer:
-                batch = next(dataloader)
-            prior_time = prior_timer.elapsed
+            try:
+                # Get the next batch safely
+                with Timer() as prior_timer:
+                    batch = next(dataloader)
+                prior_time = prior_timer.elapsed
 
-            # Train the model on the batch
-            with Timer() as train_timer:
-                results = self.run_batch(batch)
-            train_time = train_timer.elapsed
+                # Train the model on the batch
+                with Timer() as train_timer:
+                    results = self.run_batch(batch)
+                train_time = train_timer.elapsed
+
+            except torch.cuda.OutOfMemoryError:
+                if self.master_process:
+                    print(
+                        f"\n[Step {step}] OutOfMemory caught during prior generation/training. Skipping batch."
+                    )
+                torch.cuda.empty_cache()
+                continue
 
             # Clear CUDA cache to free memory
             # torch.cuda.empty_cache()
