@@ -293,7 +293,7 @@ class ProximalValidationGenerator:
 
     def save_all_mechanisms(
         self,
-        mechanisms: Iterable[int] = range(1, 11),
+        mechanisms: Iterable[int] = range(1, 7),
         separate_dirs: bool = True,
     ) -> List[Path]:
         """Save each mechanism's K datasets as a separate batch.
@@ -302,13 +302,13 @@ class ProximalValidationGenerator:
 
             save_dir/mechanism_01/batch_000000.pt
             ...
-            save_dir/mechanism_10/batch_000000.pt
+            save_dir/mechanism_05/batch_000000.pt
 
         If separate_dirs=False, files are saved as:
 
             save_dir/batch_000000.pt  # mechanism 1
             ...
-            save_dir/batch_000009.pt  # mechanism 10
+            save_dir/batch_000004.pt  # mechanism 5
         """
         paths: List[Path] = []
         root = self.save_dir
@@ -409,62 +409,25 @@ class ProximalValidationGenerator:
         T = int(params["seq_len"])
 
         if mechanism_id == 1:
-            return self._mechanism_1_linear_gaussian(T)
+            return self._mechanism_1_linear_heterogeneous(T)
         if mechanism_id == 2:
-            return self._mechanism_2_linear_heterogeneous(T)
+            return self._mechanism_2_smooth_nonlinear(T)
         if mechanism_id == 3:
-            return self._mechanism_3_smooth_nonlinear(T)
+            return self._mechanism_3_lognormal_skew(T)
         if mechanism_id == 4:
-            return self._mechanism_4_categorical(T)
+            return self._mechanism_4_dense_rotation(T)
         if mechanism_id == 5:
-            return self._mechanism_5_mixed_tabular(T)
+            return self._mechanism_5_multiplicative(T)
         if mechanism_id == 6:
-            return self._mechanism_6_latent_effect_modification(T)
-        if mechanism_id == 7:
-            return self._mechanism_7_weak_redundant_omitted_edges(T)
-        if mechanism_id == 8:
-            return self._mechanism_8_positivity_stress(T)
-        if mechanism_id == 9:
-            return self._mechanism_9_multimodal_mixture(T)
-        if mechanism_id == 10:
-            return self._mechanism_10_two_timepoint_summary(T)
+            return self._mechanism_6_trig_interference(T)
 
         raise ValueError(f"Unknown mechanism_id={mechanism_id}")
 
     # ------------------------------------------------------------------
-    # Mechanism 1: Linear-Gaussian proximal baseline
+    # Mechanism 1: Linear heterogeneous treatment effect
     # ------------------------------------------------------------------
 
-    def _mechanism_1_linear_gaussian(self, T: int) -> Tuple[Tensor, ...]:
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-        X, U, Z, W = self._linear_proxy_skeleton(T, d_U, d_X, d_W, d_Z)
-
-        raw_logit = (
-            self._linear(X, 1)
-            + self._linear(U, 1)
-            + self._linear(Z, 1)
-            + self._rsu_scalar(-0.5, 0.5)
-        )
-        p = self._propensity(raw_logit)
-
-        tau = self._rsu_scalar(0.3, 2.0) * torch.ones(T, 1, dtype=self.dtype)
-        f0 = (
-            self._rsu_scalar(-0.5, 0.5)
-            + self._linear(X, 1)
-            + self._linear(U, 1)
-            + self._linear(W, 1)
-        )
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 2: Linear heterogeneous treatment effect
-    # ------------------------------------------------------------------
-
-    def _mechanism_2_linear_heterogeneous(self, T: int) -> Tuple[Tensor, ...]:
+    def _mechanism_1_linear_heterogeneous(self, T: int) -> Tuple[Tensor, ...]:
         d_U, d_X, d_W, d_Z = self._sample_dims()
         X, U, Z, W = self._linear_proxy_skeleton(T, d_U, d_X, d_W, d_Z)
 
@@ -493,10 +456,10 @@ class ProximalValidationGenerator:
         return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
 
     # ------------------------------------------------------------------
-    # Mechanism 3: Smooth nonlinear continuous proxies
+    # Mechanism 2: Smooth nonlinear continuous proxies
     # ------------------------------------------------------------------
 
-    def _mechanism_3_smooth_nonlinear(self, T: int) -> Tuple[Tensor, ...]:
+    def _mechanism_2_smooth_nonlinear(self, T: int) -> Tuple[Tensor, ...]:
         d_U, d_X, d_W, d_Z = self._sample_dims()
         X = self._standardize(self._randn(T, d_X))
         U = torch.tanh(self._linear(X, d_U)) + self._noise(T, d_U, sigma=0.6)
@@ -535,437 +498,128 @@ class ProximalValidationGenerator:
 
         return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
 
-    # ------------------------------------------------------------------
-    # Mechanism 4: Categorical latent confounder with categorical proxies
-    # ------------------------------------------------------------------
-
-    def _mechanism_4_categorical(self, T: int) -> Tuple[Tensor, ...]:
-        # U is stored as one scalar code column, but internally has M categories.
-        d_U, d_X, d_W, d_Z = self._sample_dims(force_d_U=1)
-        max_categories = max(1, min(5, d_Z, d_W))
-        M = max_categories
-
-        X = self._standardize(self._randn(T, d_X))
-
-        if M == 1:
-            # Degenerate fallback if max_dim_W=max_dim_Z=1. Prefer max dims >=2.
-            u_idx = torch.zeros(T, dtype=torch.long)
-            U_oh = torch.ones(T, 1, dtype=self.dtype)
-        else:
-            u_logits = self._linear(X, M) + self._randn(1, M) * 0.2
-            u_idx = torch.multinomial(
-                torch.softmax(u_logits, dim=1), 1, generator=self.rng
-            ).squeeze(1)
-            U_oh = F.one_hot(u_idx, num_classes=M).to(self.dtype)
-
-        denom = float(max(M - 1, 1))
-        U = 2.0 * (u_idx.to(self.dtype).view(T, 1) / denom) - 1.0
-
-        kappa_z = self._uniform_scalar(1.0, 4.0)
-        kappa_w = self._uniform_scalar(1.0, 4.0)
-
-        z_logits = kappa_z * U_oh + self._linear(X, M, low=0.05, high=0.4)
-        w_logits = kappa_w * U_oh + self._linear(X, M, low=0.05, high=0.4)
-
-        z_idx = torch.multinomial(
-            torch.softmax(z_logits, dim=1), 1, generator=self.rng
-        ).squeeze(1)
-        w_idx = torch.multinomial(
-            torch.softmax(w_logits, dim=1), 1, generator=self.rng
-        ).squeeze(1)
-
-        Z = self._noise(T, d_Z, sigma=0.05)
-        W = self._noise(T, d_W, sigma=0.05)
-        Z[:, :M] = F.one_hot(z_idx, num_classes=M).to(self.dtype)
-        W[:, :M] = F.one_hot(w_idx, num_classes=M).to(self.dtype)
-
-        alpha_u = self._rsu(M, 1)
-        beta_u = self._rsu(M, 1)
-        raw_logit = self._linear(X, 1) + U_oh @ alpha_u + self._linear(Z, 1)
-        p = self._propensity(raw_logit)
-
-        tau = self._rsu_scalar(0.2, 1.5) + self._linear(X, 1, low=0.1, high=0.7)
-        f0 = self._linear(X, 1) + U_oh @ beta_u + self._linear(W, 1)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.8))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 5: Mixed tabular data: continuous, binary, categorical, count
-    # ------------------------------------------------------------------
-
-    def _mechanism_5_mixed_tabular(self, T: int) -> Tuple[Tensor, ...]:
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-
-        d_cont = max(1, d_X // 2)
-        d_bin = max(0, (d_X - d_cont) // 2)
-        d_ord = d_X - d_cont - d_bin
-
-        X_cont = self._standardize(self._randn(T, d_cont))
-        parts = [X_cont]
-
-        if d_bin > 0:
-            p_bin = torch.sigmoid(self._linear(X_cont, d_bin))
-            X_bin = (self._rand(T, d_bin) < p_bin).to(self.dtype)
-            parts.append(X_bin)
-
-        if d_ord > 0:
-            latent_ord = self._linear(X_cont, d_ord) + self._noise(T, d_ord, sigma=0.8)
-            X_ord = torch.bucketize(
-                latent_ord, torch.tensor([-0.7, 0.7], dtype=self.dtype)
-            ).to(self.dtype)
-            X_ord = X_ord - 1.0  # values in {-1, 0, 1}
-            parts.append(X_ord)
-
-        X = torch.cat(parts, dim=1)
-        X = X[:, :d_X]
-
-        U = self._linear(X, d_U) + self._noise(T, d_U, sigma=0.7)
-
-        # Z: first block continuous, second block binary.
-        d_Z_cont = max(1, d_Z // 2)
-        d_Z_bin = d_Z - d_Z_cont
-        Z_cont = (
-            self._linear(X, d_Z_cont)
-            + self._linear(U, d_Z_cont)
-            + self._noise(T, d_Z_cont, sigma=0.4)
-        )
-        z_parts = [Z_cont]
-        if d_Z_bin > 0:
-            p_zb = torch.sigmoid(self._linear(X, d_Z_bin) + self._linear(U, d_Z_bin))
-            Z_bin = (self._rand(T, d_Z_bin) < p_zb).to(self.dtype)
-            z_parts.append(Z_bin)
-        Z = torch.cat(z_parts, dim=1)
-
-        # W: count-like standardized block plus ordinal block.
-        d_W_count = max(1, d_W // 2)
-        d_W_ord = d_W - d_W_count
-        rate_log = (self._linear(X, d_W_count) + self._linear(U, d_W_count)).clamp(
-            -2.0, 2.0
-        )
-        rate = torch.exp(rate_log)
-        W_count_raw = torch.poisson(rate, generator=self.rng)
-        W_count = (W_count_raw - rate) / torch.sqrt(rate + 1e-4)
-        w_parts = [W_count]
-        if d_W_ord > 0:
-            latent_w = (
-                self._linear(X, d_W_ord)
-                + self._linear(U, d_W_ord)
-                + self._noise(T, d_W_ord, sigma=0.8)
-            )
-            W_ord = torch.bucketize(
-                latent_w, torch.tensor([-1.0, 0.0, 1.0], dtype=self.dtype)
-            ).to(self.dtype)
-            W_ord = (W_ord - 1.5) / 1.5
-            w_parts.append(W_ord)
-        W = torch.cat(w_parts, dim=1)
-
-        raw_logit = self._linear(X, 1) + self._linear(U, 1) + self._linear(Z, 1)
-        p = self._propensity(raw_logit)
-
-        tau = self._rsu_scalar(0.2, 1.5) + self._linear(X, 1, low=0.05, high=0.5)
-        f0 = torch.tanh(self._linear(X, 1)) + self._linear(U, 1) + self._linear(W, 1)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 6: Latent effect modification
-    # ------------------------------------------------------------------
-
-    def _mechanism_6_latent_effect_modification(self, T: int) -> Tuple[Tensor, ...]:
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-        X, U, Z, W = self._linear_proxy_skeleton(T, d_U, d_X, d_W, d_Z)
-
-        raw_logit = self._linear(X, 1) + self._linear(U, 1) + self._linear(Z, 1)
-        p = self._propensity(raw_logit)
-
-        tau = (
-            self._rsu_scalar(0.2, 1.2)
-            + self._linear(X, 1, low=0.05, high=0.6)
-            + self._linear(U, 1, low=0.05, high=0.6)
-        )
-        f0 = self._linear(X, 1) + self._linear(U, 1) + self._linear(W, 1)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 7: Weak/redundant proxies and omitted Z->A/W->Y edges
-    # ------------------------------------------------------------------
-
-    def _mechanism_7_weak_redundant_omitted_edges(self, T: int) -> Tuple[Tensor, ...]:
+    def _mechanism_3_lognormal_skew(self, T: int) -> Tuple[Tensor, ...]:
         d_U, d_X, d_W, d_Z = self._sample_dims()
         X = self._standardize(self._randn(T, d_X))
         U = self._linear(X, d_U) + self._noise(T, d_U, sigma=0.8)
 
-        d_Z_rel = max(1, min(d_Z, math.ceil(d_Z / 2)))
-        d_W_rel = max(1, min(d_W, math.ceil(d_W / 2)))
-
-        weak = self._rand(1).item() < 0.30
-        proxy_scale = (
-            self._uniform_scalar(0.1, 0.4) if weak else self._uniform_scalar(0.6, 1.5)
+        Z_raw = (
+            0.5 * self._linear(X, d_Z)
+            + 0.5 * self._linear(U, d_Z)
+            + self._noise(T, d_Z, sigma=0.3)
+        )
+        W_raw = (
+            0.5 * self._linear(X, d_W)
+            + 0.5 * self._linear(U, d_W)
+            + self._noise(T, d_W, sigma=0.3)
         )
 
-        Z_rel = (
-            self._linear(X, d_Z_rel)
-            + proxy_scale * self._linear(U, d_Z_rel)
-            + self._noise(T, d_Z_rel, sigma=0.7)
-        )
-        W_rel = (
-            self._linear(X, d_W_rel)
-            + proxy_scale * self._linear(U, d_W_rel)
-            + self._noise(T, d_W_rel, sigma=0.7)
-        )
+        Z = torch.exp(Z_raw)
+        W = torch.exp(W_raw)
 
-        Z_noise = self._randn(T, d_Z - d_Z_rel) if d_Z > d_Z_rel else self._empty(T)
-        W_noise = self._randn(T, d_W - d_W_rel) if d_W > d_W_rel else self._empty(T)
-        Z = torch.cat([Z_rel, Z_noise], dim=1)
-        W = torch.cat([W_rel, W_noise], dim=1)
+        raw_logit = self._linear(X, 1) + self._linear(U, 1) + self._linear(Z_raw, 1)
+        p = self._propensity(raw_logit)
 
-        # Omitted Z -> A edge: treatment depends on X and U, but not directly on Z.
+        f0 = torch.log1p(X.abs().sum(dim=1, keepdim=True)) * U[:, :1] + 0.1 * W_raw.pow(
+            2
+        ).sum(dim=1, keepdim=True)
+        tau = 0.5 * X[:, :1].pow(2) + torch.tanh(self._linear(X, 1))
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    def _mechanism_4_dense_rotation(self, T: int) -> Tuple[Tensor, ...]:
+
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._standardize(self._randn(T, d_X))
+        U = self._linear(X, d_U) + self._noise(T, d_U, sigma=0.5)
+
+        Z_signal = self._linear(U, d_U)
+        Z_noise = self._noise(T, d_Z - d_U, sigma=1.0)
+        Z_base = torch.cat([Z_signal, Z_noise], dim=1)
+
+        W_signal = self._linear(U, d_U)
+        W_noise = self._noise(T, d_W - d_U, sigma=1.0)
+        W_base = torch.cat([W_signal, W_noise], dim=1)
+
+        Q_Z, _ = torch.linalg.qr(self._randn(d_Z, d_Z))
+        Q_W, _ = torch.linalg.qr(self._randn(d_W, d_W))
+
+        Z = Z_base @ Q_Z
+        W = W_base @ Q_W
+
+        raw_logit = (
+            self._linear(X, 1) + self._linear(U, 1) + self._rsu_scalar() * Z[:, :1]
+        )
+        p = self._propensity(raw_logit)
+
+        f0 = self._linear(X, 1) + self._linear(U, 1) + self._rsu_scalar() * W[:, :1]
+        tau = self._rsu_scalar(0.5, 2.0) + self._linear(X, 1, low=0.1, high=0.5)
+
+        eps_y = self._noise(T, 1, sigma=0.5)
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    def _mechanism_5_multiplicative(self, T: int) -> Tuple[Tensor, ...]:
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+        X = self._standardize(self._randn(T, d_X))
+        U = self._linear(X, d_U) + self._noise(T, d_U, sigma=0.5)
+
+        X_proj_Z = self._linear(X, d_U)
+        X_proj_W = self._linear(X, d_U)
+
+        Z_core = U * torch.sin(X_proj_Z)
+        W_core = U * torch.exp(-torch.abs(X_proj_W))
+
+        Z = self._linear(Z_core, d_Z) + self._noise(T, d_Z, sigma=0.3)
+        W = self._linear(W_core, d_W) + self._noise(T, d_W, sigma=0.3)
+
+        raw_logit = (
+            self._linear(X, 1) + self._linear(U, 1) - 0.5 * Z.mean(dim=1, keepdim=True)
+        )
+        p = self._propensity(raw_logit)
+
+        f0 = self._linear(X, 1) + self._linear(U, 1) + 0.5 * W.mean(dim=1, keepdim=True)
+        tau = torch.ones(T, 1, dtype=self.dtype) * self._rsu_scalar(0.5, 1.5)
+
+        eps_y = self._noise(T, 1, sigma=0.5)
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    def _mechanism_6_trig_interference(self, T: int) -> Tuple[Tensor, ...]:
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+        X = self._standardize(self._randn(T, d_X))
+        U = self._linear(X, d_U) + self._noise(T, d_U, sigma=0.8)
+
+        Z = self._linear(X, d_Z) + U[:, [0 % d_U]] * self._noise(T, d_Z, sigma=0.5)
+        W = self._linear(X, d_W) + U[:, [0 % d_U]] * self._noise(T, d_W, sigma=0.5)
+
         raw_logit = self._linear(X, 1) + self._linear(U, 1)
         p = self._propensity(raw_logit)
 
-        # Omitted W -> Y edge: outcome depends on X and U, but not directly on W.
-        tau = self._rsu_scalar(0.2, 1.5) + self._linear(X, 1, low=0.05, high=0.6)
-        f0 = self._linear(X, 1) + self._linear(U, 1)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
+        # f0 involves high-frequency waves and multiplicative interactions
+        X_proj = self._linear(X, 1)
+        U_proj = self._linear(U, 1)
+        W_proj = self._linear(W, 1)
+
+        f0 = 2.0 * torch.sin(3.0 * X_proj * U_proj) + torch.cos(2.0 * W_proj)
+
+        # Exponential CATE to create heavy tails in the treatment effect
+        tau = torch.exp(0.5 * torch.sin(self._linear(X, 1)))
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.1, 0.5))
         Y0 = f0 + eps_y
         Y1 = f0 + tau + eps_y
 
         return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 8: Positivity/overlap stress test
-    # ------------------------------------------------------------------
-
-    def _mechanism_8_positivity_stress(self, T: int) -> Tuple[Tensor, ...]:
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-        X = self._standardize(self._randn(T, d_X))
-        U = torch.tanh(self._linear(X, d_U)) + self._noise(T, d_U, sigma=0.5)
-        Z = torch.sin(self._linear(U, d_Z) + self._linear(X, d_Z)) + self._noise(
-            T, d_Z, sigma=0.3
-        )
-        W = torch.tanh(self._linear(U, d_W) + self._linear(X, d_W)) + self._noise(
-            T, d_W, sigma=0.3
-        )
-
-        raw = (
-            self._linear(X, 1)
-            + self._linear(U, 1)
-            + self._linear(Z, 1)
-            + Z[:, :1] * X[:, :1]
-        )
-        raw = self._standardize(raw)
-        kappa = self._uniform_scalar(1.5, 4.0)
-        p = self.cfg.overlap_eps + (1.0 - 2.0 * self.cfg.overlap_eps) * torch.sigmoid(
-            kappa * raw
-        )
-        p = p.clamp(self.cfg.overlap_eps, 1.0 - self.cfg.overlap_eps)
-
-        tau = self._rsu_scalar(0.2, 1.5) + 0.4 * torch.sin(self._linear(X, 1))
-        f0 = torch.tanh(self._linear(X, 1)) + self._linear(U, 1) + self._linear(W, 1)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.8))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 9: Multimodal latent mixture
-    # ------------------------------------------------------------------
-
-    def _mechanism_9_multimodal_mixture(self, T: int) -> Tuple[Tensor, ...]:
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-        R = self._randint(2, 4)
-
-        pi = torch.softmax(self._randn(R), dim=0)
-        S = torch.multinomial(pi.expand(T, R), 1, generator=self.rng).squeeze(1)
-
-        X = torch.zeros(T, d_X, dtype=self.dtype)
-        U = torch.zeros(T, d_U, dtype=self.dtype)
-        Z = torch.zeros(T, d_Z, dtype=self.dtype)
-        W = torch.zeros(T, d_W, dtype=self.dtype)
-        raw_logit = torch.zeros(T, 1, dtype=self.dtype)
-        tau = torch.zeros(T, 1, dtype=self.dtype)
-        f0 = torch.zeros(T, 1, dtype=self.dtype)
-
-        for r in range(R):
-            mask = S == r
-            nr = int(mask.sum().item())
-            if nr == 0:
-                continue
-
-            mu_x = self._randn(1, d_X) * self._uniform_scalar(0.5, 1.5)
-            sig_x = self._uniform_scalar(0.5, 1.5)
-            X_r = mu_x + sig_x * self._randn(nr, d_X)
-            X_r = self._standardize(X_r)
-
-            U_r = (
-                self._rsu_scalar(0.3, 1.2)
-                + self._linear(X_r, d_U)
-                + self._noise(nr, d_U, sigma=0.6)
-            )
-            Z_r = (
-                self._linear(X_r, d_Z)
-                + self._linear(U_r, d_Z)
-                + torch.sin(self._linear(U_r, d_Z, low=0.1, high=0.8))
-                + self._noise(nr, d_Z, sigma=0.4)
-            )
-            W_r = (
-                self._linear(X_r, d_W)
-                + self._linear(U_r, d_W)
-                + torch.tanh(self._linear(U_r, d_W, low=0.1, high=0.8))
-                + self._noise(nr, d_W, sigma=0.4)
-            )
-
-            raw_r = (
-                self._linear(X_r, 1)
-                + self._linear(U_r, 1)
-                + self._linear(Z_r, 1)
-                + self._rsu_scalar(-0.5, 0.5)
-            )
-            tau_r = (
-                self._rsu_scalar(0.1, 1.4)
-                + self._linear(X_r, 1, low=0.05, high=0.6)
-                + self._linear(U_r, 1, low=0.05, high=0.6)
-            )
-            f0_r = (
-                torch.sin(self._linear(X_r, 1))
-                + torch.tanh(self._linear(U_r, 1))
-                + self._linear(W_r, 1)
-            )
-
-            X[mask] = X_r
-            U[mask] = U_r
-            Z[mask] = Z_r
-            W[mask] = W_r
-            raw_logit[mask] = raw_r
-            tau[mask] = tau_r
-            f0[mask] = f0_r
-
-        p = self._propensity(raw_logit)
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
-
-    # ------------------------------------------------------------------
-    # Mechanism 10: Two-timepoint proximal-summary mechanism
-    # ------------------------------------------------------------------
-
-    def _mechanism_10_two_timepoint_summary(self, T: int) -> Tuple[Tensor, ...]:
-        """Two-timepoint DGF squeezed into point-treatment batch format.
-
-        A0 is a historical treatment included as a pre-A1 covariate when there is
-        room. The saved A is the final treatment A1. Y0/Y1 are potential outcomes
-        under interventions A1=0/1, holding the generated pre-A1 history fixed.
-        """
-        d_U, d_X, d_W, d_Z = self._sample_dims()
-
-        d_X0 = max(1, d_X // 2)
-        # Reserve one X column for A0 if possible.
-        has_a0_col = d_X >= 3
-        d_X1 = d_X - d_X0 - (1 if has_a0_col else 0)
-        d_X1 = max(0, d_X1)
-
-        d_Z0 = max(1, d_Z // 2)
-        d_Z1 = d_Z - d_Z0
-        d_W0 = max(1, d_W // 2)
-        d_W1 = d_W - d_W0
-
-        X0 = self._standardize(self._randn(T, d_X0))
-        U0 = self._linear(X0, d_U) + self._noise(T, d_U, sigma=0.6)
-        Z0 = (
-            self._linear(X0, d_Z0)
-            + self._linear(U0, d_Z0)
-            + self._noise(T, d_Z0, sigma=0.4)
-        )
-        W0 = (
-            self._linear(X0, d_W0)
-            + self._linear(U0, d_W0)
-            + self._noise(T, d_W0, sigma=0.4)
-        )
-
-        p0 = self._propensity(
-            self._linear(X0, 1) + self._linear(U0, 1) + self._linear(Z0, 1)
-        )
-        A0 = (self._rand(T, 1) < p0).to(self.dtype)
-
-        if d_X1 > 0:
-            X1 = (
-                self._linear(X0, d_X1)
-                + self._linear(U0, d_X1)
-                + self._rsu_scalar(0.2, 1.0) * A0
-                + self._noise(T, d_X1, sigma=0.5)
-            )
-        else:
-            X1 = self._empty(T)
-
-        U1 = 0.6 * U0 + self._linear(X1, d_U) + self._noise(T, d_U, sigma=0.5)
-
-        if d_Z1 > 0:
-            Z1 = (
-                self._linear(X1, d_Z1)
-                + self._linear(U1, d_Z1)
-                + self._noise(T, d_Z1, sigma=0.4)
-            )
-            Z = torch.cat([Z0, Z1], dim=1)
-        else:
-            Z1 = self._empty(T)
-            Z = Z0
-
-        if d_W1 > 0:
-            W1 = (
-                self._linear(X1, d_W1)
-                + self._linear(U1, d_W1)
-                + self._noise(T, d_W1, sigma=0.4)
-            )
-            W = torch.cat([W0, W1], dim=1)
-        else:
-            W1 = self._empty(T)
-            W = W0
-
-        x_parts = [X0]
-        if d_X1 > 0:
-            x_parts.append(X1)
-        if has_a0_col:
-            x_parts.append(A0)
-        X = torch.cat(x_parts, dim=1)[:, :d_X]
-
-        raw_logit = (
-            self._linear(X, 1)
-            + self._linear(U1, 1)
-            + self._linear(Z, 1)
-            + self._rsu_scalar(0.2, 1.0) * A0
-        )
-        p = self._propensity(raw_logit)
-
-        tau = (
-            self._rsu_scalar(0.2, 1.5)
-            + self._linear(X, 1, low=0.05, high=0.6)
-            + self._rsu_scalar(0.1, 0.7) * A0
-        )
-        f0 = (
-            self._linear(X, 1)
-            + self._linear(U0, 1)
-            + self._linear(U1, 1)
-            + self._linear(W, 1)
-            + self._rsu_scalar(0.1, 0.7) * A0
-        )
-        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 1.0))
-        Y0 = f0 + eps_y
-        Y1 = f0 + tau + eps_y
-
-        return self._finalize(U1, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
 
     # ------------------------------------------------------------------
     # Shared DGF helpers
