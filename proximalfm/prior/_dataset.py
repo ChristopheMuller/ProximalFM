@@ -379,15 +379,22 @@ class Prior:
             if xi.ndim == 1:
                 xi = xi.unsqueeze(0)
 
+            # Treat di as an integer, but bound it safely by the actual tensor size
+            actual_di = min(int(di), xi.shape[-1])
+
+            # Slice down to the true active feature width to prevent indexing out of bounds
+            xi_active = xi[:, :actual_di]
             num_features = xi.shape[-1]
-            # Only consider actual features (up to di, ignoring padding)
-            xi = xi[:, :di]
-            # Identify features with more than one unique value (informative features)
-            unique_mask = [len(torch.unique(xi[..., j])) > 1 for j in range(di)]
+            # Identify features with more than one unique value
+            unique_mask = [
+                len(torch.unique(xi_active[:, j])) > 1 for j in range(actual_di)
+            ]
             di_new = sum(unique_mask)
-            # Create new tensor with only informative features, padding the rest
+
+            # Extract the unique features and pad back up to the original size
+            xi_unique = xi_active[:, unique_mask]
             xi_new = F.pad(
-                xi[:, unique_mask],
+                xi_unique,
                 pad=(0, num_features - di_new),
                 mode="constant",
                 value=0,
@@ -401,7 +408,7 @@ class Prior:
         # Padding to max_d if needed
         if X_new.shape[-1] < max_d:
             X_new = F.pad(X_new, (0, max_d - X_new.shape[-1]), mode="constant", value=0)
-        d_new = torch.tensor([min(di, max_d) for di in d_new], device=X_new.device)
+        d_new = torch.tensor([min(int(di), max_d) for di in d_new], device=X_new.device)
 
         return X_new, d_new
 
