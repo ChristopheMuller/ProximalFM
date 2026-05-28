@@ -1,6 +1,6 @@
 training:
   clip_grad: 1.5
-  device: mps
+  device: cuda
   early_stop: 30
   epochs: 1500
   exp_name: "test"
