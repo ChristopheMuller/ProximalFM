@@ -376,11 +376,14 @@ class Prior:
 
         def filter_unique_features(xi: Tensor, di: int) -> Tuple[Tensor, Tensor]:
             """Filters features with only one unique value from a single dataset."""
+            if xi.ndim == 1:
+                xi = xi.unsqueeze(0)
+
             num_features = xi.shape[-1]
             # Only consider actual features (up to di, ignoring padding)
             xi = xi[:, :di]
             # Identify features with more than one unique value (informative features)
-            unique_mask = [len(torch.unique(xi[:, j])) > 1 for j in range(di)]
+            unique_mask = [len(torch.unique(xi[..., j])) > 1 for j in range(di)]
             di_new = sum(unique_mask)
             # Create new tensor with only informative features, padding the rest
             xi_new = F.pad(
