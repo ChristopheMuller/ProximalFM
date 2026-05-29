@@ -4,28 +4,28 @@
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  source: generate
-  output_dir: results/tobedeleted
+  source: load
+  output_dir: synthetic/synthetic_5dim
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_rows: 512    # context samples shown to each estimator
-  n_batch: 50    # number of independent datasets (episodes)
+  n_rows: 1024
+  n_batch: 50
   prop_train: 0.75
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
   prior:
     batch_size: 1
     batch_size_per_gp: 1
-    min_dim_U: 3
-    max_dim_U: 3
-    min_dim_W: 3
-    max_dim_W: 3
-    min_dim_Z: 3
-    max_dim_Z: 3
+    min_dim_U: 1
+    max_dim_U: 5
+    min_dim_W: 1
+    max_dim_W: 5
+    min_dim_Z: 1
+    max_dim_Z: 5
     min_dim_X: 1
-    max_dim_X: 1
+    max_dim_X: 5
     min_seq_len: None
-    max_seq_len: 512
+    max_seq_len: 1024
     log_seq_len: False
     seq_len_per_gp: False
     min_train_size: 0.5
@@ -84,12 +84,12 @@ methods:
     use_W: true
     use_Z: true
 
-  - name: S-TabICL-Oracle
-    cls:   S_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: false
-    is_oracle: true
+  # - name: S-TabICL-Oracle
+  #   cls:   S_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: false
+  #   is_oracle: true
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS
@@ -155,12 +155,12 @@ methods:
     use_W: true
     use_Z: true
 
-  # - name: X-TabICL-Oracle
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: true
-  #   use_Z: false
-  #   is_oracle: true
+  - name: X-TabICL-Oracle
+    cls:   X_Learner
+    base:  tabicl
+    use_W: true
+    use_Z: false
+    is_oracle: true
 
 
   # ── Proximal baselines ───────────────────────────────────────────────────
@@ -172,41 +172,37 @@ methods:
     cls:          P2SLS
     interactions: true
 
-  # - name: KPV-ATE
-  #   cls: NMMRWrappers
-  #   model_type: KernelPV
-  #   estimate_cate: false
-  #   lam1: 0.01
-  #   lam2: 0.01
-  #   split_ratio: 0.5
+  - name: KPV-ATE
+    cls: NMMRWrappers
+    model_type: KernelPV
+    lam1_max: 10
+    lam1_min: 0.001
+    n_lam1_search: 10
+    lam2_max: 10
+    lam2_min: 0.001
+    n_lam2_search: 10
+    split_ratio: 0.5
+    scale: 2.0
 
-  # - name: KPV-CATE
-  #   cls: NMMRWrappers
-  #   model_type: KernelPV
-  #   estimate_cate: true
-  #   lam1: 0.01
-  #   lam2: 0.01
-  #   split_ratio: 0.5
+  - name: PMMR-ATE
+    cls: NMMRWrappers
+    model_type: PMMR
+    estimate_cate: false
+    lam1: 0.01
 
-  # - name: PMMR-ATE
-  #   cls: NMMRWrappers
-  #   model_type: PMMR
-  #   estimate_cate: false
-  #   lam1: 0.01
+  - name: PMMR-CATE
+    cls: NMMRWrappers
+    model_type: PMMR
+    estimate_cate: true
+    lam1: 0.01
 
-  # - name: PMMR-CATE
-  #   cls: NMMRWrappers
-  #   model_type: PMMR
-  #   estimate_cate: true
-  #   lam1: 0.01
+  - name: NMMR-U
+    cls: NMMR
+    loss_name: U_statistic
 
-  # - name: NMMR-U
-  #   cls: NMMR
-  #   loss_name: U_statistic
-
-  # - name: NMMR-V
-  #   cls: NMMR
-  #   loss_name: V_statistic
+  - name: NMMR-V
+    cls: NMMR
+    loss_name: V_statistic
 
   # - name: DFPV-ATE
   #   cls: DFPV
@@ -231,14 +227,7 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       ProximalFM_check3
-    checkpoint: check_3/
-
   - name:       ProximalFM_check1
-    checkpoint: check_1/
-
-  - name:       ProximalFM_check7
-    checkpoint: check_7/
-
-  - name:       ProximalFM_check8
-    checkpoint: check_8/
+    checkpoint: check1/
+  - name:       ProximalFM_check2
+    checkpoint: check2/
