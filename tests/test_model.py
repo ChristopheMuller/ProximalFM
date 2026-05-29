@@ -2,7 +2,7 @@ import torch
 import pytest
 
 # Adjust this import path based on your actual project structure
-from proximalfm._model import TabICL
+from proximalfm._model import ProximalFM
 
 
 @pytest.fixture
@@ -21,7 +21,7 @@ def setup_model_and_data():
     H_A = 1  # Treatment variable
 
     # Initialize a miniature version of TabICL for fast testing
-    model = TabICL(
+    model = ProximalFM(
         embed_dim=16,
         col_num_blocks=1,
         col_nhead=2,

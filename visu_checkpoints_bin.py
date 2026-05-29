@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
 from proximalfm.prior import PriorDataset
-from proximalfm._model import TabICL
+from proximalfm._model import ProximalFM
 
 # %%
 # 1. Configuration & Toggles
@@ -122,7 +122,7 @@ vals_y0, vals_y1, vals_cate = None, None, None
 
 first_ckpt_path = os.path.join(CHECKPOINT_DIR, raw_checkpoints[0])
 first_ckpt = torch.load(first_ckpt_path, map_location="cpu", weights_only=True)
-model = TabICL(**first_ckpt["config"])
+model = ProximalFM(**first_ckpt["config"])
 
 print(f"Tracking evolution across {len(raw_checkpoints)} checkpoints...")
 

@@ -23,7 +23,7 @@ import datetime
 import wandb
 import yaml
 
-from proximalfm._model.tabicl import TabICL
+from proximalfm._model.proximalfm import ProximalFM
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.train._optim import get_scheduler
@@ -254,7 +254,7 @@ class ExperimentLogger:
 
 
 class Trainer:
-    """This class handles the complete training lifecycle for TabICL."""
+    """This class handles the complete training lifecycle for ProximalFM."""
 
     def __init__(self, config):
         self.config = config
@@ -337,7 +337,7 @@ class Trainer:
         torch.backends.cudnn.allow_tf32 = True
 
     def build_model(self):
-        """Build and initialize the TabICL model."""
+        """Build and initialize the ProximalFM model."""
 
         self.model_config = {
             "loss_type": self.loss_type,
@@ -362,7 +362,7 @@ class Trainer:
             "bias_free_ln": self.config.bias_free_ln,
             "recompute": self.config.recompute,
         }
-        model = TabICL(**self.model_config)
+        model = ProximalFM(**self.model_config)
         model.to(device=self.config.device)
 
         checkpoint_path = None

@@ -39,22 +39,15 @@ from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 
 
-class TabICL(nn.Module):
+class ProximalFM(nn.Module):
     """A Tabular In-Context Learning Foundation Model.
 
-    TabICL is a transformer-based architecture for in-context learning on tabular data to make
+    ProximalFM is a transformer-based architecture for in-context learning on tabular data to make
     predictions without fine-tuning. It processes tabular data through three sequential stages:
 
     1. Column-wise embedding creates distribution-aware embeddings
     2. Row-wise interaction captures interactions between features within each row
     3. Dataset-wise in-context learning to learn patterns from labeled examples and make predictions
-
-    This class is the underlying raw PyTorch module for TabICL. It is not
-    intended to be used directly. Instead, use the classes from the top-level
-    `tabicl` package such as :class:`tabicl.TabICLClassifier` or
-    :class:`tabicl.TabICLRegressor` that wrap this class to include the
-    necessary preprocessing of input features and postprocessing of
-    predictions.
 
     Parameters
     ----------

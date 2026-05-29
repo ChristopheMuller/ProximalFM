@@ -84,7 +84,7 @@ from benchmarks.bench_metrics import (
 
 # ── Optional: neural model support ───────────────────────────────────────────
 try:
-    from proximalfm._model.tabicl import TabICL
+    from proximalfm._model.proximalfm import ProximalFM
     from proximalfm.prior._dataset import PriorDataset
 
     _PROXFM_AVAILABLE = True
@@ -408,7 +408,7 @@ def run_neural_model(
     preds_dir: Path,
     force: bool,
 ) -> tuple[str, np.ndarray, np.ndarray] | None:
-    """Load a TabICL checkpoint and run inference."""
+    """Load a ProximalFM checkpoint and run inference."""
     if not _PROXFM_AVAILABLE:
         console.print(
             "    [yellow]⚠[/] proximalfm not installed — skipping neural models."
@@ -464,7 +464,7 @@ def run_neural_model(
 
     # Initialize model using config stashed inside the checkpoint or config file
     mcfg = ckpt.get("config", {})
-    model = TabICL(**mcfg).to(device)
+    model = ProximalFM(**mcfg).to(device)
 
     # Load weights safely (clean up DDP 'module.' prefixes if present)
     state_dict = ckpt.get("state_dict", ckpt)

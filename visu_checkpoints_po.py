@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from proximalfm.prior import PriorDataset
-from proximalfm._model import TabICL
+from proximalfm._model import ProximalFM
 
 # %%
 # 1. Configuration & Generation
@@ -114,7 +114,7 @@ first_checkpoint = torch.load(
     map_location="cpu",
     weights_only=False,
 )
-model = TabICL(**first_checkpoint["config"])
+model = ProximalFM(**first_checkpoint["config"])
 model.eval()
 
 # %%
