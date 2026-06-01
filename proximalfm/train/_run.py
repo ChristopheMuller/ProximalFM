@@ -1032,11 +1032,7 @@ class Trainer:
         if not global_valid:
             return None
 
-        sdpa_ctx = torch.nn.attention.sdpa_kernel(
-            [torch.nn.attention.SDPBackend.MATH, torch.nn.attention.SDPBackend.CUDNN]
-        )
-
-        with sdpa_ctx, self.amp_ctx:
+        with self.amp_ctx:
             # 3. Model predicts logits of shape (B, test_size, nbins * 2)
             pred_logits = self.model(
                 micro_X,
