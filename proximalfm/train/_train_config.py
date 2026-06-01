@@ -7,6 +7,12 @@ def str2bool(value):
     return value.lower() == "true"
 
 
+def nullable_int(value):
+    if value is None or str(value).lower() == "none":
+        return None
+    return int(value)
+
+
 def train_size_type(value):
     """Custom type function to handle both int and float train sizes."""
     value = float(value)
@@ -88,9 +94,9 @@ def build_parser():
     )
     parser.add_argument(
         "--train_dataloader_prefetch_factor",
-        type=int,
-        default=8,
-        help="Number of batches to prefetch for training data loading",
+        type=nullable_int,
+        default=None,
+        help="Number of batches to prefetch (must be None if num_workers=0)",
     )
 
     # Optimization Config
