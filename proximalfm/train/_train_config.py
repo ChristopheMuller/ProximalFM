@@ -80,6 +80,18 @@ def build_parser():
         default=8,
         help="Size of micro-batches for gradient accumulation",
     )
+    parser.add_argument(
+        "--train_dataloader_num_workers",
+        type=int,
+        default=4,
+        help="Number of worker processes for training data loading",
+    )
+    parser.add_argument(
+        "--train_dataloader_prefetch_factor",
+        type=int,
+        default=8,
+        help="Number of batches to prefetch for training data loading",
+    )
 
     # Optimization Config
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")

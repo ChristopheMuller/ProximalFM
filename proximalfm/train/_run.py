@@ -438,55 +438,55 @@ class Trainer:
 
     def configure_prior(self):
         """Set up a tabular dataset generator for proximal synthetic data."""
-        if self.config.prior_dir is None:
+        c = self.config
+        if c.prior_dir is None:
             dataset = PriorDataset(
-                batch_size=self.config.batch_size,
-                batch_size_per_gp=self.config.batch_size_per_gp,
-                min_dim_U=self.config.min_dim_U,
-                max_dim_U=self.config.max_dim_U,
-                min_dim_W=self.config.min_dim_W,
-                max_dim_W=self.config.max_dim_W,
-                min_dim_Z=self.config.min_dim_Z,
-                max_dim_Z=self.config.max_dim_Z,
-                min_dim_X=self.config.min_dim_X,
-                max_dim_X=self.config.max_dim_X,
-                min_seq_len=self.config.min_seq_len,
-                max_seq_len=self.config.max_seq_len,
-                log_seq_len=self.config.log_seq_len,
-                seq_len_per_gp=self.config.seq_len_per_gp,
-                min_train_size=self.config.min_train_size,
-                max_train_size=self.config.max_train_size,
-                replay_small=self.config.replay_small,
-                prior_type=self.config.prior_type,
-                device=self.config.prior_device,
+                batch_size=c.batch_size,
+                batch_size_per_gp=c.batch_size_per_gp,
+                min_dim_U=c.min_dim_U,
+                max_dim_U=c.max_dim_U,
+                min_dim_W=c.min_dim_W,
+                max_dim_W=c.max_dim_W,
+                min_dim_Z=c.min_dim_Z,
+                max_dim_Z=c.max_dim_Z,
+                min_dim_X=c.min_dim_X,
+                max_dim_X=c.max_dim_X,
+                min_seq_len=c.min_seq_len,
+                max_seq_len=c.max_seq_len,
+                log_seq_len=c.log_seq_len,
+                seq_len_per_gp=c.seq_len_per_gp,
+                min_train_size=c.min_train_size,
+                max_train_size=c.max_train_size,
+                replay_small=c.replay_small,
+                prior_type=c.prior_type,
+                device=c.prior_device,
                 n_jobs=1,
             )
         else:
             # Load pre-generated prior data from disk
             dataset = LoadPriorDataset(
-                data_dir=self.config.prior_dir,
-                batch_size=self.config.batch_size,
+                data_dir=c.prior_dir,
+                batch_size=c.batch_size,
                 ddp_world_size=self.ddp_world_size,
                 ddp_rank=self.ddp_rank,
-                start_from=self.config.load_prior_start,
-                delete_after_load=self.config.delete_after_load,
-                device=self.config.prior_device,
+                start_from=c.load_prior_start,
+                delete_after_load=c.delete_after_load,
+                device=c.prior_device,
             )
 
         if self.master_process:
             print(dataset)
 
         # Create dataloader for efficient loading and prefetching
+        use_cuda_prior = "cuda" in getattr(self.config, "prior_device", "cpu")
         self.dataloader = DataLoader(
             dataset,
             batch_size=None,
             shuffle=False,
-            num_workers=4,
-            prefetch_factor=8,
-            pin_memory=True if self.config.prior_device == "cpu" else False,
-            pin_memory_device=self.config.device
-            if self.config.prior_device == "cpu"
-            else "",
+            num_workers=c.train_dataloader_num_workers,
+            prefetch_factor=c.train_dataloader_prefetch_factor,
+            pin_memory=True if not use_cuda_prior else False,
+            pin_memory_device=self.config.device if not use_cuda_prior else "",
         )
 
     def configure_validation_prior(self):
