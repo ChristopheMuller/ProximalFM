@@ -468,7 +468,11 @@ def run_neural_model(
 
     # Load weights safely (clean up DDP 'module.' prefixes if present)
     state_dict = ckpt.get("state_dict", ckpt)
-    clean_state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    clean_state_dict = {
+        k.replace("_orig_mod.", "").replace("module.", ""): v
+        for k, v in state_dict.items()
+    }
+
     model.load_state_dict(clean_state_dict, strict=False)
     model.eval()
 
@@ -497,7 +501,7 @@ def run_neural_model(
 
     preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
     times = np.zeros(N_BATCH, dtype=np.float32)
-    chunk = 10
+    chunk = 3
 
     with torch.no_grad():
         for start in range(0, N_BATCH, chunk):

@@ -940,23 +940,34 @@ class CausalPFN_Estimator(CATEEstimator):
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
 
+# 1. Add a global cache for TabICL models to prevent repeated initializations
+_TABICL_CACHE = {}
+
+
+def _get_cached_tabicl():
+    """Returns a single, globally shared instance of TabICLRegressor."""
+    if not _TABICL_AVAILABLE:
+        raise ImportError("tabicl is not installed.")
+
+    if "default" not in _TABICL_CACHE:
+        with silent():
+            # Adjust initialization parameters if your TabICL setup requires them
+            _TABICL_CACHE["default"] = TabICLRegressor()
+
+    return _TABICL_CACHE["default"]
+
 
 def _make_base_model(name: str):
-    """Return a fresh sklearn estimator by short name.
-
-    Why a factory function rather than a class dict?
-        RandomForestRegressor must not share random_state across instances
-        or arms — returning a new object each call prevents accidental aliasing.
-    """
-    if name == "tabicl" and not _TABICL_AVAILABLE:
-        raise ImportError("tabicl is not installed.")
+    """Return a fresh sklearn estimator by short name (or cached for FMs)."""
+    if name == "tabicl":
+        # 2. Divert to the cached singleton instance instead of creating a new one
+        return _get_cached_tabicl()
 
     factories: dict[str, Callable] = {
         "linear": LinearRegression,
         "rf": lambda: RandomForestRegressor(
             n_estimators=100, max_depth=5, random_state=42
         ),
-        "tabicl": TabICLRegressor if _TABICL_AVAILABLE else lambda: None,
     }
 
     if name not in factories:

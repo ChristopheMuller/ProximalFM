@@ -331,18 +331,15 @@ def make_combined_rich_table(
     from rich.table import Table
     from rich import box
 
-    # 1. Compute average ranking per episode (dataset) based on CATE RMSE
-    ranks = all_results.groupby("episode")["cate_rmse"].rank(method="min")
-    avg_ranks = all_results.assign(rank=ranks).groupby("method")["rank"].mean()
-
-    # 2. Sort methods by average rank (lowest/best rank first)
-    avg_ranks = avg_ranks.sort_values(ascending=True)
+    # 1. SORTING: Determine method ordering strictly by mean CATE RMSE (ascending)
+    cate_rmse_means = (
+        all_results.groupby("method")["cate_rmse"].mean().sort_values(ascending=True)
+    )
 
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
 
-    # ── ATE Columns ──
-    tbl.add_column("Avg Rank", justify="right")
+    # ── ATE Columns ── (ATE Rank column removed)
     tbl.add_column("ATE RMSE", justify="right")
     tbl.add_column("ATE Regret", justify="right")
 
@@ -354,9 +351,7 @@ def make_combined_rich_table(
 
     tbl.add_column("Time (s)", justify="right")
 
-    # Get styles
-    avg_rank_styles = _get_column_styles(avg_ranks, "Avg Rank")
-
+    # Get styles for metrics
     ate_styles = {
         "RMSE": _get_column_styles(
             ate_summary.get("RMSE", pd.Series(dtype=float)), "RMSE"
@@ -385,9 +380,8 @@ def make_combined_rich_table(
         ),
     }
 
-    # 3. Iterate over the sorted index instead of ate_summary.index
-    for method in avg_ranks.index:
-        # Fallback to empty series if a method is somehow missing from the summaries
+    # 2. Iterate over the sorted index (ordered by CATE RMSE ascending)
+    for method in cate_rmse_means.index:
         ate_row = (
             ate_summary.loc[method]
             if method in ate_summary.index
@@ -407,18 +401,8 @@ def make_combined_rich_table(
             formatted_val = format_str.format(val)
             return f"[{style}]{formatted_val}[/{style}]" if style else formatted_val
 
-        # Format rank specifically
-        rank_val = avg_ranks.get(method, float("nan"))
-        rank_style = avg_rank_styles.get(method, "")
-        formatted_rank = f"{rank_val:.2f}" if not pd.isna(rank_val) else "-"
-        styled_rank = (
-            f"[{rank_style}]{formatted_rank}[/{rank_style}]"
-            if rank_style
-            else formatted_rank
-        )
-
+        # Stacking cells dynamically matching our updated column structure
         cells = [
-            styled_rank,
             get_styled(ate_row, "RMSE", ate_styles),
             get_styled(ate_row, "Median Regret", ate_styles, "{:.2f}x"),
             get_styled(cate_row, "Median R²", cate_styles),
