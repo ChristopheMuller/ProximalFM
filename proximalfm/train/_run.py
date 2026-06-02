@@ -375,8 +375,23 @@ class Trainer:
             model_state_dict = model.state_dict()
             filtered_state_dict = {}
 
-            # 1. Filter weights based on TRANSFER_RULES
-            for name, weight in old_state_dict.items():
+            clean_old_state_dict = {}
+            for k, v in old_state_dict.items():
+                clean_key = k
+                # Remove DDP wrapper prefix if present
+                if clean_key.startswith("module."):
+                    clean_key = clean_key[7:]
+                # Remove torch.compile wrapper prefix if present
+                if clean_key.startswith("_orig_mod."):
+                    clean_key = clean_key[10:]
+                # Catch edge cases where DDP wraps a compiled model (module._orig_mod.)
+                if clean_key.startswith("_orig_mod."):
+                    clean_key = clean_key[10:]
+
+                clean_old_state_dict[clean_key] = v
+
+            # 1. Filter weights based on TRANSFER_RULES using the clean state dict
+            for name, weight in clean_old_state_dict.items():
                 if (
                     name in model_state_dict
                     and weight.shape == model_state_dict[name].shape
@@ -389,7 +404,6 @@ class Trainer:
 
             # 2. Load the allowed weights (strict=False leaves "scratch" weights as random)
             model.load_state_dict(filtered_state_dict, strict=False)
-
         # 3. Apply freezing logic
         for name, param in model.named_parameters():
             state = get_parameter_state(name, TRANSFER_RULES)
