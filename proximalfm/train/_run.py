@@ -284,15 +284,7 @@ class Trainer:
         self.eval_buffer_episodes = getattr(self.config, "eval_buffer_episodes", 64)
 
     def configure_ddp(self):
-        """Set up distributed training and system configuration.
-
-        This method:
-        1. Configures distributed data parallel (DDP) if enabled
-        2. Sets up device and process information
-        3. Adjusts batch size for multi-GPU training
-        4. Sets random seeds for reproducibility
-        """
-        # Setup distributed training
+        """Set up distributed training and system configuration."""
         self.ddp = int(os.environ.get("RANK", -1)) != -1
 
         if self.ddp:
@@ -304,7 +296,6 @@ class Trainer:
             self.config.device = f"cuda:{self.ddp_local_rank}"
             torch.cuda.set_device(self.config.device)
 
-            # Adjust batch size for distributed training
             original_batch_size = self.config.batch_size
             self.config.batch_size = math.ceil(
                 original_batch_size / self.ddp_world_size
@@ -329,7 +320,6 @@ class Trainer:
 
         self.curr_step = 0
 
-        # Set random seeds
         seed_offset = self.ddp_rank if self.ddp else 0
         np.random.seed(self.config.np_seed + seed_offset)
         torch.manual_seed(self.config.torch_seed + seed_offset)
@@ -371,6 +361,9 @@ class Trainer:
         elif hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
             checkpoint_path = self.get_latest_checkpoint()
 
+        loaded_params_count = 0
+        total_model_params = sum(p.numel() for p in model.parameters())
+
         if checkpoint_path and os.path.exists(checkpoint_path):
             if self.master_process:
                 print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
@@ -391,6 +384,8 @@ class Trainer:
                     state = get_parameter_state(name, TRANSFER_RULES)
                     if state in ["finetune", "freeze"]:
                         filtered_state_dict[name] = weight
+                        # Track the count of weights successfully mapped over
+                        loaded_params_count += weight.numel()
 
             # 2. Load the allowed weights (strict=False leaves "scratch" weights as random)
             model.load_state_dict(filtered_state_dict, strict=False)
@@ -408,8 +403,19 @@ class Trainer:
             frozen_params = sum(
                 p.numel() for p in model.parameters() if not p.requires_grad
             )
+
+            # Calculate what percentage of the architecture came from the checkpoint
+            pct_loaded = (
+                (loaded_params_count / total_model_params * 100)
+                if total_model_params > 0
+                else 0.0
+            )
+
             print(
-                f"Model built: {num_params:,} trainable params | {frozen_params:,} frozen params."
+                f"Model built: {num_params:,} trainable params | "
+                f"{frozen_params:,} frozen params.\n"
+                f"Checkpoint tracking: {loaded_params_count:,}/{total_model_params:,} "
+                f"parameters loaded from checkpoint ({pct_loaded:.2f}%)."
             )
 
             # Route summary logging through the new Logger class
@@ -417,7 +423,9 @@ class Trainer:
                 {
                     "trainable_params": num_params,
                     "frozen_params": frozen_params,
-                    "total_params": num_params + frozen_params,
+                    "total_params": total_model_params,
+                    "loaded_checkpoint_params": loaded_params_count,
+                    "pct_params_loaded": pct_loaded,
                 }
             )
 
