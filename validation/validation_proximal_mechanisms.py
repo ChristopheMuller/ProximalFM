@@ -245,8 +245,8 @@ class ProximalValidationGenerator:
             U, X, W, Z, A, A_probs, Y_obs, Y0, Y1,
             d_U, d_X, d_W, d_Z, seq_lens, train_sizes
         """
-        if not 1 <= mechanism_id <= 12:
-            raise ValueError("mechanism_id must be in {1, ..., 12}")
+        if not 1 <= mechanism_id <= 18:
+            raise ValueError("mechanism_id must be in {1, ..., 18}")
 
         B = int(batch_size or self.cfg.K)
         T = int(seq_len or self.cfg.seq_len)
@@ -370,7 +370,7 @@ class ProximalValidationGenerator:
 
     def save_all_mechanisms(
         self,
-        mechanisms: Iterable[int] = range(1, 13),
+        mechanisms: Iterable[int] = range(1, 19),
         separate_dirs: bool = True,
     ) -> List[Path]:
         """Save each mechanism's K datasets as a separate batch.
@@ -486,32 +486,31 @@ class ProximalValidationGenerator:
         T = int(params["seq_len"])
         train_n = int(params.get("train_size", max(1, T // 2)))
 
-        if mechanism_id == 1:
-            return self._mechanism_1_linear_heterogeneous(T)
-        if mechanism_id == 2:
-            return self._mechanism_2_smooth_nonlinear(T)
-        if mechanism_id == 3:
-            return self._mechanism_3_lognormal_skew(T)
-        if mechanism_id == 4:
-            return self._mechanism_4_dense_rotation(T)
-        if mechanism_id == 5:
-            return self._mechanism_5_multiplicative(T)
-        if mechanism_id == 6:
-            return self._mechanism_6_trig_interference(T)
-        if mechanism_id == 7:
-            return self._mechanism_7_mixed_tabular(T)
-        if mechanism_id == 8:
-            return self._mechanism_8_latent_sites(T)
-        if mechanism_id == 9:
-            return self._mechanism_9_weak_proxies(T)
-        if mechanism_id == 10:
-            return self._mechanism_10_limited_overlap_thresholds(T)
-        if mechanism_id == 11:
-            return self._mechanism_11_censored_heavy_tail(T)
-        if mechanism_id == 12:
-            return self._mechanism_12_train_query_shift(T, train_n)
+        dispatch = {
+            1: lambda: self._mechanism_1_linear_heterogeneous(T),
+            2: lambda: self._mechanism_2_smooth_nonlinear(T),
+            3: lambda: self._mechanism_3_lognormal_skew(T),
+            4: lambda: self._mechanism_4_dense_rotation(T),
+            5: lambda: self._mechanism_5_multiplicative(T),
+            6: lambda: self._mechanism_6_trig_interference(T),
+            7: lambda: self._mechanism_7_mixed_tabular(T),
+            8: lambda: self._mechanism_8_latent_sites(T),
+            9: lambda: self._mechanism_9_weak_proxies(T),
+            10: lambda: self._mechanism_10_limited_overlap_thresholds(T),
+            11: lambda: self._mechanism_11_censored_heavy_tail(T),
+            12: lambda: self._mechanism_12_train_query_shift(T, train_n),
+            13: lambda: self._mechanism_13_factor_model_proxies(T),
+            14: lambda: self._mechanism_14_tree_structured(T),
+            15: lambda: self._mechanism_15_gp_surface(T),
+            16: lambda: self._mechanism_16_discrete_latent(T),
+            17: lambda: self._mechanism_17_near_null_effect(T),
+            18: lambda: self._mechanism_18_multiplicative_confounding(T),
+        }
 
-        raise ValueError(f"Unknown mechanism_id={mechanism_id}")
+        if mechanism_id not in dispatch:
+            raise ValueError(f"Unknown mechanism_id={mechanism_id}")
+
+        return dispatch[mechanism_id]()
 
     # ------------------------------------------------------------------
     # Mechanism 1: Linear heterogeneous treatment effect
@@ -655,7 +654,7 @@ class ProximalValidationGenerator:
         p = self._propensity(raw_logit)
 
         f0 = self._linear(X, 1) + self._linear(U, 1) + self._rsu_scalar() * W[:, :1]
-        tau = self._rsu_scalar(0.5, 2.0) + self._linear(X, 1, low=0.1, high=0.5)
+        tau = self._rsu_scalar(0.5, 1.5) * torch.sigmoid(self._linear(X, 1) * X[:, :1])
 
         eps_y = self._noise(T, 1, sigma=0.5)
         Y0 = f0 + eps_y
@@ -687,7 +686,7 @@ class ProximalValidationGenerator:
         p = self._propensity(raw_logit)
 
         f0 = self._linear(X, 1) + self._linear(U, 1) + 0.5 * W.mean(dim=1, keepdim=True)
-        tau = torch.ones(T, 1, dtype=self.dtype) * self._rsu_scalar(0.5, 1.5)
+        tau = self._rsu_scalar(0.3, 1.0) * torch.exp(0.4 * (X[:, :1] * U[:, :1]))
 
         eps_y = self._noise(T, 1, sigma=0.5)
         Y0 = f0 + eps_y
@@ -1042,6 +1041,338 @@ class ProximalValidationGenerator:
         tau = 0.5 + 0.5 * torch.sin(self._linear(X, 1)) + 0.3 * torch.sigmoid(X[:, :1])
 
         eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.7))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 13: Linear factor-model proxies, nonlinear outcome
+    # ------------------------------------------------------------------
+
+    def _mechanism_13_factor_model_proxies(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        Classical factor-analytic proxy model.
+
+        Z and W are noisy measurements of U, optionally shifted by X.
+        The proxy system is linear, but the outcome and treatment effect are
+        nonlinear, so P2SLS/OLS should not automatically win.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._correlated_X(T, d_X)
+        U = 0.7 * self._linear(X, d_U) + self._noise(
+            T, d_U, sigma=self._log_unif_scalar(0.5, 1.2)
+        )
+
+        lambda_Z = self._rsu(d_U, d_Z, low=0.6, high=1.5)
+        lambda_W = self._rsu(d_U, d_W, low=0.6, high=1.5)
+
+        Z = (
+            U @ lambda_Z
+            + 0.3 * self._linear(X, d_Z)
+            + self._noise(T, d_Z, sigma=self._log_unif_scalar(0.3, 1.0))
+        )
+        W = (
+            U @ lambda_W
+            + 0.3 * self._linear(X, d_W)
+            + self._noise(T, d_W, sigma=self._log_unif_scalar(0.3, 1.0))
+        )
+
+        raw_logit = (
+            0.6 * self._linear(X, 1)
+            + 1.0 * self._linear(U, 1)
+            + 0.8 * self._linear(Z, 1)
+        )
+        p = self._propensity(raw_logit)
+
+        w_proj = self._linear(W, 1)
+        u_proj = self._linear(U, 1)
+        x_proj = self._linear(X, 1)
+
+        f0 = (
+            0.5 * self._linear(X, 1)
+            + torch.tanh(u_proj)
+            + 0.7 * torch.sign(w_proj) * torch.sqrt(w_proj.abs() + 1e-3)
+            + 0.4 * torch.sin(x_proj * u_proj)
+        )
+
+        tau = (
+            0.3
+            + 0.8 * (X[:, :1] > 0.0).to(self.dtype) * torch.sigmoid(x_proj)
+            + 0.2 * torch.tanh(u_proj)
+        )
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.8))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 14: Tree / rule-based structural response
+    # ------------------------------------------------------------------
+
+    def _mechanism_14_tree_structured(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        Piecewise-constant/tabular rule mechanism.
+
+        This mimics rule-based treatment policies and subgroup-specific outcome
+        surfaces. It is intentionally non-smooth and hard for OLS.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._correlated_X(T, d_X)
+        U = 0.6 * self._linear(X, d_U) + self._noise(T, d_U, sigma=0.7)
+
+        Z = self._linear(torch.cat([X, U], dim=1), d_Z) + self._noise(T, d_Z, sigma=0.5)
+        W = self._linear(torch.cat([X, U], dim=1), d_W) + self._noise(T, d_W, sigma=0.5)
+
+        outcome_regions = self._random_tree_regions(X, U, depth=3).view(-1)
+        n_regions = int(outcome_regions.max().item()) + 1
+
+        region_base = self._rsu(n_regions, 1, low=0.5, high=2.0)
+        region_tau = self._rsu(n_regions, 1, low=0.1, high=1.4)
+
+        f0 = (
+            region_base[outcome_regions]
+            + 0.5 * torch.tanh(self._linear(W, 1))
+            + 0.2 * torch.relu(X[:, :1])
+        )
+
+        tau = (
+            region_tau[outcome_regions]
+            + 0.2 * (X[:, :1] > 0.5).to(self.dtype)
+            - 0.2 * (X[:, :1] < -0.5).to(self.dtype)
+        )
+
+        treatment_regions = self._random_tree_regions(X, U, depth=2).view(-1)
+        n_treat_regions = int(treatment_regions.max().item()) + 1
+        region_logits = self._rsu(n_treat_regions, 1, low=0.5, high=2.0)
+
+        raw_logit = (
+            region_logits[treatment_regions]
+            + 0.8 * torch.tanh(self._linear(Z, 1))
+            + 0.4 * self._linear(X, 1)
+        )
+        p = self._propensity(raw_logit)
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.15, 0.6))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 15: Random Fourier feature / GP-like smooth surface
+    # ------------------------------------------------------------------
+
+    def _mechanism_15_gp_surface(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        GP-like smooth structural functions via random Fourier features.
+
+        This is smooth, but not an MLP prior. It tests whether the model can
+        handle long-range nonlinear similarity structure.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._correlated_X(T, d_X)
+        U = self._rff_feature(X, d_U, n_features=48) + self._noise(T, d_U, sigma=0.6)
+
+        Z = self._rff_feature(
+            torch.cat([X, U], dim=1), d_Z, n_features=48
+        ) + self._noise(T, d_Z, sigma=0.4)
+        W = self._rff_feature(
+            torch.cat([X, U], dim=1), d_W, n_features=48
+        ) + self._noise(T, d_W, sigma=0.4)
+
+        raw_logit = self._rff_feature(torch.cat([X, U, Z], dim=1), 1, n_features=64)
+        p = self._propensity(raw_logit)
+
+        f0 = self._rff_feature(
+            torch.cat([X, U, W], dim=1), 1, n_features=64
+        ) + 0.3 * torch.tanh(self._linear(W, 1))
+
+        tau_raw = self._rff_feature(X, 1, n_features=64)
+        tau = 0.4 + 0.8 * torch.tanh(tau_raw)
+
+        hetero_sigma = 0.15 + 0.4 * torch.sigmoid(self._linear(U, 1))
+        eps_y = hetero_sigma * self._randn(T, 1)
+
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 16: Discrete latent confounding
+    # ------------------------------------------------------------------
+
+    def _mechanism_16_discrete_latent(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        U is approximately a discrete latent class.
+
+        This is realistic for patient types, customer segments, hospitals, etc.
+        It is intentionally different from continuous smooth latent priors.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        n_clusters = self._randint(4, 12)
+        X = self._correlated_X(T, d_X)
+
+        cluster_logits = self._linear(X, n_clusters)
+        cluster_probs = torch.softmax(cluster_logits, dim=1)
+        cluster_ids = torch.multinomial(
+            cluster_probs, num_samples=1, replacement=True, generator=self.rng
+        ).squeeze(1)
+
+        cluster_U = self._rsu(n_clusters, d_U, low=0.5, high=2.0)
+        cluster_base = self._rsu(n_clusters, 1, low=0.5, high=2.0)
+        cluster_tau = self._rsu(n_clusters, 1, low=0.1, high=1.2)
+        cluster_A = self._rsu(n_clusters, 1, low=0.5, high=2.0)
+
+        U = cluster_U[cluster_ids] + self._noise(T, d_U, sigma=0.25)
+
+        Z = (
+            self._linear(U, d_Z)
+            + 0.3 * self._linear(X, d_Z)
+            + self._noise(T, d_Z, sigma=0.5)
+        )
+        W = (
+            self._linear(U, d_W)
+            + 0.3 * self._linear(X, d_W)
+            + self._noise(T, d_W, sigma=0.5)
+        )
+
+        if d_Z >= 2:
+            Z[:, 0:1] = self._binary_columns_from_score(Z[:, 0:1])
+        if d_W >= 2:
+            W[:, 0:1] = self._binary_columns_from_score(W[:, 0:1])
+
+        raw_logit = (
+            cluster_A[cluster_ids]
+            + 0.5 * self._linear(X, 1)
+            + 0.8 * torch.tanh(self._linear(Z, 1))
+        )
+        p = self._propensity(raw_logit)
+
+        f0 = (
+            cluster_base[cluster_ids]
+            + 0.5 * self._linear(X, 1)
+            + 0.7 * torch.tanh(self._linear(W, 1))
+        )
+
+        tau = cluster_tau[cluster_ids] + 0.25 * torch.tanh(self._linear(X, 1))
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.8))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 17: Near-null / sparse effect
+    # ------------------------------------------------------------------
+
+    def _mechanism_17_near_null_effect(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        Near-zero or sparse CATE.
+
+        This tests specificity: the model should not hallucinate nonzero effects
+        just because treatment assignment is confounded.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._correlated_X(T, d_X)
+        U = 0.7 * self._linear(X, d_U) + self._noise(T, d_U, sigma=0.8)
+
+        Z = self._linear(torch.cat([X, U], dim=1), d_Z) + self._noise(T, d_Z, sigma=0.5)
+        W = self._linear(torch.cat([X, U], dim=1), d_W) + self._noise(T, d_W, sigma=0.5)
+
+        raw_logit = (
+            0.8 * self._linear(X, 1)
+            + 1.2 * self._linear(U, 1)
+            + 0.8 * torch.tanh(self._linear(Z, 1))
+        )
+        p = self._propensity(raw_logit)
+
+        x0 = X[:, :1]
+        hinge = torch.relu(x0 - self._uniform_scalar(-0.3, 0.5))
+
+        f0 = (
+            0.6 * self._linear(X, 1)
+            + 0.8 * torch.tanh(self._linear(U, 1))
+            + 0.8
+            * torch.sign(self._linear(W, 1))
+            * torch.sqrt(self._linear(W, 1).abs() + 1e-3)
+            + 0.4 * hinge
+        )
+
+        null_frac = self._uniform_scalar(0.6, 0.95)
+        is_null = self._rand(T, 1) < null_frac
+
+        tau_nonzero = self._rsu_scalar(0.05, 0.35) * torch.tanh(self._linear(X, 1))
+        tau = torch.where(
+            is_null,
+            torch.zeros(T, 1, dtype=self.dtype),
+            tau_nonzero,
+        )
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.25, 1.0))
+        Y0 = f0 + eps_y
+        Y1 = f0 + tau + eps_y
+
+        return self._finalize(U, X, W, Z, p, Y0, Y1, d_U, d_X, d_W, d_Z)
+
+    # ------------------------------------------------------------------
+    # Mechanism 18: Multiplicative confounding
+    # ------------------------------------------------------------------
+
+    def _mechanism_18_multiplicative_confounding(self, T: int) -> Tuple[Tensor, ...]:
+        """
+        Treatment probability depends on X * U interactions.
+
+        This creates genuinely non-additive confounding while preserving the
+        proximal exclusion restrictions.
+        """
+        d_U, d_X, d_W, d_Z = self._sample_dims()
+
+        X = self._correlated_X(T, d_X)
+        U = 0.6 * self._linear(X, d_U) + self._noise(T, d_U, sigma=0.6)
+
+        UX_interact = U[:, :1] * X[:, :1]
+        higher_cross = self._linear(self._linear(X, d_U) * U, 1)
+
+        Z = (
+            self._linear(U, d_Z)
+            + self._rsu_scalar(0.2, 0.8) * X[:, :1]
+            + self._noise(T, d_Z, sigma=0.4)
+        )
+        W = (
+            self._linear(U, d_W)
+            + self._rsu_scalar(0.2, 0.8) * X[:, :1]
+            + self._noise(T, d_W, sigma=0.4)
+        )
+
+        raw_logit = (
+            0.5 * self._linear(X, 1)
+            + 0.8 * self._linear(U, 1)
+            + self._rsu_scalar(0.5, 1.5) * UX_interact
+            + 0.5 * higher_cross
+            + 0.7 * torch.tanh(self._linear(Z, 1))
+        )
+        p = self._propensity(raw_logit)
+
+        f0 = (
+            0.4 * self._linear(X, 1)
+            + self._rsu_scalar(0.5, 1.0) * (U[:, :1] * torch.tanh(self._linear(W, 1)))
+            + self._rsu_scalar(0.3, 0.8)
+            * torch.sigmoid(self._linear(U, 1) + self._linear(X, 1))
+        )
+
+        tau = 0.4 + 0.7 * torch.tanh(self._linear(X, 1) + UX_interact)
+
+        eps_y = self._noise(T, 1, sigma=self._log_unif_scalar(0.2, 0.8))
         Y0 = f0 + eps_y
         Y1 = f0 + tau + eps_y
 
@@ -1492,5 +1823,47 @@ class ProximalValidationGenerator:
             10: "limited_overlap_thresholds",
             11: "censored_heavy_tail",
             12: "train_query_shift",
+            13: "factor_model_proxies",
+            14: "tree_structured",
+            15: "gp_rff_surface",
+            16: "discrete_latent",
+            17: "near_null_effect",
+            18: "multiplicative_confounding",
         }
         return names.get(int(mechanism_id), f"unknown_{mechanism_id}")
+
+    def _random_tree_regions(self, X: Tensor, U: Tensor, depth: int = 3) -> Tensor:
+        """Assign each row to a leaf of a random axis-aligned tree on [X, U]."""
+        features = torch.cat([X, U], dim=1)  # [T, d]
+        T, d = features.shape
+        assignment = torch.zeros(T, dtype=torch.long)
+        n_leaves = 1
+
+        for _ in range(depth):
+            new_assignment = assignment.clone()
+            for leaf_id in range(n_leaves):
+                mask = (assignment == leaf_id).nonzero(as_tuple=True)[0]
+                if len(mask) < 4:
+                    continue
+                feat_idx = self._randint(0, d - 1)
+                vals = features[mask, feat_idx]
+                threshold = vals.median()
+                left_mask = mask[vals <= threshold]
+                right_mask = mask[vals > threshold]
+                new_assignment[right_mask] = 2 * leaf_id + 1
+                new_assignment[left_mask] = 2 * leaf_id
+            assignment = new_assignment
+            n_leaves = int(assignment.max().item()) + 1
+
+        return assignment.unsqueeze(1)  # [T, 1]
+
+    def _rff_feature(self, x: Tensor, out_dim: int, n_features: int = 64) -> Tensor:
+        """Random Fourier Features approximation of RBF-GP sample."""
+        d = x.shape[1]
+        length_scale = self._log_unif_scalar(0.3, 2.0)
+        omega = self._randn(d, n_features) / length_scale  # spectral frequencies
+        phi = torch.cat([torch.cos(x @ omega), torch.sin(x @ omega),], dim=1) / (
+            n_features**0.5
+        )  # [T, 2*n_features]
+        alpha = self._rsu(2 * n_features, out_dim, low=0.3, high=1.5)
+        return phi @ alpha  # [T, out_dim]
