@@ -18,29 +18,6 @@ Pipeline
        d. Print running ATE metrics after each method finishes
     3. (Optional) Run neural model checkpoints
     4. Print final ATE table + CATE table
-
-Design notes
-────────────
-* Incremental saving
-    Each method's predictions are saved to {output_dir}/preds/{name}_preds.npz
-    as soon as they complete.  If the process is interrupted and restarted,
-    already-saved methods are skipped automatically.  Pass --force to redo.
-
-* Parallel execution
-    ProcessPoolExecutor dispatches batches to worker processes.  Each worker
-    calls build_method() to reconstruct the estimator from the config dict
-    (plain-data serialisable) rather than pickling the estimator object itself.
-    This is safer across OS (fork/spawn) and avoids sklearn pickling quirks.
-
-* Live display
-    Rich Progress shows a bar per method with batch count + elapsed time.
-    After each method finishes, a partial results table is printed so you
-    can see which methods are already clearly worse without waiting for the
-    full run.
-
-* No global mutable state
-    Worker functions receive all their inputs as arguments and return plain
-    numpy arrays — no globals, no shared memory, no locks needed.
 """
 
 from __future__ import annotations
@@ -407,8 +384,11 @@ def run_neural_model(
     device_str: str,
     preds_dir: Path,
     force: bool,
-) -> tuple[str, np.ndarray, np.ndarray] | None:
-    """Load a ProximalFM checkpoint and run inference."""
+) -> list[tuple[str, np.ndarray, np.ndarray]] | None:
+    """Load ProximalFM checkpoint(s) and run inference.
+
+    Returns a list of tuples containing (output_name, preds, times).
+    """
     if not _PROXFM_AVAILABLE:
         console.print(
             "    [yellow]⚠[/] proximalfm not installed — skipping neural models."
@@ -417,68 +397,63 @@ def run_neural_model(
 
     name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
+    run_all = model_cfg.get("all", False)
+
+    # 1. Identify which checkpoints we want to process
+    targets = []  # Elements: (display_suffix, target_ckpt_path)
 
     if ckpt_dir.is_file():
-        best_path = ckpt_dir
-        step_suffix = ""
-    else:
-        best_path = ckpt_dir / "best_model.ckpt"
-        step_suffix = ""
+        targets.append(("", ckpt_dir))
+    elif run_all:
+        # Collect ALL checkpoints inside the directory
+        ckpt_files = list(ckpt_dir.glob("*.ckpt"))
+        valid_ckpts = []
+        for f in ckpt_files:
+            match = re.search(r"(\d+)", f.name)
+            step_val = int(match.group(1)) if match else -1
+            valid_ckpts.append((step_val, f))
 
-        if not best_path.exists():
-            # Look for step-XXXX.ckpt files
+        # Sort chronologically/numerically by step count
+        valid_ckpts.sort(key=lambda x: x[0])
+
+        if not valid_ckpts:
+            console.print(
+                f"    [red]✗[/] No checkpoints found in directory: {ckpt_dir}"
+            )
+            return None
+
+        for step, path in valid_ckpts:
+            suffix = f"_step_{step}" if step != -1 else f"_{path.stem}"
+            targets.append((suffix, path))
+        console.print(
+            f"    [dim]Found 'all: true'. Queueing {len(targets)} checkpoints from {ckpt_dir}...[/]"
+        )
+    else:
+        # Default behavior: look for best_model.ckpt or fall back to highest numerical step
+        best_path = ckpt_dir / "best_model.ckpt"
+        if best_path.exists():
+            targets.append(("", best_path))
+        else:
             ckpt_files = list(ckpt_dir.glob("*.ckpt"))
             valid_ckpts = []
-
             for f in ckpt_files:
-                # Extracts numbers from patterns like 'step-1700.ckpt' or '1700.ckpt'
                 match = re.search(r"(\d+)", f.name)
                 if match:
                     valid_ckpts.append((int(match.group(1)), f))
 
             if valid_ckpts:
-                # Sort by step number descending and pick the highest
-                highest_step, best_path = max(valid_ckpts, key=lambda x: x[0])
-                step_suffix = f"_{highest_step}"
+                highest_step, fallback_path = max(valid_ckpts, key=lambda x: x[0])
+                targets.append((f"_{highest_step}", fallback_path))
                 console.print(
-                    f"    [dim]best_model.ckpt not found. Selected highest step: {best_path.name}[/]"
+                    f"    [dim]best_model.ckpt not found. Selected highest step: {fallback_path.name}[/]"
                 )
             else:
                 console.print(f"    [red]✗[/] No checkpoints found in: {ckpt_dir}")
                 return None
 
-    # Append the step number to the name/file if using a step checkpoint
-    output_name = f"{name}{step_suffix}"
-    pred_file = preds_dir / f"{output_name}_preds.npz"
-    # ─────────────────────────────────────────────────────────────────────────
-
-    if pred_file.exists() and not force:
-        console.print(f"    [dim]Skip {output_name!r} — predictions already saved.[/]")
-        loaded = np.load(pred_file)
-        preds = loaded["preds"]
-        times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
-        return output_name, preds, times
-
+    # 2. Iterate through determined targets sequentially
+    completed_runs = []
     device = torch.device(device_str)
-    ckpt = torch.load(best_path, map_location=device, weights_only=False)
-
-    # Initialize model using config stashed inside the checkpoint or config file
-    mcfg = ckpt.get("config", {})
-    model = ProximalFM(**mcfg).to(device)
-
-    # Load weights safely (clean up DDP 'module.' prefixes if present)
-    state_dict = ckpt.get("state_dict", ckpt)
-    clean_state_dict = {
-        k.replace("_orig_mod.", "").replace("module.", ""): v
-        for k, v in state_dict.items()
-    }
-
-    model.load_state_dict(clean_state_dict, strict=False)
-    model.eval()
-
-    console.print(
-        f"    [green]✓[/] Loaded {output_name!r} (step {ckpt.get('curr_step', '?')})"
-    )
 
     N_TRAIN = data["N_TRAIN"]
     N_TEST = data["N_TEST"]
@@ -493,68 +468,103 @@ def run_neural_model(
     d_z = data["d_Z"].to(device, dtype=torch.long)
     d_w = data["d_W"].to(device, dtype=torch.long)
 
-    # Squeeze if necessary to match expected logic
     if a_t.ndim == 3:
         a_t = a_t.squeeze(-1)
     if y_t.ndim == 3:
         y_t = y_t.squeeze(-1)
 
-    preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
-    times = np.zeros(N_BATCH, dtype=np.float32)
-    chunk = 3
+    for suffix, ckpt_path in targets:
+        output_name = f"{name}{suffix}"
+        pred_file = preds_dir / f"{output_name}_preds.npz"
 
-    with torch.no_grad():
-        for start in range(0, N_BATCH, chunk):
-            end = min(start + chunk, N_BATCH)
-            t0 = time.perf_counter()
-
-            micro_X = x_t[start:end]
-            micro_Z = z_t[start:end]
-            micro_W = w_t[start:end]
-            micro_A = a_t[start:end]
-            micro_Y_obs = y_t[start:end]
-            micro_d_X = d_x[start:end]
-            micro_d_Z = d_z[start:end]
-            micro_d_W = d_w[start:end]
-
-            # Truncate feature dimensions for optimization
-            max_X = micro_d_X.max().item()
-            if micro_X.shape[-1] > max_X:
-                micro_X = micro_X[..., :max_X]
-
-            max_W = micro_d_W.max().item()
-            if micro_W.shape[-1] > max_W:
-                micro_W = micro_W[..., :max_W]
-
-            max_Z = micro_d_Z.max().item()
-            if micro_Z.shape[-1] > max_Z:
-                micro_Z = micro_Z[..., :max_Z]
-
-            y_ctx = micro_Y_obs[:, :N_TRAIN]
-
-            pred_cate = model.predict(
-                X=micro_X,
-                Z=micro_Z,
-                W=micro_W,
-                A=micro_A,
-                y_train=y_ctx,
-                d_X=micro_d_X,
-                d_Z=micro_d_Z,
-                d_W=micro_d_W,
-                target="cate",
-                output_type="mean",
+        if pred_file.exists() and not force:
+            console.print(
+                f"    [dim]Skip {output_name!r} — predictions already saved.[/]"
             )
+            loaded = np.load(pred_file)
+            preds = loaded["preds"]
+            times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
+            completed_runs.append((output_name, preds, times))
+            continue
 
-            t1 = time.perf_counter()
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-            chunk_size = end - start
-            avg_time = (t1 - t0) / chunk_size
-            times[start:end] = avg_time
-            preds[start:end] = pred_cate.cpu().numpy()
+        # Initialize model architecture matching checkpoint parameters
+        mcfg = ckpt.get("config", {})
+        model = ProximalFM(**mcfg).to(device)
 
-    np.savez(pred_file, preds=preds, times=times)
-    console.print(f"    [green]✓[/] {output_name} → {pred_file}")
-    return output_name, preds, times
+        # Safely map state weights (handling explicit/implicit module boundaries)
+        state_dict = ckpt.get("state_dict", ckpt)
+        clean_state_dict = {
+            k.replace("_orig_mod.", "").replace("module.", ""): v
+            for k, v in state_dict.items()
+        }
+
+        model.load_state_dict(clean_state_dict, strict=False)
+        model.eval()
+
+        console.print(
+            f"    [green]✓[/] Processing {output_name!r} (step {ckpt.get('curr_step', '?')})"
+        )
+
+        preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
+        times = np.zeros(N_BATCH, dtype=np.float32)
+        chunk = 3
+
+        with torch.no_grad():
+            for start in range(0, N_BATCH, chunk):
+                end = min(start + chunk, N_BATCH)
+                t0 = time.perf_counter()
+
+                micro_X = x_t[start:end]
+                micro_Z = z_t[start:end]
+                micro_W = w_t[start:end]
+                micro_A = a_t[start:end]
+                micro_Y_obs = y_t[start:end]
+                micro_d_X = d_x[start:end]
+                micro_d_Z = d_z[start:end]
+                micro_d_W = d_w[start:end]
+
+                # Truncate active dimensions for execution efficiency
+                max_X = micro_d_X.max().item()
+                if micro_X.shape[-1] > max_X:
+                    micro_X = micro_X[..., :max_X]
+
+                max_W = micro_d_W.max().item()
+                if micro_W.shape[-1] > max_W:
+                    micro_W = micro_W[..., :max_W]
+
+                max_Z = micro_d_Z.max().item()
+                if micro_Z.shape[-1] > max_Z:
+                    micro_Z = micro_Z[..., :max_Z]
+
+                y_ctx = micro_Y_obs[:, :N_TRAIN]
+
+                pred_cate = model.predict(
+                    X=micro_X,
+                    Z=micro_Z,
+                    W=micro_W,
+                    A=micro_A,
+                    y_train=y_ctx,
+                    d_X=micro_d_X,
+                    d_Z=micro_d_Z,
+                    d_W=micro_d_W,
+                    target="cate",
+                    output_type="mean",
+                )
+
+                t1 = time.perf_counter()
+
+                chunk_size = end - start
+                avg_time = (t1 - t0) / chunk_size
+                times[start:end] = avg_time
+                preds[start:end] = pred_cate.cpu().numpy()
+
+        np.savez(pred_file, preds=preds, times=times)
+        console.print(f"    [green]✓[/] {output_name} saved → {pred_file}")
+        completed_runs.append((output_name, preds, times))
+
+    return completed_runs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -695,10 +705,10 @@ def main() -> None:
         device = cfg["run"].get("device", "cpu")
 
         for mcfg in model_cfgs:
-            result = run_neural_model(mcfg, data, device, preds_dir, force)
-            if result is not None:
-                name, preds, times = result
-                accumulated[name] = (preds, times)
+            results = run_neural_model(mcfg, data, device, preds_dir, force)
+            if results is not None:
+                for name, preds, times in results:
+                    accumulated[name] = (preds, times)
 
     # ── Step 4: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 4  Evaluation[/]"))
