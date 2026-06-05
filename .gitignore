@@ -8,7 +8,6 @@ runs/*
 eval_data/*
 results/*
 benchmarks/results/*
-synthetic/*
 wandb/*
 archive/*
 
@@ -17,3 +16,5 @@ archive/*
 *.json
 *.ckpt
 *.txt
+*.npz
+*.csv
