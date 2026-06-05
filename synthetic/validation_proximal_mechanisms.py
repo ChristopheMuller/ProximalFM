@@ -410,7 +410,6 @@ class ProximalValidationGenerator:
 
     def save_batch_sparse(
         self,
-        batch_idx: int,
         U: Tensor,
         X: Tensor,
         W: Tensor,
@@ -427,54 +426,60 @@ class ProximalValidationGenerator:
         seq_lens: Tensor,
         train_sizes: Tensor,
     ) -> None:
-        """Save batch data in the sparse format used by your training generator."""
+        """Standardizes and merges the batch inline into the format expected by the benchmark."""
         B, T, _ = X.shape
+        train_size = int(train_sizes[0].item())
+        n_test = T - train_size
 
-        U_sparse = dense2sparse(
-            U.reshape(-1, U.shape[-1]),
-            d_U.repeat_interleave(T),
-            dtype=torch.float32,
-        )
-        X_sparse = dense2sparse(
-            X.reshape(-1, X.shape[-1]),
-            d_X.repeat_interleave(T),
-            dtype=torch.float32,
-        )
-        W_sparse = dense2sparse(
-            W.reshape(-1, W.shape[-1]),
-            d_W.repeat_interleave(T),
-            dtype=torch.float32,
-        )
-        Z_sparse = dense2sparse(
-            Z.reshape(-1, Z.shape[-1]),
-            d_Z.repeat_interleave(T),
-            dtype=torch.float32,
+        # --- 1. Inline Safe Standardization ---
+        def safe_standardize(tensor: Tensor) -> Tensor:
+            if tensor.shape[-1] == 0:
+                return tensor
+            mu = tensor.mean(dim=1, keepdim=True)
+            std = tensor.std(dim=1, keepdim=True)
+            std = torch.where(std < 1e-5, torch.ones_like(std), std)
+            return (tensor - mu) / std
+
+        X_std = safe_standardize(X)
+        W_std = safe_standardize(W)
+        Z_std = safe_standardize(Z)
+        U_std = safe_standardize(U)
+
+        # --- 2. Target Standardization (Based entirely on training context) ---
+        y_train_obs = Y_obs[:, :train_size]
+        y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
+        y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
+            min=1e-5
         )
 
-        batch_file = self.save_dir / f"batch_{batch_idx:06d}.pt"
-        temp_file = self.save_dir / f"batch_{batch_idx:06d}.pt.tmp"
+        Y_obs_std = (Y_obs - y_context_mean) / y_context_std
 
-        torch.save(
-            {
-                "U": U_sparse.cpu(),
-                "X": X_sparse.cpu(),
-                "W": W_sparse.cpu(),
-                "Z": Z_sparse.cpu(),
-                "A": A.cpu(),
-                "A_probs": A_probs.cpu(),
-                "Y_obs": Y_obs.cpu(),
-                "Y0": Y0.cpu(),
-                "Y1": Y1.cpu(),
-                "d_U": d_U.cpu(),
-                "d_X": d_X.cpu(),
-                "d_W": d_W.cpu(),
-                "d_Z": d_Z.cpu(),
-                "seq_lens": seq_lens.cpu(),
-                "train_sizes": train_sizes.cpu(),
-                "batch_size": B,
-            },
-            temp_file,
-        )
+        # --- 3. Compute explicit standardized ITEs ---
+        y_test_0 = Y0[:, train_size:]
+        y_test_1 = Y1[:, train_size:]
+        true_ITEs_std = ((y_test_1 - y_test_0) / y_context_std).cpu().numpy()
+
+        # --- 4. Format strictly to the target `data.pt` structure ---
+        final_data = {
+            "U": U_std.cpu(),
+            "X": X_std.cpu(),
+            "Z": Z_std.cpu(),
+            "W": W_std.cpu(),
+            "A": A.cpu(),
+            "Y": Y_obs_std.cpu(),
+            "d_X": d_X.cpu(),
+            "d_Z": d_Z.cpu(),
+            "d_W": d_W.cpu(),
+            "true_ITEs": true_ITEs_std,
+            "N_TRAIN": train_size,
+            "N_TEST": n_test,
+            "N_BATCH": B,
+        }
+
+        batch_file = self.save_dir / "data.pt"
+        temp_file = self.save_dir / "data.pt.tmp"
+
+        torch.save(final_data, temp_file)
         temp_file.replace(batch_file)
 
     # ------------------------------------------------------------------

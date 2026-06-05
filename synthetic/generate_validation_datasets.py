@@ -1,14 +1,14 @@
 #%%
-
 from validation_proximal_mechanisms import (
     ValidationGeneratorConfig,
     ProximalValidationGenerator,
 )
+import torch
 
 cfg = ValidationGeneratorConfig(
-    save_dir="new_synt_10dim",
-    K=3,
-    seq_len=2048,
+    save_dir="test",
+    K=5,
+    seq_len=512,
     train_size=0.75,
     min_dim_U=1,
     max_dim_U=10,
@@ -22,5 +22,16 @@ cfg = ValidationGeneratorConfig(
 )
 
 gen = ProximalValidationGenerator(cfg)
-paths = gen.save_all_mechanisms(separate_dirs=False)
+
+mechanisms_to_compile = range(1, 19)
+all_batches = []
+
+print("Generating and collecting mechanism episodes...")
+for mech_id in mechanisms_to_compile:
+    batch = gen.get_batch(mechanism_id=mech_id)
+    all_batches.append(batch)
+
+unpacked = list(zip(*all_batches))
+merged_tensors = [torch.cat(tensors, dim=0) for tensors in unpacked]
+gen.save_batch_sparse(*merged_tensors)
 # %%
