@@ -10,7 +10,7 @@ from proximalfm._model import ProximalFM
 
 # %%
 # 1. Configuration & Toggles
-CHECKPOINT_DIR = "check_3/"
+CHECKPOINT_DIR = "check9/"
 TEST_SAMPLE_IDX = 0
 PLOT_MEAN = True
 PLOT_NORMALIZED = True
@@ -22,15 +22,15 @@ prior = PriorDataset(
     batch_size=1,
     batch_size_per_gp=1,
     min_dim_U=1,
-    max_dim_U=1,
+    max_dim_U=10,
     min_dim_W=1,
-    max_dim_W=1,
+    max_dim_W=10,
     min_dim_Z=1,
-    max_dim_Z=1,
-    min_dim_X=2,
-    max_dim_X=2,
+    max_dim_Z=10,
+    min_dim_X=1,
+    max_dim_X=10,
     min_seq_len=None,
-    max_seq_len=512,
+    max_seq_len=2048,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.8,
@@ -131,10 +131,13 @@ for ckpt_name in raw_checkpoints:
         os.path.join(CHECKPOINT_DIR, ckpt_name), map_location="cpu", weights_only=True
     )
 
-    state_dict = {
-        k.replace("module.", ""): v for k, v in checkpoint["state_dict"].items()
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    clean_state_dict = {
+        k.replace("_orig_mod.", "").replace("module.", ""): v
+        for k, v in state_dict.items()
     }
-    model.load_state_dict(state_dict)
+
+    model.load_state_dict(clean_state_dict)
     model.eval()
 
     with torch.inference_mode():
