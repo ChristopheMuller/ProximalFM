@@ -4,12 +4,12 @@
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  source: load
-  output_dir: synthetic/synthetic_5dim
+  source: generate
+  output_dir: results/tbd
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_rows: 1024
-  n_batch: 50
+  n_rows: 2000
+  n_batch: 10
   prop_train: 0.75
 
   # ── Prior (only used when source=generate; paste the one from the checkpoints)
@@ -17,13 +17,13 @@ data:
     batch_size: 1
     batch_size_per_gp: 1
     min_dim_U: 1
-    max_dim_U: 5
+    max_dim_U: 2
     min_dim_W: 1
-    max_dim_W: 5
+    max_dim_W: 2
     min_dim_Z: 1
-    max_dim_Z: 5
+    max_dim_Z: 2
     min_dim_X: 1
-    max_dim_X: 5
+    max_dim_X: 2
     min_seq_len: None
     max_seq_len: 1024
     log_seq_len: False
@@ -53,12 +53,12 @@ methods:
     use_W: true
     use_Z: true
 
-  - name: S-OLS+AX
-    cls:   S_Learner
-    base:  linear
-    use_W: true
-    use_Z: true
-    interactions: true
+  # - name: S-OLS+AX
+  #   cls:   S_Learner
+  #   base:  linear
+  #   use_W: true
+  #   use_Z: true
+  #   interactions: true
 
   - name: S-RF
     cls:   S_Learner
@@ -78,11 +78,11 @@ methods:
   #   use_W: true
   #   use_Z: false
 
-  - name: S-TabICL
-    cls:   S_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
+  # - name: S-TabICL
+  #   cls:   S_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
 
   # - name: S-TabICL-Oracle
   #   cls:   S_Learner
@@ -92,17 +92,17 @@ methods:
   #   is_oracle: true
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
-  - name: T-OLS
-    cls:   T_Learner
-    base:  linear
-    use_W: true
-    use_Z: true
+  # - name: T-OLS
+  #   cls:   T_Learner
+  #   base:  linear
+  #   use_W: true
+  #   use_Z: true
 
-  - name: T-RF
-    cls:   T_Learner
-    base:  rf
-    use_W: true
-    use_Z: true
+  # - name: T-RF
+  #   cls:   T_Learner
+  #   base:  rf
+  #   use_W: true
+  #   use_Z: true
 
   # - name: T-TabICL-Xonly
   #   cls:   T_Learner
@@ -116,11 +116,11 @@ methods:
   #   use_W: true
   #   use_Z: false
 
-  - name: T-TabICL
-    cls:   T_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
+  # - name: T-TabICL
+  #   cls:   T_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
 
   # - name: T-TabICL-Oracle
   #   cls:   T_Learner
@@ -130,12 +130,12 @@ methods:
   #   is_oracle: true
 
   # ── X-Learner baselines ──────────────────────────────────────────────────
-  - name: X-RF
-    cls:   X_Learner
-    base:  rf
-    use_W: true
-    use_Z: true
-    interactions: false
+  # - name: X-RF
+  #   cls:   X_Learner
+  #   base:  rf
+  #   use_W: true
+  #   use_Z: true
+  #   interactions: false
 
   # - name: X-TabICL-Xonly
   #   cls:   X_Learner
@@ -149,18 +149,18 @@ methods:
   #   use_W: true
   #   use_Z: false
 
-  - name: X-TabICL
-    cls:   X_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: true
+  # - name: X-TabICL
+  #   cls:   X_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: true
 
-  - name: X-TabICL-Oracle
-    cls:   X_Learner
-    base:  tabicl
-    use_W: true
-    use_Z: false
-    is_oracle: true
+  # - name: X-TabICL-Oracle
+  #   cls:   X_Learner
+  #   base:  tabicl
+  #   use_W: true
+  #   use_Z: false
+  #   is_oracle: true
 
 
   # ── Proximal baselines ───────────────────────────────────────────────────
@@ -168,66 +168,48 @@ methods:
     cls:          P2SLS
     interactions: false
 
-  - name: P2SLS+AX
-    cls:          P2SLS
-    interactions: true
+  - name: P-RF
+    cls:          PLearner
+    base:         rf
+    n_splits:     5
+    q_clip:       [-10.0, 10.0]
+    refit_full_nuisance: false
 
-  - name: KPV-ATE
-    cls: NMMRWrappers
-    model_type: KernelPV
-    lam1_max: 10
-    lam1_min: 0.001
-    n_lam1_search: 10
-    lam2_max: 10
-    lam2_min: 0.001
-    n_lam2_search: 10
+  - name: KPV
+    cls:         KernelPV
     split_ratio: 0.5
-    scale: 2.0
 
-  - name: PMMR-ATE
-    cls: NMMRWrappers
-    model_type: PMMR
-    estimate_cate: false
-    lam1: 0.01
+  - name: PMMR
+    cls:        PMMR
+    lam1:       1.0
 
-  - name: PMMR-CATE
-    cls: NMMRWrappers
-    model_type: PMMR
-    estimate_cate: true
-    lam1: 0.01
+  - name: NMMR
+    cls:        NMMR
 
-  - name: NMMR-U
-    cls: NMMR
-    loss_name: U_statistic
+  - name: DFPV
+    cls:        DFPV
 
-  - name: NMMR-V
-    cls: NMMR
-    loss_name: V_statistic
-
-  # - name: DFPV-ATE
-  #   cls: DFPV
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
-  # - name: CausalFM
-  #   cls:  CausalFM
-  #   checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
 
-  # - name: DoPFN
-  #   cls:  DoPFN
-  #   use_W: true
-  #   use_Z: true
-  
-  # - name: CausalPFN
-  #   cls:  CausalPFN
-  #   use_W: true
-  #   use_Z: true
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
+
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: false
+    use_Z: false
+
 
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       ProximalFM_check1
-    checkpoint: check1/
-  - name:       ProximalFM_check2
-    checkpoint: check2/
+  - name:       ProximalFM_check9
+    checkpoint: check9/

@@ -845,6 +845,158 @@ class DFPV_Wrapper(CATEEstimator):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Foundation Model Wrappers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CAUSALFM_CACHE = {}
+_CAUSALPFN_CACHE = {}
+
+
+class CausalFM_Estimator(CATEEstimator):
+    def __init__(self, checkpoint_path: str, use_W: bool = True, use_Z: bool = True):
+        # Lock in CausalFM, kick out NMMR
+        _switch_src_context(target_repo_name="CausalFM", competitor_repo_name="NMMR")
+
+        try:
+            from causalfm.models import StandardCATEModel
+        except ImportError as e:
+            raise ImportError(f"CausalFM import failed even after switch: {e}")
+
+        torch.set_num_threads(1)
+
+        if checkpoint_path not in _CAUSALFM_CACHE:
+            with silent():
+                _CAUSALFM_CACHE[checkpoint_path] = StandardCATEModel.from_pretrained(
+                    checkpoint_path
+                )
+
+        self.model = _CAUSALFM_CACHE[checkpoint_path]
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+        self.ctx_x = None
+        self.ctx_a = None
+        self.ctx_y = None
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        # Build unified covariate matrix (stacking X, W, Z if configured)
+        feat = self.fb.build(X, W=W, Z=Z)
+
+        # Store as PyTorch tensors with correct shapes (n, 1) for A and Y
+        self.ctx_x = torch.Tensor(feat)
+        self.ctx_a = torch.Tensor(A).reshape(-1, 1)
+        self.ctx_y = torch.Tensor(Y).reshape(-1, 1)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        if self.ctx_x is None:
+            raise ValueError("Must call fit() before predict().")
+
+        # Build test covariate matrix
+        feat = self.fb.build(X, W=W, Z=Z)
+        x_test = torch.Tensor(feat)
+
+        with torch.no_grad():
+            result = self.model.estimate_cate(
+                self.ctx_x, self.ctx_a, self.ctx_y, x_test
+            )
+
+        # Convert back to numpy array of shape (n,)
+        return result["cate"].cpu().numpy().squeeze()
+
+
+class DoPFN_Estimator(CATEEstimator):
+    """Wrapper for DoPFNRegressor.
+
+    Uses in-context learning by storing the training data via .fit() and
+    evaluating counterfactuals during .predict().
+    """
+
+    def __init__(
+        self,
+        use_W: bool = True,
+        use_Z: bool = True,
+    ):
+        if not _DOPFN_AVAILABLE:
+            raise ImportError(
+                "DoPFN is not installed or cannot be found. "
+                "Ensure it is installed and sys.path is correct."
+            )
+
+        torch.set_num_threads(1)
+
+        with silent():
+            self.model = DoPFNRegressor()
+
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        feat = self.fb.build(X, A=A, W=W, Z=Z)
+
+        with silent():
+            self.model.fit(feat, Y)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        n = X.shape[0]
+
+        # Build counterfactual covariate matrices
+        feat1 = self.fb.build(X, A=np.ones(n), W=W, Z=Z)
+        feat0 = self.fb.build(X, A=np.zeros(n), W=W, Z=Z)
+
+        with silent():
+            with torch.no_grad():
+                pred1 = self.model.predict(torch.Tensor(feat1))
+                pred0 = self.model.predict(torch.Tensor(feat0))
+
+        # Convert to numpy and calculate CATE (Y1 - Y0)
+        if isinstance(pred1, torch.Tensor):
+            pred1 = pred1.detach().cpu().numpy()
+        if isinstance(pred0, torch.Tensor):
+            pred0 = pred0.detach().cpu().numpy()
+
+        return (pred1 - pred0).squeeze()
+
+
+class CausalPFN_Estimator(CATEEstimator):
+    def __init__(self, use_W: bool = True, use_Z: bool = True):
+        if not _CAUSALPFN_AVAILABLE:
+            raise ImportError("causalpfn is not installed.")
+
+        import torch
+
+        torch.set_num_threads(1)
+
+        if "default" not in _CAUSALPFN_CACHE:
+            with silent():
+                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
+                    device="cpu", verbose=False
+                )
+
+        self.model = _CAUSALPFN_CACHE["default"]
+        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+
+        X_train = np.ascontiguousarray(feat, dtype=np.float32)
+        A_train = np.ascontiguousarray(A.ravel(), dtype=np.float32)
+        Y_train = np.ascontiguousarray(Y.ravel(), dtype=np.float32)
+
+        with silent():
+            self.model.fit(X_train, A_train, Y_train)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        feat = self.fb.build(X, W=W, Z=Z)
+        X_test = np.ascontiguousarray(feat, dtype=np.float32)
+
+        with silent():
+            estimated_cate = self.model.estimate_cate(X_test)
+
+        return np.asarray(estimated_cate).squeeze()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -934,6 +1086,19 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "PMMR": lambda: PMMR_Wrapper(**cfg),
         "NMMR": lambda: NMMR_Wrapper(**cfg),
         "DFPV": lambda: DFPV_Wrapper(**cfg),
+        "CausalFM": lambda: CausalFM_Estimator(
+            checkpoint_path=cfg["checkpoint"],
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        ),
+        "DoPFN": lambda: DoPFN_Estimator(
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        ),
+        "CausalPFN": lambda: CausalPFN_Estimator(
+            use_W=cfg.get("use_W", True),
+            use_Z=cfg.get("use_Z", True),
+        ),
     }
     if cls not in factories:
         raise ValueError(
