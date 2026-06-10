@@ -444,424 +444,72 @@ class P2SLS(CATEEstimator):
         return np.full(X.shape[0], self.ate_)
 
 
-class NMMR_Wrappers(CATEEstimator):
-    def __init__(self, model_type: str, **kwargs):
-        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
+from plearner import BridgeParams, PLearner as BasePLearner, RegressorMixin
 
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.PMMR.model import PMMRModel
-        from src.models.kernelPV.model import KernelPVModel
 
-        self.model_type = model_type
-        self._PVTrainDataSet = PVTrainDataSet
+class ProximalPLearner(CATEEstimator):
+    """Wrapper for the Ghassami & Sverdrup style proximal P-Learner.
 
-        safe_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in ["name", "cls", "model_type", "use_W", "use_Z"]
-        }
-
-        # Safe defaults for KernelPV grid searches if tuning is active
-        if model_type == "KernelPV":
-            if safe_kwargs.get("lam1") is None:
-                safe_kwargs.setdefault("lam1_min", 1e-5)
-                safe_kwargs.setdefault("lam1_max", 1e1)
-                safe_kwargs.setdefault("n_lam1_search", 10)
-            if safe_kwargs.get("lam2") is None:
-                safe_kwargs.setdefault("lam2_min", 1e-5)
-                safe_kwargs.setdefault("lam2_max", 1e1)
-                safe_kwargs.setdefault("n_lam2_search", 10)
-
-        if model_type == "PMMR":
-            self.model = PMMRModel(**safe_kwargs)
-        elif model_type == "KernelPV":
-            self.model = KernelPVModel(**safe_kwargs)
-        else:
-            raise ValueError(f"Unknown NMMR model type: {model_type}")
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        if W is None or Z is None:
-            raise ValueError("NMMR methods require both W and Z proxies.")
-
-        # MONKEY-PATCH THE KERNEL CLASS AT RUNTIME BEFORE FIT() RUNS
-        # This fixes the sigma=0 division-by-zero error during internal tuning loops
-        from src.utils import kernel_func
-
-        def _get_safe_fit(original_fit_func):
-            def safe_fit(instance, data, scale=1.0):
-                original_fit_func(instance, data, scale=scale)
-                if hasattr(instance, "sigma"):
-                    if isinstance(instance.sigma, np.ndarray):
-                        instance.sigma[instance.sigma == 0] = 1e-3
-                    elif instance.sigma == 0:
-                        instance.sigma = 1e-3
-
-            return safe_fit
-
-        if hasattr(kernel_func.ColumnWiseGaussianKernel, "fit") and not hasattr(
-            kernel_func.ColumnWiseGaussianKernel, "_is_patched"
-        ):
-            kernel_func.ColumnWiseGaussianKernel.fit = _get_safe_fit(
-                kernel_func.ColumnWiseGaussianKernel.fit
-            )
-            kernel_func.ColumnWiseGaussianKernel._is_patched = True
-
-        if hasattr(kernel_func.GaussianKernel, "fit") and not hasattr(
-            kernel_func.GaussianKernel, "_is_patched"
-        ):
-            kernel_func.GaussianKernel.fit = _get_safe_fit(
-                kernel_func.GaussianKernel.fit
-            )
-            kernel_func.GaussianKernel._is_patched = True
-
-        train_data = self._PVTrainDataSet(
-            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
-            treatment_proxy=np.asarray(Z),
-            outcome_proxy=np.asarray(W),
-            outcome=np.asarray(Y),
-            backdoor=np.asarray(X),
-        )
-
-        self.model.fit(train_data, data_name="bench")
-        return self
-
-    def predict(self, X, *, W=None, Z=None):
-        n = X.shape[0]
-
-        # Treatment vectors for the ATE point contrast
-        t0 = np.zeros((n, 1))
-        t1 = np.ones((n, 1))
-
-        if self.model_type == "PMMR":
-            # For PMMR ATE, we call predict without passing the backdoor X array
-            predsY0 = self.model.predict(treatment=t0)
-            predsY1 = self.model.predict(treatment=t1)
-            raw_ate = (predsY1 - predsY0).squeeze()
-
-        elif self.model_type == "KernelPV":
-            # Call the native repository ATE method for each treatment value
-            predsY0 = self.model.predict(treatment=t0)
-            predsY1 = self.model.predict(treatment=t1)
-            raw_ate = (predsY1 - predsY0).squeeze()
-
-        # If the backend returns a single scalar ATE, broadcast it to match shape (n,)
-        if np.isscalar(raw_ate) or raw_ate.ndim == 0:
-            return np.full(n, fill_value=float(raw_ate))
-
-        # If it returns a vector (e.g., sample-aligned predictions evaluated at t1 vs t0)
-        return np.asarray(raw_ate).squeeze()
-
-
-# Inside bench_methods.py
-
-
-class NMMR_Estimator(CATEEstimator):
-    def __init__(self, **kwargs):
-        # Local import to prevent global path collisions
-        import sys
-        from pathlib import Path
-
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        nmmr_path = str(PROJECT_ROOT / "NMMR")
-
-        if nmmr_path not in sys.path:
-            sys.path.insert(0, nmmr_path)
-
-        from src.models.NMMR.NMMR_wrapper import NMMRCATEEstimator
-
-        train_params = {
-            "network_width": kwargs.get("network_width", 64),
-            "network_depth": kwargs.get("network_depth", 3),
-            "n_epochs": kwargs.get("n_epochs", 100),
-            "batch_size": kwargs.get("batch_size", 256),
-            "learning_rate": kwargs.get("learning_rate", 1e-3),
-            "loss_name": kwargs.get("loss_name", "U_statistic"),
-        }
-
-        self.model = NMMRCATEEstimator(train_params=train_params)
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        if W is None or Z is None:
-            raise ValueError("NMMR requires W and Z proxies.")
-        self.model.fit(X, A, Y, W, Z)
-        return self
-
-    def predict(self, X, *, W=None, Z=None):
-        return self.model.predict(X)
-
-
-class DFPV_Estimator(CATEEstimator):
-    """Wrapper for the Deep Feature Proxy Variable (DFPV) Model."""
-
-    def __init__(self, **kwargs):
-        import sys
-        from pathlib import Path
-
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
-        # 1. Isolate the environment for DFPV (Assuming it shares the NMMR repo structure)
-        dfpv_repo_path = str(PROJECT_ROOT / "NMMR")
-
-        if dfpv_repo_path not in sys.path:
-            sys.path.insert(0, dfpv_repo_path)
-
-        # 2. Purge the 'src' cache to prevent module collisions
-        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
-        for k in keys:
-            del sys.modules[k]
-
-        # 3. Import classes directly in __init__ after environment is prepped
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.DFPV.model import DFPVModel
-
-        import torch  # Make sure torch is imported here
-
-        torch.set_num_threads(1)
-
-        self._PVTrainDataSet = PVTrainDataSet
-        self._DFPVModel = DFPVModel
-
-        self.lam1 = kwargs.get("lam1", 0.1)
-        self.lam2 = kwargs.get("lam2", 0.1)
-        self.feat_dim = kwargs.get("feat_dim", 16)
-        self.hidden_dim = kwargs.get("hidden_dim", 32)
-        self.split_ratio = kwargs.get("split_ratio", 0.5)
-        self.add_stage1_intercept = kwargs.get("add_stage1_intercept", True)
-        self.add_stage2_intercept = kwargs.get("add_stage2_intercept", True)
-
-        self.model = None
-
-    def _build_mlp(self, in_dim, out_dim):
-        """Constructs a simple MLP for the DFPV feature extractors."""
-        import torch.nn as nn
-
-        return nn.Sequential(
-            nn.Linear(in_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, out_dim),
-        )
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        if W is None or Z is None:
-            raise ValueError("DFPV requires both W and Z proxies.")
-
-        n = X.shape[0]
-
-        # Split data into Stage 1 and Stage 2
-        indices = np.random.permutation(n)
-        split_idx = int(n * self.split_ratio)
-        idx1, idx2 = indices[:split_idx], indices[split_idx:]
-
-        A_2d = np.asarray(A).reshape(-1, 1)
-        Y_2d = np.asarray(Y).reshape(-1, 1)
-        X_2d = np.asarray(X)
-        W_2d = np.asarray(W)
-        Z_2d = np.asarray(Z)
-
-        # Use the class loaded in __init__
-        train1 = self._PVTrainDataSet(
-            treatment=A_2d[idx1],
-            treatment_proxy=Z_2d[idx1],
-            outcome_proxy=W_2d[idx1],
-            outcome=Y_2d[idx1],
-            backdoor=X_2d[idx1],
-        )
-
-        train2 = self._PVTrainDataSet(
-            treatment=A_2d[idx2],
-            treatment_proxy=Z_2d[idx2],
-            outcome_proxy=W_2d[idx2],
-            outcome=Y_2d[idx2],
-            backdoor=X_2d[idx2],
-        )
-
-        dim_A = A_2d.shape[1]
-        dim_X = X_2d.shape[1]
-        dim_W = W_2d.shape[1]
-        dim_Z = Z_2d.shape[1]
-
-        # Instantiate the DFPV model using the class loaded in __init__
-        self.model = self._DFPVModel(
-            treatment_1st_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_2nd_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_proxy_net=self._build_mlp(dim_Z, self.feat_dim),
-            outcome_proxy_net=self._build_mlp(dim_W, self.feat_dim),
-            backdoor_1st_net=self._build_mlp(dim_X, self.feat_dim),
-            backdoor_2nd_net=self._build_mlp(dim_X, self.feat_dim),
-            add_stage1_intercept=self.add_stage1_intercept,
-            add_stage2_intercept=self.add_stage2_intercept,
-        )
-
-        self.model.fit(train1, train2, self.lam1, self.lam2)
-        return self
-
-    def predict(self, X, *, W=None, Z=None):
-        if self.model is None:
-            raise RuntimeError("Must call fit() before predict().")
-
-        n = X.shape[0]
-
-        A1 = np.ones((n, 1))
-        A0 = np.zeros((n, 1))
-
-        y1 = self.model.predict(A1)
-        y0 = self.model.predict(A0)
-
-        return (y1 - y0).squeeze()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Foundation Model Wrappers
-# ─────────────────────────────────────────────────────────────────────────────
-
-_CAUSALFM_CACHE = {}
-_CAUSALPFN_CACHE = {}
-
-
-class CausalFM_Estimator(CATEEstimator):
-    def __init__(self, checkpoint_path: str, use_W: bool = True, use_Z: bool = True):
-        # Lock in CausalFM, kick out NMMR
-        _switch_src_context(target_repo_name="CausalFM", competitor_repo_name="NMMR")
-
-        try:
-            from causalfm.models import StandardCATEModel
-        except ImportError as e:
-            raise ImportError(f"CausalFM import failed even after switch: {e}")
-
-        torch.set_num_threads(1)
-
-        if checkpoint_path not in _CAUSALFM_CACHE:
-            with silent():
-                _CAUSALFM_CACHE[checkpoint_path] = StandardCATEModel.from_pretrained(
-                    checkpoint_path
-                )
-
-        self.model = _CAUSALFM_CACHE[checkpoint_path]
-        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
-
-        self.ctx_x = None
-        self.ctx_a = None
-        self.ctx_y = None
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        # Build unified covariate matrix (stacking X, W, Z if configured)
-        feat = self.fb.build(X, W=W, Z=Z)
-
-        # Store as PyTorch tensors with correct shapes (n, 1) for A and Y
-        self.ctx_x = torch.Tensor(feat)
-        self.ctx_a = torch.Tensor(A).reshape(-1, 1)
-        self.ctx_y = torch.Tensor(Y).reshape(-1, 1)
-        return self
-
-    def predict(self, X, *, W=None, Z=None):
-        if self.ctx_x is None:
-            raise ValueError("Must call fit() before predict().")
-
-        # Build test covariate matrix
-        feat = self.fb.build(X, W=W, Z=Z)
-        x_test = torch.Tensor(feat)
-
-        with torch.no_grad():
-            result = self.model.estimate_cate(
-                self.ctx_x, self.ctx_a, self.ctx_y, x_test
-            )
-
-        # Convert back to numpy array of shape (n,)
-        return result["cate"].cpu().numpy().squeeze()
-
-
-class DoPFN_Estimator(CATEEstimator):
-    """Wrapper for DoPFNRegressor.
-
-    Uses in-context learning by storing the training data via .fit() and
-    evaluating counterfactuals during .predict().
+    Adapts the native cross-fitting and kernel bridge estimation steps
+    to match the benchmark's unified API interface.
     """
 
     def __init__(
         self,
-        use_W: bool = True,
-        use_Z: bool = True,
+        bridge_params: Optional[BridgeParams] = None,
+        final_model: Optional[RegressorMixin] = None,
+        n_splits: int = 3,
+        random_state: Optional[int] = None,
+        q_clip: Optional[tuple[float, float]] = None,
+        refit_full_nuisance: bool = False,
     ):
-        if not _DOPFN_AVAILABLE:
-            raise ImportError(
-                "DoPFN is not installed or cannot be found. "
-                "Ensure it is installed and sys.path is correct."
+        self.bridge_params = (
+            bridge_params if bridge_params is not None else BridgeParams()
+        )
+        self.final_model = final_model
+        self.n_splits = n_splits
+        self.random_state = random_state
+        self.q_clip = q_clip
+        self.refit_full_nuisance = refit_full_nuisance
+
+        # Instantiate the underlying execution engine
+        self.estimator_ = BasePLearner(
+            bridge_params=self.bridge_params,
+            final_model=self.final_model,
+            n_splits=self.n_splits,
+            random_state=self.random_state,
+            q_clip=self.q_clip,
+            refit_full_nuisance=self.refit_full_nuisance,
+        )
+
+    def fit(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: Optional[np.ndarray] = None,
+        Z: Optional[np.ndarray] = None,
+    ) -> "ProximalPLearner":
+        """Unpack proxy arguments and route them to the native P-Learner signature."""
+        if W is None or Z is None:
+            raise ValueError(
+                "ProximalPLearner requires both an outcome proxy (W) and a treatment proxy (Z)."
             )
 
-        torch.set_num_threads(1)
-
-        with silent():
-            self.model = DoPFNRegressor()
-
-        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        feat = self.fb.build(X, A=A, W=W, Z=Z)
-
-        with silent():
-            self.model.fit(feat, Y)
+        # Route arguments to fit(X, Z, W, A, Y)
+        self.estimator_.fit(X=X, Z=Z, W=W, A=A, Y=Y)
         return self
 
-    def predict(self, X, *, W=None, Z=None):
-        n = X.shape[0]
-
-        # Build counterfactual covariate matrices
-        feat1 = self.fb.build(X, A=np.ones(n), W=W, Z=Z)
-        feat0 = self.fb.build(X, A=np.zeros(n), W=W, Z=Z)
-
-        with silent():
-            with torch.no_grad():
-                pred1 = self.model.predict(torch.Tensor(feat1))
-                pred0 = self.model.predict(torch.Tensor(feat0))
-
-        # Convert to numpy and calculate CATE (Y1 - Y0)
-        if isinstance(pred1, torch.Tensor):
-            pred1 = pred1.detach().cpu().numpy()
-        if isinstance(pred0, torch.Tensor):
-            pred0 = pred0.detach().cpu().numpy()
-
-        return (pred1 - pred0).squeeze()
-
-
-class CausalPFN_Estimator(CATEEstimator):
-    def __init__(self, use_W: bool = True, use_Z: bool = True):
-        if not _CAUSALPFN_AVAILABLE:
-            raise ImportError("causalpfn is not installed.")
-
-        import torch
-
-        torch.set_num_threads(1)
-
-        if "default" not in _CAUSALPFN_CACHE:
-            with silent():
-                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
-                    device="cpu", verbose=False
-                )
-
-        self.model = _CAUSALPFN_CACHE["default"]
-        self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
-
-    def fit(self, X, A, Y, *, W=None, Z=None):
-        feat = self.fb.build(X, W=W, Z=Z)
-
-        X_train = np.ascontiguousarray(feat, dtype=np.float32)
-        A_train = np.ascontiguousarray(A.ravel(), dtype=np.float32)
-        Y_train = np.ascontiguousarray(Y.ravel(), dtype=np.float32)
-
-        with silent():
-            self.model.fit(X_train, A_train, Y_train)
-        return self
-
-    def predict(self, X, *, W=None, Z=None):
-        feat = self.fb.build(X, W=W, Z=Z)
-        X_test = np.ascontiguousarray(feat, dtype=np.float32)
-
-        with silent():
-            estimated_cate = self.model.estimate_cate(X_test)
-
-        return np.asarray(estimated_cate).squeeze()
+    def predict(
+        self,
+        X: np.ndarray,
+        *,
+        W: Optional[np.ndarray] = None,
+        Z: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """Predict the CATE (tau) for covariates X."""
+        return self.estimator_.predict(X)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -943,28 +591,12 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_Z=cfg.get("use_Z", True),
         ),
         "P2SLS": lambda: P2SLS(),
-        "CausalFM": lambda: CausalFM_Estimator(
-            checkpoint_path=cfg["checkpoint"],
-            use_W=cfg.get("use_W", True),
-            use_Z=cfg.get("use_Z", True),
-        ),
-        "DoPFN": lambda: DoPFN_Estimator(
-            use_W=cfg.get("use_W", True),
-            use_Z=cfg.get("use_Z", True),
-        ),
-        "CausalPFN": lambda: CausalPFN_Estimator(
-            use_W=cfg.get("use_W", True),
-            use_Z=cfg.get("use_Z", True),
-        ),
-        "NMMRWrappers": lambda: NMMR_Wrappers(
-            model_type=cfg.get("model_type", "PMMR"),
-            **{k: v for k, v in cfg.items() if k not in ["model_type"]},
-        ),
-        "NMMR": lambda: NMMR_Estimator(
-            **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}
-        ),
-        "DFPV": lambda: DFPV_Estimator(
-            **{k: v for k, v in cfg.items() if k not in ["name", "cls"]}
+        "PLearner": lambda: ProximalPLearner(
+            final_model=_make_base_model(cfg.get("base", "rf")),
+            n_splits=cfg.get("n_splits", 3),
+            random_state=cfg.get("random_state", 42),
+            q_clip=cfg.get("q_clip", None),
+            refit_full_nuisance=cfg.get("refit_full_nuisance", False),
         ),
     }
     if cls not in factories:
