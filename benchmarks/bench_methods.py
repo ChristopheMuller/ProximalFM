@@ -382,138 +382,66 @@ class X_Learner(CATEEstimator):
 
 
 class P2SLS(CATEEstimator):
-    """Proximal Two-Stage Least Squares causal estimator.
+    """Proximal Two-Stage Least Squares causal estimator for ATE.
 
     Notation
     ────────
-        Z — treatment-inducing proxy  (instrument; correlated with A, not Y|U,X)
-        W — outcome-inducing proxy    (pre-treatment; correlated with U, not A|U,X)
+        Z — treatment-inducing proxy  (correlated with A, but not Y | U, X)
+        W — outcome-inducing proxy    (pre-treatment; correlated with U, not A | U, X)
         U — unmeasured confounder
 
-    Stage 1  (nuisance / bridge function)
-    ──────────────────────────────────────
-        Ŵ = α₀ + α_A·A + α_X·X + α_Z·Z  [+ α_AX·(A⊗X)  if interactions]
+    Stage 1  (proxy bridge / nuisance regression)
+    ─────────────────────────────────────────────
+        W = α₀ + α_A·A + α_X·X + α_Z·Z + ε
 
-        Why A⊗X in stage 1 when interactions=True?
-            Standard 2SLS requires the first stage to include every exogenous
-            regressor that appears in the structural (second-stage) equation.
-            When interactions=True, A⊗X enters stage 2 as an exogenous column.
-            Omitting it from stage 1 causes the stage-1 residuals to correlate
-            with A⊗X, violating the orthogonality condition needed for
-            consistent estimation of the bridge function coefficients.
+        We estimate E[W | A, X, Z] by linear regression and obtain W_hat.
 
     Stage 2  (outcome / structural equation)
-    ─────────────────────────────────────────
-        Y = β₀ + β_A·A + β_X·X + β_W·Ŵ  [+ β_AX·(A⊗X)  if interactions]
+    ────────────────────────────────────────
+        Y = β₀ + β_A·A + β_X·X + β_W·W_hat + η
 
-        Substituting Ŵ removes the confounding path through W.
-        β_A is the ATE; β_AX encodes effect heterogeneity in X.
-
-    CATE identification and the pre-treatment cancellation
-    ───────────────────────────────────────────────────────
-        W is measured *before* treatment, so the potential outcome W(a) = W
-        for all a — intervening on A does not change W.  This means that in
-        the structural equation the term β_W·W is the *same* under A=1 and A=0:
-
-            CATE(x, w) = h(w, 1, x) − h(w, 0, x)
-                       = (β_A + β_X·x + β_W·w + β_AX·x)
-                         − (β_X·x + β_W·w)
-                       = β_A + β_AX·x
-
-        The β_W·w terms cancel exactly.  The CATE depends only on X, not on W.
-
-        Consequence for predict():
-            We must use the *same* W (or Ŵ) for both counterfactuals.
-            Using W_hat(A=1) for the A=1 branch and W_hat(A=0) for the A=0
-            branch introduces a spurious term  β_W·(Ŵ₁ − Ŵ₀)  that has no
-            causal interpretation and biases the CATE estimate.
-
-    Args:
-        interactions : if True, append A×X columns to *both* stage 1 and
-                       stage 2 feature matrices.
+        The coefficient β_A is the ATE under the linear proximal 2SLS model.
     """
 
-    def __init__(self, interactions: bool = False):
-        self.interactions = interactions
+    def __init__(self):
         self.stage1 = LinearRegression()
         self.stage2 = LinearRegression()
-
-    # ── internal helpers ──────────────────────────────────────────────────
+        self.ate_ = None
 
     def _s1_features(self, A: np.ndarray, X: np.ndarray, Z: np.ndarray) -> np.ndarray:
-        """[A, X, Z, (A⊗X)] — same column set at fit and predict time.
-
-        A⊗X is included whenever interactions=True because every exogenous
-        column that appears in stage 2 must appear in stage 1 (2SLS requirement).
-        """
+        """Return [A, X, Z] for the first stage."""
         a = A.reshape(-1, 1)
-        parts = [a, X, Z]
-        if self.interactions:
-            parts.append(a * X)
-        return np.hstack(parts)
+        return np.hstack([a, X, Z])
 
     def _s2_features(self, A: np.ndarray, X: np.ndarray, W: np.ndarray) -> np.ndarray:
-        """[A, X, W, (A⊗X)] — W here is either Ŵ (training) or W_fixed (predict)."""
+        """Return [A, X, W] for the second stage."""
         a = A.reshape(-1, 1)
-        parts = [a, X, W]
-        if self.interactions:
-            parts.append(a * X)
-        return np.hstack(parts)
-
-    # ── public interface ──────────────────────────────────────────────────
+        W = np.asarray(W)
+        if W.ndim == 1:
+            W = W.reshape(-1, 1)
+        return np.hstack([a, X, W])
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError(
-                "P2SLS requires both W (outcome proxy) and Z (treatment proxy). "
-                "Switch to S/T-Learner for proxy-free baselines."
+                "P2SLS requires both W (outcome proxy) and Z (treatment proxy)."
             )
-        # Stage 1: project W onto all exogenous variables (A, X, Z, and A⊗X)
-        W_hat = self.stage1.fit(self._s1_features(A, X, Z), W).predict(
-            self._s1_features(A, X, Z)
-        )
-        # Stage 2: regress Y on treatment, covariates, and instrumented proxy
-        self.stage2.fit(self._s2_features(A, X, W_hat), Y)
+
+        s1 = self._s1_features(A, X, Z)
+        W_hat = self.stage1.fit(s1, W).predict(s1)
+
+        s2 = self._s2_features(A, X, W_hat)
+        self.stage2.fit(s2, Y)
+
+        self.ate_ = float(self.stage2.coef_.reshape(-1)[0])
         return self
 
-    def predict(self, X, *, W=None, Z=None) -> np.ndarray:
-        """Estimate CATE as h(W_fixed, 1, X) − h(W_fixed, 0, X).
+    def predict(self, X, **kwargs) -> np.ndarray:
+        """Return the estimated ATE for every observation."""
+        if self.ate_ is None:
+            raise ValueError("Call fit() before predict().")
 
-        W_fixed is held constant across both counterfactuals, reflecting the
-        fact that W is pre-treatment and does not respond to A.
-
-        Priority for W_fixed:
-            1. Observed W_q  — use directly; it cancels in the contrast anyway.
-            2. Z available   — predict Ŵ from stage 1 using a neutral A=0
-                               (any fixed A works since the β_W term cancels).
-            3. Neither       — raise, because we cannot form a valid contrast.
-
-        Note: because β_W·W_fixed cancels in the difference, the CATE result
-        is numerically identical regardless of which W_fixed is chosen.
-        The choice matters only for the *level* of Ŷ(a), not the contrast.
-        """
-        if W is None and Z is None:
-            raise ValueError(
-                "P2SLS.predict() needs at least W (observed proxy) or Z "
-                "(to predict Ŵ).  Both are None."
-            )
-
-        n = X.shape[0]
-
-        if W is not None:
-            # Observed pre-treatment proxy — preferred, no stage-1 needed
-            W_fixed = W
-        else:
-            # Predict Ŵ from Z; use A=0 as neutral value (cancels in contrast)
-            W_fixed = self.stage1.predict(self._s1_features(np.zeros(n), X, Z))
-
-        A1 = np.ones(n)
-        A0 = np.zeros(n)
-
-        # Same W_fixed for both branches — spurious β_W·(Ŵ₁ − Ŵ₀) term is gone
-        y1 = self.stage2.predict(self._s2_features(A1, X, W_fixed))
-        y0 = self.stage2.predict(self._s2_features(A0, X, W_fixed))
-        return y1 - y0
+        return np.full(X.shape[0], self.ate_)
 
 
 class NMMR_Wrappers(CATEEstimator):
@@ -1014,7 +942,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
-        "P2SLS": lambda: P2SLS(interactions=cfg.get("interactions", False)),
+        "P2SLS": lambda: P2SLS(),
         "CausalFM": lambda: CausalFM_Estimator(
             checkpoint_path=cfg["checkpoint"],
             use_W=cfg.get("use_W", True),
