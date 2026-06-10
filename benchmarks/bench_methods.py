@@ -687,6 +687,41 @@ class PMMR_Wrapper(CATEEstimator):
         return np.asarray(raw_ate).squeeze()
 
 
+class NMMR_Wrapper(CATEEstimator):
+    def __init__(self, **kwargs):
+        # Local import to prevent global path collisions
+        import sys
+        from pathlib import Path
+
+        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        nmmr_path = str(PROJECT_ROOT / "NMMR")
+
+        if nmmr_path not in sys.path:
+            sys.path.insert(0, nmmr_path)
+
+        from src.models.NMMR.NMMR_wrapper import NMMRCATEEstimator
+
+        train_params = {
+            "network_width": kwargs.get("network_width", 64),
+            "network_depth": kwargs.get("network_depth", 3),
+            "n_epochs": kwargs.get("n_epochs", 100),
+            "batch_size": kwargs.get("batch_size", 256),
+            "learning_rate": kwargs.get("learning_rate", 1e-3),
+            "loss_name": kwargs.get("loss_name", "U_statistic"),
+        }
+
+        self.model = NMMRCATEEstimator(train_params=train_params)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("NMMR requires W and Z proxies.")
+        self.model.fit(X, A, Y, W, Z)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        return self.model.predict(X)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
@@ -775,6 +810,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         ),
         "KernelPV": lambda: KPV_Wrapper(**cfg),
         "PMMR": lambda: PMMR_Wrapper(**cfg),
+        "NMMR": lambda: NMMR_Wrapper(**cfg),
     }
     if cls not in factories:
         raise ValueError(
