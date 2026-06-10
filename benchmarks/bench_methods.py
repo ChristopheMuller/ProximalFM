@@ -512,6 +512,181 @@ class ProximalPLearner(CATEEstimator):
         return self.estimator_.predict(X)
 
 
+class KPV_Wrapper(CATEEstimator):
+    def __init__(self, **kwargs):
+        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
+
+        from src.data.ate.data_class import PVTrainDataSet
+        from src.models.kernelPV.model import KernelPVModel
+
+        self._PVTrainDataSet = PVTrainDataSet
+
+        safe_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ["name", "cls", "use_W", "use_Z"]
+        }
+
+        if safe_kwargs.get("lam1") is None:
+            safe_kwargs.setdefault("lam1_min", 1e-5)
+            safe_kwargs.setdefault("lam1_max", 1e1)
+            safe_kwargs.setdefault("n_lam1_search", 10)
+        if safe_kwargs.get("lam2") is None:
+            safe_kwargs.setdefault("lam2_min", 1e-5)
+            safe_kwargs.setdefault("lam2_max", 1e1)
+            safe_kwargs.setdefault("n_lam2_search", 10)
+
+        self.model = KernelPVModel(**safe_kwargs)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("NMMR methods require both W and Z proxies.")
+
+        # MONKEY-PATCH THE KERNEL CLASS AT RUNTIME BEFORE FIT() RUNS
+        # This fixes the sigma=0 division-by-zero error during internal tuning loops
+        from src.utils import kernel_func
+
+        def _get_safe_fit(original_fit_func):
+            def safe_fit(instance, data, scale=1.0):
+                original_fit_func(instance, data, scale=scale)
+                if hasattr(instance, "sigma"):
+                    if isinstance(instance.sigma, np.ndarray):
+                        instance.sigma[instance.sigma == 0] = 1e-3
+                    elif instance.sigma == 0:
+                        instance.sigma = 1e-3
+
+            return safe_fit
+
+        if hasattr(kernel_func.ColumnWiseGaussianKernel, "fit") and not hasattr(
+            kernel_func.ColumnWiseGaussianKernel, "_is_patched"
+        ):
+            kernel_func.ColumnWiseGaussianKernel.fit = _get_safe_fit(
+                kernel_func.ColumnWiseGaussianKernel.fit
+            )
+            kernel_func.ColumnWiseGaussianKernel._is_patched = True
+
+        if hasattr(kernel_func.GaussianKernel, "fit") and not hasattr(
+            kernel_func.GaussianKernel, "_is_patched"
+        ):
+            kernel_func.GaussianKernel.fit = _get_safe_fit(
+                kernel_func.GaussianKernel.fit
+            )
+            kernel_func.GaussianKernel._is_patched = True
+
+        train_data = self._PVTrainDataSet(
+            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
+            treatment_proxy=np.asarray(Z),
+            outcome_proxy=np.asarray(W),
+            outcome=np.asarray(Y),
+            backdoor=np.asarray(X),
+        )
+
+        self.model.fit(train_data, data_name="bench")
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        n = X.shape[0]
+
+        # Treatment vectors for the ATE point contrast
+        t0 = np.zeros((n, 1))
+        t1 = np.ones((n, 1))
+
+        # Call the native repository ATE method for each treatment value
+        predsY0 = self.model.predict(treatment=t0)
+        predsY1 = self.model.predict(treatment=t1)
+        raw_ate = (predsY1 - predsY0).squeeze()
+
+        # If the backend returns a single scalar ATE, broadcast it to match shape (n,)
+        if np.isscalar(raw_ate) or raw_ate.ndim == 0:
+            return np.full(n, fill_value=float(raw_ate))
+
+        # If it returns a vector (e.g., sample-aligned predictions evaluated at t1 vs t0)
+        return np.asarray(raw_ate).squeeze()
+
+
+class PMMR_Wrapper(CATEEstimator):
+    def __init__(self, **kwargs):
+        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
+
+        from src.data.ate.data_class import PVTrainDataSet
+        from src.models.PMMR.model import PMMRModel
+
+        self._PVTrainDataSet = PVTrainDataSet
+
+        safe_kwargs = {
+            k: v
+            for k, v in kwargs.items()
+            if k not in ["name", "cls", "model_type", "use_W", "use_Z"]
+        }
+
+        self.model = PMMRModel(**safe_kwargs)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        if W is None or Z is None:
+            raise ValueError("NMMR methods require both W and Z proxies.")
+
+        # MONKEY-PATCH THE KERNEL CLASS AT RUNTIME BEFORE FIT() RUNS
+        # This fixes the sigma=0 division-by-zero error during internal tuning loops
+        from src.utils import kernel_func
+
+        def _get_safe_fit(original_fit_func):
+            def safe_fit(instance, data, scale=1.0):
+                original_fit_func(instance, data, scale=scale)
+                if hasattr(instance, "sigma"):
+                    if isinstance(instance.sigma, np.ndarray):
+                        instance.sigma[instance.sigma == 0] = 1e-3
+                    elif instance.sigma == 0:
+                        instance.sigma = 1e-3
+
+            return safe_fit
+
+        if hasattr(kernel_func.ColumnWiseGaussianKernel, "fit") and not hasattr(
+            kernel_func.ColumnWiseGaussianKernel, "_is_patched"
+        ):
+            kernel_func.ColumnWiseGaussianKernel.fit = _get_safe_fit(
+                kernel_func.ColumnWiseGaussianKernel.fit
+            )
+            kernel_func.ColumnWiseGaussianKernel._is_patched = True
+
+        if hasattr(kernel_func.GaussianKernel, "fit") and not hasattr(
+            kernel_func.GaussianKernel, "_is_patched"
+        ):
+            kernel_func.GaussianKernel.fit = _get_safe_fit(
+                kernel_func.GaussianKernel.fit
+            )
+            kernel_func.GaussianKernel._is_patched = True
+
+        train_data = self._PVTrainDataSet(
+            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
+            treatment_proxy=np.asarray(Z),
+            outcome_proxy=np.asarray(W),
+            outcome=np.asarray(Y),
+            backdoor=np.asarray(X),
+        )
+
+        self.model.fit(train_data, data_name="bench")
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        n = X.shape[0]
+
+        # Treatment vectors for the ATE point contrast
+        t0 = np.zeros((n, 1))
+        t1 = np.ones((n, 1))
+
+        # For PMMR ATE, we call predict without passing the backdoor X array
+        predsY0 = self.model.predict(treatment=t0)
+        predsY1 = self.model.predict(treatment=t1)
+        raw_ate = (predsY1 - predsY0).squeeze()
+
+        # If the backend returns a single scalar ATE, broadcast it to match shape (n,)
+        if np.isscalar(raw_ate) or raw_ate.ndim == 0:
+            return np.full(n, fill_value=float(raw_ate))
+
+        # If it returns a vector (e.g., sample-aligned predictions evaluated at t1 vs t0)
+        return np.asarray(raw_ate).squeeze()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
@@ -598,6 +773,8 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             q_clip=cfg.get("q_clip", None),
             refit_full_nuisance=cfg.get("refit_full_nuisance", False),
         ),
+        "KernelPV": lambda: KPV_Wrapper(**cfg),
+        "PMMR": lambda: PMMR_Wrapper(**cfg),
     }
     if cls not in factories:
         raise ValueError(
