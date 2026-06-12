@@ -6,6 +6,8 @@
 # - Role Embeddings: Added an nn.Embedding layer to assign unique role-specific
 #   tokens to each group, allowing the Set Transformer to distinguish
 #   between proxy types.
+# - Y and A Conditioning: Incorporated target (y_train) and treatment (A) information
+#   directly into the embeddings, enabling target-aware and treatment-aware representations.
 # - Unified Concatenation: All variables (X, Z, W, A) are concatenated into a
 #   single sequence before being processed by the Set Transformer.
 # - Selective Masking: Implemented per-proxy-type masking (inv_X, inv_Z, etc.)
@@ -163,8 +165,8 @@ class ColEmbedding(nn.Module):
             recompute=recompute,
         )
 
-        self.y0_encoder = nn.Linear(1, embed_dim)
-        self.y1_encoder = nn.Linear(1, embed_dim)
+        self.y_encoder = nn.Linear(1, embed_dim)
+        self.a_encoder = nn.Linear(1, embed_dim)
 
         if affine:
             self.out_w = SkippableLinear(embed_dim, embed_dim)
@@ -185,21 +187,6 @@ class ColEmbedding(nn.Module):
 
         # 4 Causal Roles: 0=X, 1=Z, 2=W, 3=A
         self.role_embedding = nn.Embedding(num_embeddings=4, embedding_dim=embed_dim)
-
-    def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
-        """
-        y expected shape: (B, train_size)
-        A expected shape: (B, train_size)
-        """
-        # Project to embeddings -> shape: (B, train_size, embed_dim)
-        y0_emb = self.y0_encoder(y.unsqueeze(-1))
-        y1_emb = self.y1_encoder(y.unsqueeze(-1))
-
-        # Unsqueeze A so shape is (B, train_size, 1) to broadcast across embed_dim
-        A_expanded = A.unsqueeze(-1)
-
-        y_emb = torch.where(A_expanded == 0, y0_emb, y1_emb)
-        return y_emb
 
     def _get_invalid_mask(
         self, max_len: int, lengths: Optional[Tensor], B: int, device: torch.device
@@ -245,10 +232,12 @@ class ColEmbedding(nn.Module):
         # 3. Add target embeddings (y_train) to the context rows
         assert y_train is not None, "y_train must be provided."
 
-        A_train = A[:, 0, :train_size, 0]
-        y_emb = self.y_encoder(y_train, A_train)
+        y_emb = self.y_encoder(y_train.unsqueeze(-1))
         y_emb_broadcast = y_emb.unsqueeze(1)
         src[..., :train_size, :] = src[..., :train_size, :] + y_emb_broadcast
+
+        a_emb = self.a_encoder(A)
+        src = src + a_emb
 
         inv_mask_exp = inv_concat.unsqueeze(-1).unsqueeze(-1).expand_as(src)
         src[inv_mask_exp] = -100.0

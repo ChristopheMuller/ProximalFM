@@ -445,9 +445,7 @@ class ProximalFM(nn.Module):
         )
 
         # Dataset-wise in-context learning
-        return self.icl_predictor(
-            representations, y_train=y_train, a_train=A[:, :train_size]
-        )
+        return self.icl_predictor(representations, y_train=y_train, A=A)
 
     def _inference_forward(
         self,
