@@ -3,13 +3,14 @@
 # - Regression Specialization: Excised all classification-specific logic,
 #   including hierarchical classification ('ClassNode'), grouping, and
 #   label encoding.
-# - Hardcoded Output Dimension: Replaced the dynamic 'out_dim' parameter
-#   with a fixed output size of 4, tailored for the mean and variance of Y0 and Y1.
 # - Unified Target Encoder: Standardized 'y_encoder' as 'nn.Linear(1, d_model)',
 #   removing the 'OneHotAndLinear' path previously used for classification.
 # - Inference Streamlining: Simplified '_predict_standard' and '_inference_forward'
 #   by removing 'softmax_temperature', 'return_logits', and multi-class
 #   slicing logic.
+# - Changed the y_encoder to take in both y and A, and use A to determine which linear layer to
+#    use for encoding the target values. This allows the model to learn separate embeddings for
+#    treated vs control samples, which is important for causal inference tasks.
 # - Cleaned API: Removed 'max_classes' and 'out_dim' from the constructor,
 #   as the task type is now strictly continuous proximal learning.
 # - Caching Logic: Simplified 'forward_with_cache' and 'forward_with_repr_cache'
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 from typing import Optional, Union
 from collections import OrderedDict
-from torch import nn, Tensor
+from torch import nn, Tensor, where
 
 from .encoders import Encoder
 from .kv_cache import KVCache
@@ -110,14 +111,30 @@ class ICLearning(nn.Module):
         if self.norm_first:
             self.ln = nn.LayerNorm(d_model, bias=not bias_free_ln)
 
-        self.y_encoder = nn.Linear(1, d_model)
+        self.y0_encoder = nn.Linear(1, d_model)
+        self.y1_encoder = nn.Linear(1, d_model)
 
         self.decoder = nn.Sequential(
             nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, out_dim)
         )
         self.inference_mgr = InferenceManager(enc_name="tf_icl", out_dim=out_dim)
 
-    def _icl_predictions(self, R: Tensor, y_train: Tensor) -> Tensor:
+    def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
+        """
+        y expected shape: (B, train_size)
+        A expected shape: (B, train_size)
+        """
+        # Project to embeddings -> shape: (B, train_size, embed_dim)
+        y0_emb = self.y0_encoder(y.unsqueeze(-1))
+        y1_emb = self.y1_encoder(y.unsqueeze(-1))
+
+        # Unsqueeze A so shape is (B, train_size, 1) to broadcast across embed_dim
+        A_expanded = A.unsqueeze(-1)
+
+        y_emb = where(A_expanded == 0, y0_emb, y1_emb)
+        return y_emb
+
+    def _icl_predictions(self, R: Tensor, y_train: Tensor, a_train: Tensor) -> Tensor:
         """In-context learning predictions.
 
         Parameters
@@ -140,7 +157,7 @@ class ICLearning(nn.Module):
         """
 
         train_size = y_train.shape[1]
-        Ry_train = self.y_encoder(y_train.unsqueeze(-1))
+        Ry_train = self.y_encoder(y_train, a_train)
         R[:, :train_size] = R[:, :train_size] + Ry_train
 
         src = self.tf_icl(R, train_size=train_size)
@@ -154,6 +171,7 @@ class ICLearning(nn.Module):
         self,
         R: Tensor,
         y_train: Tensor,
+        a_train: Tensor,
         auto_batch: bool = True,
     ) -> Tensor:
         """Generate predictions.
@@ -182,7 +200,7 @@ class ICLearning(nn.Module):
 
         out = self.inference_mgr(
             self._icl_predictions,
-            inputs=OrderedDict([("R", R), ("y_train", y_train)]),
+            inputs=OrderedDict([("R", R), ("y_train", y_train), ("a_train", a_train)]),
             auto_batch=auto_batch,
         )
 
@@ -195,6 +213,7 @@ class ICLearning(nn.Module):
         self,
         R: Tensor,
         y_train: Tensor,
+        a_train: Tensor,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
         """In-context learning based on learned row representations for inference.
@@ -226,14 +245,14 @@ class ICLearning(nn.Module):
             mgr_config = InferenceConfig().ICL_CONFIG
         self.inference_mgr.configure(**mgr_config)
 
-        out = self._predict_standard(R, y_train)
-
+        out = self._predict_standard(R, y_train, a_train=a_train)
         return out
 
     def forward(
         self,
         R: Tensor,
         y_train: Tensor,
+        a_train: Tensor,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
         """In-context learning based on learned row representations.
@@ -267,37 +286,18 @@ class ICLearning(nn.Module):
 
         if self.training:
             train_size = y_train.shape[1]
-            out = self._icl_predictions(R, y_train)
+            out = self._icl_predictions(R, y_train, a_train=a_train)
             out = out[:, train_size:]
         else:
-            out = self._inference_forward(R, y_train, mgr_config)
+            out = self._inference_forward(
+                R, y_train, a_train=a_train, mgr_config=mgr_config
+            )
 
         return out
 
-    def prepare_repr_cache(self, R: Tensor, y_train: Tensor) -> Tensor:
-        """Add target embedding to train representations.
-
-        Parameters
-        ----------
-        R : Tensor
-            Row representations of shape (B, T, D) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - D is the dimension of row representations
-
-        y_train : Tensor
-            Training targets of shape (B, train_size), where train_size is the position
-            to split the input into training and test data.
-
-        Returns
-        -------
-        Tensor
-            Full representations with y_train baked into the train portion,
-            shape (B, T, D).
-        """
-
+    def prepare_repr_cache(self, R: Tensor, y_train: Tensor, a_train: Tensor) -> Tensor:
         train_size = y_train.shape[1]
-        Ry_train = self.y_encoder(y_train.unsqueeze(-1))
+        Ry_train = self.y_encoder(y_train.unsqueeze(-1), a_train.unsqueeze(-1))
         R[:, :train_size] = R[:, :train_size] + Ry_train
 
         return R
@@ -379,44 +379,19 @@ class ICLearning(nn.Module):
         R: Tensor,
         icl_cache: KVCache,
         y_train: Optional[Tensor] = None,
+        a_train: Optional[Tensor] = None,
         use_cache: bool = False,
         store_cache: bool = True,
     ) -> Tensor:
-        """In-context learning predictions with KV caching.
 
-        Parameters
-        ----------
-        R : Tensor
-            Row representations of shape (B, T, D).
-
-        icl_cache : KVCache
-            Cache object for storing/retrieving K/V projections.
-
-        y_train : Optional[Tensor], default=None
-            Training targets of shape (B, train_size). Required when store_cache=True;
-            ignored when use_cache=True.
-
-        use_cache : bool, default=False
-            Whether to use cached values to avoid redundant computation.
-
-        store_cache : bool, default=True
-            Whether to store computed values in cache.
-
-        Returns
-        -------
-        Tensor
-            Predictions of shape (B, T, out_dim) or (B, test_size, out_dim) when use_cache=True:
-
-            - For regression: out_dim = 4
-        """
-        # When using cache, skip y_train embedding — it's already baked
-        # into the cached K/V projections from the store_cache pass.
         train_size = None
         if store_cache:
-            assert y_train is not None, "y_train must be provided when store_cache=True"
+            assert (
+                y_train is not None and a_train is not None
+            ), "Both y_train and a_train required when store_cache=True"
             train_size = y_train.shape[1]
 
-            Ry_train = self.y_encoder(y_train.unsqueeze(-1))
+            Ry_train = self.y_encoder(y_train.unsqueeze(-1), a_train.unsqueeze(-1))
             R[:, :train_size] = R[:, :train_size] + Ry_train
 
         src = self.tf_icl.forward_with_cache(
