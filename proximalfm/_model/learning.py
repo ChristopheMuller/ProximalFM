@@ -122,9 +122,13 @@ class ICLearning(nn.Module):
     def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
         """
         y expected shape: (B, train_size)
-        A expected shape: (B, train_size)
+        A expected shape: (B, train_size) or (B, train_size, 1)
         """
-        # Project to embeddings -> shape: (B, train_size, embed_dim)
+        # If A arrives as a 3D tensor [B, train_size, 1], squeeze it down to 2D [B, train_size]
+        if A.dim() == 3 and A.shape[-1] == 1:
+            A = A.squeeze(-1)
+
+        # Project targets to embeddings -> shape: (B, train_size, d_model)
         y0_emb = self.y0_encoder(y.unsqueeze(-1))
         y1_emb = self.y1_encoder(y.unsqueeze(-1))
 
