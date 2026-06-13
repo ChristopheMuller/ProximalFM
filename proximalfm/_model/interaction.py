@@ -226,7 +226,7 @@ class RowInteraction(nn.Module):
         return representations  # (B, T, C*E)
 
     def _inference_forward(
-        self, embeddings: Tensor, mgr_config: MgrConfig = None
+        self, embeddings: Tensor, d, mgr_config: MgrConfig = None
     ) -> Tensor:
         """Transform feature embeddings into row representations for inference.
 
@@ -253,14 +253,19 @@ class RowInteraction(nn.Module):
             mgr_config = InferenceConfig().ROW_CONFIG
         self.inference_mgr.configure(**mgr_config)
 
-        B, T = embeddings.shape[:2]
+        B, T, HC, E = embeddings.shape
+        device = embeddings.device
+
         cls_tokens = self.cls_tokens.expand(B, T, self.num_cls, self.embed_dim)
-        embeddings[:, :, : self.num_cls] = cls_tokens.to(embeddings.device)
+        embeddings[:, :, : self.num_cls] = cls_tokens.to(device)
+        key_mask = self._generate_key_mask(HC, T, B, device, d)
+
         representations = self.inference_mgr(
-            self._aggregate_embeddings, inputs=OrderedDict([("embeddings", embeddings)])
+            self._aggregate_embeddings,
+            inputs=OrderedDict([("embeddings", embeddings), ("key_mask", key_mask)]),
         )
 
-        return representations  # (B, T, C*E)
+        return representations
 
     def forward(
         self,
@@ -295,6 +300,6 @@ class RowInteraction(nn.Module):
         if self.training:
             representations = self._train_forward(embeddings, d)
         else:
-            representations = self._inference_forward(embeddings, mgr_config)
+            representations = self._inference_forward(embeddings, d, mgr_config)
 
         return representations  # (B, T, C*E)

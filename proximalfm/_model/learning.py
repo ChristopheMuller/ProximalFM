@@ -111,51 +111,60 @@ class ICLearning(nn.Module):
         if self.norm_first:
             self.ln = nn.LayerNorm(d_model, bias=not bias_free_ln)
 
-        self.y_encoder = nn.Linear(1, d_model)
-        self.a_encoder = nn.Linear(1, d_model)
+        self.y0_encoder = nn.Linear(1, d_model)
+        self.y1_encoder = nn.Linear(1, d_model)
 
         self.decoder = nn.Sequential(
             nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, out_dim)
         )
         self.inference_mgr = InferenceManager(enc_name="tf_icl", out_dim=out_dim)
 
-    def _icl_predictions(self, R: Tensor, y_train: Tensor, A: Tensor) -> Tensor:
-        """In-context learning predictions.
+    def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
+        """Encode target values based on treatment assignment.
 
         Parameters
         ----------
-        R : Tensor
-            Row representations of shape (B, T, D) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - D is the dimension of row representations
-
-        y_train : Tensor
-            Training targets of shape (B, train_size), where train_size is the position
-            to split the input into training and test data.
+        y : Tensor
+            Target values of shape (B, train_size).
+        A : Tensor
+            Treatment assignments of shape (B, train_size).
 
         Returns
         -------
         Tensor
-            Predictions of shape (B, T, out_dim) #out-dim = 4
-
+            Encoded target values of shape (B, train_size, d_model).
         """
+        # Ensure clean [B, train_size, 1] shapes for linear projections
+        y_input = y.unsqueeze(-1)
+        A_input = A.unsqueeze(-1)
 
+        y0_emb = self.y0_encoder(y_input)  # (B, train_size, d_model)
+        y1_emb = self.y1_encoder(y_input)  # (B, train_size, d_model)
+
+        # Condition matches embedding layout exactly along the last dimension
+        y_emb = where(A_input == 0, y0_emb, y1_emb)
+
+        return y_emb
+
+    def _icl_predictions(self, R: Tensor, y_train: Tensor, A_train: Tensor) -> Tensor:
+        """In-context learning predictions."""
         train_size = y_train.shape[1]
 
-        # 1. Shape normalization for Treatment A
-        if A.dim() == 2:
-            A = A.unsqueeze(-1)  # (B, T) -> (B, T, 1)
+        # 1. Normalize A_train to a plain 2D tensor (B, T) for easy slicing
+        if A_train.dim() == 3:
+            A_train = A_train.squeeze(-1)
 
-        # 2. Apply A-encoder across the ENTIRE sequence length (Context + Test)
-        a_emb = self.a_encoder(A.float())
-        src = R + a_emb
+        # 2. FIX: Extract and slice A to isolate context entries matching y_train
+        A_context = A_train[:, :train_size]  # Shape: (B, train_size)
 
-        # 3. Add universal Target outcome embeddings strictly to the context rows
-        y_emb = self.y_encoder(y_train.unsqueeze(-1))
+        # 3. Compute conditional target embeddings
+        y_emb = self.y_encoder(y_train, A_context)  # Shape: (B, train_size, d_model)
+
+        # 4. FIX: Safely clone R and add context target values
+        src = R.clone()
         src[:, :train_size] = src[:, :train_size] + y_emb
 
-        # 4. Dataset-wide context parsing
+        # 5. Dataset-wide context parsing
         src = self.tf_icl(src, train_size=train_size)
         if self.norm_first:
             src = self.ln(src)
@@ -167,7 +176,7 @@ class ICLearning(nn.Module):
         self,
         R: Tensor,
         y_train: Tensor,
-        A: Tensor,
+        A_train: Tensor,
         auto_batch: bool = True,
     ) -> Tensor:
         """Generate predictions.
@@ -196,7 +205,7 @@ class ICLearning(nn.Module):
 
         out = self.inference_mgr(
             self._icl_predictions,
-            inputs=OrderedDict([("R", R), ("y_train", y_train), ("A", A)]),
+            inputs=OrderedDict([("R", R), ("y_train", y_train), ("A_train", A_train)]),
             auto_batch=auto_batch,
         )
 
@@ -209,7 +218,7 @@ class ICLearning(nn.Module):
         self,
         R: Tensor,
         y_train: Tensor,
-        A: Tensor,
+        A_train: Tensor,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
         """In-context learning based on learned row representations for inference.
@@ -241,14 +250,14 @@ class ICLearning(nn.Module):
             mgr_config = InferenceConfig().ICL_CONFIG
         self.inference_mgr.configure(**mgr_config)
 
-        out = self._predict_standard(R, y_train, A=A)
+        out = self._predict_standard(R, y_train, A_train=A_train)
         return out
 
     def forward(
         self,
         R: Tensor,
         y_train: Tensor,
-        A: Tensor,
+        A_train: Tensor,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
         """In-context learning based on learned row representations.
@@ -282,9 +291,11 @@ class ICLearning(nn.Module):
 
         if self.training:
             train_size = y_train.shape[1]
-            out = self._icl_predictions(R, y_train, A=A)
+            out = self._icl_predictions(R, y_train, A_train=A_train)
             out = out[:, train_size:]
         else:
-            out = self._inference_forward(R, y_train, A=A, mgr_config=mgr_config)
+            out = self._inference_forward(
+                R, y_train, A_train=A_train, mgr_config=mgr_config
+            )
 
         return out

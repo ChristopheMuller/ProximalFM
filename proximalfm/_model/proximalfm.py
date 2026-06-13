@@ -385,7 +385,7 @@ class ProximalFM(nn.Module):
         X: Tensor,
         Z: Tensor,
         W: Tensor,
-        A: Tensor,
+        A_train: Tensor,
         y_train: Tensor,
         d_X: Optional[Tensor] = None,
         d_Z: Optional[Tensor] = None,
@@ -434,7 +434,7 @@ class ProximalFM(nn.Module):
                 X=X,
                 Z=Z,
                 W=W,
-                A=A,
+                A_train=A_train,
                 y_train=y_train,
                 d_X=d_X,
                 d_Z=d_Z,
@@ -445,7 +445,7 @@ class ProximalFM(nn.Module):
         )
 
         # Dataset-wise in-context learning
-        return self.icl_predictor(representations, y_train=y_train, A=A)
+        return self.icl_predictor(representations, y_train=y_train, A_train=A_train)
 
     def _inference_forward(
         self,
@@ -553,67 +553,32 @@ class ProximalFM(nn.Module):
         embed_with_test: bool = False,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
-        """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning.
+        """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning."""
 
-        Parameters
-        ----------
-        X : Tensor
-            Input tensor of shape (B, T, H) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features (columns)
-            The first train_size positions contain training samples, and the remaining positions contain test samples.
+        train_size = y_train.shape[1]
+        B, T, _ = X.shape
 
-        y_train : Tensor
-            Training labels of shape (B, train_size) where:
-             - B is the number of tables
-             - train_size is the number of training samples provided for in-context learning
-
-        d : Optional[Tensor], default=None
-            The number of features per dataset. Used only in training mode.
-
-        embed_with_test : bool, default=False
-            If True, allow training samples to attend to test samples during embedding.
-
-        feature_shuffles : Optional[List[List[int]]], default=None
-            A list of feature shuffle patterns for each table in the batch. Used only in inference mode.
-            When provided, indicates that X contains the same table with different feature orders.
-            In this case, column-wise embeddings are computed once and then shuffled accordingly.
-
-        return_logits : bool, default=True
-            If True, return raw logits instead of probabilities. Used only in inference mode.
-
-        softmax_temperature : float, default=0.9
-            Temperature for the softmax function. Used only in inference mode.
-
-        inference_config : Optional[InferenceConfig], default=None
-            Inference configuration. Used only in inference mode.
-
-        Returns
-        -------
-        Tensor
-            For training mode:
-                Predictions of shape (B, test_size, out_dim):
-
-                - For regression (max_classes=0): out_dim = num_quantiles
-                - For classification (max_classes>0): out_dim = max_classes
-
-            For inference mode:
-                For regression (max_classes=0):
-                    Predictions of shape (B, test_size, num_quantiles)
-
-                For classification (max_classes>0):
-                    If return_logits=True: Logits of shape (B, test_size, num_classes)
-                    If return_logits=False: Probabilities of shape (B, test_size, num_classes)
-        """
+        if A.shape[1] == T:
+            A_train = A[:, :train_size]
+        else:
+            A_train = A
 
         if self.training:
             out = self._train_forward(
-                X, Z, W, A, y_train, d_X, d_Z, d_W, embed_with_test
+                X, Z, W, A_train, y_train, d_X, d_Z, d_W, embed_with_test
             )
         else:
             out = self._inference_forward(
-                X, Z, W, A, y_train, d_X, d_Z, d_W, embed_with_test, inference_config
+                X,
+                Z,
+                W,
+                A_train,
+                y_train,
+                d_X,
+                d_Z,
+                d_W,
+                embed_with_test,
+                inference_config,
             )
 
         return out
