@@ -150,11 +150,10 @@ class ICLearning(nn.Module):
         """In-context learning predictions."""
         train_size = y_train.shape[1]
 
-        # 1. Normalize A_train to a plain 2D tensor (B, T) for easy slicing
         if A_train.dim() == 3:
             A_train = A_train.squeeze(-1)
 
-        # 2. FIX: Extract and slice A to isolate context entries matching y_train
+        # 2. SECURITY: Extract and slice A to isolate context entries matching y_train
         A_context = A_train[:, :train_size]  # Shape: (B, train_size)
 
         # 3. Compute conditional target embeddings

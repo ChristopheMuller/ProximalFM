@@ -183,72 +183,129 @@ class RowInteraction(nn.Module):
 
         return cls_outputs.flatten(-2)  # (B, T, C*E)
 
-    def _train_forward(self, embeddings: Tensor, d: Optional[Tensor] = None) -> Tensor:
-        """Transform feature embeddings into row representations for training.
-
-        Parameters
-        ----------
-        embeddings : Tensor
-            Feature embeddings of shape (B, T, H+C, E) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features
-             - C is the number of class tokens
-             - E is the embedding dimension
-
-        d : Optional[Tensor], default=None
-            The number of features per dataset. Used only in training mode.
-
-        Returns
-        -------
-        Tensor
-            Row representations of shape (B, T, C*E) where C is the number of class tokens.
+    def _generate_key_mask(
+        self,
+        HC: int,
+        T: int,
+        B: int,
+        device: torch.device,
+        d: Optional[Tensor] = None,
+        train_size: Optional[int] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        hide_query_proxies: bool = False,
+    ) -> Optional[Tensor]:
         """
+        Build row-wise key padding mask.
 
+        Shape:
+            key_mask: (B, T, HC)
+
+        Semantics:
+            True = masked / cannot be attended to.
+
+        Feature layout assumed after ColEmbedding sorting:
+            [CLS slots, X valid, Z valid, W valid, padding]
+
+        where the CLS slots are the first self.num_cls positions.
+        """
+        key_mask = torch.zeros(B, T, HC, dtype=torch.bool, device=device)
+
+        indices = torch.arange(HC, device=device).view(1, 1, HC).expand(B, T, HC)
+
+        # 1. Standard padding mask: mask positions beyond valid feature count.
+        if d is not None:
+            d = d.to(device=device)
+            valid_count = d + self.num_cls
+            key_mask = key_mask | (indices >= valid_count.view(B, 1, 1))
+
+        # 2. Proximal restriction:
+        #    query/test rows should not attend to Z/W feature positions.
+        if hide_query_proxies:
+            if train_size is None:
+                raise ValueError(
+                    "train_size must be provided when hide_query_proxies=True."
+                )
+            if d_X is None or d_Z is None or d_W is None:
+                raise ValueError(
+                    "d_X, d_Z, and d_W must be provided when hide_query_proxies=True."
+                )
+
+            d_X = d_X.to(device=device)
+            d_Z = d_Z.to(device=device)
+            d_W = d_W.to(device=device)
+
+            # Layout after ColEmbedding:
+            # [CLS, X, Z, W, padding]
+            z_start = self.num_cls + d_X
+            w_end = self.num_cls + d_X + d_Z + d_W
+
+            proxy_positions = (indices >= z_start.view(B, 1, 1)) & (
+                indices < w_end.view(B, 1, 1)
+            )
+
+            row_indices = torch.arange(T, device=device).view(1, T, 1)
+            query_rows = row_indices >= train_size
+
+            key_mask = key_mask | (query_rows & proxy_positions)
+
+        # If nothing is masked, returning None is slightly cleaner.
+        if not key_mask.any():
+            return None
+
+        return key_mask
+
+    def _train_forward(
+        self,
+        embeddings: Tensor,
+        d: Optional[Tensor] = None,
+        train_size: Optional[int] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        hide_query_proxies: bool = False,
+    ) -> Tensor:
         B, T, HC, E = embeddings.shape
         device = embeddings.device
 
-        cls_tokens = self.cls_tokens.expand(B, T, self.num_cls, self.embed_dim)
-        embeddings[:, :, : self.num_cls] = cls_tokens.to(embeddings.device)
+        # Safer than in-place mutation of the ColEmbedding output.
+        embeddings = embeddings.clone()
 
-        # Create mask to prevent from attending to empty features
-        if d is None:
-            key_mask = None
-        else:
-            d = d + self.num_cls
-            indices = torch.arange(HC, device=device).view(1, 1, HC).expand(B, T, HC)
-            key_mask = indices >= d.view(B, 1, 1)  # (B, T, HC)
+        cls_tokens = self.cls_tokens.expand(B, T, self.num_cls, self.embed_dim)
+        embeddings[:, :, : self.num_cls, :] = cls_tokens.to(device)
+
+        key_mask = self._generate_key_mask(
+            HC=HC,
+            T=T,
+            B=B,
+            device=device,
+            d=d,
+            train_size=train_size,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            hide_query_proxies=hide_query_proxies,
+        )
 
         representations = self._aggregate_embeddings(
-            embeddings, key_mask
-        )  # (B, T, C*E)
+            embeddings,
+            key_mask,
+        )
 
-        return representations  # (B, T, C*E)
+        return representations
 
     def _inference_forward(
-        self, embeddings: Tensor, d, mgr_config: MgrConfig = None
+        self,
+        embeddings: Tensor,
+        d: Optional[Tensor] = None,
+        train_size: Optional[int] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        hide_query_proxies: bool = False,
+        mgr_config: MgrConfig = None,
     ) -> Tensor:
-        """Transform feature embeddings into row representations for inference.
-
-        Parameters
-        ----------
-        embeddings : Tensor
-            Feature embeddings of shape (B, T, H+C, E) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features
-             - C is the number of class tokens
-             - E is the embedding dimension
-
-        mgr_config : MgrConfig, default=None
-            Configuration for InferenceManager.
-
-        Returns
-        -------
-        Tensor
-            Row representations of shape (B, T, C*E) where C is the number of class tokens.
-        """
-        # Configure inference parameters
         if mgr_config is None:
             mgr_config = InferenceConfig().ROW_CONFIG
         self.inference_mgr.configure(**mgr_config)
@@ -256,13 +313,32 @@ class RowInteraction(nn.Module):
         B, T, HC, E = embeddings.shape
         device = embeddings.device
 
+        embeddings = embeddings.clone()
+
         cls_tokens = self.cls_tokens.expand(B, T, self.num_cls, self.embed_dim)
-        embeddings[:, :, : self.num_cls] = cls_tokens.to(device)
-        key_mask = self._generate_key_mask(HC, T, B, device, d)
+        embeddings[:, :, : self.num_cls, :] = cls_tokens.to(device)
+
+        key_mask = self._generate_key_mask(
+            HC=HC,
+            T=T,
+            B=B,
+            device=device,
+            d=d,
+            train_size=train_size,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            hide_query_proxies=hide_query_proxies,
+        )
 
         representations = self.inference_mgr(
             self._aggregate_embeddings,
-            inputs=OrderedDict([("embeddings", embeddings), ("key_mask", key_mask)]),
+            inputs=OrderedDict(
+                [
+                    ("embeddings", embeddings),
+                    ("key_mask", key_mask),
+                ]
+            ),
         )
 
         return representations
@@ -271,35 +347,33 @@ class RowInteraction(nn.Module):
         self,
         embeddings: Tensor,
         d: Optional[Tensor] = None,
+        train_size: Optional[int] = None,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        hide_query_proxies: bool = False,
         mgr_config: MgrConfig = None,
     ) -> Tensor:
-        """Transform feature embeddings into row representations.
-
-        Parameters
-        ----------
-        embeddings : Tensor
-            Feature embeddings of shape (B, T, H+C, E) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features
-             - C is the number of class tokens
-             - E is the embedding dimension
-
-        d : Optional[Tensor], default=None
-            The number of features per dataset. Used only in training mode.
-
-        mgr_config : MgrConfig, default=None
-            Configuration for InferenceManager. Used only in inference mode.
-
-        Returns
-        -------
-        Tensor
-            Row representations of shape (B, T, C*E) where C is the number of class tokens.
-        """
-
         if self.training:
-            representations = self._train_forward(embeddings, d)
+            representations = self._train_forward(
+                embeddings=embeddings,
+                d=d,
+                train_size=train_size,
+                d_X=d_X,
+                d_Z=d_Z,
+                d_W=d_W,
+                hide_query_proxies=hide_query_proxies,
+            )
         else:
-            representations = self._inference_forward(embeddings, d, mgr_config)
+            representations = self._inference_forward(
+                embeddings=embeddings,
+                d=d,
+                train_size=train_size,
+                d_X=d_X,
+                d_Z=d_Z,
+                d_W=d_W,
+                hide_query_proxies=hide_query_proxies,
+                mgr_config=mgr_config,
+            )
 
-        return representations  # (B, T, C*E)
+        return representations

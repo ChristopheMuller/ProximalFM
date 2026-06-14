@@ -317,7 +317,7 @@ class ProximalFM(nn.Module):
 
     def _get_d_total(self, d_X, d_Z, d_W):
         if d_X is not None and d_Z is not None and d_W is not None:
-            return d_X + d_Z + d_W + 1  # RowInteraction adds num_cls itself
+            return d_X + d_Z + d_W  # RowInteraction adds num_cls itself
         return None
 
     def _safe_standardize(
@@ -485,75 +485,31 @@ class ProximalFM(nn.Module):
 
         B, T, H = X.shape
         train_size = y_train.shape[1]
-        assert train_size <= T, "Number of training samples exceeds total samples"
 
-        # Column-wise embedding -> Row-wise interaction
+        col_embeddings = self.col_embedder(
+            X=X,
+            Z=Z,
+            W=W,
+            A_train=A_train,
+            y_train=y_train,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            embed_with_test=embed_with_test,
+        )
+
         representations = self.row_interactor(
-            self.col_embedder(
-                X=X,  # [B, T, dim_x]
-                Z=Z,  # [B, T, dim_z]
-                W=W,  # [B, T, dim_w]
-                A_train=A_train,  # [B, train_size]
-                y_train=y_train,  # [B, train_size]
-                d_X=d_X,
-                d_Z=d_Z,
-                d_W=d_W,
-                embed_with_test=embed_with_test,
-            ),
+            col_embeddings,
             d=d_total,
+            train_size=train_size,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            hide_query_proxies=True,
         )
 
         # Dataset-wise in-context learning
         return self.icl_predictor(representations, y_train=y_train, A_train=A_train)
-
-    def _inference_forward(
-        self,
-        X: Tensor,
-        Z: Tensor,
-        W: Tensor,
-        A: Tensor,
-        y_train: Tensor,
-        d_X: Optional[Tensor] = None,
-        d_Z: Optional[Tensor] = None,
-        d_W: Optional[Tensor] = None,
-        embed_with_test: bool = False,
-        inference_config: Optional[InferenceConfig] = None,
-    ) -> Tensor:
-        train_size = y_train.shape[1]
-        assert (
-            train_size <= X.shape[1]
-        ), "Number of training samples exceeds total samples"
-
-        if inference_config is None:
-            inference_config = InferenceConfig()
-
-        # Column-wise embedding -> Row-wise interaction
-        d_total = self._get_d_total(d_X, d_Z, d_W)
-        representations = self.row_interactor(
-            self.col_embedder(
-                X=X,
-                Z=Z,
-                W=W,
-                A=A,
-                y_train=y_train,
-                d_X=d_X,
-                d_Z=d_Z,
-                d_W=d_W,
-                embed_with_test=embed_with_test,
-                mgr_config=inference_config.COL_CONFIG,
-            ),
-            d=d_total,
-            mgr_config=inference_config.ROW_CONFIG,
-        )
-
-        # Dataset-wise in-context learning
-        out = self.icl_predictor(
-            representations,
-            y_train=y_train,
-            mgr_config=inference_config.ICL_CONFIG,
-        )
-
-        return out
 
     def forward(
         self,
@@ -593,19 +549,11 @@ class ProximalFM(nn.Module):
                 X, Z, W, A_train, y_train, d_X, d_Z, d_W, embed_with_test
             )
         else:
-            out = self._inference_forward(
-                X,
-                Z,
-                W,
-                A_train,
-                y_train,
-                d_X,
-                d_Z,
-                d_W,
-                embed_with_test,
-                inference_config,
+            raise (
+                NotImplementedError(
+                    "need to implement inference forward with cache and inference_config"
+                )
             )
-
         return out
 
     @torch.no_grad()
