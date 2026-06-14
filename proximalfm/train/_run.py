@@ -999,27 +999,12 @@ class Trainer:
         micro_d_W = micro_d_W.to(self.config.device)
         micro_d_Z = micro_d_Z.to(self.config.device)
 
-        def safe_standardize(x):
-            mu = x.mean(dim=1, keepdim=True)
-            std = x.std(dim=1, keepdim=True)
-            # Prevent division by zero for zero-variance or zero-padded features
-            std = torch.where(std < 1e-5, torch.ones_like(std), std)
-            return (x - mu) / std
-
-        # 1. Standardize Covariates
-        micro_X = safe_standardize(micro_X)
-        micro_W = safe_standardize(micro_W)
-        micro_Z = safe_standardize(micro_Z)
-
         # 2. Standardize Targets based ONLY on the observed training context
         y_train_obs = micro_Y_obs[:, :train_size]
         y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
         y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
             min=1e-5
         )
-
-        # Scale context
-        y_train_obs_std = (y_train_obs - y_context_mean) / y_context_std
 
         # Test targets for loss
         y_test_0 = micro_Y0[:, train_size:]
@@ -1061,7 +1046,7 @@ class Trainer:
                 micro_Z,
                 micro_W,
                 micro_A,
-                y_train_obs_std,
+                y_train_obs,
                 micro_d_X,
                 micro_d_Z,
                 micro_d_W,

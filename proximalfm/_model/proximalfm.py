@@ -320,6 +320,95 @@ class ProximalFM(nn.Module):
             return d_X + d_Z + d_W + 1  # RowInteraction adds num_cls itself
         return None
 
+    def _safe_standardize(
+        self,
+        x: Tensor,
+        train_size: int,
+        fit_on_context_only: bool = True,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """
+        Standardize x using context rows only by default.
+
+        Returns:
+            x_std, mean, std
+        """
+        fit_x = x[:, :train_size, :] if fit_on_context_only else x
+
+        mu = fit_x.mean(dim=1, keepdim=True)
+        std = fit_x.std(dim=1, unbiased=False, keepdim=True)
+        std = torch.where(std < 1e-5, torch.ones_like(std), std)
+
+        return (x - mu) / std, mu, std
+
+    def _hide_query_proxies(
+        self,
+        Z: Tensor,
+        W: Tensor,
+        train_size: int,
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Hide Z/W for query rows.
+
+        Important: call this AFTER standardization, so hidden query proxy
+        values become exactly 0 in standardized space.
+        """
+        if Z.shape[1] > train_size:
+            Z = Z.clone()
+            Z[:, train_size:, :] = 0.0
+
+        if W.shape[1] > train_size:
+            W = W.clone()
+            W[:, train_size:, :] = 0.0
+
+        return Z, W
+
+    def _standardize_forward_inputs(
+        self,
+        X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        y_train: Tensor,
+        train_size: int,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+        """
+        Standardize all model inputs in a no-leak way.
+
+        X:
+            Uses context-only stats. This is the strict no-transductive version.
+            If you later decide that using all X is acceptable, change only this line.
+
+        Z/W:
+            Always use context-only stats, then hide query rows.
+
+        y_train:
+            Uses context-only stats because y only exists for context rows.
+        """
+        X_std, _, _ = self._safe_standardize(
+            X,
+            train_size=train_size,
+            fit_on_context_only=True,
+        )
+
+        Z_std, _, _ = self._safe_standardize(
+            Z,
+            train_size=train_size,
+            fit_on_context_only=True,
+        )
+
+        W_std, _, _ = self._safe_standardize(
+            W,
+            train_size=train_size,
+            fit_on_context_only=True,
+        )
+
+        Z_std, W_std = self._hide_query_proxies(Z_std, W_std, train_size)
+
+        y_mean = y_train.mean(dim=1, keepdim=True)
+        y_std = y_train.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
+        y_train_std = (y_train - y_mean) / y_std
+
+        return X_std, Z_std, W_std, y_train_std, y_mean, y_std
+
     def _get_y0_y1_shift_scale(self, y_context: Tensor, A_context: Tensor):
         """Calculates standardization stats separately for treated and control."""
         # Ensure A is squeezed to (B, train_size) to match y_context
@@ -392,36 +481,6 @@ class ProximalFM(nn.Module):
         d_W: Optional[Tensor] = None,
         embed_with_test: bool = False,
     ) -> Tensor:
-        """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning for training.
-
-        Parameters
-        ----------
-        X : Tensor
-            Input tensor of shape (B, T, H) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features (columns)
-            The first train_size positions contain training samples, and the remaining positions contain test samples.
-
-        y_train : Tensor
-            Training labels of shape (B, train_size) where:
-             - B is the number of tables
-             - train_size is the number of training samples provided for in-context learning
-
-        d : Optional[Tensor], default=None
-            The number of features per dataset.
-
-        embed_with_test : bool, default=False
-            If True, allow training samples to attend to test samples during embedding.
-
-        Returns
-        -------
-        Tensor
-            Predictions of shape (B, test_size, out_dim):
-
-            - For regression (max_classes=0): out_dim = num_quantiles
-            - For classification (max_classes>0): out_dim = max_classes
-        """
         d_total = self._get_d_total(d_X, d_Z, d_W)
 
         B, T, H = X.shape
@@ -431,11 +490,11 @@ class ProximalFM(nn.Module):
         # Column-wise embedding -> Row-wise interaction
         representations = self.row_interactor(
             self.col_embedder(
-                X=X,
-                Z=Z,
-                W=W,
-                A_train=A_train,
-                y_train=y_train,
+                X=X,  # [B, T, dim_x]
+                Z=Z,  # [B, T, dim_z]
+                W=W,  # [B, T, dim_w]
+                A_train=A_train,  # [B, train_size]
+                y_train=y_train,  # [B, train_size]
                 d_X=d_X,
                 d_Z=d_Z,
                 d_W=d_W,
@@ -460,50 +519,6 @@ class ProximalFM(nn.Module):
         embed_with_test: bool = False,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
-        """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning.
-
-        Parameters
-        ----------
-        X : Tensor
-            Input tensor of shape (B, T, H) where:
-             - B is the number of tables
-             - T is the number of samples (rows)
-             - H is the number of features (columns)
-            The first train_size positions contain training samples, and the remaining positions contain test samples.
-
-        y_train : Tensor
-            Training labels of shape (B, train_size) where:
-             - B is the number of tables
-             - train_size is the number of training samples provided for in-context learning
-
-        feature_shuffles : Optional[List[List[int]]], default=None
-            A list of feature shuffle patterns for each table in the batch.
-            When provided, indicates that X contains the same table with different feature orders.
-            In this case, column-wise embeddings are computed once and then shuffled accordingly.
-
-        embed_with_test : bool, default=False
-            If True, allow training samples to attend to test samples during embedding.
-
-        return_logits : bool, default=True
-            If True, return raw logits instead of probabilities.
-
-        softmax_temperature : float, default=0.9
-            Temperature for the softmax function.
-
-        inference_config : Optional[InferenceConfig], default=None
-            Inference configuration.
-
-        Returns
-        -------
-        Tensor
-            For regression (max_classes=0):
-                Predictions of shape (B, test_size, num_quantiles), where test_size = T - train_size
-
-            For classification (max_classes>0):
-                If return_logits=True: Logits of shape (B, test_size, num_classes)
-                If return_logits=False: Probabilities of shape (B, test_size, num_classes)
-        """
-
         train_size = y_train.shape[1]
         assert (
             train_size <= X.shape[1]
@@ -553,10 +568,20 @@ class ProximalFM(nn.Module):
         embed_with_test: bool = False,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
-        """Column-wise embedding -> row-wise interaction -> dataset-wise in-context learning."""
 
         train_size = y_train.shape[1]
         B, T, _ = X.shape
+
+        assert train_size <= T, "Number of training samples exceeds total samples"
+
+        # Important: all training and inference calls now go through this.
+        X, Z, W, y_train, _, _ = self._standardize_forward_inputs(
+            X=X,
+            Z=Z,
+            W=W,
+            y_train=y_train,
+            train_size=train_size,
+        )
 
         if A.shape[1] == T:
             A_train = A[:, :train_size]
@@ -602,31 +627,15 @@ class ProximalFM(nn.Module):
         was_training = self.training
         self.eval()
 
-        # 1. Standardize Covariates (MATCHING TRAINING EXACTLY)
-        def safe_standardize(x):
-            mu = x.mean(dim=1, keepdim=True)
-            std = x.std(dim=1, keepdim=True)
-            std = torch.where(std < 1e-5, torch.ones_like(std), std)
-            return (x - mu) / std
-
-        X_std = safe_standardize(X)
-        Z_std = safe_standardize(Z)
-        W_std = safe_standardize(W)
-
-        # 2. Compute stats strictly from context
         y_context_mean = y_train.mean(dim=1, keepdim=True)
         y_context_std = y_train.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
 
-        # 3. Standardize context BEFORE forward pass
-        y_train_std = (y_train - y_context_mean) / y_context_std
-
-        # 4. Forward pass (now receiving properly scaled data for BOTH features and targets)
-        logits = self._inference_forward(
-            X=X_std,
-            Z=Z_std,
-            W=W_std,
+        logits = self.forward(
+            X=X,
+            Z=Z,
+            W=W,
             A=A,
-            y_train=y_train_std,
+            y_train=y_train,
             d_X=d_X,
             d_Z=d_Z,
             d_W=d_W,
