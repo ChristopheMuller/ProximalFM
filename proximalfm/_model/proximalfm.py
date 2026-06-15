@@ -511,6 +511,62 @@ class ProximalFM(nn.Module):
         # Dataset-wise in-context learning
         return self.icl_predictor(representations, y_train=y_train, A_train=A_train)
 
+    def _inference_forward(
+        self,
+        X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A_train: Tensor,
+        y_train: Tensor,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        embed_with_test: bool = False,
+        inference_config: Optional[InferenceConfig] = None,
+    ) -> Tensor:
+        """Inference forward pass handling configuration routing and KV caching."""
+        if inference_config is None:
+            inference_config = InferenceConfig()
+
+        d_total = self._get_d_total(d_X, d_Z, d_W)
+        train_size = y_train.shape[1]
+
+        # 1. Column-wise embedding
+        col_embeddings = self.col_embedder(
+            X=X,
+            Z=Z,
+            W=W,
+            A_train=A_train,
+            y_train=y_train,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            embed_with_test=embed_with_test,
+            mgr_config=inference_config.COL_CONFIG,
+        )
+
+        # 2. Row-wise interaction
+        representations = self.row_interactor(
+            col_embeddings,
+            d=d_total,
+            train_size=train_size,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
+            hide_query_proxies=True,
+            mgr_config=inference_config.ROW_CONFIG,
+        )
+
+        # 3. Dataset-wise in-context learning
+        out = self.icl_predictor(
+            representations,
+            y_train=y_train,
+            A_train=A_train,
+            mgr_config=inference_config.ICL_CONFIG,
+        )
+
+        return out
+
     def forward(
         self,
         X: Tensor,
@@ -549,10 +605,17 @@ class ProximalFM(nn.Module):
                 X, Z, W, A_train, y_train, d_X, d_Z, d_W, embed_with_test
             )
         else:
-            raise (
-                NotImplementedError(
-                    "need to implement inference forward with cache and inference_config"
-                )
+            out = self._inference_forward(
+                X,
+                Z,
+                W,
+                A_train,
+                y_train,
+                d_X,
+                d_Z,
+                d_W,
+                embed_with_test,
+                inference_config,
             )
         return out
 
