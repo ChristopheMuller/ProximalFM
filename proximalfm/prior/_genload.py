@@ -282,13 +282,18 @@ class LoadPriorDataset(IterableDataset):
                 print(f"Warning: Could not load or parse metadata.json: {e}")
 
         # Buffers for storing datasets that haven't been returned yet
+        self.buffer_U = None
         self.buffer_X = None
         self.buffer_W = None
         self.buffer_Z = None
         self.buffer_A = None
+        self.buffer_A_probs = None
         self.buffer_Y_obs = None
         self.buffer_Y0 = None
         self.buffer_Y1 = None
+        self.buffer_MU0 = None
+        self.buffer_MU1 = None
+        self.buffer_d_U = None
         self.buffer_d_X = None
         self.buffer_d_W = None
         self.buffer_d_Z = None
@@ -307,7 +312,8 @@ class LoadPriorDataset(IterableDataset):
         Returns
         -------
         tuple
-            A tuple containing (X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_lens, train_sizes, batch_size).
+            A tuple containing (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1,
+            d_U, d_X, d_W, d_Z, seq_lens, train_sizes, batch_size).
         """
         batch_file = self.data_dir / f"batch_{self.current_idx:06d}.pt"
 
@@ -329,6 +335,12 @@ class LoadPriorDataset(IterableDataset):
             batch["A_probs"],
         )
         Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
+        if "MU0" not in batch or "MU1" not in batch:
+            raise KeyError(
+                f"Batch file {batch_file} does not contain MU0/MU1. "
+                "Regenerate prior data with the CATE-enabled prior before training."
+            )
+        MU0, MU1 = batch["MU0"], batch["MU1"]
         d_U, d_X, d_W, d_Z = batch["d_U"], batch["d_X"], batch["d_W"], batch["d_Z"]
         seq_lens = batch["seq_lens"]
         train_sizes = batch["train_sizes"]
@@ -345,6 +357,8 @@ class LoadPriorDataset(IterableDataset):
             Y_obs = SliceNestedTensor(Y_obs)
             Y0 = SliceNestedTensor(Y0)
             Y1 = SliceNestedTensor(Y1)
+            MU0 = SliceNestedTensor(MU0)
+            MU1 = SliceNestedTensor(MU1)
         else:
             # Convert sparse tensor to dense
             T = seq_lens[0]
@@ -378,6 +392,8 @@ class LoadPriorDataset(IterableDataset):
             Y_obs,
             Y0,
             Y1,
+            MU0,
+            MU1,
             d_U,
             d_X,
             d_W,
@@ -410,6 +426,8 @@ class LoadPriorDataset(IterableDataset):
                 Y_obs,
                 Y0,
                 Y1,
+                MU0,
+                MU1,
                 d_U,
                 d_X,
                 d_W,
@@ -428,6 +446,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = Y_obs
             self.buffer_Y0 = Y0
             self.buffer_Y1 = Y1
+            self.buffer_MU0 = MU0
+            self.buffer_MU1 = MU1
             self.buffer_d_U = d_U
             self.buffer_d_X = d_X
             self.buffer_d_W = d_W
@@ -455,6 +475,8 @@ class LoadPriorDataset(IterableDataset):
                     Y_obs,
                     Y0,
                     Y1,
+                    MU0,
+                    MU1,
                     d_U,
                     d_X,
                     d_W,
@@ -476,6 +498,8 @@ class LoadPriorDataset(IterableDataset):
                     self.buffer_Y_obs = Y_obs
                     self.buffer_Y0 = Y0
                     self.buffer_Y1 = Y1
+                    self.buffer_MU0 = MU0
+                    self.buffer_MU1 = MU1
                     self.buffer_d_U = d_U
                     self.buffer_d_X = d_X
                     self.buffer_d_W = d_W
@@ -513,6 +537,12 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_Y1 = cat_slice_nested_tensors(
                             [self.buffer_Y1, Y1], dim=0
                         )
+                        self.buffer_MU0 = cat_slice_nested_tensors(
+                            [self.buffer_MU0, MU0], dim=0
+                        )
+                        self.buffer_MU1 = cat_slice_nested_tensors(
+                            [self.buffer_MU1, MU1], dim=0
+                        )
                     else:
                         self.buffer_U = torch.cat([self.buffer_U, U], dim=0)
                         self.buffer_X = torch.cat([self.buffer_X, X], dim=0)
@@ -525,6 +555,8 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_Y_obs = torch.cat([self.buffer_Y_obs, Y_obs], dim=0)
                         self.buffer_Y0 = torch.cat([self.buffer_Y0, Y0], dim=0)
                         self.buffer_Y1 = torch.cat([self.buffer_Y1, Y1], dim=0)
+                        self.buffer_MU0 = torch.cat([self.buffer_MU0, MU0], dim=0)
+                        self.buffer_MU1 = torch.cat([self.buffer_MU1, MU1], dim=0)
 
                     self.buffer_d_U = torch.cat([self.buffer_d_U, d_U], dim=0)
                     self.buffer_d_X = torch.cat([self.buffer_d_X, d_X], dim=0)
@@ -555,6 +587,8 @@ class LoadPriorDataset(IterableDataset):
         Y_obs_out = self.buffer_Y_obs[:output_size]
         Y0_out = self.buffer_Y0[:output_size]
         Y1_out = self.buffer_Y1[:output_size]
+        MU0_out = self.buffer_MU0[:output_size]
+        MU1_out = self.buffer_MU1[:output_size]
         d_U_out = self.buffer_d_U[:output_size]
         d_X_out = self.buffer_d_X[:output_size]
         d_W_out = self.buffer_d_W[:output_size]
@@ -573,6 +607,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = self.buffer_Y_obs[output_size:]
             self.buffer_Y0 = self.buffer_Y0[output_size:]
             self.buffer_Y1 = self.buffer_Y1[output_size:]
+            self.buffer_MU0 = self.buffer_MU0[output_size:]
+            self.buffer_MU1 = self.buffer_MU1[output_size:]
             self.buffer_d_U = self.buffer_d_U[output_size:]
             self.buffer_d_X = self.buffer_d_X[output_size:]
             self.buffer_d_W = self.buffer_d_W[output_size:]
@@ -591,6 +627,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y_obs = None
             self.buffer_Y0 = None
             self.buffer_Y1 = None
+            self.buffer_MU0 = None
+            self.buffer_MU1 = None
             self.buffer_d_U = None
             self.buffer_d_X = None
             self.buffer_d_W = None
@@ -609,6 +647,8 @@ class LoadPriorDataset(IterableDataset):
             Y_obs_out = Y_obs_out.nested_tensor
             Y0_out = Y0_out.nested_tensor
             Y1_out = Y1_out.nested_tensor
+            MU0_out = MU0_out.nested_tensor
+            MU1_out = MU1_out.nested_tensor
 
         return (
             U_out,
@@ -620,6 +660,8 @@ class LoadPriorDataset(IterableDataset):
             Y_obs_out,
             Y0_out,
             Y1_out,
+            MU0_out,
+            MU1_out,
             d_U_out,
             d_X_out,
             d_W_out,
@@ -658,6 +700,7 @@ class LoadPriorDataset(IterableDataset):
             repr_str += (
                 f"    replay_small: {self.metadata.get('replay_small', 'N/A')}\n"
             )
+            repr_str += f"    mcmc_cate: {self.metadata.get('mcmc_cate', 'N/A')}\n"
         repr_str += ")"
 
         return repr_str
@@ -700,7 +743,10 @@ class SavePriorDataset:
             max_train_size=self.args.max_train_size,
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
-            scm_fixed_hp=DEFAULT_FIXED_HP,
+            scm_fixed_hp={
+                **DEFAULT_FIXED_HP,
+                "mcmc_cate": self.args.mcmc_cate,
+            },
             scm_sampled_hp=DEFAULT_SAMPLED_HP,
             n_jobs=self.args.n_jobs,
             num_threads_per_generate=self.args.num_threads_per_generate,
@@ -729,6 +775,7 @@ class SavePriorDataset:
             "min_train_size": self.args.min_train_size,
             "max_train_size": self.args.max_train_size,
             "replay_small": self.args.replay_small,
+            "mcmc_cate": self.args.mcmc_cate,
         }
         with open(self.save_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -745,6 +792,8 @@ class SavePriorDataset:
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -792,6 +841,8 @@ class SavePriorDataset:
                 "Y_obs": Y_obs,
                 "Y0": Y0,
                 "Y1": Y1,
+                "MU0": MU0,
+                "MU1": MU1,
                 "d_U": d_U,
                 "d_X": d_X,
                 "d_W": d_W,
@@ -826,6 +877,8 @@ class SavePriorDataset:
                 Y_obs,
                 Y0,
                 Y1,
+                MU0,
+                MU1,
                 d_U,
                 d_X,
                 d_W,
@@ -835,9 +888,17 @@ class SavePriorDataset:
             ) = self.prior.get_batch()
 
             # Move tensors to CPU before saving
-            X, W, Z, A, A_probs = X.cpu(), W.cpu(), Z.cpu(), A.cpu(), A_probs.cpu()
+            U, X, W, Z, A, A_probs = (
+                U.cpu(),
+                X.cpu(),
+                W.cpu(),
+                Z.cpu(),
+                A.cpu(),
+                A_probs.cpu(),
+            )
             Y_obs, Y0, Y1 = Y_obs.cpu(), Y0.cpu(), Y1.cpu()
-            d_X, d_W, d_Z = d_X.cpu(), d_W.cpu(), d_Z.cpu()
+            MU0, MU1 = MU0.cpu(), MU1.cpu()
+            d_U, d_X, d_W, d_Z = d_U.cpu(), d_X.cpu(), d_W.cpu(), d_Z.cpu()
             seq_lens = seq_lens.cpu()
             train_sizes = train_sizes.cpu()
 
@@ -852,6 +913,8 @@ class SavePriorDataset:
                 Y_obs,
                 Y0,
                 Y1,
+                MU0,
+                MU1,
                 d_U,
                 d_X,
                 d_W,
@@ -987,6 +1050,12 @@ if __name__ == "__main__":
         default="mix_scm",
         choices=["mlp_scm", "tree_scm", "mix_scm"],
         help="Type of prior to use",
+    )
+    parser.add_argument(
+        "--mcmc_cate",
+        type=int,
+        default=200,
+        help="Number of Monte Carlo latent/noise worlds per X used to estimate MU0/MU1.",
     )
     parser.add_argument(
         "--n_jobs", type=int, default=-1, help="Number of jobs for parallel processing"
