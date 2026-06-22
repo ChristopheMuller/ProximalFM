@@ -26,6 +26,7 @@ import yaml
 from proximalfm._model.proximalfm import ProximalFM
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
+from proximalfm.prior._linear_dataset import LinearPriorDataset
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._eval import CausalEvaluator

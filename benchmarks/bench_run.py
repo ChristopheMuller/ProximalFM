@@ -63,6 +63,7 @@ from benchmarks.bench_metrics import (
 try:
     from proximalfm._model.proximalfm import ProximalFM
     from proximalfm.prior._dataset import PriorDataset
+    from proximalfm.prior._linear_dataset import LinearPriorDataset
 
     _PROXFM_AVAILABLE = True
 except ImportError:
@@ -125,6 +126,7 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     torch.manual_seed(seed)
     np.random.seed(seed)
     dataset = PriorDataset(**prior_kw)
+    # dataset = LinearPriorDataset(**prior_kw)
     batch = next(iter(dataset))
 
     # Prior dataset yields 14 elements
