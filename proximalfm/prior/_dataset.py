@@ -600,91 +600,92 @@ class SCMPrior(Prior):
             std = tensor.std(dim=0, keepdim=True) + 1e-8
             return (tensor - mean) / std
 
+        T = params["seq_len"]
+        K = int(params.get("mcmc_cate", 200))
+        if K < 1:
+            raise ValueError("mcmc_cate must be >= 1")
+
         while True:
+            eps_X_sampler = XSampler(
+                seq_len=T,
+                num_features=params["dim_X"],
+                pre_stats=params.get("pre_sample_cause_stats", False),
+                sampling=params.get("sampling", "mixed"),
+                device=self.device,
+            )
+            eps_X = eps_X_sampler.sample()
+
+            f_X = prior_cls(
+                in_dim=eps_X.shape[-1],
+                num_outputs=params["dim_X"],
+                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+            ).to(self.device)
+
+            X = f_X(eps_X)
+            X_ = safe_normalize(X)
+
+            X_rep_ = (
+                X_[:, None, :]
+                .expand(T, K, params["dim_X"])
+                .reshape(T * K, params["dim_X"])
+            )
+
             eps_sampler = XSampler(
-                seq_len=params["seq_len"],
-                num_features=params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"]
-                + params["dim_Z"]
-                + 2,
+                seq_len=T * K,
+                num_features=params["dim_U"] + params["dim_W"] + params["dim_Z"] + 2,
                 pre_stats=params.get("pre_sample_cause_stats", False),
                 sampling=params.get("sampling", "mixed"),
                 device=self.device,
             )
             eps = eps_sampler.sample()
-            eps_U = eps[:, : params["dim_U"]]
-            eps_X = eps[:, params["dim_U"] : params["dim_U"] + params["dim_X"]]
-            eps_W = eps[
-                :,
-                params["dim_U"]
-                + params["dim_X"] : params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"],
-            ]
-            eps_Z = eps[
-                :,
-                params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"] : params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"]
-                + params["dim_Z"],
-            ]
-            eps_A = eps[
-                :,
-                params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"]
-                + params["dim_Z"] : params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"]
-                + params["dim_Z"]
-                + 1,
-            ]
-            eps_Y = eps[
-                :,
-                params["dim_U"]
-                + params["dim_X"]
-                + params["dim_W"]
-                + params["dim_Z"]
-                + 1 :,
-            ]
+
+            start = 0
+            eps_U = eps[:, start : start + params["dim_U"]]
+            start += params["dim_U"]
+
+            eps_W = eps[:, start : start + params["dim_W"]]
+            start += params["dim_W"]
+
+            eps_Z = eps[:, start : start + params["dim_Z"]]
+            start += params["dim_Z"]
+
+            eps_A = eps[:, start : start + 1]
+            start += 1
+
+            eps_Y = eps[:, start : start + 1]
+
+            input_U = torch.cat([X_rep_, eps_U], dim=-1)
 
             f_U = prior_cls(
-                in_dim=eps_U.shape[-1],
+                in_dim=input_U.shape[-1],
                 num_outputs=params["dim_U"],
                 **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            U = f_U(eps_U)
-            U_ = safe_normalize(U)
 
-            input_X = torch.cat([U_, eps_X], dim=-1)
-            f_X = prior_cls(
-                in_dim=input_X.shape[-1],
-                num_outputs=params["dim_X"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
-            ).to(self.device)
-            X = f_X(input_X)
-            X_ = safe_normalize(X)
+            U_mc = f_U(input_U)
+            U_mc_ = safe_normalize(U_mc)
 
-            input_W = torch.cat([U_, X_, eps_W * 5], dim=-1)
+            input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
+
             f_W = prior_cls(
                 in_dim=input_W.shape[-1],
                 num_outputs=params["dim_W"],
                 **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            W = f_W(input_W)
-            W_ = safe_normalize(W)
 
-            input_Z = torch.cat([U_, X_, eps_Z * 5], dim=-1)
+            W_mc = f_W(input_W)
+            W_mc_ = safe_normalize(W_mc)
+
+            input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
+
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
                 num_outputs=params["dim_Z"],
                 **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
-            Z = f_Z(input_Z)
-            Z_ = safe_normalize(Z)
+
+            Z_mc = f_Z(input_Z)
+            Z_mc_ = safe_normalize(Z_mc)
 
             p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)
             p_dim_u_augment_A = params.get("confounding_duplication_of_U_in_A", 0.5)
@@ -708,18 +709,18 @@ class SCMPrior(Prior):
 
             f_u_augment_out_dim = torch.max(dim_u_augment_Y, dim_u_augment_A)
             f_u_augment = prior_cls(
-                in_dim=U_.shape[-1],
+                in_dim=U_mc_.shape[-1],
                 num_outputs=int(f_u_augment_out_dim),
                 num_layers=3,
                 hidden_dim=max(10, int(f_u_augment_out_dim)),
             ).to(self.device)
-            u_aug = f_u_augment(U_)
+
+            u_aug = f_u_augment(U_mc_)
 
             u_aug_y = u_aug[:, :dim_u_augment_Y]
             u_aug_a = u_aug[:, :dim_u_augment_A]
 
-            input_y = torch.cat([U_, X_, W_, eps_Y, u_aug_y], dim=-1)
-            input_A = torch.cat([U_, X_, Z_, eps_A, u_aug_a], dim=-1)
+            input_A = torch.cat([U_mc_, X_rep_, Z_mc_, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
@@ -727,13 +728,17 @@ class SCMPrior(Prior):
                 u_skip=0,
                 **{**params, "noise_std": 0.0} if "noise_std" in params else params,
             ).to(self.device)
+
             A_logits = f_A(input_A).squeeze(-1)
-            A, A_probs = self.sample_A(
+
+            A_mc, A_probs_mc = self.sample_A(
                 A_logits,
                 shift=params.get("propensity_shift", 0.0),
                 scale=params.get("propensity_scale", 1.0),
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
+
+            input_y = torch.cat([U_mc_, X_rep_, W_mc_, eps_Y, u_aug_y], dim=-1)
 
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],
@@ -746,32 +751,49 @@ class SCMPrior(Prior):
             y0_raw = y_joint_raw[:, 0]
             y1_raw = y_joint_raw[:, 1]
 
-            # --- CausalPFN - RealCause Std ---
             gamma_hetero = torch.rand(1, device=self.device)
-            alphas = torch.rand(params["seq_len"], device=self.device)
+            alphas = torch.rand(T * K, device=self.device)
 
             cate_raw = y1_raw - y0_raw
             ate_raw = cate_raw.mean()
 
-            y1 = (alphas + (1 - alphas) * gamma_hetero) * y1_raw + (
+            y1_mc = (alphas + (1 - alphas) * gamma_hetero) * y1_raw + (
                 1 - gamma_hetero
             ) * (1 - alphas) * (y0_raw + ate_raw)
-            y0 = ((1 - alphas) + alphas * gamma_hetero) * y0_raw + (
+
+            y0_mc = ((1 - alphas) + alphas * gamma_hetero) * y0_raw + (
                 1 - gamma_hetero
             ) * alphas * (y1_raw - ate_raw)
 
-            # --- Compute Factual Observed Y ---
+            MU0 = y0_mc.reshape(T, K).mean(dim=1)
+            MU1 = y1_mc.reshape(T, K).mean(dim=1)
+
+            obs_k = torch.randint(K, size=(T,), device=self.device)
+            obs_idx = torch.arange(T, device=self.device) * K + obs_k
+
+            U = U_mc[obs_idx]
+            W = W_mc[obs_idx]
+            Z = Z_mc[obs_idx]
+            A = A_mc[obs_idx]
+            A_probs = A_probs_mc[obs_idx]
+            y0 = y0_mc[obs_idx]
+            y1 = y1_mc[obs_idx]
+
             y = torch.where(A == 1, y1, y0)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
-            U, X, W, Z, y, y0, y1 = (
+            U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1 = (
                 U.unsqueeze(0),
                 X.unsqueeze(0),
                 W.unsqueeze(0),
                 Z.unsqueeze(0),
+                A.unsqueeze(0),
+                A_probs.unsqueeze(0),
                 y.unsqueeze(0),
                 y0.unsqueeze(0),
                 y1.unsqueeze(0),
+                MU0.unsqueeze(0),
+                MU1.unsqueeze(0),
             )
             d_U = torch.tensor([params["dim_U"]], device=self.device, dtype=torch.long)
             d_X = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
@@ -784,7 +806,7 @@ class SCMPrior(Prior):
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
             if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
-                U, X, W, Z, A, A_probs, y, y0, y1, d_U, d_X, d_W, d_Z = (
+                U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
                     W.squeeze(0),
@@ -794,6 +816,8 @@ class SCMPrior(Prior):
                     y.squeeze(0),
                     y0.squeeze(0),
                     y1.squeeze(0),
+                    MU0.squeeze(0),
+                    MU1.squeeze(0),
                     d_U.squeeze(0),
                     d_X.squeeze(0),
                     d_W.squeeze(0),
@@ -809,6 +833,8 @@ class SCMPrior(Prior):
                     y,
                     y0,
                     y1,
+                    MU0,
+                    MU1,
                     d_U,
                     d_X,
                     d_W,
@@ -822,7 +848,6 @@ class SCMPrior(Prior):
         scale: float = 1.0,
         epsilon: float = 1e-3,
     ) -> Tensor:
-
         logits = (logits - logits.mean()) / (logits.std() + 1e-8)
         logits = logits * scale + shift
 
@@ -984,6 +1009,8 @@ class SCMPrior(Prior):
             Y_obs_list,
             Y0_list,
             Y1_list,
+            MU0_list,
+            MU1_list,
             d_U_list,
             d_X_list,
             d_W_list,
@@ -1005,6 +1032,12 @@ class SCMPrior(Prior):
             )
             Y0 = nested_tensor([t.to(self.device) for t in Y0_list], device=self.device)
             Y1 = nested_tensor([t.to(self.device) for t in Y1_list], device=self.device)
+            MU0 = nested_tensor(
+                [t.to(self.device) for t in MU0_list], device=self.device
+            )
+            MU1 = nested_tensor(
+                [t.to(self.device) for t in MU1_list], device=self.device
+            )
         else:
             U = torch.stack(U_list).to(self.device)
             X = torch.stack(X_list).to(self.device)
@@ -1015,6 +1048,8 @@ class SCMPrior(Prior):
             Y_obs = torch.stack(Y_obs_list).to(self.device)
             Y0 = torch.stack(Y0_list).to(self.device)
             Y1 = torch.stack(Y1_list).to(self.device)
+            MU0 = torch.stack(MU0_list).to(self.device)
+            MU1 = torch.stack(MU1_list).to(self.device)
 
         # Metadata
         d_U = torch.stack(d_U_list).to(self.device)
@@ -1043,6 +1078,8 @@ class SCMPrior(Prior):
             Y_obs,
             Y0,
             Y1,
+            MU0,
+            MU1,
             d_U,
             d_X,
             d_W,
