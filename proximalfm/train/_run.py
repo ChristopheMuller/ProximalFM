@@ -26,6 +26,7 @@ import yaml
 from proximalfm._model.proximalfm import ProximalFM
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
+from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.prior._linear_dataset import LinearPriorDataset
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
@@ -482,6 +483,10 @@ class Trainer:
                 max_train_size=c.max_train_size,
                 replay_small=c.replay_small,
                 prior_type=c.prior_type,
+                scm_fixed_hp={
+                    **DEFAULT_FIXED_HP,
+                    "mcmc_cate": getattr(c, "mcmc_cate", 200),
+                },
                 device=c.prior_device,
                 n_jobs=1,
             )
@@ -865,6 +870,8 @@ class Trainer:
         micro_Y_obs,
         micro_Y0,
         micro_Y1,
+        micro_MU0,
+        micro_MU1,
         micro_d_X,
         micro_d_W,
         micro_d_Z,
@@ -907,6 +914,8 @@ class Trainer:
             micro_Y_obs = micro_Y_obs[:, :seq_len]
             micro_Y0 = micro_Y0[:, :seq_len]
             micro_Y1 = micro_Y1[:, :seq_len]
+            micro_MU0 = micro_MU0[:, :seq_len]
+            micro_MU1 = micro_MU1[:, :seq_len]
 
         # Truncate feature dimensions
         max_X = micro_d_X.max().item()
@@ -921,7 +930,17 @@ class Trainer:
         if micro_Z.shape[-1] > max_Z:
             micro_Z = micro_Z[..., :max_Z]
 
-        return micro_X, micro_W, micro_Z, micro_A, micro_Y_obs, micro_Y0, micro_Y1
+        return (
+            micro_X,
+            micro_W,
+            micro_Z,
+            micro_A,
+            micro_Y_obs,
+            micro_Y0,
+            micro_Y1,
+            micro_MU0,
+            micro_MU1,
+        )
 
     def run_micro_batch(
         self, micro_batch, micro_batch_idx, num_micro_batches, is_train=True
@@ -945,7 +964,6 @@ class Trainer:
         dict
             Result dictionary with 'ce' and 'accuracy' keys.
         """
-        # Unpack the 12 items
         (
             micro_U,
             micro_X,
@@ -956,6 +974,8 @@ class Trainer:
             micro_Y_obs,
             micro_Y0,
             micro_Y1,
+            micro_MU0,
+            micro_MU1,
             micro_d_U,
             micro_d_X,
             micro_d_W,
@@ -974,6 +994,8 @@ class Trainer:
             micro_Y_obs,
             micro_Y0,
             micro_Y1,
+            micro_MU0,
+            micro_MU1,
         ) = self.align_micro_batch(
             micro_X,
             micro_W,
@@ -982,6 +1004,8 @@ class Trainer:
             micro_Y_obs,
             micro_Y0,
             micro_Y1,
+            micro_MU0,
+            micro_MU1,
             micro_d_X,
             micro_d_W,
             micro_d_Z,
@@ -996,6 +1020,8 @@ class Trainer:
         micro_Y_obs = micro_Y_obs.to(self.config.device)
         micro_Y0 = micro_Y0.to(self.config.device)
         micro_Y1 = micro_Y1.to(self.config.device)
+        micro_MU0 = micro_MU0.to(self.config.device)
+        micro_MU1 = micro_MU1.to(self.config.device)
         micro_d_X = micro_d_X.to(self.config.device)
         micro_d_W = micro_d_W.to(self.config.device)
         micro_d_Z = micro_d_Z.to(self.config.device)
@@ -1007,14 +1033,20 @@ class Trainer:
             min=1e-5
         )
 
-        # Test targets for loss
-        y_test_0 = micro_Y0[:, train_size:]
-        y_test_1 = micro_Y1[:, train_size:]
+        # Test targets for loss.
+        y_test_0_sampled = micro_Y0[:, train_size:]
+        y_test_1_sampled = micro_Y1[:, train_size:]
+        mu_test_0 = micro_MU0[:, train_size:]
+        mu_test_1 = micro_MU1[:, train_size:]
 
-        # Scale test targets for CRPS loss
-        y_test_0_std = (y_test_0 - y_context_mean) / y_context_std
-        y_test_1_std = (y_test_1 - y_context_mean) / y_context_std
+        # Scale all targets using ONLY the observed training context.
+        y_test_0_std = (mu_test_0 - y_context_mean) / y_context_std
+        y_test_1_std = (mu_test_1 - y_context_mean) / y_context_std
         true_cate_std = y_test_1_std - y_test_0_std
+
+        sampled_y_test_0_std = (y_test_0_sampled - y_context_mean) / y_context_std
+        sampled_y_test_1_std = (y_test_1_sampled - y_context_mean) / y_context_std
+        sampled_ite_std = sampled_y_test_1_std - sampled_y_test_0_std
 
         # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
@@ -1261,6 +1293,19 @@ class Trainer:
                     if is_train
                     else hl_sigma,
                 }
+            scale = num_micro_batches if is_train else 1
+            micro_results.update(
+                {
+                    "target/cate_mean": true_cate_std.mean().item() / scale,
+                    "target/cate_std": true_cate_std.std(unbiased=False).item() / scale,
+                    "target/sampled_ite_mean": sampled_ite_std.mean().item() / scale,
+                    "target/ite_minus_cate_mse": torch.mean(
+                        (sampled_ite_std - true_cate_std) ** 2
+                    ).item()
+                    / scale,
+                }
+            )
+
         return micro_results
 
     def run_batch(self, batch):
