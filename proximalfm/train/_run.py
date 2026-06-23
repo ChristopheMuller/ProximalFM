@@ -295,6 +295,7 @@ class Trainer:
             self.ddp_world_size = int(os.environ["WORLD_SIZE"])
             self.master_process = self.ddp_rank == 0
             self.config.device = f"cuda:{self.ddp_local_rank}"
+            self.config.prior_device = f"cuda:{self.ddp_local_rank}"
             torch.cuda.set_device(self.config.device)
 
             original_batch_size = self.config.batch_size
@@ -585,18 +586,22 @@ class Trainer:
 
     def configure_amp(self):
         """Configure automatic mixed precision (AMP) for training."""
-
         self.amp = self.config.amp and "cuda" in self.config.device
-        self.scaler = torch.GradScaler("cuda", enabled=self.amp)
+        dtype_str = getattr(self.config, "dtype", "bfloat16")
+
+        if dtype_str == "bfloat16":
+            amp_dtype, need_scaler = torch.bfloat16, False
+        elif dtype_str == "float16":
+            amp_dtype, need_scaler = torch.float16, True
+        else:
+            amp_dtype, need_scaler = torch.float32, False
+
+        self.scaler = torch.GradScaler("cuda", enabled=self.amp and need_scaler)
+
         if self.amp:
             if self.master_process:
-                print("Automatic Mixed Precision is enabled.")
-            self.amp_ctx = torch.autocast(
-                device_type="cuda",
-                dtype=torch.float16
-                if self.config.dtype == "float16"
-                else torch.float32,
-            )
+                print(f"AMP enabled with dtype={dtype_str}.")
+            self.amp_ctx = torch.autocast(device_type="cuda", dtype=amp_dtype)
         else:
             self.amp_ctx = nullcontext()
 

@@ -70,9 +70,10 @@ def build_parser():
     )
     parser.add_argument(
         "--dtype",
-        default="float32",
+        default="bfloat16",
         type=str,
-        help="Data type (supported for float16, float32) used for training",
+        choices=["float32", "float16", "bfloat16"],
+        help="AMP dtype. bfloat16 recommended for H100 (no GradScaler needed).",
     )
     parser.add_argument("--np_seed", type=int, default=42, help="Random seed for numpy")
     parser.add_argument(
