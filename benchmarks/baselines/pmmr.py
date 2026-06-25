@@ -5,7 +5,7 @@ Single-stage kernel ridge estimator for proximal causal inference. Learns an
 outcome bridge function h(A, W) by minimising a kernelised maximum-moment
 restriction with two ridge penalties.
 
-Reference: Mastouri et al. (2021), "Proximal Causal Learning with Kernels"
+Reference: Mastouri et al. "Proximal Causal Learning with Kernels" (ICML 2021)
 
 Let, over the n training points, with product kernels over (A, Z, X) and (A, W, X):
     Φ = K_A ⊙ K_Z ⊙ K_X      (instrument-side feature gram)
