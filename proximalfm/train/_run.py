@@ -446,6 +446,7 @@ class Trainer:
             )
 
         if self.config.model_compile:
+            torch._dynamo.config.cache_size_limit = 64
             model = torch.compile(model, dynamic=True)
             if self.master_process:
                 print("Model compiled successfully.")
