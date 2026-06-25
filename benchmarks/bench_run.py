@@ -269,7 +269,6 @@ def build_batches(data: dict) -> list[dict]:
 def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
     b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
     try:
-
         try:
             torch.set_num_threads(1)
             torch.set_num_interop_threads(1)

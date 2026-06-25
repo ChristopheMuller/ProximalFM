@@ -542,6 +542,13 @@ class KPV_Wrapper(CATEEstimator):
 
 
 class PMMR_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See PMMREstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
         from benchmarks.baselines.pmmr import PMMRConfig, PMMREstimator
 
@@ -553,6 +560,13 @@ class PMMR_Wrapper(CATEEstimator):
         )
         self.model = PMMREstimator(cfg)
 
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown PMMR strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("PMMR requires W and Z proxies.")
@@ -560,10 +574,20 @@ class PMMR_Wrapper(CATEEstimator):
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        return self.model.predict(X)
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, strategy="paired")
+        return self.model.predict(X, strategy=self.strategy)
 
 
 class NMMR_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See NMMREstimator.predict:
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
         from benchmarks.baselines.nmmr import NMMRConfig, NMMREstimator
 
@@ -578,13 +602,18 @@ class NMMR_Wrapper(CATEEstimator):
             weight_decay=kwargs.get("weight_decay", 1e-4),
             predict_batch_size=kwargs.get("predict_batch_size", 128),
             w_predict_batch_size=kwargs.get("w_predict_batch_size", 4096),
-            w_strategy=kwargs.get("w_strategy", "independent"),
             x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
             x_cond_top_k=kwargs.get("x_cond_top_k", 512),
             seed=kwargs.get("seed", 42),
         )
         self.model = NMMREstimator(cfg)
-        self.use_W = kwargs.get("use_W", True)
+
+        self.strategy = kwargs.get("strategy", "paired")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown NMMR strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
@@ -593,7 +622,10 @@ class NMMR_Wrapper(CATEEstimator):
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        return self.model.predict(X, W=W if self.use_W else None)
+        # Paired uses the query-time W; the marginalising strategies ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W)
+        return self.model.predict(X, W=None, strategy=self.strategy)
 
 
 class DFPV_Wrapper(CATEEstimator):
