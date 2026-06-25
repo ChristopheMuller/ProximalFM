@@ -90,8 +90,10 @@ def compute_episode_metrics(
     time: float,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> EpisodeMetrics:
-
-    ate_pred = float(np.nanmean(pred))
+    if np.all(np.isnan(pred)):
+        ate_pred = np.nan
+    else:
+        ate_pred = float(np.nanmean(pred))
     ate_true = float(true_ite.mean())
     ite_var = float(true_ite.var())
 
@@ -147,7 +149,6 @@ def compute_all_metrics(
     method: str,
     ite_var_threshold: float = ITE_VAR_THRESHOLD,
 ) -> pd.DataFrame:
-
     rows = [
         asdict(
             compute_episode_metrics(
@@ -240,7 +241,6 @@ def _summarise_cate(df: pd.DataFrame) -> pd.Series:
 def build_summary_tables(
     all_results: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-
     # 1. Compute base errors needed for regret ratios
     all_results["ate_sq_error"] = all_results["ate_error"] ** 2
 
