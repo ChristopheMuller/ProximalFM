@@ -513,6 +513,13 @@ class ProximalPLearner(CATEEstimator):
 
 
 class KPV_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See KPVEstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
         from benchmarks.baselines.kpv import KPVConfig, KPVEstimator
 
@@ -531,6 +538,13 @@ class KPV_Wrapper(CATEEstimator):
         )
         self.model = KPVEstimator(cfg)
 
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown KPV strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("KPV requires W and Z proxies.")
@@ -538,7 +552,11 @@ class KPV_Wrapper(CATEEstimator):
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        return self.model.predict(X)
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, mode="paired")
+        return self.model.predict(X, mode=self.strategy)
 
 
 class PMMR_Wrapper(CATEEstimator):
