@@ -55,8 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from benchmarks.bench_methods import build_method
 from benchmarks.bench_metrics import (
     compute_all_metrics,
-    build_summary_tables,
-    make_combined_rich_table,
+    build_summary_table,
+    make_summary_rich_table,
 )
 
 # ── Optional: neural model support ───────────────────────────────────────────
@@ -594,15 +594,10 @@ def print_partial_results(
         for name, (preds, times) in accumulated.items()
     ]
     all_df = pd.concat(frames, ignore_index=True)
-    ate_df, cate_df = build_summary_tables(all_df)
+    summary = build_summary_table(all_df)
     console.print(
         Padding(
-            make_combined_rich_table(
-                all_results=all_df,
-                ate_summary=ate_df,
-                cate_summary=cate_df,
-                title="Live Results So Far",
-            ),
+            make_summary_rich_table(summary, title="Live Results So Far"),
             (1, 4),
         )
     )
@@ -738,20 +733,17 @@ def main() -> None:
         ignore_index=True,
     )
 
-    ate_summary, cate_summary = build_summary_tables(all_results)
+    summary = build_summary_table(all_results)
     console.print(
         Padding(
-            make_combined_rich_table(
-                all_results, ate_summary, cate_summary, title="Final Evaluation"
-            ),
+            make_summary_rich_table(summary, title="Final Evaluation"),
             (1, 4),
         )
     )
 
     results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)
-    ate_summary.to_csv(results_dir / "ate_summary.csv")
-    cate_summary.to_csv(results_dir / "cate_summary.csv")
+    summary.to_csv(results_dir / "summary.csv")
 
     console.print(f"  [green]✓[/] Full results → [cyan]{results_csv}[/]")
     console.print(Rule("[bold green]Done[/]"))
