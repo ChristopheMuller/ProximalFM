@@ -647,125 +647,79 @@ class NMMR_Wrapper(CATEEstimator):
 
 
 class DFPV_Wrapper(CATEEstimator):
-    """Wrapper for the Deep Feature Proxy Variable (DFPV) Model."""
+    """Wrapper for the Deep Feature Proxy Variable (DFPV) estimator."""
+
+    # Which prediction target the estimator returns. See DFPVEstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        import sys
-        from pathlib import Path
+        import warnings
 
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        from benchmarks.baselines.dfpv import DFPVConfig, DFPVEstimator
 
-        # 1. Isolate the environment for DFPV (Assuming it shares the NMMR repo structure)
-        dfpv_repo_path = str(PROJECT_ROOT / "NMMR")
+        # The benchmark fans batches out across a `spawn` ProcessPool. Concurrent
+        # multi-process MPS/Metal access stalls (each worker also does many
+        # MPS↔CPU solve round-trips), so MPS is unsafe here: force CPU. MPS is
+        # still fine for single-process use of DFPVEstimator directly.
+        device = kwargs.get("device", None)
+        if device == "mps":
+            warnings.warn(
+                "DFPV_Wrapper: ignoring device='mps' — it deadlocks inside the "
+                "benchmark's multiprocess pool. Falling back to CPU.",
+                stacklevel=2,
+            )
+            device = "cpu"
 
-        if dfpv_repo_path not in sys.path:
-            sys.path.insert(0, dfpv_repo_path)
-
-        # 2. Purge the 'src' cache to prevent module collisions
-        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
-        for k in keys:
-            del sys.modules[k]
-
-        # 3. Import classes directly in __init__ after environment is prepped
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.DFPV.model import DFPVModel
-
-        import torch  # Make sure torch is imported here
-
-        torch.set_num_threads(1)
-
-        self._PVTrainDataSet = PVTrainDataSet
-        self._DFPVModel = DFPVModel
-
-        self.lam1 = kwargs.get("lam1", 0.1)
-        self.lam2 = kwargs.get("lam2", 0.1)
-        self.feat_dim = kwargs.get("feat_dim", 16)
-        self.hidden_dim = kwargs.get("hidden_dim", 32)
-        self.split_ratio = kwargs.get("split_ratio", 0.5)
-        self.add_stage1_intercept = kwargs.get("add_stage1_intercept", True)
-        self.add_stage2_intercept = kwargs.get("add_stage2_intercept", True)
-
-        self.model = None
-
-    def _build_mlp(self, in_dim, out_dim):
-        """Constructs a simple MLP for the DFPV feature extractors."""
-        import torch.nn as nn
-
-        return nn.Sequential(
-            nn.Linear(in_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, out_dim),
+        cfg = DFPVConfig(
+            feature_dim=kwargs.get("feature_dim", kwargs.get("feat_dim", 8)),
+            hidden_dim=kwargs.get("hidden_dim", 32),
+            n_hidden_layers=kwargs.get("n_hidden_layers", 2),
+            use_backdoor=kwargs.get("use_backdoor", True),
+            add_stage1_intercept=kwargs.get("add_stage1_intercept", True),
+            add_stage2_intercept=kwargs.get("add_stage2_intercept", True),
+            lam1=kwargs.get("lam1", 0.1),
+            lam2=kwargs.get("lam2", 0.1),
+            n_epochs=kwargs.get("n_epochs", 50),
+            stage1_iter=kwargs.get("stage1_iter", 20),
+            stage2_iter=kwargs.get("stage2_iter", 1),
+            lr=kwargs.get("lr", 1e-3),
+            treatment_weight_decay=kwargs.get("treatment_weight_decay", 0.0),
+            treatment_proxy_weight_decay=kwargs.get(
+                "treatment_proxy_weight_decay", 0.0
+            ),
+            outcome_proxy_weight_decay=kwargs.get("outcome_proxy_weight_decay", 0.0),
+            backdoor_weight_decay=kwargs.get("backdoor_weight_decay", 0.0),
+            split_ratio=kwargs.get("split_ratio", 0.5),
+            x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
+            x_cond_top_k=kwargs.get("x_cond_top_k", 512),
+            seed=kwargs.get("seed", 42),
+            device=device,
         )
+        self.model = DFPVEstimator(cfg)
+
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown DFPV strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("DFPV requires both W and Z proxies.")
-
-        n = X.shape[0]
-
-        # Split data into Stage 1 and Stage 2
-        indices = np.random.permutation(n)
-        split_idx = int(n * self.split_ratio)
-        idx1, idx2 = indices[:split_idx], indices[split_idx:]
-
-        A_2d = np.asarray(A).reshape(-1, 1)
-        Y_2d = np.asarray(Y).reshape(-1, 1)
-        X_2d = np.asarray(X)
-        W_2d = np.asarray(W)
-        Z_2d = np.asarray(Z)
-
-        # Use the class loaded in __init__
-        train1 = self._PVTrainDataSet(
-            treatment=A_2d[idx1],
-            treatment_proxy=Z_2d[idx1],
-            outcome_proxy=W_2d[idx1],
-            outcome=Y_2d[idx1],
-            backdoor=X_2d[idx1],
-        )
-
-        train2 = self._PVTrainDataSet(
-            treatment=A_2d[idx2],
-            treatment_proxy=Z_2d[idx2],
-            outcome_proxy=W_2d[idx2],
-            outcome=Y_2d[idx2],
-            backdoor=X_2d[idx2],
-        )
-
-        dim_A = A_2d.shape[1]
-        dim_X = X_2d.shape[1]
-        dim_W = W_2d.shape[1]
-        dim_Z = Z_2d.shape[1]
-
-        # Instantiate the DFPV model using the class loaded in __init__
-        self.model = self._DFPVModel(
-            treatment_1st_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_2nd_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_proxy_net=self._build_mlp(dim_Z, self.feat_dim),
-            outcome_proxy_net=self._build_mlp(dim_W, self.feat_dim),
-            backdoor_1st_net=self._build_mlp(dim_X, self.feat_dim),
-            backdoor_2nd_net=self._build_mlp(dim_X, self.feat_dim),
-            add_stage1_intercept=self.add_stage1_intercept,
-            add_stage2_intercept=self.add_stage2_intercept,
-        )
-
-        self.model.fit(train1, train2, self.lam1, self.lam2)
+        self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        if self.model is None:
-            raise RuntimeError("Must call fit() before predict().")
-
-        n = X.shape[0]
-
-        A1 = np.ones((n, 1))
-        A0 = np.zeros((n, 1))
-
-        y1 = self.model.predict(A1)
-        y0 = self.model.predict(A0)
-
-        return (y1 - y0).squeeze()
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, strategy="paired")
+        return self.model.predict(X, strategy=self.strategy)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
