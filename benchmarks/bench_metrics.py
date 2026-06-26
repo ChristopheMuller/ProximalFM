@@ -3,25 +3,30 @@ bench_metrics.py — Evaluation metrics for CATE benchmarks.
 
 Two distinct estimation targets
 ────────────────────────────────
+All datasets are already standardised upstream (in bench_run._generate_data)
+using context-only statistics, so every episode is on the same outcome scale
+before any method runs.  The metrics here therefore operate on the raw
+(already-standardised) values — there is no further ÷ SD(τ) rescaling.
+Cross-dataset comparability instead comes from the scale-free R² family and the
+per-episode regret ratios (method error / best-method error).
+
 ATE  (Average Treatment Effect)
     A scalar per episode: mean(τ̂) vs mean(τ).
     Every estimator produces an ATE, even a constant-effect model.
-    Summary stats: Bias, MAE, RMSE, Std  — all in raw *and* normalised
-    (÷ SD(τ)) units so that high-variance episodes do not dominate.
-    Cross-episode R² measures how well predicted ATEs track true ATEs
-    across the batch.
+    Summary stats: Bias, RMSE, RMedSE on the standardised effects, plus a
+    cross-episode R² measuring how well predicted ATEs track true ATEs and a
+    median regret ratio against the per-episode best method.
 
 CATE (Conditional Average Treatment Effect)
     A function τ̂(x) evaluated at n_test query points per episode.
-    Reported with both absolute metrics (MAE, RMSE, normalised by SD(τ))
-    and the R² family:
+    Reported with absolute metrics (RMSE, RMedSE) and the R² family:
         cate_r2       — standard R² (penalises both level and shape errors)
         cate_r2_shape — R² after removing the ATE bias (pure heterogeneity)
         cate_r2_ate_penalty — bias² / Var(τ), the ATE-level contribution
     Decomposition identity: cate_r2 = cate_r2_shape − cate_r2_ate_penalty
     Guard: episodes where Var(τ) < ITE_VAR_THRESHOLD are labelled
     'homogeneous' and excluded from R²-family averaging.  Absolute metrics
-    (MAE, RMSE) are still computed for those episodes.
+    (RMSE, RMedSE) are still computed for those episodes.
 
 Design note
 ───────────

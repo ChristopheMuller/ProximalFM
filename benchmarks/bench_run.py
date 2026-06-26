@@ -151,10 +151,14 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     # Ensure train_size is a standard integer for clean slicing
     train_size = int(train_size[0].item())
 
-    # --- 1. Standardize Covariates ---
+    # --- 1. Standardize Covariates (context-only stats, no test leakage) ---
+    # Statistics are computed strictly on the first `train_size` rows (the
+    # context the methods are allowed to see) and then applied to the whole
+    # episode, including the query rows.
     def safe_standardize(x: torch.Tensor) -> torch.Tensor:
-        mu = x.mean(dim=1, keepdim=True)
-        std = x.std(dim=1, keepdim=True)
+        ctx = x[:, :train_size]
+        mu = ctx.mean(dim=1, keepdim=True)
+        std = ctx.std(dim=1, keepdim=True)
         # Prevent division by zero for zero-variance or zero-padded features
         std = torch.where(std < 1e-5, torch.ones_like(std), std)
         return (x - mu) / std
