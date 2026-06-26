@@ -264,9 +264,6 @@ class PMMREstimator:
 
         return (self._alpha @ K_test).ravel()
 
-    def predict_marginal_effect(self, n: int = 1) -> np.ndarray:
-        return self.predict_mean_outcome(1.0, n=n) - self.predict_mean_outcome(0.0, n=n)
-
     def _predict_mean_outcome_independent_w(
         self, a: float, X: np.ndarray
     ) -> np.ndarray:
