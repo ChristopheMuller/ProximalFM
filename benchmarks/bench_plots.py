@@ -14,12 +14,18 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # ─────────────────────────────────────────────────────────────────────────────
 # Method Styling Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# Grouping:
-# - OLS : Blue
-# - RF : Green
-# - TabICL : Purple
-# - P2SLS : Orange
-# - Tabular / Neural Causal Models : Red
+# One entry per `name:` in bench_config.yaml (active *and* commented, so styles
+# survive when a method is re-enabled), plus the neural model name.
+#
+# Convention: colour = method family, marker = variant within the family.
+#   OLS .......... Blue    #1f77b4      KPV .......... Cyan   #17becf
+#   RF ........... Green   #2ca02c      PMMR ......... Brown  #8c564b
+#   TabICL ....... Purple  #9467bd      NMMR ......... Pink   #e377c2
+#   P2SLS ........ Orange  #ff7f0e      DFPV ......... Olive  #bcbd22
+#   Neural causal models (CausalFM / DoPFN / CausalPFN / ProximalFM) . Red #d62728
+#
+# Proximal strategy markers: paired/XW = "o", independent/X-Wind = "s",
+# conditional/X-cond = "^", marginal/ATE = "D".
 METHOD_STYLES = {
     # ── OLS baselines (Blue) ──
     "S-OLS": {"color": "#1f77b4", "marker": "o"},  # circle
@@ -28,97 +34,100 @@ METHOD_STYLES = {
     # ── RF baselines (Green) ──
     "S-RF": {"color": "#2ca02c", "marker": "o"},
     "T-RF": {"color": "#2ca02c", "marker": "^"},
-    # ── TabICL baselines (Purple) ──
+    "X-RF": {"color": "#2ca02c", "marker": "P"},  # plus (filled)
+    "P-RF": {"color": "#2ca02c", "marker": "X"},  # cross (filled)
+    # ── TabICL baselines (Purple) ── (Oracle variants use a star)
     "S-TabICL": {"color": "#9467bd", "marker": "o"},
+    "S-TabICL-Oracle": {"color": "#9467bd", "marker": "*", "s": 180},
     "T-TabICL": {"color": "#9467bd", "marker": "^"},
-    # ── Proximal baselines (Orange) ──
+    "T-TabICL-Oracle": {"color": "#9467bd", "marker": "X"},
+    "X-TabICL": {"color": "#9467bd", "marker": "v"},  # triangle down
+    "X-TabICL-Oracle": {"color": "#9467bd", "marker": "P"},
+    # ── P2SLS proximal baselines (Orange) ──
     "P2SLS": {"color": "#ff7f0e", "marker": "o"},
     "P2SLS+AX": {"color": "#ff7f0e", "marker": "s"},
+    # ── KPV (Cyan) ──
+    "KPV-XW": {"color": "#17becf", "marker": "o"},
+    "KPV-X-Wind": {"color": "#17becf", "marker": "s"},
+    "KPV-X-cond": {"color": "#17becf", "marker": "^"},
+    "KPV-ATE": {"color": "#17becf", "marker": "D"},
+    # ── PMMR (Brown) ──
+    "PMMR-XW": {"color": "#8c564b", "marker": "o"},
+    "PMMR-X-Wind": {"color": "#8c564b", "marker": "s"},
+    "PMMR-X-cond": {"color": "#8c564b", "marker": "^"},
+    "PMMR-ATE": {"color": "#8c564b", "marker": "D"},
+    # ── NMMR (Pink) ── (variant = loss statistic)
+    "NMMR-U": {"color": "#e377c2", "marker": "o"},
+    "NMMR-V": {"color": "#e377c2", "marker": "s"},
+    # ── DFPV (Olive) ──
+    "DFPV-XW": {"color": "#bcbd22", "marker": "o"},
+    "DFPV-X-Wind": {"color": "#bcbd22", "marker": "s"},
+    "DFPV-X-cond": {"color": "#bcbd22", "marker": "^"},
+    "DFPV-ATE": {"color": "#bcbd22", "marker": "D"},
     # ── Tabular & Neural Models (Red) ──
     "CausalFM": {"color": "#d62728", "marker": "X"},  # cross
     "DoPFN": {"color": "#d62728", "marker": "D"},  # diamond
     "CausalPFN": {"color": "#d62728", "marker": "P"},  # plus
     "ProximalFM": {"color": "#d62728", "marker": "*", "s": 200},  # big star
+    "ProximalFM_check12": {"color": "#d62728", "marker": "*", "s": 200},
 }
 
 
-def plot_ate_vs_cate_normrmse(results_dir: Path):
+def plot_ate_bias_vs_npehe(results_dir: Path):
     """
-    Plots a scatter comparing Cross-Episode ATE RMSE vs Average CATE RMSE.
-    Ideal performance is at the origin (0, 0).
+    Scatter comparing the (absolute) normalised ATE bias against the median
+    nPEHE per method.  Ideal performance is at the origin (0, 0): no level bias
+    and CATE error well below the constant-ATE baseline (nPEHE = 1).
     """
-    ate_csv = results_dir / "ate_summary.csv"
-    cate_csv = results_dir / "cate_summary.csv"
+    summary_csv = results_dir / "summary.csv"
 
-    if not ate_csv.exists() or not cate_csv.exists():
-        warnings.warn(f"Summary CSVs not found in {results_dir}. Skipping RMSE plot.")
+    if not summary_csv.exists():
+        warnings.warn(f"summary.csv not found in {results_dir}. Skipping bias plot.")
         return
 
-    df_ate = pd.read_csv(ate_csv, index_col="method")
-    df_cate = pd.read_csv(cate_csv, index_col="method")
-
-    df = pd.DataFrame(
-        {"ATE_RMSE": df_ate["RMSE"], "CATE_RMSE": df_cate["RMSE"]}
-    ).dropna()
+    df = pd.read_csv(summary_csv, index_col="method")
+    df = df[["ATE Bias", "nPEHE"]].dropna()
+    df["abs_bias"] = df["ATE Bias"].abs()
 
     plt.figure(figsize=(7, 7))
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-    # Plot each method
     for row in df.itertuples():
         method = row.Index
         style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
 
         plt.scatter(
-            row.ATE_RMSE,
-            row.CATE_RMSE,
+            row.abs_bias,
+            row.nPEHE,
             color=style.get("color"),
             marker=style.get("marker"),
-            s=style.get("s", 120),  # default size 120
+            s=style.get("s", 120),
             label=method,
             edgecolors="white",
             linewidths=0.8,
             zorder=5,
         )
 
-    # Calculate dynamic limits to frame the data properly
-    max_val = max(df["ATE_RMSE"].max(), df["CATE_RMSE"].max())
-    pad = max_val * 0.1
-
-    # Add reference line y=x (Where ATE error = CATE error)
-    plt.plot(
-        [-pad, max_val + pad],
-        [-pad, max_val + pad],
-        ls="--",
-        color="gray",
-        alpha=0.4,
+    # nPEHE = 1 is the "predict the constant ATE" reference.
+    plt.axhline(
+        1.0,
+        color="red",
+        linestyle="--",
+        alpha=0.5,
         zorder=0,
-        label="y = x",
+        label="nPEHE = 1 (constant-ATE baseline)",
     )
-
-    # Emphasize the axes/origin (0 is perfect)
-    plt.axhline(0, color="black", linestyle="-", alpha=0.4, zorder=0)
     plt.axvline(0, color="black", linestyle="-", alpha=0.4, zorder=0)
 
-    # Set limits starting slightly below 0 so the origin is clearly visible
-    min_limit = min(df["ATE_RMSE"].min(), df["CATE_RMSE"].min()) - 0.03
-    plt.xlim(min_limit, max_val + pad)
-    plt.ylim(min_limit, max_val + pad)
-
-    # use log scale for x and y
-    plt.xscale("log")
-    plt.yscale("log")
-
     plt.title(
-        "ATE vs CATE Estimation Error (RMSE)\n[Closer to Origin is Better]",
+        "ATE Bias vs CATE Error\n[Closer to Origin is Better]",
         fontsize=14,
         fontweight="bold",
         pad=15,
     )
-    plt.xlabel("ATE RMSE (Cross-Episode)")
-    plt.ylabel("CATE RMSE (Average per Episode)")
+    plt.xlabel("|Normalised ATE bias|  (median, ÷ SD(τ))")
+    plt.ylabel("nPEHE  (median)")
 
-    # Legend formatting
     plt.legend(
         bbox_to_anchor=(1.05, 1),
         loc="upper left",
@@ -127,7 +136,134 @@ def plot_ate_vs_cate_normrmse(results_dir: Path):
         frameon=False,
     )
 
-    output_file = results_dir / "plot_ate_vs_cate_rmse.png"
+    output_file = results_dir / "plot_ate_bias_vs_npehe.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print(f"Plot saved successfully to: {output_file}")
+    plt.close()
+
+
+def plot_npehe_boxplot(csv_path: str):
+    df = pd.read_csv(csv_path)
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+
+    df_valid = df.dropna(subset=["npehe"]).copy()
+    if df_valid.empty:
+        warnings.warn("No heterogeneous episodes. Skipping nPEHE boxplot.")
+        return
+
+    # Order methods by median nPEHE (best/lowest at the top).
+    method_order = (
+        df_valid.groupby("method")["npehe"].median().sort_values(ascending=True).index
+    )
+
+    plt.figure(figsize=(10, 6))
+    ax = sns.boxplot(
+        data=df_valid,
+        x="npehe",
+        y="method",
+        order=method_order,
+        palette="viridis",
+    )
+
+    ax.axvline(
+        1.0,
+        color="red",
+        linestyle="--",
+        alpha=0.6,
+        label="nPEHE = 1 (constant-ATE baseline)",
+    )
+    ax.set_xlim(0, min(3.0, df_valid["npehe"].quantile(0.99)))
+
+    plt.title("CATE Estimation: nPEHE Distribution", fontsize=16, fontweight="bold")
+    plt.xlabel("nPEHE  (√(mean residual² / Var(τ)), lower is better)")
+    plt.ylabel("")
+    plt.legend(loc="lower right")
+
+    output_file = Path(csv_path).parent / "plot_npehe_box.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print(f"Plot saved successfully to: {output_file}")
+    plt.close()
+
+
+def plot_cd_diagram(csv_path: str):
+    """Critical-difference diagram of methods ranked by per-episode nPEHE.
+
+    Runs a Friedman omnibus test + Nemenyi post-hoc (via autorank) over the
+    per-episode nPEHE ranks.  Methods are placed on a rank axis (lower/left =
+    better) and any group whose average ranks differ by less than the critical
+    difference (CD) is joined by a horizontal bar — i.e. not significantly
+    different at α = 0.05.
+
+    The test requires a *complete block*: every method must have a valid nPEHE
+    on every episode used.  Homogeneous episodes (NaN for all methods) and any
+    episode where a method failed are therefore dropped to keep the comparison
+    paired.
+    """
+    try:
+        from autorank import autorank, plot_stats
+    except ImportError:
+        warnings.warn("autorank not installed; skipping CD diagram.")
+        return
+
+    df = pd.read_csv(csv_path)
+    if "npehe" not in df.columns:
+        warnings.warn("No 'npehe' column found; skipping CD diagram.")
+        return
+
+    n_episodes = df["episode"].nunique()
+
+    # Build an episode × method matrix of nPEHE (lower is better).
+    pivot = df.pivot_table(index="episode", columns="method", values="npehe")
+    pivot = pivot.dropna(axis=1, how="all")  # drop never-evaluated methods
+    pivot = pivot.dropna(axis=0, how="any")  # keep only fully-paired episodes
+
+    if pivot.shape[1] < 3:
+        warnings.warn("Need >=3 methods with paired nPEHE for a CD diagram. Skipping.")
+        return
+    if pivot.shape[0] < 5:
+        warnings.warn(
+            f"Only {pivot.shape[0]} fully-paired episodes; CD diagram needs more "
+            "for a meaningful Friedman test. Skipping."
+        )
+        return
+
+    dropped = n_episodes - len(pivot)
+    if dropped:
+        print(
+            f"CD diagram: {len(pivot)} complete episodes used "
+            f"({dropped} dropped for homogeneity/failed methods)."
+        )
+
+    # order='ascending' → smaller nPEHE ranks better; force the nonparametric
+    # path so we always get a Friedman+Nemenyi CD diagram.  autorank still runs
+    # normality/variance tests for its report; silence their spurious warnings
+    # (constant-nPEHE methods trigger zero-range Shapiro/Levene) since the
+    # forced nonparametric path discards those results anyway.
+    with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
+        warnings.simplefilter("ignore")
+        result = autorank(
+            pivot,
+            alpha=0.05,
+            order="ascending",
+            force_mode="nonparametric",
+            verbose=False,
+        )
+
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
+    height = max(2.5, 0.4 * pivot.shape[1])
+    fig, ax = plt.subplots(figsize=(11, height))
+    plot_stats(result, allow_insignificant=True, ax=ax)
+
+    fig.suptitle(
+        "Critical-Difference Diagram — methods ranked by nPEHE (left = better)\n"
+        f"Friedman + Nemenyi, α=0.05, CD={result.cd:.3f}, "
+        f"{pivot.shape[0]} episodes",
+        fontsize=13,
+        fontweight="bold",
+        y=1.05,
+    )
+
+    output_file = Path(csv_path).parent / "plot_cd_npehe.png"
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
@@ -181,19 +317,28 @@ def plot_cate_r2_boxplot(csv_path: str):
     df = pd.read_csv(csv_path)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-    df_valid = df.dropna(subset=["cate_r2_shape"]).copy()
+    df_valid = df.dropna(subset=["shape_r2"]).copy()
 
     if df_valid.empty:
         warnings.warn("No heterogeneity in treatment effect. Skipping CATE R2 boxplot.")
         return
+
+    # Order methods by median shape R² (best at the top).
+    method_order = (
+        df_valid.groupby("method")["shape_r2"]
+        .median()
+        .sort_values(ascending=False)
+        .index
+    )
 
     plt.figure(figsize=(10, 6))
 
     # Create the horizontal boxplot
     ax = sns.boxplot(
         data=df_valid,
-        x="cate_r2_shape",
+        x="shape_r2",
         y="method",
+        order=method_order,
         palette="viridis",
     )
 
@@ -313,7 +458,9 @@ if __name__ == "__main__":
     # Existing Plots
     plot_true_vs_pred_ate(full_csv_path)
     plot_cate_r2_boxplot(full_csv_path)
-    plot_ate_vs_cate_normrmse(results_dir)
+    plot_npehe_boxplot(full_csv_path)
+    plot_ate_bias_vs_npehe(results_dir)
+    plot_cd_diagram(full_csv_path)
 
     for i in range(5):
         plot_single_episode_cate(full_csv_path.parent.parent, episode_idx=i)
