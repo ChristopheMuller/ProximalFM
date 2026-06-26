@@ -444,7 +444,11 @@ class P2SLS(CATEEstimator):
         return np.full(X.shape[0], self.ate_)
 
 
-from plearner import BridgeParams, PLearner as BasePLearner, RegressorMixin
+from benchmarks.baselines.plearner import (
+    BridgeParams,
+    PLearner as BasePLearner,
+    RegressorMixin,
+)
 
 
 class ProximalPLearner(CATEEstimator):

@@ -52,15 +52,19 @@ def _check_lengths(*arrays: np.ndarray) -> None:
 def rbf_kernel(
     X: np.ndarray, Y: Optional[np.ndarray] = None, sigma: float = 1.0
 ) -> np.ndarray:
-    """Gaussian RBF kernel exp(-sigma * ||x-y||^2).
+    """Gaussian RBF kernel exp(-||x-y||^2 / (2 * sigma)).
 
-    This matches the common R/kernlab parameterization where `sigma` is the
-    inverse length-scale, not the length-scale itself.
+    This matches the `rdetools::rbfkernel` parameterization used by the
+    reference R implementation (Ghassami et al. style proximal code), namely
+    `K = exp(-D / (2 * sigma))` with D the squared Euclidean distance. Here
+    `sigma` is the width parameter in that R convention (not an inverse
+    length-scale), so `kernel_sigma` values suggested in the R code transfer
+    over directly.
     """
     if Y is None:
         Y = X
     d2 = pairwise_distances(X, Y, metric="sqeuclidean")
-    return np.exp(-float(sigma) * d2)
+    return np.exp(-d2 / (2.0 * float(sigma)))
 
 
 def _pinv(A: np.ndarray, rcond: float = 1e-10, hermitian: bool = False) -> np.ndarray:
@@ -90,6 +94,7 @@ class BridgeParams:
     penalizes the critic used to estimate h at A=1.
     """
 
+    # RBF width in the rdetools convention: K = exp(-||.||^2 / (2 * kernel_sigma)).
     kernel_sigma: float = 1.0
 
     lm_Hh1: float = 1e-3
