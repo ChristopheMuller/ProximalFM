@@ -62,7 +62,8 @@ def test_trainer_run_one_epoch(dummy_args):
     # We want to patch the dataloader to return a fast dummy batch
     with patch.object(trainer, "dataloader") as mock_dataloader:
         # Create a dummy batch
-        # 12 items: (X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_len, train_size)
+        # 15 items: (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1,
+        #            d_U, d_X, d_W, d_Z, seq_len, train_size)
 
         U = torch.randn(2, 20, dummy_args.max_dim_U)
         X = torch.randn(2, 20, dummy_args.max_dim_X)
@@ -105,6 +106,12 @@ def test_trainer_run_one_epoch(dummy_args):
         trainer.config.max_steps = 1
         trainer.config.save_temp_every = 1000
         trainer.config.save_perm_every = 1000
+
+        # Drive the loop in "near-infinite-stream" mode: one generated batch per
+        # block, reused once, so exactly one batch is consumed for the one step
+        # (matches the single mocked batch above).
+        trainer.config.gen_block_size = trainer.config.batch_size
+        trainer.config.gen_reuse_passes = 1
 
         trainer.train()
         assert trainer.curr_step == 1
