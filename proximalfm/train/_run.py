@@ -724,99 +724,199 @@ class Trainer:
                 except Exception as e:
                     print(f"Error removing checkpoint {ckpt_path}: {e}")
 
+    def _shuffle_batch_rows(self, batch):
+        """Permute the datasets within a batch to decorrelate group ordering.
+
+        Only applied when the entire batch shares a single ``seq_len`` and
+        ``train_size`` (the ``seq_len_per_gp=False`` case). In that case any
+        permutation is safe. Otherwise — nested tensors, or pre-generated
+        batches loaded from disk whose rows carry heterogeneous metadata — the
+        original ordering is kept untouched, since ``run_batch`` relies on
+        consecutive rows being homogeneous within a micro-batch
+        (``validate_micro_batch``) and a random shuffle could mix sequence
+        lengths / train sizes and trigger a ValueError.
+        """
+        if any(t.is_nested for t in batch):
+            return batch
+        # batch[13] = seq_lens, batch[14] = train_sizes (per-dataset metadata).
+        seq_lens, train_sizes = batch[13], batch[14]
+        if seq_lens.unique().numel() > 1 or train_sizes.unique().numel() > 1:
+            return batch
+        perm = torch.randperm(batch[0].shape[0], device=batch[0].device)
+        return [t[perm] for t in batch]
+
+    def _post_step(self, results, prior_time, train_time):
+        """Per-step bookkeeping after one ``run_batch``.
+
+        Advances ``curr_step`` by exactly one and preserves the per-step cadence
+        of checkpointing (``save_temp_every`` / ``save_perm_every``) and
+        validation (``val_interval``). Returns the (possibly augmented) results.
+        """
+        self.curr_step += 1
+
+        if self.master_process:
+            # Add timing information to results
+            results.update({"prior_time": prior_time, "train_time": train_time})
+            if self.train_evaluator.ready(self.eval_buffer_episodes):
+                buffered_train_metrics = self.train_evaluator.compute(
+                    prefix="train_",
+                    sync_ddp=False,
+                    include_count=True,
+                )
+                results.update(buffered_train_metrics)
+                self.train_evaluator.reset()
+
+            # Save checkpoints
+            is_temp_save = self.curr_step % self.config.save_temp_every == 0
+            is_perm_save = self.curr_step % self.config.save_perm_every == 0
+
+            if is_temp_save or is_perm_save:
+                ckpt_name = f"step-{self.curr_step}.ckpt"
+                self.save_checkpoint(name=ckpt_name)
+
+                # Manage checkpoint limit only for temporary checkpoints
+                if (
+                    is_temp_save
+                    and not is_perm_save
+                    and self.config.max_checkpoints > 0
+                ):
+                    self.manage_checkpoint()
+
+        # Must run on ALL processes to prevent DDP hangs during all_reduce
+        if self.val_dataloader is not None and (
+            self.curr_step % self.config.val_interval == 0 or self.curr_step == 1
+        ):
+            val_results = self.validate()
+            results.update(val_results)
+
+            # Log to console only on master
+            if self.master_process:
+                print(
+                    f"\n[Step {self.curr_step}] Validation | "
+                    + " | ".join([f"{k}: {v:.4f}" for k, v in val_results.items()])
+                )
+
+        # Route training logs through the new Logger class
+        results["lr"] = self.scheduler.get_last_lr()[0]
+        self.logger.log(results, step=self.curr_step)
+        return results
+
     @ddp_cleanup
     def train(self):
         """Main training loop.
 
-        Iterates through batches, processes them, updates model parameters,
-        and handles checkpoint saving and metric logging.
+        Amortizes prior generation by alternating between two phases:
+
+        1. Generate a resident in-memory ``block`` of ``gen_block_size`` datasets
+           (= ``ceil(gen_block_size / batch_size)`` generated batches) up front.
+        2. Train ``gen_reuse_passes`` (K) passes over that block, reshuffling
+           between every pass, before freeing it and regenerating a fresh one.
+
+        The reuse factor is therefore exactly K. ``curr_step``, checkpointing and
+        validation all still advance per training step (one ``run_batch`` call),
+        not per block.
         """
 
         if self.master_process:
             step_progress = tqdm(
-                range(self.curr_step, self.config.max_steps), desc="Step", leave=True
+                initial=self.curr_step,
+                total=self.config.max_steps,
+                desc="Step",
+                leave=True,
             )
-        else:
-            step_progress = range(self.curr_step, self.config.max_steps)
 
         dataloader = iter(self.dataloader)
-        for step in step_progress:
-            try:
-                # Get the next batch safely
-                with Timer() as prior_timer:
-                    batch = next(dataloader)
-                prior_time = prior_timer.elapsed
+        # A block is gen_block_size datasets, drawn as whole generated batches.
+        num_batches_per_block = max(
+            1, math.ceil(self.config.gen_block_size / self.config.batch_size)
+        )
 
-                # Train the model on the batch
-                with Timer() as train_timer:
-                    results = self.run_batch(batch)
-                train_time = train_timer.elapsed
+        # Outer loop: generate a fresh block, then reuse it for K passes.
+        while self.curr_step < self.config.max_steps:
+            with Timer() as gen_timer:
+                block = []
+                for _ in range(num_batches_per_block):
+                    try:
+                        block.append(next(dataloader))
+                    except torch.cuda.OutOfMemoryError:
+                        if self.master_process:
+                            print(
+                                "\n[Step {}] OutOfMemory caught during block "
+                                "generation. Using a partial block.".format(
+                                    self.curr_step
+                                )
+                            )
+                        torch.cuda.empty_cache()
+                        break
+            # Keep the block length identical across ranks so every rank issues the
+            # same number of run_batch calls and reaches validation / internal
+            # all-reduces in lockstep, even if generation OOM'd on only some ranks.
+            if self.ddp:
+                count = torch.tensor(
+                    [len(block)], device=self.config.device, dtype=torch.int64
+                )
+                torch.distributed.all_reduce(count, op=torch.distributed.ReduceOp.MIN)
+                block = block[: int(count.item())]
 
-            except torch.cuda.OutOfMemoryError:
-                if self.master_process:
-                    print(
-                        f"\n[Step {step}] OutOfMemory caught during prior generation/training. Skipping batch."
-                    )
-                torch.cuda.empty_cache()
+            if not block:
+                # No rank produced a usable batch; retry generation on all ranks.
                 continue
 
-            # Clear CUDA cache to free memory
-            # torch.cuda.empty_cache()
+            # Generation cost is amortized over the steps that actually reuse the
+            # block. The final/truncated block runs fewer than K*len(block) steps,
+            # so cap the denominator at the remaining steps (OOM-skipped batches
+            # are not corrected for; prior_time is a diagnostic only).
+            planned_steps = min(
+                self.config.gen_reuse_passes * len(block),
+                self.config.max_steps - self.curr_step,
+            )
+            amortized_prior_time = gen_timer.elapsed / max(1, planned_steps)
 
-            self.curr_step = step + 1
-            if self.master_process:
-                # Add timing information to results
-                results.update({"prior_time": prior_time, "train_time": train_time})
-                if self.train_evaluator.ready(self.eval_buffer_episodes):
-                    buffered_train_metrics = self.train_evaluator.compute(
-                        prefix="train_",
-                        sync_ddp=False,
-                        include_count=True,
-                    )
-                    results.update(buffered_train_metrics)
-                    self.train_evaluator.reset()
+            reached_end = False
+            for _pass in range(self.config.gen_reuse_passes):
+                # Shuffle block order each pass so micro-batches are not drawn in
+                # generation order, decorrelating gradients across the block.
+                for bi in torch.randperm(len(block)).tolist():
+                    if self.curr_step >= self.config.max_steps:
+                        reached_end = True
+                        break
 
-                # Update progress bar with rounded values for cleaner display
-                step_progress.set_postfix(
-                    **{
-                        k: round(v, 3) if isinstance(v, float) else v
-                        for k, v in results.items()
-                    }
-                )
+                    batch = self._shuffle_batch_rows(block[bi])
 
-                # Save checkpoints
-                is_temp_save = self.curr_step % self.config.save_temp_every == 0
-                is_perm_save = self.curr_step % self.config.save_perm_every == 0
+                    try:
+                        with Timer() as train_timer:
+                            results = self.run_batch(batch)
+                    except torch.cuda.OutOfMemoryError:
+                        if self.master_process:
+                            print(
+                                f"\n[Step {self.curr_step}] OutOfMemory caught during "
+                                "training. Skipping batch."
+                            )
+                        torch.cuda.empty_cache()
+                        continue
 
-                if is_temp_save or is_perm_save:
-                    ckpt_name = f"step-{self.curr_step}.ckpt"
-                    self.save_checkpoint(name=ckpt_name)
-
-                    # Manage checkpoint limit only for temporary checkpoints
-                    if (
-                        is_temp_save
-                        and not is_perm_save
-                        and self.config.max_checkpoints > 0
-                    ):
-                        self.manage_checkpoint()
-
-            # Must run on ALL processes to prevent DDP hangs during all_reduce
-            if self.val_dataloader is not None and (
-                self.curr_step % self.config.val_interval == 0 or self.curr_step == 1
-            ):
-                val_results = self.validate()
-                results.update(val_results)
-
-                # Log to console only on master
-                if self.master_process:
-                    print(
-                        f"\n[Step {self.curr_step}] Validation | "
-                        + " | ".join([f"{k}: {v:.4f}" for k, v in val_results.items()])
+                    results = self._post_step(
+                        results, amortized_prior_time, train_timer.elapsed
                     )
 
-            # Route training logs through the new Logger class
-            results["lr"] = self.scheduler.get_last_lr()[0]
-            self.logger.log(results, step=self.curr_step)
+                    if self.master_process:
+                        step_progress.update(1)
+                        # Rounded values for cleaner display
+                        step_progress.set_postfix(
+                            **{
+                                k: round(v, 3) if isinstance(v, float) else v
+                                for k, v in results.items()
+                            }
+                        )
+
+                if reached_end:
+                    break
+
+            # Free the block before generating the next one (bounded memory).
+            del block
+
+        if self.master_process:
+            step_progress.close()
 
     def validate_micro_batch(self, micro_seq_len, micro_train_size):
         """Validate consistent sequence length and train size within a micro batch.

@@ -99,6 +99,23 @@ def build_parser():
         default=None,
         help="Number of batches to prefetch (must be None if num_workers=0)",
     )
+    parser.add_argument(
+        "--gen_block_size",
+        type=int,
+        default=2000,
+        help="Number of prior datasets to generate up front into a resident "
+        "in-memory block (= ceil(gen_block_size / batch_size) generated batches). "
+        "Generation cost is amortized over gen_reuse_passes passes of this block. "
+        "To recover near-infinite-stream behaviour (regenerate every step), set "
+        "--gen_block_size <= batch_size together with --gen_reuse_passes 1.",
+    )
+    parser.add_argument(
+        "--gen_reuse_passes",
+        type=int,
+        default=5,
+        help="Number of training passes over each generated block before "
+        "regenerating a fresh one. This is the data reuse factor K.",
+    )
 
     # Optimization Config
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
