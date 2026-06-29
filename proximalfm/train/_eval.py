@@ -13,19 +13,38 @@ class CausalEvaluator:
     Stateful streaming evaluator for causal metrics.
 
     It does not store predictions. Instead, update() computes per-episode metrics
-    for each micro-batch and accumulates metric sums + episode counts.
+    for each micro-batch and accumulates them.
 
     Metric philosophy:
-        - CATE/PO metrics: computed per episode in standardized space, then averaged.
+        - CATE/PO metrics: computed per episode in standardized space. The
+          per-episode values are retained so that compute() can report robust
+          summaries (median, p25, p75) rather than a mean. R²-style metrics are
+          unbounded below, so a handful of near-homogeneous episodes (tiny
+          Var(τ)) can drive a *mean* arbitrarily negative even when the model is
+          good; the median is unaffected. To match the benchmark
+          (``benchmarks/bench_metrics.py``), episodes with
+          ``Var(τ) < homogeneous_var_threshold`` are *excluded* from the R²
+          metrics entirely.
         - ATE metrics: computed over the full buffer of episodes.
     """
 
-    def __init__(self, eps: float = 1e-8):
+    def __init__(
+        self,
+        eps: float = 1e-8,
+        homogeneous_var_threshold: float = 1e-6,
+    ):
         self.eps = eps
+        # Episodes whose true CATE variance is below this are "constant effect"
+        # episodes; the scale-free R² metrics are undefined for them and they
+        # are dropped (matches benchmarks.bench_metrics.ITE_VAR_THRESHOLD).
+        self.homogeneous_var_threshold = homogeneous_var_threshold
         self.reset()
 
     def reset(self):
+        # Running sums for buffer-level metrics (ATE) and extra_metrics.
         self.metric_sums = defaultdict(float)
+        # Per-episode value tensors for metrics summarized via percentiles.
+        self.metric_values = defaultdict(list)
         self.num_episodes = 0
         self.num_updates = 0
 
@@ -62,42 +81,54 @@ class CausalEvaluator:
 
         batch_size = pred_y0.shape[0]
 
-        # 1. Potential outcome metrics (per-episode, then averaged)
+        # 1. Potential outcome metrics (per-episode; summarized via percentiles)
         mse_y0 = F.mse_loss(pred_y0, true_y0, reduction="none").mean(dim=1)
         mse_y1 = F.mse_loss(pred_y1, true_y1, reduction="none").mean(dim=1)
 
         rmse_y0 = torch.sqrt(mse_y0)
         rmse_y1 = torch.sqrt(mse_y1)
 
-        self.metric_sums["po/rmse_y0"] += rmse_y0.sum().item()
-        self.metric_sums["po/rmse_y1"] += rmse_y1.sum().item()
+        self.metric_values["po/rmse_y0"].append(rmse_y0.cpu())
+        self.metric_values["po/rmse_y1"].append(rmse_y1.cpu())
 
-        # 2. CATE metrics (per-episode, then averaged)
+        # 2. CATE metrics (per-episode; summarized via percentiles)
         mse_cate = F.mse_loss(pred_cate, true_cate, reduction="none").mean(dim=1)
         rmse_cate = torch.sqrt(mse_cate)
+        self.metric_values["cate/rmse"].append(rmse_cate.cpu())
 
-        var_cate = true_cate.var(dim=1, unbiased=False)
-        r2_cate = torch.where(
-            var_cate > self.eps,
-            1.0 - (mse_cate / var_cate.clamp_min(self.eps)),
-            torch.where(mse_cate < self.eps, 1.0, 0.0),
+        # Sign / decision agreement: fraction of test units whose predicted
+        # effect direction matches the truth. Scale-free and defined for every
+        # episode, so it is kept for all of them.
+        sign_agreement = (
+            (torch.sign(pred_cate) == torch.sign(true_cate)).float().mean(dim=1)
         )
+        self.metric_values["cate/sign_agreement"].append(sign_agreement.cpu())
 
-        var_residuals = (pred_cate - true_cate).var(dim=1, unbiased=False)
-        r2_shape_cate = torch.where(
-            var_cate > self.eps,
-            1.0 - (var_residuals / var_cate.clamp_min(self.eps)),
-            torch.where(var_residuals < self.eps, 1.0, 0.0),
-        )
-
-        self.metric_sums["cate/rmse"] += rmse_cate.sum().item()
-        self.metric_sums["cate/r2"] += r2_cate.sum().item()
-        self.metric_sums["cate/r2_shape"] += r2_shape_cate.sum().item()
-
-        # 3. ATE — accumulate buffer-tracking sums only.
+        # nPEHE / R² / ATE-bias are scale-free in Var(τ) and only defined for
+        # heterogeneous episodes. Drop near-constant episodes (as the benchmark
+        # does) rather than assigning them a fallback value that pollutes the
+        # distribution.
         true_ate = true_cate.mean(dim=1)
         pred_ate = pred_cate.mean(dim=1)
 
+        var_cate = true_cate.var(dim=1, unbiased=False)
+        var_residuals = (pred_cate - true_cate).var(dim=1, unbiased=False)
+        heterogeneous = var_cate >= self.homogeneous_var_threshold
+
+        if heterogeneous.any():
+            vc = var_cate[heterogeneous]
+            sd_tau = vc.sqrt()
+            npehe = (mse_cate[heterogeneous] / vc).sqrt()
+            r2_cate = 1.0 - (mse_cate[heterogeneous] / vc)
+            r2_shape_cate = 1.0 - (var_residuals[heterogeneous] / vc)
+            # Signed, normalized ATE bias: (mean(τ̂) − mean(τ)) / SD(τ).
+            ate_bias_norm = (pred_ate[heterogeneous] - true_ate[heterogeneous]) / sd_tau
+            self.metric_values["cate/npehe"].append(npehe.cpu())
+            self.metric_values["cate/r2"].append(r2_cate.cpu())
+            self.metric_values["cate/r2_shape"].append(r2_shape_cate.cpu())
+            self.metric_values["ate/bias_norm"].append(ate_bias_norm.cpu())
+
+        # 3. ATE — accumulate buffer-tracking sums only.
         mse_ate = (true_ate - pred_ate) ** 2
 
         self.metric_sums["_ate/mse_sum"] += mse_ate.sum().item()
@@ -124,17 +155,31 @@ class CausalEvaluator:
         include_count: bool = True,
     ) -> dict[str, float]:
         """
-        Compute averaged metrics.
+        Compute summary metrics.
+
+        Per-episode metrics (RMSE, R², R²-shape) are summarized by their median
+        and inter-quartile bounds (p25/p75) instead of a mean, which is robust to
+        the heavy left tail of the R² metrics. ATE metrics and ``extra_metrics``
+        remain buffer-level means.
         """
 
-        if self.num_episodes == 0:
+        ddp_active = sync_ddp and dist.is_available() and dist.is_initialized()
+
+        # When syncing across ranks every rank must enter the collectives below,
+        # even if it locally saw no episodes, or the process group deadlocks.
+        if not ddp_active and self.num_episodes == 0:
             return {}
 
         keys = sorted(self.metric_sums.keys())
         count = float(self.num_episodes)
         sums = [float(self.metric_sums[k]) for k in keys]
 
-        if sync_ddp and dist.is_available() and dist.is_initialized():
+        # Concatenate per-episode value tensors (local) for percentile metrics.
+        value_tensors = {
+            k: torch.cat(v).double() for k, v in self.metric_values.items() if v
+        }
+
+        if ddp_active:
             if device is None:
                 raise ValueError("device must be provided when sync_ddp=True")
 
@@ -148,18 +193,46 @@ class CausalEvaluator:
             count = payload[0].item()
             sums = payload[1:].tolist()
 
+            # Gather the full per-episode value tensors across ranks so the
+            # quantiles are computed over the global set of episodes. Keys may
+            # differ per rank (e.g. a rank with only homogeneous episodes has no
+            # "cate/r2"), so gather plain dicts and merge by key.
+            world_size = dist.get_world_size()
+            gathered: list[dict | None] = [None] * world_size
+            dist.all_gather_object(
+                gathered, {k: t.cpu() for k, t in value_tensors.items()}
+            )
+            merged = defaultdict(list)
+            for rank_dict in gathered:
+                if not rank_dict:
+                    continue
+                for k, t in rank_dict.items():
+                    if t.numel() > 0:
+                        merged[k].append(t)
+            value_tensors = {k: torch.cat(v) for k, v in merged.items() if v}
+
         if count <= 0:
             return {}
 
         raw_sums = {k: v for k, v in zip(keys, sums)}
         metrics = {}
 
-        # 1. Per-episode averages
+        # 1. Per-episode metrics: median + inter-quartile bounds.
+        quantiles = torch.tensor([0.25, 0.5, 0.75], dtype=torch.float64)
+        for key, values in value_tensors.items():
+            if values.numel() == 0:
+                continue
+            p25, median, p75 = torch.quantile(values, quantiles).tolist()
+            metrics[f"{prefix}{key}"] = median
+            metrics[f"{prefix}{key}/p25"] = p25
+            metrics[f"{prefix}{key}/p75"] = p75
+
+        # 2. extra_metrics: buffer-level means (non-underscore sum keys).
         for key in keys:
             if not key.startswith("_"):
                 metrics[f"{prefix}{key}"] = raw_sums[key] / count
 
-        # 2. ATE metrics
+        # 3. ATE metrics
         if "_ate/mse_sum" in raw_sums:
             mse_ate = raw_sums["_ate/mse_sum"] / count
             mean_ate = raw_sums["_ate/true_sum"] / count
