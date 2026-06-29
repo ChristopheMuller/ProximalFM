@@ -727,6 +727,75 @@ class DFPV_Wrapper(CATEEstimator):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# EconML Causal Forest (DROrthoForest)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class CausalForest_Wrapper(CATEEstimator):
+    """Doubly-Robust Orthogonal Forest from EconML.
+
+    Uses DROrthoForest which combines random forests with doubly-robust
+    score functions to estimate heterogeneous treatment effects.  W and Z
+    proxies are optionally stacked with X as additional controls passed to
+    EconML's W argument (the set of features used for nuisance estimation
+    but not for heterogeneity).
+    """
+
+    def __init__(
+        self,
+        n_trees: int = 200,
+        min_leaf_size: int = 10,
+        max_depth: int = 10,
+        subsample_ratio: float = 0.7,
+        use_W: bool = False,
+        use_Z: bool = False,
+        random_state: int = 42,
+        n_jobs: int = 1,
+    ):
+        try:
+            from econml.orf import DROrthoForest
+        except ImportError as e:
+            raise ImportError("econml is not installed. Run: pip install econml") from e
+
+        self.use_W = use_W
+        self.use_Z = use_Z
+        # n_jobs=1: the benchmark already fans episodes out across a `spawn`
+        # ProcessPoolExecutor, so letting DROrthoForest spin up its own loky
+        # workers (default n_jobs=-1) oversubscribes the CPU and stalls — the
+        # same hazard the DFPV wrapper guards against with MPS.
+        self.model = DROrthoForest(
+            n_trees=n_trees,
+            min_leaf_size=min_leaf_size,
+            max_depth=max_depth,
+            subsample_ratio=subsample_ratio,
+            random_state=random_state,
+            n_jobs=n_jobs,
+        )
+
+    def _build_controls(
+        self, X: np.ndarray, W: Optional[np.ndarray], Z: Optional[np.ndarray]
+    ) -> Optional[np.ndarray]:
+        """Stack optional proxies into EconML's W (nuisance controls)."""
+        parts = []
+        if self.use_W and W is not None:
+            parts.append(W if W.ndim == 2 else W[:, None])
+        if self.use_Z and Z is not None:
+            parts.append(Z if Z.ndim == 2 else Z[:, None])
+        if not parts:
+            return None
+        return np.hstack(parts)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        controls = self._build_controls(X, W, Z)
+        with silent():
+            self.model.fit(Y, A, X=X, W=controls)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        return self.model.effect(X).squeeze()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Foundation Model Wrappers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -980,6 +1049,16 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "CausalPFN": lambda: CausalPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+        ),
+        "CausalForest": lambda: CausalForest_Wrapper(
+            n_trees=cfg.get("n_trees", 200),
+            min_leaf_size=cfg.get("min_leaf_size", 10),
+            max_depth=cfg.get("max_depth", 10),
+            subsample_ratio=cfg.get("subsample_ratio", 0.7),
+            use_W=cfg.get("use_W", False),
+            use_Z=cfg.get("use_Z", False),
+            random_state=cfg.get("random_state", 42),
+            n_jobs=cfg.get("n_jobs", 1),
         ),
     }
     if cls not in factories:
