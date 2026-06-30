@@ -292,7 +292,7 @@ def build_parser():
     )
     parser.add_argument(
         "--prior_type",
-        default="mix_scm",
+        default="mlp_scm",
         type=str,
         help="Prior type: dummy, mlp_scm, tree_scm, mix_scm",
     )
