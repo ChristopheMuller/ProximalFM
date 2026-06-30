@@ -336,12 +336,18 @@ class LoadPriorDataset(IterableDataset):
             batch["A_probs"],
         )
         Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
-        if "MU0" not in batch or "MU1" not in batch:
-            raise KeyError(
-                f"Batch file {batch_file} does not contain MU0/MU1. "
-                "Regenerate prior data with the CATE-enabled prior before training."
-            )
-        MU0, MU1 = batch["MU0"], batch["MU1"]
+        # MU0/MU1 are the noise-free conditional means (response surfaces) used to
+        # build the supervised CATE target (true_cate = MU1 - MU0). Real / benchmark
+        # validation datasets often ship only realized potential outcomes (Y0, Y1)
+        # and no surfaces, so fall back to them: true_cate then becomes the realized
+        # ITE (Y1 - Y0). They share shape/dtype, so the loss and evaluator are
+        # unchanged. NOTE: if Y0/Y1 carry outcome noise, validation CATE error is
+        # inflated by that noise variance (it estimates PEHE^2 + Var(noise)); treat
+        # it as a monitoring signal rather than an absolute PEHE.
+        if "MU0" in batch and "MU1" in batch:
+            MU0, MU1 = batch["MU0"], batch["MU1"]
+        else:
+            MU0, MU1 = Y0, Y1
         d_U, d_X, d_W, d_Z = batch["d_U"], batch["d_X"], batch["d_W"], batch["d_Z"]
         seq_lens = batch["seq_lens"]
         train_sizes = batch["train_sizes"]
