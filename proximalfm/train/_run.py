@@ -40,6 +40,37 @@ warnings.filterwarnings(
 )
 
 
+def is_oom_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is an out-of-memory error from any accelerator.
+
+    Covers CUDA (``torch.cuda.OutOfMemoryError``, a ``RuntimeError`` subclass) as
+    well as MPS / generic backends, which surface OOM as a plain ``RuntimeError``
+    whose message mentions running out of memory. Note that *asynchronous* MPS
+    command-buffer failures (kIOGPUCommandBufferCallbackErrorOutOfMemory) may not
+    be raised at the originating op and can leave the context unusable; those are
+    not reliably recoverable even when caught here.
+    """
+    if isinstance(exc, torch.cuda.OutOfMemoryError):
+        return True
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        return (
+            "out of memory" in msg
+            or "insufficient memory" in msg
+            or "mps backend out of memory" in msg
+        )
+    return False
+
+
+def empty_accelerator_cache(device: str) -> None:
+    """Free cached allocator memory on the active accelerator (CUDA or MPS)."""
+    device = str(device)
+    if "cuda" in device:
+        torch.cuda.empty_cache()
+    elif "mps" in device and hasattr(torch, "mps"):
+        torch.mps.empty_cache()
+
+
 def get_parameter_state(param_name: str, rules: dict) -> str:
     """Finds the longest matching prefix in the rules dict for a given parameter name."""
     best_match = "default"
@@ -493,6 +524,11 @@ class Trainer:
                 scm_fixed_hp={
                     **DEFAULT_FIXED_HP,
                     "mcmc_cate": getattr(c, "mcmc_cate", 200),
+                    "prior_mc_mem_budget": getattr(
+                        c,
+                        "prior_mc_mem_budget",
+                        DEFAULT_FIXED_HP["prior_mc_mem_budget"],
+                    ),
                 },
                 device=c.prior_device,
                 n_jobs=1,
@@ -512,16 +548,21 @@ class Trainer:
         if self.master_process:
             print(dataset)
 
-        # Create dataloader for efficient loading and prefetching
-        use_cuda_prior = "cuda" in getattr(self.config, "prior_device", "cpu")
+        # Create dataloader for efficient loading and prefetching.
+        # pin_memory only accelerates CPU->CUDA host transfers. It is a no-op (and
+        # warns) when the prior is already generated on an accelerator, and is
+        # unsupported on MPS, so only pin when the prior comes from the CPU and the
+        # training device is CUDA.
+        prior_on_cpu = "cpu" in getattr(self.config, "prior_device", "cpu")
+        pin_to_cuda = prior_on_cpu and "cuda" in str(self.config.device)
         self.dataloader = DataLoader(
             dataset,
             batch_size=None,
             shuffle=False,
             num_workers=c.train_dataloader_num_workers,
             prefetch_factor=c.train_dataloader_prefetch_factor,
-            pin_memory=True if not use_cuda_prior else False,
-            pin_memory_device=self.config.device if not use_cuda_prior else "",
+            pin_memory=pin_to_cuda,
+            pin_memory_device=self.config.device if pin_to_cuda else "",
         )
 
     def configure_validation_prior(self):
@@ -561,8 +602,31 @@ class Trainer:
         )
 
         if self.master_process:
+            # Peek at the first batch file to report which CATE target the
+            # validation will use: the true response surfaces (MU0/MU1) or the
+            # realized potential outcomes (Y0/Y1) as a surrogate, in which case
+            # true_cate = Y1 - Y0 (see LoadPriorDataset._load_batch_file).
+            first_file = os.path.join(self.config.val_dir, sorted(all_val_files)[0])
+            try:
+                peek = torch.load(first_file, map_location="cpu", weights_only=True)
+                has_mu = "MU0" in peek and "MU1" in peek
+                del peek
+            except Exception:
+                has_mu = None
+
+            if has_mu is True:
+                target_note = "using true MU0/MU1 (noise-free CATE target)"
+            elif has_mu is False:
+                target_note = (
+                    "MU0/MU1 absent -> using Y0/Y1 as surrogate "
+                    "(true_cate = Y1 - Y0, the realized ITE)"
+                )
+            else:
+                target_note = "could not determine CATE target source"
+
             print(
-                f"Validation dataset configured from {self.config.val_dir} ({total_val_files} total files)."
+                f"Validation dataset configured from {self.config.val_dir} "
+                f"({total_val_files} total files). {target_note}."
             )
 
         pin_memory = self.config.prior_device == "cpu" and "cuda" in str(
@@ -832,7 +896,9 @@ class Trainer:
                 for _ in range(num_batches_per_block):
                     try:
                         block.append(next(dataloader))
-                    except torch.cuda.OutOfMemoryError:
+                    except RuntimeError as e:
+                        if not is_oom_error(e):
+                            raise
                         if self.master_process:
                             print(
                                 "\n[Step {}] OutOfMemory caught during block "
@@ -840,7 +906,8 @@ class Trainer:
                                     self.curr_step
                                 )
                             )
-                        torch.cuda.empty_cache()
+                        empty_accelerator_cache(self.config.device)
+                        empty_accelerator_cache(self.config.prior_device)
                         break
             # Keep the block length identical across ranks so every rank issues the
             # same number of run_batch calls and reaches validation / internal
@@ -880,13 +947,15 @@ class Trainer:
                     try:
                         with Timer() as train_timer:
                             results = self.run_batch(batch)
-                    except torch.cuda.OutOfMemoryError:
+                    except RuntimeError as e:
+                        if not is_oom_error(e):
+                            raise
                         if self.master_process:
                             print(
                                 f"\n[Step {self.curr_step}] OutOfMemory caught during "
                                 "training. Skipping batch."
                             )
-                        torch.cuda.empty_cache()
+                        empty_accelerator_cache(self.config.device)
                         continue
 
                     results = self._post_step(
@@ -1463,11 +1532,13 @@ class Trainer:
                         results[k] = 0.0
                     results[k] += v
 
-            except torch.cuda.OutOfMemoryError:
+            except RuntimeError as e:
+                if not is_oom_error(e):
+                    raise
                 print(
                     f"Warning: OOM error in micro-batch {idx+1}/{num_micro_batches} at step {self.curr_step}. Skipping."
                 )
-                torch.cuda.empty_cache()
+                empty_accelerator_cache(self.config.device)
                 failed_batches += 1
                 continue
 
@@ -1538,8 +1609,10 @@ class Trainer:
 
                 total_valid_samples += current_mb_size
 
-            except torch.cuda.OutOfMemoryError:
-                torch.cuda.empty_cache()
+            except RuntimeError as e:
+                if not is_oom_error(e):
+                    raise
+                empty_accelerator_cache(self.config.device)
                 continue
 
         return total_valid_samples

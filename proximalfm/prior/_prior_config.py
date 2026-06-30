@@ -18,6 +18,7 @@ DEFAULT_FIXED_HP = {
     "permute_labels": True,
     "propensity_epsilon": 1e-3,
     "mcmc_cate": 200,
+    "prior_mc_mem_budget": 50_000_000,
 }
 
 DEFAULT_SAMPLED_HP = {
