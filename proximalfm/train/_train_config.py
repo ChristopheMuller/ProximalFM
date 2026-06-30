@@ -2,6 +2,8 @@
 
 import argparse
 
+from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
+
 
 def str2bool(value):
     return value.lower() == "true"
@@ -301,6 +303,22 @@ def build_parser():
         default="cpu",
         type=str,
         help="Device for prior data generation",
+    )
+    parser.add_argument(
+        "--mcmc_cate",
+        type=int,
+        default=200,
+        help="Monte Carlo latent/noise worlds per X used to estimate the CATE "
+        "target MU0/MU1. Higher => lower target variance (cleaner labels), "
+        "linearly more generation cost. Only used by the on-the-fly SCM prior.",
+    )
+    parser.add_argument(
+        "--prior_mc_mem_budget",
+        type=int,
+        default=DEFAULT_FIXED_HP["prior_mc_mem_budget"],
+        help="Element-count cap on the (seq_len*mcmc_cate)-row prior generation "
+        "tensors; auto-lowers effective mcmc_cate per dataset to stay under it. "
+        "Raise on large-memory GPUs so mcmc_cate is not throttled; set 0 to disable.",
     )
 
     ###########################################################################
