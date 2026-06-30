@@ -248,11 +248,18 @@ class MLPSCM(nn.Module):
             out = layer(out)
             outputs.append(out)
 
-        # 2. Pool all hidden states together
-        pool = torch.cat(outputs, dim=-1)
+        # 2. Permutation sampling over the *conceptual* pool of all hidden states.
+        # Every collected state has width ``hidden_dim``, so the pool width is simply
+        # ``len(outputs) * hidden_dim``. We compute the permutation against that width
+        # without ever materializing ``torch.cat(outputs)`` -- materializing the pool
+        # would transiently double the activation memory (a full second copy of every
+        # layer) only to keep ``num_outputs`` columns. Drawing ``randperm`` on the same
+        # total width consumes the RNG identically to the cat-based version, so the
+        # selected indices (and thus the output) are unchanged.
+        hidden_dim = outputs[0].shape[-1]
+        total_width = len(outputs) * hidden_dim
 
-        # 3. Permutation sampling
-        random_perm = torch.randperm(pool.shape[-1], device=pool.device)
+        random_perm = torch.randperm(total_width, device=out.device)
         indices = random_perm[: self.num_outputs]
 
         # Sort indices to preserve topological ordering.
@@ -260,6 +267,16 @@ class MLPSCM(nn.Module):
         # it appears earlier in the returned feature vector.
         indices, _ = torch.sort(indices)
 
-        final_out = pool[..., indices]
+        # 3. Gather the selected columns directly from the per-layer activations,
+        # placing each at its sorted slot. ``layer_ids`` maps a global pool index to
+        # the layer that produced it; ``col_ids`` to the column within that layer.
+        layer_ids = indices // hidden_dim
+        col_ids = indices % hidden_dim
+
+        final_out = outputs[0].new_empty((*out.shape[:-1], self.num_outputs))
+        for layer_id in torch.unique(layer_ids).tolist():
+            slot_mask = layer_ids == layer_id
+            slots = slot_mask.nonzero(as_tuple=True)[0]
+            final_out[..., slots] = outputs[layer_id][..., col_ids[slot_mask]]
 
         return torch.nan_to_num(final_out, nan=0.0)
