@@ -513,10 +513,13 @@ def build_parser():
     )
 
     parser.add_argument(
-        "--val_rolling_batches",
-        default=10,
-        type=int,
-        help="If True, uses a rolling batch iterator for validation instead of restarting from the beginning each time. This can be more efficient for large validation datasets.",
+        "--val_micro_batch_size",
+        default=None,
+        type=nullable_int,
+        help="Micro-batch size used during validation. Validation runs under "
+        "inference_mode (no backward pass), so it can use a larger micro-batch "
+        "than training before hitting memory limits. Defaults to "
+        "--micro_batch_size when unset.",
     )
     parser.add_argument(
         "--eval_buffer_episodes",

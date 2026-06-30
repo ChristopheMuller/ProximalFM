@@ -284,6 +284,11 @@ class Trainer:
         self.val_evaluator = CausalEvaluator()
         self.eval_buffer_episodes = getattr(self.config, "eval_buffer_episodes", 64)
 
+        self.val_micro_batch_size = (
+            getattr(self.config, "val_micro_batch_size", None)
+            or self.config.micro_batch_size
+        )
+
     def configure_ddp(self):
         """Set up distributed training and system configuration."""
         self.ddp = int(os.environ.get("RANK", -1)) != -1
@@ -555,25 +560,16 @@ class Trainer:
                 f"Validation dataset configured from {self.config.val_dir} ({total_val_files} total files)."
             )
 
-        # Create dataloader
+        pin_memory = self.config.prior_device == "cpu" and "cuda" in str(
+            self.config.device
+        )
         self.val_dataloader = DataLoader(
             val_dataset,
             batch_size=None,
             shuffle=False,
-            num_workers=1,
-            prefetch_factor=2,
-            pin_memory=True if self.config.prior_device == "cpu" else False,
-            pin_memory_device=self.config.device
-            if self.config.prior_device == "cpu"
-            else "",
+            num_workers=0,
+            pin_memory=pin_memory,
         )
-
-        def cycle(iterable):
-            while True:
-                for x in iterable:
-                    yield x
-
-        self.val_iterator = iter(cycle(self.val_dataloader))
 
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
@@ -788,13 +784,6 @@ class Trainer:
         ):
             val_results = self.validate()
             results.update(val_results)
-
-            # Log to console only on master
-            if self.master_process:
-                print(
-                    f"\n[Step {self.curr_step}] Validation | "
-                    + " | ".join([f"{k}: {v:.4f}" for k, v in val_results.items()])
-                )
 
         # Route training logs through the new Logger class
         results["lr"] = self.scheduler.get_last_lr()[0]
@@ -1468,11 +1457,20 @@ class Trainer:
         """Evaluate the model on a batch without gradients."""
         batch = [t.to_padded_tensor(padding=0.0) if t.is_nested else t for t in batch]
 
-        num_micro_batches = math.ceil(
-            self.config.batch_size / self.config.micro_batch_size
-        )
+        for i in (4, 5, 6, 7, 8):
+            if batch[i].dim() == 3 and batch[i].shape[-1] == 1:
+                batch[i] = batch[i].squeeze(-1)
+
+        seq_lens = batch[13]  # shape (B,)
+        train_sizes = batch[14]  # shape (B,)
+        sort_idx = torch.argsort(seq_lens * (train_sizes.max() + 1) + train_sizes)
+        batch = [t[sort_idx] for t in batch]
+
+        actual_batch_size = batch[0].shape[0]
+        num_micro_batches = math.ceil(actual_batch_size / self.val_micro_batch_size)
+
         micro_batches = [
-            torch.split(t, self.config.micro_batch_size, dim=0) for t in batch
+            torch.split(t, self.val_micro_batch_size, dim=0) for t in batch
         ]
         micro_batches = list(zip(*micro_batches))
 
@@ -1501,19 +1499,24 @@ class Trainer:
 
         return total_valid_samples
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def validate(self):
-        """Run a rolling validation pass over a chunk of the val_dir."""
+        """Run one full pass over the entire validation set.
+
+        Metrics are accumulated across every validation episode and computed
+        once, so each ``validate()`` call reports performance over the whole
+        val_dir (i.e. logged exactly when all validation episodes have been
+        visited once).
+        """
         if self.val_dataloader is None:
             return {}
 
         self.model.eval()
         self.val_evaluator.reset()
 
-        eval_batches = getattr(self.config, "val_rolling_batches", 20)
-
-        for _ in range(eval_batches):
-            batch = next(self.val_iterator)
+        # One full epoch over the validation set. The dataloader yields batches
+        # until all files are consumed, then stops.
+        for batch in self.val_dataloader:
             self.run_val_batch(batch)
 
         final_metrics = self.val_evaluator.compute(

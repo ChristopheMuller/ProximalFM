@@ -263,16 +263,22 @@ def _save_val_batch(pool: Tuple[Tensor, ...], idx: range, batch_file: Path) -> N
     W_sp = dense2sparse(W_b.reshape(-1, W_b.shape[-1]), d_W_b.repeat_interleave(T))
     Z_sp = dense2sparse(Z_b.reshape(-1, Z_b.shape[-1]), d_Z_b.repeat_interleave(T))
 
+    def _btt(t: Tensor) -> Tensor:
+        t = t[sl].cpu()
+        if t.dim() == 3 and t.shape[-1] == 1:
+            t = t.squeeze(-1)
+        return t
+
     payload = {
         "U": U_sp,
         "X": X_sp,
         "W": W_sp,
         "Z": Z_sp,
-        "A": A[sl].cpu(),
-        "A_probs": A_probs[sl].cpu(),
-        "Y_obs": Y_obs[sl].cpu(),
-        "Y0": Y0[sl].cpu(),
-        "Y1": Y1[sl].cpu(),
+        "A": _btt(A),
+        "A_probs": _btt(A_probs),
+        "Y_obs": _btt(Y_obs),
+        "Y0": _btt(Y0),
+        "Y1": _btt(Y1),
         "d_U": d_U_b.cpu(),
         "d_X": d_X_b.cpu(),
         "d_W": d_W_b.cpu(),
