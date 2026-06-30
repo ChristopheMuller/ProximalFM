@@ -55,8 +55,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from benchmarks.bench_methods import build_method
 from benchmarks.bench_metrics import (
     compute_all_metrics,
-    build_summary_tables,
-    make_combined_rich_table,
+    build_summary_table,
+    make_summary_rich_table,
 )
 
 # ── Optional: neural model support ───────────────────────────────────────────
@@ -151,10 +151,14 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     # Ensure train_size is a standard integer for clean slicing
     train_size = int(train_size[0].item())
 
-    # --- 1. Standardize Covariates ---
+    # --- 1. Standardize Covariates (context-only stats, no test leakage) ---
+    # Statistics are computed strictly on the first `train_size` rows (the
+    # context the methods are allowed to see) and then applied to the whole
+    # episode, including the query rows.
     def safe_standardize(x: torch.Tensor) -> torch.Tensor:
-        mu = x.mean(dim=1, keepdim=True)
-        std = x.std(dim=1, keepdim=True)
+        ctx = x[:, :train_size]
+        mu = ctx.mean(dim=1, keepdim=True)
+        std = ctx.std(dim=1, keepdim=True)
         # Prevent division by zero for zero-variance or zero-padded features
         std = torch.where(std < 1e-5, torch.ones_like(std), std)
         return (x - mu) / std
@@ -269,6 +273,12 @@ def build_batches(data: dict) -> list[dict]:
 def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
     b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
     try:
+        try:
+            torch.set_num_threads(1)
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            pass
+
         t0 = time.perf_counter()
         _, method = build_method(method_cfg)
 
@@ -584,15 +594,10 @@ def print_partial_results(
         for name, (preds, times) in accumulated.items()
     ]
     all_df = pd.concat(frames, ignore_index=True)
-    ate_df, cate_df = build_summary_tables(all_df)
+    summary = build_summary_table(all_df)
     console.print(
         Padding(
-            make_combined_rich_table(
-                all_results=all_df,
-                ate_summary=ate_df,
-                cate_summary=cate_df,
-                title="Live Results So Far",
-            ),
+            make_summary_rich_table(summary, title="Live Results So Far"),
             (1, 4),
         )
     )
@@ -728,20 +733,17 @@ def main() -> None:
         ignore_index=True,
     )
 
-    ate_summary, cate_summary = build_summary_tables(all_results)
+    summary = build_summary_table(all_results)
     console.print(
         Padding(
-            make_combined_rich_table(
-                all_results, ate_summary, cate_summary, title="Final Evaluation"
-            ),
+            make_summary_rich_table(summary, title="Final Evaluation"),
             (1, 4),
         )
     )
 
     results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)
-    ate_summary.to_csv(results_dir / "ate_summary.csv")
-    cate_summary.to_csv(results_dir / "cate_summary.csv")
+    summary.to_csv(results_dir / "summary.csv")
 
     console.print(f"  [green]✓[/] Full results → [cyan]{results_csv}[/]")
     console.print(Rule("[bold green]Done[/]"))

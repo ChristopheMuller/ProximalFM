@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import time
 import json
+import random
 import warnings
 import argparse
 from tqdm import tqdm
@@ -1072,6 +1073,7 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    random.seed(args.np_seed)
     np.random.seed(args.np_seed)
     torch.manual_seed(args.torch_seed)
     saver = SavePriorDataset(args)

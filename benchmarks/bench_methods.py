@@ -444,7 +444,11 @@ class P2SLS(CATEEstimator):
         return np.full(X.shape[0], self.ate_)
 
 
-from plearner import BridgeParams, PLearner as BasePLearner, RegressorMixin
+from benchmarks.baselines.plearner import (
+    BridgeParams,
+    PLearner as BasePLearner,
+    RegressorMixin,
+)
 
 
 class ProximalPLearner(CATEEstimator):
@@ -513,335 +517,282 @@ class ProximalPLearner(CATEEstimator):
 
 
 class KPV_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See KPVEstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
-        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
+        from benchmarks.baselines.kpv import KPVConfig, KPVEstimator
 
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.kernelPV.model import KernelPVModel
+        cfg = KPVConfig(
+            split_ratio=kwargs.get("split_ratio", 0.5),
+            kernel_scale=kwargs.get("kernel_scale", 1.0),
+            lam1=kwargs.get("lam1", None),
+            lam1_min=kwargs.get("lam1_min", 1e-5),
+            lam1_max=kwargs.get("lam1_max", 1e1),
+            n_lam1_search=kwargs.get("n_lam1_search", 10),
+            lam2=kwargs.get("lam2", None),
+            lam2_min=kwargs.get("lam2_min", 1e-5),
+            lam2_max=kwargs.get("lam2_max", 1e1),
+            n_lam2_search=kwargs.get("n_lam2_search", 10),
+            seed=kwargs.get("seed", 42),
+        )
+        self.model = KPVEstimator(cfg)
 
-        self._PVTrainDataSet = PVTrainDataSet
-
-        safe_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in ["name", "cls", "use_W", "use_Z"]
-        }
-
-        if safe_kwargs.get("lam1") is None:
-            safe_kwargs.setdefault("lam1_min", 1e-5)
-            safe_kwargs.setdefault("lam1_max", 1e1)
-            safe_kwargs.setdefault("n_lam1_search", 10)
-        if safe_kwargs.get("lam2") is None:
-            safe_kwargs.setdefault("lam2_min", 1e-5)
-            safe_kwargs.setdefault("lam2_max", 1e1)
-            safe_kwargs.setdefault("n_lam2_search", 10)
-
-        self.model = KernelPVModel(**safe_kwargs)
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown KPV strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
-            raise ValueError("NMMR methods require both W and Z proxies.")
-
-        # MONKEY-PATCH THE KERNEL CLASS AT RUNTIME BEFORE FIT() RUNS
-        # This fixes the sigma=0 division-by-zero error during internal tuning loops
-        from src.utils import kernel_func
-
-        def _get_safe_fit(original_fit_func):
-            def safe_fit(instance, data, scale=1.0):
-                original_fit_func(instance, data, scale=scale)
-                if hasattr(instance, "sigma"):
-                    if isinstance(instance.sigma, np.ndarray):
-                        instance.sigma[instance.sigma == 0] = 1e-3
-                    elif instance.sigma == 0:
-                        instance.sigma = 1e-3
-
-            return safe_fit
-
-        if hasattr(kernel_func.ColumnWiseGaussianKernel, "fit") and not hasattr(
-            kernel_func.ColumnWiseGaussianKernel, "_is_patched"
-        ):
-            kernel_func.ColumnWiseGaussianKernel.fit = _get_safe_fit(
-                kernel_func.ColumnWiseGaussianKernel.fit
-            )
-            kernel_func.ColumnWiseGaussianKernel._is_patched = True
-
-        if hasattr(kernel_func.GaussianKernel, "fit") and not hasattr(
-            kernel_func.GaussianKernel, "_is_patched"
-        ):
-            kernel_func.GaussianKernel.fit = _get_safe_fit(
-                kernel_func.GaussianKernel.fit
-            )
-            kernel_func.GaussianKernel._is_patched = True
-
-        train_data = self._PVTrainDataSet(
-            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
-            treatment_proxy=np.asarray(Z),
-            outcome_proxy=np.asarray(W),
-            outcome=np.asarray(Y),
-            backdoor=np.asarray(X),
-        )
-
-        self.model.fit(train_data, data_name="bench")
+            raise ValueError("KPV requires W and Z proxies.")
+        self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        n = X.shape[0]
-
-        # Treatment vectors for the ATE point contrast
-        t0 = np.zeros((n, 1))
-        t1 = np.ones((n, 1))
-
-        # Call the native repository ATE method for each treatment value
-        predsY0 = self.model.predict(treatment=t0)
-        predsY1 = self.model.predict(treatment=t1)
-        raw_ate = (predsY1 - predsY0).squeeze()
-
-        # If the backend returns a single scalar ATE, broadcast it to match shape (n,)
-        if np.isscalar(raw_ate) or raw_ate.ndim == 0:
-            return np.full(n, fill_value=float(raw_ate))
-
-        # If it returns a vector (e.g., sample-aligned predictions evaluated at t1 vs t0)
-        return np.asarray(raw_ate).squeeze()
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, mode="paired")
+        return self.model.predict(X, mode=self.strategy)
 
 
 class PMMR_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See PMMREstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
-        _switch_src_context(target_repo_name="NMMR", competitor_repo_name="CausalFM")
+        from benchmarks.baselines.pmmr import PMMRConfig, PMMREstimator
 
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.PMMR.model import PMMRModel
+        cfg = PMMRConfig(
+            kernel_scale=kwargs.get("kernel_scale", 1.0),
+            lam1=kwargs.get("lam1", 1.0),
+            lam2=kwargs.get("lam2", 1e-4),
+            seed=kwargs.get("seed", 42),
+        )
+        self.model = PMMREstimator(cfg)
 
-        self._PVTrainDataSet = PVTrainDataSet
-
-        safe_kwargs = {
-            k: v
-            for k, v in kwargs.items()
-            if k not in ["name", "cls", "model_type", "use_W", "use_Z"]
-        }
-
-        self.model = PMMRModel(**safe_kwargs)
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown PMMR strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
-            raise ValueError("NMMR methods require both W and Z proxies.")
-
-        # MONKEY-PATCH THE KERNEL CLASS AT RUNTIME BEFORE FIT() RUNS
-        # This fixes the sigma=0 division-by-zero error during internal tuning loops
-        from src.utils import kernel_func
-
-        def _get_safe_fit(original_fit_func):
-            def safe_fit(instance, data, scale=1.0):
-                original_fit_func(instance, data, scale=scale)
-                if hasattr(instance, "sigma"):
-                    if isinstance(instance.sigma, np.ndarray):
-                        instance.sigma[instance.sigma == 0] = 1e-3
-                    elif instance.sigma == 0:
-                        instance.sigma = 1e-3
-
-            return safe_fit
-
-        if hasattr(kernel_func.ColumnWiseGaussianKernel, "fit") and not hasattr(
-            kernel_func.ColumnWiseGaussianKernel, "_is_patched"
-        ):
-            kernel_func.ColumnWiseGaussianKernel.fit = _get_safe_fit(
-                kernel_func.ColumnWiseGaussianKernel.fit
-            )
-            kernel_func.ColumnWiseGaussianKernel._is_patched = True
-
-        if hasattr(kernel_func.GaussianKernel, "fit") and not hasattr(
-            kernel_func.GaussianKernel, "_is_patched"
-        ):
-            kernel_func.GaussianKernel.fit = _get_safe_fit(
-                kernel_func.GaussianKernel.fit
-            )
-            kernel_func.GaussianKernel._is_patched = True
-
-        train_data = self._PVTrainDataSet(
-            treatment=np.asarray(A, dtype=float).reshape(-1, 1),
-            treatment_proxy=np.asarray(Z),
-            outcome_proxy=np.asarray(W),
-            outcome=np.asarray(Y),
-            backdoor=np.asarray(X),
-        )
-
-        self.model.fit(train_data, data_name="bench")
+            raise ValueError("PMMR requires W and Z proxies.")
+        self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        n = X.shape[0]
-
-        # Treatment vectors for the ATE point contrast
-        t0 = np.zeros((n, 1))
-        t1 = np.ones((n, 1))
-
-        # For PMMR ATE, we call predict without passing the backdoor X array
-        predsY0 = self.model.predict(treatment=t0)
-        predsY1 = self.model.predict(treatment=t1)
-        raw_ate = (predsY1 - predsY0).squeeze()
-
-        # If the backend returns a single scalar ATE, broadcast it to match shape (n,)
-        if np.isscalar(raw_ate) or raw_ate.ndim == 0:
-            return np.full(n, fill_value=float(raw_ate))
-
-        # If it returns a vector (e.g., sample-aligned predictions evaluated at t1 vs t0)
-        return np.asarray(raw_ate).squeeze()
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, strategy="paired")
+        return self.model.predict(X, strategy=self.strategy)
 
 
 class NMMR_Wrapper(CATEEstimator):
+    # Which prediction target the estimator returns. See NMMREstimator.predict:
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"paired", "independent", "conditional"}
+
     def __init__(self, **kwargs):
-        # Local import to prevent global path collisions
-        import sys
-        from pathlib import Path
+        from benchmarks.baselines.nmmr import NMMRConfig, NMMREstimator
 
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
-        nmmr_path = str(PROJECT_ROOT / "NMMR")
+        cfg = NMMRConfig(
+            hidden_dim=kwargs.get("hidden_dim", 64),
+            n_layers=kwargs.get("n_layers", 3),
+            length_scale=kwargs.get("length_scale", 1.0),
+            loss=kwargs.get("loss", "u_stat"),
+            n_epochs=kwargs.get("n_epochs", 100),
+            batch_size=kwargs.get("batch_size", 256),
+            lr=kwargs.get("lr", 1e-3),
+            weight_decay=kwargs.get("weight_decay", 1e-4),
+            predict_batch_size=kwargs.get("predict_batch_size", 128),
+            w_predict_batch_size=kwargs.get("w_predict_batch_size", 4096),
+            x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
+            x_cond_top_k=kwargs.get("x_cond_top_k", 512),
+            seed=kwargs.get("seed", 42),
+        )
+        self.model = NMMREstimator(cfg)
 
-        if nmmr_path not in sys.path:
-            sys.path.insert(0, nmmr_path)
-
-        from src.models.NMMR.NMMR_wrapper import NMMRCATEEstimator
-
-        train_params = {
-            "network_width": kwargs.get("network_width", 64),
-            "network_depth": kwargs.get("network_depth", 3),
-            "n_epochs": kwargs.get("n_epochs", 100),
-            "batch_size": kwargs.get("batch_size", 256),
-            "learning_rate": kwargs.get("learning_rate", 1e-3),
-            "loss_name": kwargs.get("loss_name", "U_statistic"),
-        }
-
-        self.model = NMMRCATEEstimator(train_params=train_params)
+        self.strategy = kwargs.get("strategy", "paired")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown NMMR strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("NMMR requires W and Z proxies.")
-        self.model.fit(X, A, Y, W, Z)
+        self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        return self.model.predict(X)
+        # Paired uses the query-time W; the marginalising strategies ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W)
+        return self.model.predict(X, W=None, strategy=self.strategy)
 
 
 class DFPV_Wrapper(CATEEstimator):
-    """Wrapper for the Deep Feature Proxy Variable (DFPV) Model."""
+    """Wrapper for the Deep Feature Proxy Variable (DFPV) estimator."""
+
+    # Which prediction target the estimator returns. See DFPVEstimator.predict:
+    #   "marginal"    — global ATE, repeated for every test row.
+    #   "paired"      — CATE(x, w) at the supplied test (X, W) pairs (needs W).
+    #   "independent" — CATE(x) marginalising W over its marginal (assumes W ⊥ X).
+    #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
+    _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        import sys
-        from pathlib import Path
+        import warnings
 
-        PROJECT_ROOT = Path(__file__).resolve().parent.parent
+        from benchmarks.baselines.dfpv import DFPVConfig, DFPVEstimator
 
-        # 1. Isolate the environment for DFPV (Assuming it shares the NMMR repo structure)
-        dfpv_repo_path = str(PROJECT_ROOT / "NMMR")
+        # The benchmark fans batches out across a `spawn` ProcessPool. Concurrent
+        # multi-process MPS/Metal access stalls (each worker also does many
+        # MPS↔CPU solve round-trips), so MPS is unsafe here: force CPU. MPS is
+        # still fine for single-process use of DFPVEstimator directly.
+        device = kwargs.get("device", None)
+        if device == "mps":
+            warnings.warn(
+                "DFPV_Wrapper: ignoring device='mps' — it deadlocks inside the "
+                "benchmark's multiprocess pool. Falling back to CPU.",
+                stacklevel=2,
+            )
+            device = "cpu"
 
-        if dfpv_repo_path not in sys.path:
-            sys.path.insert(0, dfpv_repo_path)
-
-        # 2. Purge the 'src' cache to prevent module collisions
-        keys = [k for k in sys.modules if k == "src" or k.startswith("src.")]
-        for k in keys:
-            del sys.modules[k]
-
-        # 3. Import classes directly in __init__ after environment is prepped
-        from src.data.ate.data_class import PVTrainDataSet
-        from src.models.DFPV.model import DFPVModel
-
-        import torch  # Make sure torch is imported here
-
-        torch.set_num_threads(1)
-
-        self._PVTrainDataSet = PVTrainDataSet
-        self._DFPVModel = DFPVModel
-
-        self.lam1 = kwargs.get("lam1", 0.1)
-        self.lam2 = kwargs.get("lam2", 0.1)
-        self.feat_dim = kwargs.get("feat_dim", 16)
-        self.hidden_dim = kwargs.get("hidden_dim", 32)
-        self.split_ratio = kwargs.get("split_ratio", 0.5)
-        self.add_stage1_intercept = kwargs.get("add_stage1_intercept", True)
-        self.add_stage2_intercept = kwargs.get("add_stage2_intercept", True)
-
-        self.model = None
-
-    def _build_mlp(self, in_dim, out_dim):
-        """Constructs a simple MLP for the DFPV feature extractors."""
-        import torch.nn as nn
-
-        return nn.Sequential(
-            nn.Linear(in_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            nn.ReLU(),
-            nn.Linear(self.hidden_dim, out_dim),
+        cfg = DFPVConfig(
+            feature_dim=kwargs.get("feature_dim", kwargs.get("feat_dim", 8)),
+            hidden_dim=kwargs.get("hidden_dim", 32),
+            n_hidden_layers=kwargs.get("n_hidden_layers", 2),
+            use_backdoor=kwargs.get("use_backdoor", True),
+            add_stage1_intercept=kwargs.get("add_stage1_intercept", True),
+            add_stage2_intercept=kwargs.get("add_stage2_intercept", True),
+            lam1=kwargs.get("lam1", 0.1),
+            lam2=kwargs.get("lam2", 0.1),
+            n_epochs=kwargs.get("n_epochs", 50),
+            stage1_iter=kwargs.get("stage1_iter", 20),
+            stage2_iter=kwargs.get("stage2_iter", 1),
+            lr=kwargs.get("lr", 1e-3),
+            treatment_weight_decay=kwargs.get("treatment_weight_decay", 0.0),
+            treatment_proxy_weight_decay=kwargs.get(
+                "treatment_proxy_weight_decay", 0.0
+            ),
+            outcome_proxy_weight_decay=kwargs.get("outcome_proxy_weight_decay", 0.0),
+            backdoor_weight_decay=kwargs.get("backdoor_weight_decay", 0.0),
+            split_ratio=kwargs.get("split_ratio", 0.5),
+            x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
+            x_cond_top_k=kwargs.get("x_cond_top_k", 512),
+            seed=kwargs.get("seed", 42),
+            device=device,
         )
+        self.model = DFPVEstimator(cfg)
+
+        self.strategy = kwargs.get("strategy", "marginal")
+        if self.strategy not in self._VALID_STRATEGIES:
+            raise ValueError(
+                f"Unknown DFPV strategy {self.strategy!r}; "
+                f"choose from {sorted(self._VALID_STRATEGIES)}."
+            )
 
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("DFPV requires both W and Z proxies.")
-
-        n = X.shape[0]
-
-        # Split data into Stage 1 and Stage 2
-        indices = np.random.permutation(n)
-        split_idx = int(n * self.split_ratio)
-        idx1, idx2 = indices[:split_idx], indices[split_idx:]
-
-        A_2d = np.asarray(A).reshape(-1, 1)
-        Y_2d = np.asarray(Y).reshape(-1, 1)
-        X_2d = np.asarray(X)
-        W_2d = np.asarray(W)
-        Z_2d = np.asarray(Z)
-
-        # Use the class loaded in __init__
-        train1 = self._PVTrainDataSet(
-            treatment=A_2d[idx1],
-            treatment_proxy=Z_2d[idx1],
-            outcome_proxy=W_2d[idx1],
-            outcome=Y_2d[idx1],
-            backdoor=X_2d[idx1],
-        )
-
-        train2 = self._PVTrainDataSet(
-            treatment=A_2d[idx2],
-            treatment_proxy=Z_2d[idx2],
-            outcome_proxy=W_2d[idx2],
-            outcome=Y_2d[idx2],
-            backdoor=X_2d[idx2],
-        )
-
-        dim_A = A_2d.shape[1]
-        dim_X = X_2d.shape[1]
-        dim_W = W_2d.shape[1]
-        dim_Z = Z_2d.shape[1]
-
-        # Instantiate the DFPV model using the class loaded in __init__
-        self.model = self._DFPVModel(
-            treatment_1st_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_2nd_net=self._build_mlp(dim_A, self.feat_dim),
-            treatment_proxy_net=self._build_mlp(dim_Z, self.feat_dim),
-            outcome_proxy_net=self._build_mlp(dim_W, self.feat_dim),
-            backdoor_1st_net=self._build_mlp(dim_X, self.feat_dim),
-            backdoor_2nd_net=self._build_mlp(dim_X, self.feat_dim),
-            add_stage1_intercept=self.add_stage1_intercept,
-            add_stage2_intercept=self.add_stage2_intercept,
-        )
-
-        self.model.fit(train1, train2, self.lam1, self.lam2)
+        self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
     def predict(self, X, *, W=None, Z=None):
-        if self.model is None:
-            raise RuntimeError("Must call fit() before predict().")
+        # Only the paired contrast consumes the query-time W; the other
+        # strategies marginalise W internally and ignore it.
+        if self.strategy == "paired":
+            return self.model.predict(X, W=W, strategy="paired")
+        return self.model.predict(X, strategy=self.strategy)
 
-        n = X.shape[0]
 
-        A1 = np.ones((n, 1))
-        A0 = np.zeros((n, 1))
+# ─────────────────────────────────────────────────────────────────────────────
+# EconML Causal Forest (DROrthoForest)
+# ─────────────────────────────────────────────────────────────────────────────
 
-        y1 = self.model.predict(A1)
-        y0 = self.model.predict(A0)
 
-        return (y1 - y0).squeeze()
+class CausalForest_Wrapper(CATEEstimator):
+    """Doubly-Robust Orthogonal Forest from EconML.
+
+    Uses DROrthoForest which combines random forests with doubly-robust
+    score functions to estimate heterogeneous treatment effects.  W and Z
+    proxies are optionally stacked with X as additional controls passed to
+    EconML's W argument (the set of features used for nuisance estimation
+    but not for heterogeneity).
+    """
+
+    def __init__(
+        self,
+        n_trees: int = 200,
+        min_leaf_size: int = 10,
+        max_depth: int = 10,
+        subsample_ratio: float = 0.7,
+        use_W: bool = False,
+        use_Z: bool = False,
+        random_state: int = 42,
+        n_jobs: int = 1,
+    ):
+        try:
+            from econml.orf import DROrthoForest
+        except ImportError as e:
+            raise ImportError("econml is not installed. Run: pip install econml") from e
+
+        self.use_W = use_W
+        self.use_Z = use_Z
+        # n_jobs=1: the benchmark already fans episodes out across a `spawn`
+        # ProcessPoolExecutor, so letting DROrthoForest spin up its own loky
+        # workers (default n_jobs=-1) oversubscribes the CPU and stalls — the
+        # same hazard the DFPV wrapper guards against with MPS.
+        self.model = DROrthoForest(
+            n_trees=n_trees,
+            min_leaf_size=min_leaf_size,
+            max_depth=max_depth,
+            subsample_ratio=subsample_ratio,
+            random_state=random_state,
+            n_jobs=n_jobs,
+        )
+
+    def _build_controls(
+        self, X: np.ndarray, W: Optional[np.ndarray], Z: Optional[np.ndarray]
+    ) -> Optional[np.ndarray]:
+        """Stack optional proxies into EconML's W (nuisance controls)."""
+        parts = []
+        if self.use_W and W is not None:
+            parts.append(W if W.ndim == 2 else W[:, None])
+        if self.use_Z and Z is not None:
+            parts.append(Z if Z.ndim == 2 else Z[:, None])
+        if not parts:
+            return None
+        return np.hstack(parts)
+
+    def fit(self, X, A, Y, *, W=None, Z=None):
+        controls = self._build_controls(X, W, Z)
+        with silent():
+            self.model.fit(Y, A, X=X, W=controls)
+        return self
+
+    def predict(self, X, *, W=None, Z=None):
+        return self.model.effect(X).squeeze()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1098,6 +1049,16 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "CausalPFN": lambda: CausalPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+        ),
+        "CausalForest": lambda: CausalForest_Wrapper(
+            n_trees=cfg.get("n_trees", 200),
+            min_leaf_size=cfg.get("min_leaf_size", 10),
+            max_depth=cfg.get("max_depth", 10),
+            subsample_ratio=cfg.get("subsample_ratio", 0.7),
+            use_W=cfg.get("use_W", False),
+            use_Z=cfg.get("use_Z", False),
+            random_state=cfg.get("random_state", 42),
+            n_jobs=cfg.get("n_jobs", 1),
         ),
     }
     if cls not in factories:

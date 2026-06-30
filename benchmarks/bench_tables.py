@@ -1,167 +1,104 @@
 # %%
+"""bench_tables.py — Export the benchmark summary as a LaTeX table.
+
+Reads the single `summary.csv` produced by bench_run (one row per method with
+nPEHE, Shape R², ATE Bias, Mean Rank, Failure Rate, Time) and emits a LaTeX
+table with the top-3 scores bolded (direction-aware per column).
+"""
 import pandas as pd
 from pathlib import Path
 
 # %% Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-experiment_dir = Path("results/bnn_1st/results/")
-methods_to_include = []
+# Resolve paths relative to the project root so the script works regardless of
+# the current working directory (e.g. run as a `# %%` cell or from benchmarks/).
+try:
+    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+except NameError:  # __file__ is undefined in some interactive runners
+    PROJECT_ROOT = Path.cwd()
+    while (
+        not (PROJECT_ROOT / "pyproject.toml").exists()
+        and PROJECT_ROOT != PROJECT_ROOT.parent
+    ):
+        PROJECT_ROOT = PROJECT_ROOT.parent
 
-ate_metrics_to_include = ["NormBias", "NormRMSE", "NormRMedSE", "ATE R²"]
-ate_decimals = [4, 2, 2, 2]
+experiment_dir = PROJECT_ROOT / "results/test_tbd/results/"
+methods_to_include: list[str] = []  # empty → all methods
 
-cate_metrics_to_include = [
-    "NormRMSE",
-    "NormRMedSE",
-    "Mean R²",
-    "Median R²",
-    "Mean R²(shape)",
+# (column, decimals, direction) — direction picks which 3 cells get bolded.
+#   "min"  : lower is better        (nPEHE, Mean Rank, Failure Rate, Time)
+#   "max"  : higher is better       (Shape R²)
+#   "zero" : closest to 0 is better (ATE Bias)
+COLUMN_SPEC = [
+    ("nPEHE", 3, "min"),
+    ("Shape R²", 3, "max"),
+    ("ATE Bias", 3, "zero"),
+    ("Mean Rank", 2, "min"),
+    ("Failure Rate", 2, "min"),
+    ("Time (s)", 2, None),  # informational — never bolded
 ]
-cate_decimals = [2, 2, 2, 2, 2]
 
-# %% Load and Filter
+# %% Load and filter
 # ─────────────────────────────────────────────────────────────────────────────
-ate_csv = experiment_dir / "ate_summary.csv"
-cate_csv = experiment_dir / "cate_summary.csv"
+summary_csv = experiment_dir / "summary.csv"
+if not summary_csv.exists():
+    raise FileNotFoundError(
+        f"Could not find {summary_csv}. Run bench_run.py first, or fix "
+        "experiment_dir above."
+    )
 
-if not ate_csv.exists() or not cate_csv.exists():
-    raise FileNotFoundError(f"Could not find summary CSVs in {experiment_dir}")
-
-df_ate = pd.read_csv(ate_csv, index_col="method")
-df_cate = pd.read_csv(cate_csv, index_col="method")
+df = pd.read_csv(summary_csv, index_col="method")
 
 if methods_to_include:
-    valid_methods = [m for m in methods_to_include if m in df_ate.index]
-    df_ate = df_ate.loc[valid_methods]
-    df_cate = df_cate.loc[valid_methods]
+    df = df.loc[[m for m in methods_to_include if m in df.index]]
 
-df_ate = df_ate[[m for m in ate_metrics_to_include if m in df_ate.columns]]
-df_cate = df_cate[[m for m in cate_metrics_to_include if m in df_cate.columns]]
+spec = [(c, d, dr) for (c, d, dr) in COLUMN_SPEC if c in df.columns]
+df = df[[c for c, _, _ in spec]]
 
 
-def format_columns_for_latex(cols):
-    return [c.replace("R²", "$R^2$").replace("²", "$^2$") for c in cols]
-
-
-df_ate.columns = format_columns_for_latex(df_ate.columns)
-df_cate.columns = format_columns_for_latex(df_cate.columns)
-
-
-# %% Dynamic Top-3 Formatter Logic
+# %% Direction-aware top-3 bold formatter
 # ─────────────────────────────────────────────────────────────────────────────
-def create_top3_formatter(series, decimals):
-    """
-    Creates a formatting function that automatically bolds the best 3 scores.
-    Handles directions automatically: maximizes R^2, minimizes absolute Bias, minimizes others.
-    """
-    # Extract name (handles both normal columns and MultiIndex tuples)
-    c_name = series.name[-1] if isinstance(series.name, tuple) else series.name
-
-    # 1. Determine the top 3 values based on metric type
-    if "R^2" in c_name:
-        # Higher is better
-        top3_vals = series.nlargest(3).values
-    elif "Bias" in c_name:
-        # Closer to zero is better (absolute minimum)
-        top3_vals = series.loc[series.abs().nsmallest(3).index].values
+def create_top3_formatter(series: pd.Series, decimals: int, direction: str | None):
+    if direction == "max":
+        top3 = series.nlargest(3).values
+    elif direction == "zero":
+        top3 = series.loc[series.abs().nsmallest(3).index].values
+    elif direction == "min":
+        top3 = series.nsmallest(3).values
     else:
-        # Lower is better (RMSE, MAE, etc.)
-        top3_vals = series.nsmallest(3).values
+        top3 = []
 
     fmt_str = f"{{:.{decimals}f}}"
 
-    # 2. Return a formatting function to apply to each cell
     def formatter(val):
         if pd.isna(val):
             return "-"
-
         v_str = fmt_str.format(val)
-        # Check if this specific value is in the top 3
-        if val in top3_vals:
-            return f"\\textbf{{{v_str}}}"
-        return v_str
+        return f"\\textbf{{{v_str}}}" if val in top3 else v_str
 
     return formatter
 
 
-# Build dictionary of formatters for each dataframe
-ate_formatters = {
-    col: create_top3_formatter(df_ate[col], d)
-    for col, d in zip(df_ate.columns, ate_decimals)
-}
-cate_formatters = {
-    col: create_top3_formatter(df_cate[col], d)
-    for col, d in zip(df_cate.columns, cate_decimals)
+formatters = {
+    col: create_top3_formatter(df[col], dec, direction) for col, dec, direction in spec
 }
 
-# Generate LaTeX with centered environments
-latex_ate = (
-    df_ate.style.format(ate_formatters)
-    .to_latex(
-        caption="Average Treatment Effect (ATE) Results",
-        label="tab:ate_results",
-        hrules=True,
-    )
-    .replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
-)
 
-latex_cate = (
-    df_cate.style.format(cate_formatters)
-    .to_latex(
-        caption="Conditional Average Treatment Effect (CATE) Results",
-        label="tab:cate_results",
-        hrules=True,
+def to_latex(label_cols: pd.DataFrame, fmts: dict) -> str:
+    styled = label_cols.copy()
+    styled.columns = [c.replace("R²", "$R^2$") for c in styled.columns]
+    fmts = {k.replace("R²", "$R^2$"): v for k, v in fmts.items()}
+    return (
+        styled.style.format(fmts)
+        .to_latex(
+            caption="Benchmark Summary (nPEHE, Shape $R^2$, ATE Bias).",
+            label="tab:bench_results",
+            hrules=True,
+        )
+        .replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
     )
-    .replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
-)
 
-# %% Generate Combined Best Metrics Table
+
+# %% Print
 # ─────────────────────────────────────────────────────────────────────────────
-ate_comb_cols = ["ATE $R^2$", "NormRMSE"]
-cate_comb_cols = ["Mean $R^2$", "Mean $R^2$(shape)", "NormRMSE"]
-
-df_ate_comb = df_ate[[c for c in ate_comb_cols if c in df_ate.columns]].copy()
-df_cate_comb = df_cate[[c for c in cate_comb_cols if c in df_cate.columns]].copy()
-
-# Rename to MultiIndex
-df_ate_comb.columns = pd.MultiIndex.from_tuples(
-    [
-        ("ATE", col.replace("ATE ", "").replace("Norm", "N"))
-        for col in df_ate_comb.columns
-    ]
-)
-df_cate_comb.columns = pd.MultiIndex.from_tuples(
-    [
-        ("CATE", col.replace("Mean ", "").replace("Norm", "N"))
-        for col in df_cate_comb.columns
-    ]
-)
-
-# Concatenate side-by-side
-df_combined = pd.concat([df_ate_comb, df_cate_comb], axis=1)
-
-# Create formatters for the combined table (defaulting to 2 decimals)
-combined_formatters = {
-    col: create_top3_formatter(df_combined[col], 2) for col in df_combined.columns
-}
-
-# Generate LaTeX with Multi-column alignment and centering
-latex_combined = (
-    df_combined.style.format(combined_formatters)
-    .to_latex(
-        caption="Combined Top Performance Metrics for ATE and CATE",
-        label="tab:combined_results",
-        hrules=True,
-        multicol_align="c",
-    )
-    .replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
-)
-
-# %% Print Results
-# ─────────────────────────────────────────────────────────────────────────────
-print("%%% ATE TABLE %%%\n")
-print(latex_ate)
-print("\n%%% CATE TABLE %%%\n")
-print(latex_cate)
-print("\n%%% COMBINED TABLE %%%\n")
-print(latex_combined)
+print(to_latex(df, formatters))

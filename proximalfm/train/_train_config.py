@@ -99,6 +99,23 @@ def build_parser():
         default=None,
         help="Number of batches to prefetch (must be None if num_workers=0)",
     )
+    parser.add_argument(
+        "--gen_block_size",
+        type=int,
+        default=2000,
+        help="Number of prior datasets to generate up front into a resident "
+        "in-memory block (= ceil(gen_block_size / batch_size) generated batches). "
+        "Generation cost is amortized over gen_reuse_passes passes of this block. "
+        "To recover near-infinite-stream behaviour (regenerate every step), set "
+        "--gen_block_size <= batch_size together with --gen_reuse_passes 1.",
+    )
+    parser.add_argument(
+        "--gen_reuse_passes",
+        type=int,
+        default=5,
+        help="Number of training passes over each generated block before "
+        "regenerating a fresh one. This is the data reuse factor K.",
+    )
 
     # Optimization Config
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -275,7 +292,7 @@ def build_parser():
     )
     parser.add_argument(
         "--prior_type",
-        default="mix_scm",
+        default="mlp_scm",
         type=str,
         help="Prior type: dummy, mlp_scm, tree_scm, mix_scm",
     )
@@ -496,10 +513,13 @@ def build_parser():
     )
 
     parser.add_argument(
-        "--val_rolling_batches",
-        default=10,
-        type=int,
-        help="If True, uses a rolling batch iterator for validation instead of restarting from the beginning each time. This can be more efficient for large validation datasets.",
+        "--val_micro_batch_size",
+        default=None,
+        type=nullable_int,
+        help="Micro-batch size used during validation. Validation runs under "
+        "inference_mode (no backward pass), so it can use a larger micro-batch "
+        "than training before hitting memory limits. Defaults to "
+        "--micro_batch_size when unset.",
     )
     parser.add_argument(
         "--eval_buffer_episodes",

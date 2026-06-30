@@ -1,6 +1,3 @@
-[submodule "NMMR"]
-	path = NMMR
-	url = https://github.com/ChristopheMuller/NMMR
 [submodule "CausalFM"]
 	path = CausalFM
 	url = https://github.com/ChristopheMuller/CausalFM
