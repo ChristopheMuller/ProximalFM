@@ -73,6 +73,10 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# Emit the Monte Carlo memory-budget warning at most once per process to avoid
+# flooding logs when many datasets get capped.
+_MC_BUDGET_WARNED = False
+
 
 class Prior:
     """Abstract base class for dataset prior generators (Proximal Causal Learning).
@@ -565,6 +569,55 @@ class SCMPrior(Prior):
         hp_sampler = HpSamplerList(self.sampled_hp, device=self.device)
         return hp_sampler.sample()
 
+    def _cap_mc_samples(self, K: int, T: int, params: Dict[str, Any]) -> int:
+        """Cap the Monte Carlo sample count ``K`` to respect the memory budget.
+
+        The generator materializes several ``(T * K)``-row tensors at once. The
+        single widest is the MLP-SCM activation pool of width
+        ``num_layers * hidden_dim``; alongside it live the raw + normalized proxy
+        and confounder blocks. We estimate the combined per-row width and choose
+        the largest ``K`` for which ``T * K * per_row`` stays under
+        ``prior_mc_mem_budget`` (counted in tensor elements / floats).
+
+        Returns a value in ``[1, K]``. A budget of ``None`` or ``<= 0`` disables
+        capping and returns ``K`` unchanged.
+        """
+        budget = params.get("prior_mc_mem_budget", None)
+        if budget is None or budget <= 0:
+            return K
+
+        num_layers = max(2, int(params.get("num_layers", 4)))
+        hidden_dim = int(params.get("hidden_dim", 20))
+
+        # Per-row width of the concurrently live (T * K)-row tensors: the widest
+        # MLP-SCM pool plus the proxy/confounder blocks kept in raw + normalized
+        # form, plus the X replication and eps draws. A small constant covers the
+        # scalar A / y columns. This is an estimate, deliberately on the high side.
+        per_row = (
+            num_layers * hidden_dim
+            + params["dim_X"]
+            + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
+            + 8
+        )
+
+        max_rows = int(budget // max(1, T * per_row))
+        K_eff = max(1, min(K, max_rows))
+
+        global _MC_BUDGET_WARNED
+        if K_eff < K and not _MC_BUDGET_WARNED:
+            _MC_BUDGET_WARNED = True
+            warnings.warn(
+                f"prior_mc_mem_budget={budget:,} elements caps mcmc_cate from {K} "
+                f"to {K_eff} for seq_len={T} (estimated {per_row} cols/row). "
+                "MU0/MU1 will use fewer Monte Carlo samples (still unbiased, just "
+                "noisier). Raise prior_mc_mem_budget if you have more RAM, or lower "
+                "max_seq_len / hidden_dim / num_layers to keep K high.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        return K_eff
+
     @torch.no_grad()
     def generate_dataset(self, params: Dict[str, Any]) -> Tuple[Tensor, Tensor, Tensor]:
         """Generate a single valid dataset based on the provided parameters.
@@ -604,6 +657,9 @@ class SCMPrior(Prior):
         K = int(params.get("mcmc_cate", 200))
         if K < 1:
             raise ValueError("mcmc_cate must be >= 1")
+
+        # Memory safeguard
+        K = self._cap_mc_samples(K, T, params)
 
         while True:
             eps_X_sampler = XSampler(
