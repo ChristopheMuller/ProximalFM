@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 import timeit
 import warnings
 import functools
@@ -38,6 +39,20 @@ warnings.filterwarnings(
     message=".*The PyTorch API of nested tensors is in prototype stage.*",
     category=UserWarning,
 )
+
+
+def seed_dataloader_worker(worker_id: int) -> None:
+    """Seed NumPy (and torch/random) independently in each dataloader worker.
+
+    PyTorch reseeds ``torch`` and ``random`` per worker but NOT NumPy, and the SCM
+    prior draws dimensions / hyperparameters via ``np.random`` in many places. Left
+    unseeded, workers can produce correlated (partially duplicated) datasets. Derive
+    every generator's seed from ``torch.initial_seed()``, which PyTorch already makes
+    unique per (DDP rank, worker), so this stays reproducible and decorrelated.
+    """
+    worker_seed = torch.initial_seed() % (2**31 - 1)
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def is_oom_error(exc: BaseException) -> bool:
@@ -563,6 +578,9 @@ class Trainer:
             prefetch_factor=c.train_dataloader_prefetch_factor,
             pin_memory=pin_to_cuda,
             pin_memory_device=self.config.device if pin_to_cuda else "",
+            worker_init_fn=seed_dataloader_worker
+            if c.train_dataloader_num_workers > 0
+            else None,
         )
 
     def configure_validation_prior(self):
