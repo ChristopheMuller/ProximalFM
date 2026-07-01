@@ -1552,6 +1552,12 @@ class Trainer:
         if successful_micro_batches == 0:
             return results
 
+        # Fix logged metrics for skipped micro-batches.
+        if successful_micro_batches < num_micro_batches:
+            correction = num_micro_batches / successful_micro_batches
+            for k in results:
+                results[k] *= correction
+
         # Clip the gradient
         if self.config.gradient_clipping > 0:
             self.scaler.unscale_(self.optimizer)
