@@ -1194,7 +1194,7 @@ class Trainer:
         y_train_obs = micro_Y_obs[:, :train_size]
         y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
         y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
-            min=1e-5
+            min=1e-3
         )
 
         # Test targets for loss.
