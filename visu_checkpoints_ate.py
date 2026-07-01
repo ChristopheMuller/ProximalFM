@@ -9,7 +9,7 @@ from proximalfm._model import ProximalFM
 
 # %%
 # 1. Configuration & Toggles
-checkpoint_path = "check_3/"
+checkpoint_path = "mc_baseline/"
 
 KEEP_CHECK = None
 REMOVE_CHECK = []
@@ -27,10 +27,10 @@ prior = PriorDataset(
     max_dim_W=1,
     min_dim_Z=1,
     max_dim_Z=1,
-    min_dim_X=2,
-    max_dim_X=2,
+    min_dim_X=1,
+    max_dim_X=1,
     min_seq_len=None,
-    max_seq_len=512,
+    max_seq_len=65,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.8,
@@ -40,15 +40,33 @@ prior = PriorDataset(
     device="cpu",
 )
 
-num_datasets = 50
+num_datasets = 2
 batch = prior.get_batch(batch_size=num_datasets)
-U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
+(
+    U,
+    X,
+    W,
+    Z,
+    A,
+    A_probs,
+    Y_obs,
+    Y0,
+    Y1,
+    MU0,
+    MU1,
+    d_U,
+    d_X,
+    d_W,
+    d_Z,
+    seq_len,
+    train_sizes,
+) = batch
 
 # Ensure batch dimension exists
-if len(Y0.shape) == 1:
-    Y0 = Y0.unsqueeze(0)
-if len(Y1.shape) == 1:
-    Y1 = Y1.unsqueeze(0)
+if len(MU0.shape) == 1:
+    MU0 = MU0.unsqueeze(0)
+if len(MU1.shape) == 1:
+    MU1 = MU1.unsqueeze(0)
 if len(A.shape) == 1:
     A = A.unsqueeze(0)
 if len(Y_obs.shape) == 1:
@@ -70,15 +88,17 @@ y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(m
 y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
 
 # 4. Calculate Raw True ATE
-y0_test_raw = Y0[:, split_idx:]
-y1_test_raw = Y1[:, split_idx:]
-true_cate_test_raw = y1_test_raw - y0_test_raw
+# CATE(x) = mu1(x) - mu0(x) is the noise-free target the model is trained on
+# (see _run.py), so ground truth comes from MU0/MU1, not the noisy Y0/Y1 (ITE).
+mu0_test_raw = MU0[:, split_idx:]
+mu1_test_raw = MU1[:, split_idx:]
+true_cate_test_raw = mu1_test_raw - mu0_test_raw
 true_ate_raw = true_cate_test_raw.mean(dim=1)  # Shape: (num_datasets,)
 
 # 5. Calculate Normalized True ATE (Using Context Stats)
-y0_test_norm = (y0_test_raw - y_context_mean) / y_context_std
-y1_test_norm = (y1_test_raw - y_context_mean) / y_context_std
-true_cate_test_norm = y1_test_norm - y0_test_norm
+mu0_test_norm = (mu0_test_raw - y_context_mean) / y_context_std
+mu1_test_norm = (mu1_test_raw - y_context_mean) / y_context_std
+true_cate_test_norm = mu1_test_norm - mu0_test_norm
 true_ate_norm = true_cate_test_norm.mean(dim=1)  # Shape: (num_datasets,)
 
 # Route the inputs based on PLOT_NORMALIZED flag
@@ -164,6 +184,9 @@ for i, checkp in enumerate(all_checkpoints):
             y_train=y_obs_in,  # Routes raw or normalized context seamlessly
             output_type="mean",
             target="cate",
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
         )
 
         # Average the predicted CATEs over the test set points to get Predicted ATE
