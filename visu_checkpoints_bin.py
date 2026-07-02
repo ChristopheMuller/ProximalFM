@@ -10,7 +10,7 @@ from proximalfm._model import ProximalFM
 
 # %%
 # 1. Configuration & Toggles
-CHECKPOINT_DIR = "check9/"
+CHECKPOINT_DIR = "mc_baseline/"
 TEST_SAMPLE_IDX = 0
 PLOT_MEAN = True
 PLOT_NORMALIZED = True
@@ -22,15 +22,15 @@ prior = PriorDataset(
     batch_size=1,
     batch_size_per_gp=1,
     min_dim_U=1,
-    max_dim_U=10,
+    max_dim_U=1,
     min_dim_W=1,
-    max_dim_W=10,
+    max_dim_W=1,
     min_dim_Z=1,
-    max_dim_Z=10,
+    max_dim_Z=1,
     min_dim_X=1,
-    max_dim_X=10,
+    max_dim_X=1,
     min_seq_len=None,
-    max_seq_len=2048,
+    max_seq_len=100,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.8,
@@ -42,13 +42,31 @@ prior = PriorDataset(
 
 # Fetch a single batch
 batch = prior.get_batch(batch_size=2)
-U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
+(
+    U,
+    X,
+    W,
+    Z,
+    A,
+    A_probs,
+    Y_obs,
+    Y0,
+    Y1,
+    MU0,
+    MU1,
+    d_U,
+    d_X,
+    d_W,
+    d_Z,
+    seq_len,
+    train_sizes,
+) = batch
 
 # Ensure batch dimension exists
-if len(Y0.shape) == 1:
-    Y0 = Y0.unsqueeze(0)
-if len(Y1.shape) == 1:
-    Y1 = Y1.unsqueeze(0)
+if len(MU0.shape) == 1:
+    MU0 = MU0.unsqueeze(0)
+if len(MU1.shape) == 1:
+    MU1 = MU1.unsqueeze(0)
 if len(A.shape) == 1:
     A = A.unsqueeze(0)
 if len(Y_obs.shape) == 1:
@@ -68,11 +86,13 @@ y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(m
 y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
 
 # Extract Raw Test Ground Truths
-y0_test_raw = Y0[:, split_idx:]
-y1_test_raw = Y1[:, split_idx:]
+# mu0(x)/mu1(x) are the noise-free conditional-mean surfaces the model is
+# trained against (see _run.py), so overlays use MU0/MU1, not the noisy Y0/Y1.
+mu0_test_raw = MU0[:, split_idx:]
+mu1_test_raw = MU1[:, split_idx:]
 
-true_y0_val_raw = y0_test_raw[0, TEST_SAMPLE_IDX].item()
-true_y1_val_raw = y1_test_raw[0, TEST_SAMPLE_IDX].item()
+true_y0_val_raw = mu0_test_raw[0, TEST_SAMPLE_IDX].item()
+true_y1_val_raw = mu1_test_raw[0, TEST_SAMPLE_IDX].item()
 true_cate_val_raw = true_y1_val_raw - true_y0_val_raw
 
 # Route based on flag
@@ -150,6 +170,9 @@ for ckpt_name in raw_checkpoints:
             y_train=y_obs_in,
             output_type="distribution",
             target="cate",
+            d_W=d_W,
+            d_Z=d_Z,
+            d_X=d_X,
         )
 
     weights_y0 = out_dist["y0"]["weights"][0, TEST_SAMPLE_IDX].cpu().numpy()
@@ -247,25 +270,25 @@ def plot_evolution(ax, heatmap, vals, step_arr, true_val, title, y_lim=None):
     ax.legend(loc="upper left")
 
 
-# Plot Y0
+# Plot mu(0) = E[Y|X, A=0]
 plot_evolution(
     ax1,
     heatmap_y0,
     vals_y0,
     steps,
     true_y0_val,
-    f"Y(0) Evolution\nSample {TEST_SAMPLE_IDX}",
+    f"mu(0) Evolution\nSample {TEST_SAMPLE_IDX}",
     y_lim=Y_LIM,
 )
 
-# Plot Y1
+# Plot mu(1) = E[Y|X, A=1]
 plot_evolution(
     ax2,
     heatmap_y1,
     vals_y1,
     steps,
     true_y1_val,
-    f"Y(1) Evolution\nSample {TEST_SAMPLE_IDX}",
+    f"mu(1) Evolution\nSample {TEST_SAMPLE_IDX}",
     y_lim=Y_LIM,
 )
 
@@ -278,7 +301,7 @@ plot_evolution(
     vals_cate,
     steps,
     true_cate_val,
-    f"CATE [Y(1) - Y(0)] Evolution\nSample {TEST_SAMPLE_IDX}",
+    f"CATE(x) [mu(1) - mu(0)] Evolution\nSample {TEST_SAMPLE_IDX}",
     y_lim=Y_LIM,
 )
 
