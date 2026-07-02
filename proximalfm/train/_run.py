@@ -1658,8 +1658,9 @@ class Trainer:
 
         # One full epoch over the validation set. The dataloader yields batches
         # until all files are consumed, then stops.
-        for batch in self.val_dataloader:
-            self.run_val_batch(batch)
+        with Timer() as val_timer:
+            for batch in self.val_dataloader:
+                self.run_val_batch(batch)
 
         final_metrics = self.val_evaluator.compute(
             prefix="val_",
@@ -1667,6 +1668,9 @@ class Trainer:
             device=self.config.device,
             include_count=True,
         )
+
+        # Time (seconds) taken to pass over the whole validation set.
+        final_metrics["val_time"] = val_timer.elapsed
 
         self.val_evaluator.reset()
         self.model.train()
