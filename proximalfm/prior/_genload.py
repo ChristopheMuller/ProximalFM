@@ -750,10 +750,8 @@ class SavePriorDataset:
             max_train_size=self.args.max_train_size,
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
-            scm_fixed_hp={
-                **DEFAULT_FIXED_HP,
-                "mcmc_cate": self.args.mcmc_cate,
-            },
+            mcmc_cate=self.args.mcmc_cate,
+            scm_fixed_hp=DEFAULT_FIXED_HP,
             scm_sampled_hp=DEFAULT_SAMPLED_HP,
             n_jobs=self.args.n_jobs,
             num_threads_per_generate=self.args.num_threads_per_generate,

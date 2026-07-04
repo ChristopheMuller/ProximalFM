@@ -544,9 +544,9 @@ class Trainer:
                 max_train_size=c.max_train_size,
                 replay_small=c.replay_small,
                 prior_type=c.prior_type,
+                mcmc_cate=getattr(c, "mcmc_cate", 200),
                 scm_fixed_hp={
                     **DEFAULT_FIXED_HP,
-                    "mcmc_cate": getattr(c, "mcmc_cate", 200),
                     "prior_mc_mem_budget": getattr(
                         c,
                         "prior_mc_mem_budget",

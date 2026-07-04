@@ -477,6 +477,11 @@ class SCMPrior(Prior):
         'mix_scm' randomly selects between 'mlp_scm' and 'tree_scm' based on
         probabilities.
 
+    mcmc_cate : int, default=200
+        Number of Monte Carlo samples used to estimate the CATE targets
+        (MU0/MU1) per row. Higher values reduce the noise of the estimate at
+        the cost of more memory/compute.
+
     fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters.
 
@@ -514,6 +519,7 @@ class SCMPrior(Prior):
         max_train_size: Union[int, float] = 0.9,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
+        mcmc_cate: int = 200,
         fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,
@@ -552,6 +558,7 @@ class SCMPrior(Prior):
 
         self.seq_len_per_gp = seq_len_per_gp
         self.prior_type = prior_type
+        self.mcmc_cate = mcmc_cate
         self.fixed_hp = fixed_hp
         self.sampled_hp = sampled_hp
         self.n_jobs = n_jobs
@@ -1025,6 +1032,7 @@ class SCMPrior(Prior):
                         **self.fixed_hp,
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
+                        "mcmc_cate": self.mcmc_cate,
                         # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
                         "max_dim_U": self.max_dim_U,
                         "max_dim_X": gp_max_X,
@@ -1241,6 +1249,10 @@ class PriorDataset(IterableDataset):
          - 'tree_scm': Tree-based mechanisms (e.g., Random Forest, XGBoost).
          - 'mix_scm': Probabilistic mix of the above models.
 
+    mcmc_cate : int, default=200
+        Number of Monte Carlo samples used to estimate the CATE targets
+        (MU0/MU1) per row.
+
     scm_fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters for the SCM.
 
@@ -1278,6 +1290,7 @@ class PriorDataset(IterableDataset):
         max_train_size: Union[int, float] = 0.9,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
+        mcmc_cate: int = 200,
         scm_fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         scm_sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,
@@ -1306,6 +1319,7 @@ class PriorDataset(IterableDataset):
             max_train_size=max_train_size,
             replay_small=replay_small,
             prior_type=prior_type,
+            mcmc_cate=mcmc_cate,
             fixed_hp=scm_fixed_hp,
             sampled_hp=scm_sampled_hp,
             n_jobs=n_jobs,
@@ -1332,6 +1346,7 @@ class PriorDataset(IterableDataset):
         self.max_train_size = max_train_size
         self.device = device
         self.prior_type = prior_type
+        self.mcmc_cate = mcmc_cate
 
     def get_batch(
         self, batch_size: Optional[int] = None
@@ -1413,6 +1428,7 @@ class PriorDataset(IterableDataset):
             f"  seq_len: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
             f"  sequence length varies across groups: {self.seq_len_per_gp}\n"
             f"  train_size: {self.min_train_size} - {self.max_train_size}\n"
+            f"  mcmc_cate: {self.mcmc_cate}\n"
             f"  device: {self.device}\n"
             f")"
         )

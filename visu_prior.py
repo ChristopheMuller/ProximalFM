@@ -45,7 +45,6 @@ mcmc_cate = 200
 scm_fixed_hp = {
     **DEFAULT_FIXED_HP,
     "prior_cate": True,
-    "mcmc_cate": mcmc_cate,
 }
 
 dataset = PriorDataset(
@@ -67,6 +66,7 @@ dataset = PriorDataset(
     max_train_size=0.95,
     replay_small=False,
     prior_type="mlp_scm",
+    mcmc_cate=mcmc_cate,
     scm_fixed_hp=scm_fixed_hp,
     device="cpu",
 )

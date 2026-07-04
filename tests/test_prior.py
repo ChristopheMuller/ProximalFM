@@ -14,7 +14,8 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 
 import pytest
 
-FAST_FIXED_HP = {**DEFAULT_FIXED_HP, "mcmc_cate": 2}
+FAST_FIXED_HP = DEFAULT_FIXED_HP
+FAST_MCMC_CATE = 2
 
 
 class ArgsMock:
@@ -47,6 +48,7 @@ def test_scm_prior_get_batch():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mlp_scm",
+        mcmc_cate=FAST_MCMC_CATE,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -105,6 +107,7 @@ def test_scm_prior_mix_scm():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mix_scm",
+        mcmc_cate=FAST_MCMC_CATE,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -146,6 +149,7 @@ def test_scm_prior_tree_scm():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="tree_scm",
+        mcmc_cate=FAST_MCMC_CATE,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -188,6 +192,7 @@ def test_scm_prior_seq_len_per_gp():
         max_train_size=0.8,
         seq_len_per_gp=True,
         prior_type="mlp_scm",
+        mcmc_cate=FAST_MCMC_CATE,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -240,6 +245,7 @@ def test_prior_dataset():
         min_seq_len=20,
         max_seq_len=30,
         prior_type="mlp_scm",
+        mcmc_cate=FAST_MCMC_CATE,
         scm_fixed_hp=FAST_FIXED_HP,
     )
 
