@@ -62,7 +62,7 @@ def test_trainer_run_one_epoch(dummy_args):
     # We want to patch the dataloader to return a fast dummy batch
     with patch.object(trainer, "dataloader") as mock_dataloader:
         # Create a dummy batch
-        # 15 items: (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1,
+        # 17 items: (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1,
         #            d_U, d_X, d_W, d_Z, seq_len, train_size)
 
         U = torch.randn(2, 20, dummy_args.max_dim_U)
@@ -74,6 +74,8 @@ def test_trainer_run_one_epoch(dummy_args):
         Y_obs = torch.randn(2, 20)
         Y0 = torch.randn(2, 20)
         Y1 = torch.randn(2, 20)
+        MU0 = torch.randn(2, 20)
+        MU1 = torch.randn(2, 20)
         d_U = torch.tensor([3, 4])
         d_X = torch.tensor([5, 6])
         d_W = torch.tensor([4, 5])
@@ -91,6 +93,8 @@ def test_trainer_run_one_epoch(dummy_args):
             Y_obs,
             Y0,
             Y1,
+            MU0,
+            MU1,
             d_U,
             d_X,
             d_W,
@@ -135,18 +139,32 @@ def test_trainer_sub_functions(dummy_args):
     Y_obs = torch.randn(2, 20)
     Y0 = torch.randn(2, 20)
     Y1 = torch.randn(2, 20)
+    MU0 = torch.randn(2, 20)
+    MU1 = torch.randn(2, 20)
     d_X = torch.tensor([5, 6])
     d_W = torch.tensor([4, 5])
     d_Z = torch.tensor([3, 4])
 
-    a_X, a_W, a_Z, a_A, a_Y_obs, a_Y0, a_Y1 = trainer.align_micro_batch(
-        X, W, Z, A, Y_obs, Y0, Y1, d_X, d_W, d_Z, seq_len=15
+    (
+        a_X,
+        a_W,
+        a_Z,
+        a_A,
+        a_Y_obs,
+        a_Y0,
+        a_Y1,
+        a_MU0,
+        a_MU1,
+    ) = trainer.align_micro_batch(
+        X, W, Z, A, Y_obs, Y0, Y1, MU0, MU1, d_X, d_W, d_Z, seq_len=15
     )
 
     # Check truncated sequence length
     assert a_X.shape[1] == 15
     assert a_A.shape[1] == 15
     assert a_Y_obs.shape[1] == 15
+    assert a_MU0.shape[1] == 15
+    assert a_MU1.shape[1] == 15
 
     # Check truncated feature dimensions (to max across the batch)
     assert a_X.shape[2] == 6
