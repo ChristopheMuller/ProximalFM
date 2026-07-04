@@ -410,6 +410,9 @@ def run_neural_model(
     name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
     run_all = model_cfg.get("all", False)
+    # Number of feature-permutation views to average over at inference.
+    # <= 1 (or unset) means a single plain predict; > 1 enables ensemble prediction.
+    n_ensemble = int(model_cfg.get("ensemble", 1) or 1)
 
     # 1. Identify which checkpoints we want to process
     targets = []  # Elements: (display_suffix, target_ckpt_path)
@@ -515,8 +518,9 @@ def run_neural_model(
         model.load_state_dict(clean_state_dict, strict=False)
         model.eval()
 
+        ensemble_note = f", ensemble×{n_ensemble}" if n_ensemble > 1 else ""
         console.print(
-            f"    [green]✓[/] Processing {output_name!r} (step {ckpt.get('curr_step', '?')})"
+            f"    [green]✓[/] Processing {output_name!r} (step {ckpt.get('curr_step', '?')}{ensemble_note})"
         )
 
         preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
@@ -552,18 +556,34 @@ def run_neural_model(
 
                 y_ctx = micro_Y_obs[:, :N_TRAIN]
 
-                pred_cate = model.predict(
-                    X=micro_X,
-                    Z=micro_Z,
-                    W=micro_W,
-                    A=micro_A,
-                    y_train=y_ctx,
-                    d_X=micro_d_X,
-                    d_Z=micro_d_Z,
-                    d_W=micro_d_W,
-                    target="cate",
-                    output_type="mean",
-                )
+                if n_ensemble > 1:
+                    # Average CATE over `n_ensemble` feature-permuted views.
+                    pred_cate = model.predict_ensemble(
+                        X=micro_X,
+                        Z=micro_Z,
+                        W=micro_W,
+                        A=micro_A,
+                        y_train=y_ctx,
+                        d_X=micro_d_X,
+                        d_Z=micro_d_Z,
+                        d_W=micro_d_W,
+                        target="cate",
+                        output_type="mean",
+                        n_estimators=n_ensemble,
+                    )
+                else:
+                    pred_cate = model.predict(
+                        X=micro_X,
+                        Z=micro_Z,
+                        W=micro_W,
+                        A=micro_A,
+                        y_train=y_ctx,
+                        d_X=micro_d_X,
+                        d_Z=micro_d_Z,
+                        d_W=micro_d_W,
+                        target="cate",
+                        output_type="mean",
+                    )
 
                 t1 = time.perf_counter()
 

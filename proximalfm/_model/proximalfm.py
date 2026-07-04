@@ -37,6 +37,7 @@ from .interaction import RowInteraction
 from .learning import ICLearning
 from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
+from .ensemble import FeatureEnsemble, apply_permutation
 
 
 class ProximalFM(nn.Module):
@@ -767,3 +768,138 @@ class ProximalFM(nn.Module):
 
             else:
                 raise ValueError(f"Unknown output_type: {output_type}")
+
+    @staticmethod
+    def _average_ensemble_outputs(outputs: list) -> Union[Tensor, dict]:
+        """Average a list of ``predict`` outputs across ensemble members.
+
+        Handles the three output shapes returned by :meth:`predict`:
+        - plain ``Tensor`` (``output_type`` in {"mean", "quantiles"}): stacked
+          and averaged over ensemble members.
+        - a ``{"values", "weights"}`` distribution dict: the bin ``values`` are
+          identical across feature permutations (they depend only on the y-context
+          statistics and bin centers, not on the ordering of X columns), so the
+          ``weights`` (probabilities) are averaged and the ``values`` of the first
+          member are kept.
+        - a nested ``{"y0": {...}, "y1": {...}}`` dict: averaged recursively.
+        """
+        first = outputs[0]
+
+        if isinstance(first, Tensor):
+            return torch.stack(outputs, dim=0).mean(dim=0)
+
+        if isinstance(first, dict):
+            # Distribution outputs: recurse if nested (y0/y1), otherwise average weights.
+            if "weights" in first:
+                weights = torch.stack([o["weights"] for o in outputs], dim=0).mean(
+                    dim=0
+                )
+                return {"values": first["values"], "weights": weights}
+            return {
+                key: ProximalFM._average_ensemble_outputs([o[key] for o in outputs])
+                for key in first
+            }
+
+        raise TypeError(f"Cannot average ensemble output of type {type(first)}.")
+
+    @torch.no_grad()
+    def predict_ensemble(
+        self,
+        X: Tensor,
+        Z: Tensor,
+        W: Tensor,
+        A: Tensor,
+        y_train: Tensor,
+        target: Literal["y0", "y1", "cate"] = "cate",
+        output_type: Literal["mean", "quantiles", "distribution"] = "mean",
+        quantiles: Optional[list[float]] = None,
+        n_estimators: int = 8,
+        feat_shuffle_method: Literal["none", "shift", "random", "latin"] = "latin",
+        shuffle_X: bool = True,
+        shuffle_Z: bool = False,
+        shuffle_W: bool = False,
+        random_state: Optional[int] = 42,
+        d_X: Optional[Tensor] = None,
+        d_Z: Optional[Tensor] = None,
+        d_W: Optional[Tensor] = None,
+        inference_config: Optional[InferenceConfig] = None,
+    ) -> Union[Tensor, dict]:
+        """Ensemble prediction by averaging over feature-permuted views.
+
+        Creates ``n_estimators`` alternative views of the inputs by permuting the
+        feature columns of the X (and optionally Z / W) blocks, runs
+        :meth:`predict` on each view, and averages the resulting estimates. Since
+        :class:`RowInteraction` uses rotary position embeddings over feature
+        positions, the model is only approximately invariant to column ordering;
+        averaging over permutations reduces this order-sensitivity variance and
+        typically yields a more robust CATE estimate.
+
+        Only valid feature columns are permuted (padding beyond ``d_X``/``d_Z``/
+        ``d_W`` is left in place), so the per-batch feature counts are preserved
+        and can be passed through unchanged.
+
+        Parameters
+        ----------
+        X, Z, W, A, y_train : Tensor
+            Same inputs as :meth:`predict`.
+
+        target, output_type, quantiles : see :meth:`predict`.
+
+        n_estimators : int, default=8
+            Number of feature-permuted views to average over. ``n_estimators=1``
+            reproduces the plain :meth:`predict` (identity view only).
+
+        feat_shuffle_method : {"none", "shift", "random", "latin"}, default="latin"
+            Column-permutation strategy (see :class:`FeatureEnsemble`).
+
+        shuffle_X, shuffle_Z, shuffle_W : bool
+            Which feature blocks to permute across views. Defaults to permuting
+            only the covariates X.
+
+        random_state : int or None, default=42
+            Seed for reproducible permutations.
+
+        d_X, d_Z, d_W, inference_config : see :meth:`predict`.
+
+        Returns
+        -------
+        Tensor or dict
+            The ensemble-averaged prediction, with the same structure as the
+            corresponding single-view :meth:`predict` output.
+        """
+        if n_estimators < 1:
+            raise ValueError(f"n_estimators must be >= 1, got {n_estimators}.")
+
+        ensembler = FeatureEnsemble(
+            n_estimators=n_estimators,
+            feat_shuffle_method=feat_shuffle_method,
+            shuffle_X=shuffle_X,
+            shuffle_Z=shuffle_Z,
+            shuffle_W=shuffle_W,
+            random_state=random_state,
+        )
+        views = ensembler.generate(X.shape[2], Z.shape[2], W.shape[2])
+
+        outputs = []
+        for view in views:
+            X_v = apply_permutation(X, view["X"], d_X)
+            Z_v = apply_permutation(Z, view["Z"], d_Z)
+            W_v = apply_permutation(W, view["W"], d_W)
+
+            out = self.predict(
+                X=X_v,
+                Z=Z_v,
+                W=W_v,
+                A=A,
+                y_train=y_train,
+                target=target,
+                output_type=output_type,
+                quantiles=quantiles,
+                d_X=d_X,
+                d_Z=d_Z,
+                d_W=d_W,
+                inference_config=inference_config,
+            )
+            outputs.append(out)
+
+        return self._average_ensemble_outputs(outputs)
