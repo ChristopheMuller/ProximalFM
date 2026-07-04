@@ -37,7 +37,7 @@ from .interaction import RowInteraction
 from .learning import ICLearning
 from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
-from .ensemble import FeatureEnsemble, apply_permutation
+from .ensemble import FeatureEnsemble, apply_permutation, apply_value_transform
 
 
 class ProximalFM(nn.Module):
@@ -815,28 +815,39 @@ class ProximalFM(nn.Module):
         quantiles: Optional[list[float]] = None,
         n_estimators: int = 8,
         feat_shuffle_method: Literal["none", "shift", "random", "latin"] = "latin",
+        value_transforms: Optional[list[str]] = None,
         shuffle_X: bool = True,
         shuffle_Z: bool = False,
         shuffle_W: bool = False,
+        transform_X: bool = True,
+        transform_Z: bool = False,
+        transform_W: bool = False,
         random_state: Optional[int] = 42,
         d_X: Optional[Tensor] = None,
         d_Z: Optional[Tensor] = None,
         d_W: Optional[Tensor] = None,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Union[Tensor, dict]:
-        """Ensemble prediction by averaging over feature-permuted views.
+        """Ensemble prediction by averaging over feature-transformed views.
 
-        Creates ``n_estimators`` alternative views of the inputs by permuting the
-        feature columns of the X (and optionally Z / W) blocks, runs
-        :meth:`predict` on each view, and averages the resulting estimates. Since
-        :class:`RowInteraction` uses rotary position embeddings over feature
-        positions, the model is only approximately invariant to column ordering;
-        averaging over permutations reduces this order-sensitivity variance and
-        typically yields a more robust CATE estimate.
+        Creates ``n_estimators`` alternative views of the inputs, runs
+        :meth:`predict` on each, and averages the resulting estimates. Each view
+        combines two information-preserving levers:
 
-        Only valid feature columns are permuted (padding beyond ``d_X``/``d_Z``/
-        ``d_W`` is left in place), so the per-batch feature counts are preserved
-        and can be passed through unchanged.
+        1. **Column permutation** of the X/Z/W blocks. Since
+           :class:`RowInteraction` uses rotary position embeddings over feature
+           positions, the model is only approximately invariant to column
+           ordering, so different orderings give diverse-but-valid estimates.
+        2. **A bijective per-column value transform** (``value_transforms``:
+           ``"sign"``, ``"signed_log"``, ``"arcsinh"``, ``"quantile"``), applied
+           consistently to context and query rows. These re-express the features
+           in a warped basis without losing information, adding a stronger form
+           of diversity than permutation alone.
+
+        Both levers are label-preserving, so averaging reduces variance. Only
+        valid feature columns are permuted (padding beyond ``d_X``/``d_Z``/
+        ``d_W`` is left in place), so per-batch feature counts pass through
+        unchanged.
 
         Parameters
         ----------
@@ -846,15 +857,22 @@ class ProximalFM(nn.Module):
         target, output_type, quantiles : see :meth:`predict`.
 
         n_estimators : int, default=8
-            Number of feature-permuted views to average over. ``n_estimators=1``
-            reproduces the plain :meth:`predict` (identity view only).
+            Number of views to average over. ``n_estimators=1`` reproduces the
+            plain :meth:`predict` (canonical view only).
 
         feat_shuffle_method : {"none", "shift", "random", "latin"}, default="latin"
             Column-permutation strategy (see :class:`FeatureEnsemble`).
 
+        value_transforms : list of str or None, default=None
+            Bijective value transforms to cycle across views (see
+            :data:`~proximalfm._model.ensemble.VALUE_TRANSFORMS`). ``None`` means
+            permutation-only.
+
         shuffle_X, shuffle_Z, shuffle_W : bool
-            Which feature blocks to permute across views. Defaults to permuting
-            only the covariates X.
+            Which blocks to permute across views (default: X only).
+
+        transform_X, transform_Z, transform_W : bool
+            Which blocks the value transform is applied to (default: X only).
 
         random_state : int or None, default=42
             Seed for reproducible permutations.
@@ -873,18 +891,43 @@ class ProximalFM(nn.Module):
         ensembler = FeatureEnsemble(
             n_estimators=n_estimators,
             feat_shuffle_method=feat_shuffle_method,
+            value_transforms=value_transforms,
             shuffle_X=shuffle_X,
             shuffle_Z=shuffle_Z,
             shuffle_W=shuffle_W,
+            transform_X=transform_X,
+            transform_Z=transform_Z,
+            transform_W=transform_W,
             random_state=random_state,
         )
         views = ensembler.generate(X.shape[2], Z.shape[2], W.shape[2])
+        train_size = y_train.shape[1]
 
         outputs = []
         for view in views:
-            X_v = apply_permutation(X, view["X"], d_X)
-            Z_v = apply_permutation(Z, view["Z"], d_Z)
-            W_v = apply_permutation(W, view["W"], d_W)
+            transform = view["transform"]
+            # Value transform (bijective, per-column) on the enabled blocks, then
+            # permute columns. The two commute (transform is per-column), so the
+            # order is immaterial.
+            X_v = (
+                X
+                if not transform_X
+                else apply_value_transform(X, transform, train_size)
+            )
+            Z_v = (
+                Z
+                if not transform_Z
+                else apply_value_transform(Z, transform, train_size)
+            )
+            W_v = (
+                W
+                if not transform_W
+                else apply_value_transform(W, transform, train_size)
+            )
+
+            X_v = apply_permutation(X_v, view["X"], d_X)
+            Z_v = apply_permutation(Z_v, view["Z"], d_Z)
+            W_v = apply_permutation(W_v, view["W"], d_W)
 
             out = self.predict(
                 X=X_v,

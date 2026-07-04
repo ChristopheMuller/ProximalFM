@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import sys
+import math
 import random
 import itertools
 from copy import deepcopy
@@ -27,6 +28,13 @@ from typing import Dict, List, Optional
 
 import torch
 from torch import Tensor
+
+# Bijective, information-preserving per-column value transforms usable at
+# inference time. Each is applied identically to context + query rows so the
+# transformed table is an *equivalent view* of the same data (see the module
+# docstring). Lossy maps (x**2, categorization) are intentionally excluded:
+# they make the query unit ambiguous and would bias the ensemble.
+VALUE_TRANSFORMS = ("none", "sign", "signed_log", "arcsinh", "quantile")
 
 
 class RecursionLimitManager:
@@ -217,13 +225,92 @@ def apply_permutation(
     return torch.gather(x, dim=2, index=gather_idx)
 
 
-class FeatureEnsemble:
-    """Generate feature-permutation views for ensemble CATE prediction.
+def _context_standardize(x: Tensor, train_size: int) -> Tensor:
+    """Per-column standardize using context (first ``train_size``) rows only.
 
-    Produces up to ``n_estimators`` "views", each a set of independent column
-    permutations for the X, Z, and W feature blocks. The first view is always
-    the identity (the original, unshuffled data) so the ensemble includes the
-    canonical prediction.
+    No-leak: statistics come only from the context rows, then applied to all
+    rows. Constant columns (std ~ 0, e.g. padding) are left unscaled.
+    """
+    ctx = x[:, :train_size, :]
+    mu = ctx.mean(dim=1, keepdim=True)
+    std = ctx.std(dim=1, unbiased=False, keepdim=True)
+    std = torch.where(std < 1e-5, torch.ones_like(std), std)
+    return (x - mu) / std
+
+
+def _quantile_to_normal(z: Tensor, train_size: int, eps: float = 1e-6) -> Tensor:
+    """Rank-based Gaussianization fit on context rows (bijective on support).
+
+    For each column, map every value to its empirical rank among the context
+    values, then through the inverse normal CDF. Query values are ranked against
+    the same context, so the transform is consistent across context and query.
+    """
+    ctx = z[:, :train_size, :]  # (B, train_size, F)
+    ctx_sorted = ctx.sort(dim=1).values  # sorted along the sequence axis
+    # Put the feature axis first and the (sorted) sequence axis last so that
+    # searchsorted batches over (B, F) and searches along the context axis.
+    boundaries = ctx_sorted.permute(0, 2, 1).contiguous()  # (B, F, train_size)
+    vals = z.permute(0, 2, 1).contiguous()  # (B, F, T)
+
+    idx = torch.searchsorted(
+        boundaries, vals
+    )  # counts of context < val, in [0, train_size]
+    ranks = (idx.to(z.dtype) + 0.5) / boundaries.shape[-1]
+    ranks = ranks.clamp(eps, 1.0 - eps)
+    out = math.sqrt(2.0) * torch.erfinv(2.0 * ranks - 1.0)
+    return out.permute(0, 2, 1).contiguous()  # (B, T, F)
+
+
+def apply_value_transform(x: Tensor, name: Optional[str], train_size: int) -> Tensor:
+    """Apply a bijective per-column value transform to a feature block.
+
+    The block is first context-standardized (so the nonlinear maps operate on a
+    consistent scale), then warped. ``"none"`` returns ``x`` untouched so the
+    canonical view exactly reproduces a plain ``predict``. The model's own
+    internal standardization runs afterwards regardless.
+
+    Parameters
+    ----------
+    x : Tensor
+        Feature block of shape ``(B, T, F)``.
+    name : str or None
+        One of :data:`VALUE_TRANSFORMS`. ``None``/``"none"`` is the identity.
+    train_size : int
+        Number of context rows (used for no-leak standardization / ranking).
+    """
+    if name is None or name == "none":
+        return x
+
+    z = _context_standardize(x, train_size)
+
+    if name == "sign":
+        return -z
+    if name == "signed_log":
+        return torch.sign(z) * torch.log1p(z.abs())
+    if name == "arcsinh":
+        return torch.asinh(z)
+    if name == "quantile":
+        return _quantile_to_normal(z, train_size)
+
+    raise ValueError(
+        f"Unknown value transform {name!r}. Expected one of {VALUE_TRANSFORMS}."
+    )
+
+
+class FeatureEnsemble:
+    """Generate feature-transformation views for ensemble CATE prediction.
+
+    Produces up to ``n_estimators`` "views" of the same table. Each view combines
+    two independent, information-preserving levers:
+
+    1. **Column permutation** of the X/Z/W blocks (RoPE-order diversity).
+    2. **A bijective per-column value transform** (see :data:`VALUE_TRANSFORMS`)
+       applied to the enabled blocks.
+
+    Both are label-preserving, so every view is an equally-valid encoding of the
+    same data and averaging over views reduces variance. The first view is always
+    the canonical one (identity permutation + ``"none"`` transform), so an
+    ensemble reduces exactly to a plain ``predict`` when there is a single view.
 
     Parameters
     ----------
@@ -234,14 +321,20 @@ class FeatureEnsemble:
         Permutation strategy passed to :class:`FeatureShuffler`
         (``"none"``, ``"shift"``, ``"random"``, or ``"latin"``).
 
-    shuffle_X : bool, default=True
-        Whether to permute the covariate (X) columns across views.
+    value_transforms : list of str or None, default=None
+        Bijective value transforms to cycle across views, drawn from
+        :data:`VALUE_TRANSFORMS`. ``None`` (default) means permutation-only
+        (equivalent to ``["none"]``). ``"none"`` is always used for the first
+        view and deduplicated into the front of the list otherwise.
 
-    shuffle_Z : bool, default=False
-        Whether to permute the treatment-proxy (Z) columns across views.
+    shuffle_X, shuffle_Z, shuffle_W : bool, default=(True, False, False)
+        Whether to permute the covariate / treatment-proxy / outcome-proxy
+        columns across views.
 
-    shuffle_W : bool, default=False
-        Whether to permute the outcome-proxy (W) columns across views.
+    transform_X, transform_Z, transform_W : bool, default=(True, False, False)
+        Which blocks the value transform is applied to. Per-column bijections
+        preserve the proximal conditional-independence structure, so warping Z/W
+        is valid, but the default warps only the covariates X.
 
     random_state : int or None, default=42
         Seed for reproducible permutations.
@@ -251,17 +344,40 @@ class FeatureEnsemble:
         self,
         n_estimators: int = 8,
         feat_shuffle_method: str = "latin",
+        value_transforms: Optional[List[str]] = None,
         shuffle_X: bool = True,
         shuffle_Z: bool = False,
         shuffle_W: bool = False,
+        transform_X: bool = True,
+        transform_Z: bool = False,
+        transform_W: bool = False,
         random_state: Optional[int] = 42,
     ):
         self.n_estimators = n_estimators
         self.feat_shuffle_method = feat_shuffle_method
+        self.value_transforms = self._normalize_transforms(value_transforms)
         self.shuffle_X = shuffle_X
         self.shuffle_Z = shuffle_Z
         self.shuffle_W = shuffle_W
+        self.transform_X = transform_X
+        self.transform_Z = transform_Z
+        self.transform_W = transform_W
         self.random_state = random_state
+
+    @staticmethod
+    def _normalize_transforms(transforms: Optional[List[str]]) -> List[str]:
+        """Validate transforms and ensure ``"none"`` is first (canonical view)."""
+        if not transforms:
+            return ["none"]
+        for t in transforms:
+            if t not in VALUE_TRANSFORMS:
+                raise ValueError(
+                    f"Unknown value transform {t!r}. Expected one of {VALUE_TRANSFORMS}."
+                )
+        # "none" first, then the rest in given order without duplicates.
+        ordered = ["none"] + [t for t in transforms if t != "none"]
+        seen: set = set()
+        return [t for t in ordered if not (t in seen or seen.add(t))]
 
     def _block_perms(
         self, width: int, enabled: bool, seed_offset: int
@@ -287,7 +403,7 @@ class FeatureEnsemble:
 
     def generate(
         self, d_X_width: int, d_Z_width: int, d_W_width: int
-    ) -> List[Dict[str, Optional[List[int]]]]:
+    ) -> List[Dict[str, object]]:
         """Build the list of ensemble views.
 
         Parameters
@@ -299,14 +415,25 @@ class FeatureEnsemble:
         Returns
         -------
         list of dict
-            One dict per ensemble member with keys ``"X"``, ``"Z"``, ``"W"``,
-            each mapping to a column permutation (list of int) or ``None``.
+            One dict per ensemble member with keys ``"X"``, ``"Z"``, ``"W"``
+            (column permutation or ``None``) and ``"transform"`` (the value
+            transform name for that view). The first view is always the
+            canonical one: identity permutations + ``"none"``.
         """
         x_perms = self._block_perms(d_X_width, self.shuffle_X, seed_offset=0)
         z_perms = self._block_perms(d_Z_width, self.shuffle_Z, seed_offset=1)
         w_perms = self._block_perms(d_W_width, self.shuffle_W, seed_offset=2)
 
-        return [
-            {"X": x_perms[i], "Z": z_perms[i], "W": w_perms[i]}
-            for i in range(self.n_estimators)
-        ]
+        views: List[Dict[str, object]] = []
+        for i in range(self.n_estimators):
+            # transforms[0] == "none" and perms[0] == identity, so view 0 is canonical.
+            transform = self.value_transforms[i % len(self.value_transforms)]
+            views.append(
+                {
+                    "X": x_perms[i],
+                    "Z": z_perms[i],
+                    "W": w_perms[i],
+                    "transform": transform,
+                }
+            )
+        return views

@@ -498,13 +498,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Dimension ranges (kept aligned with inspect_proximal_datasets defaults).
     p.add_argument("--min_dim_U", type=int, default=1)
-    p.add_argument("--max_dim_U", type=int, default=3)
-    p.add_argument("--min_dim_X", type=int, default=2)
-    p.add_argument("--max_dim_X", type=int, default=8)
+    p.add_argument("--max_dim_U", type=int, default=10)
+    p.add_argument("--min_dim_X", type=int, default=1)
+    p.add_argument("--max_dim_X", type=int, default=10)
     p.add_argument("--min_dim_W", type=int, default=1)
-    p.add_argument("--max_dim_W", type=int, default=8)
+    p.add_argument("--max_dim_W", type=int, default=10)
     p.add_argument("--min_dim_Z", type=int, default=1)
-    p.add_argument("--max_dim_Z", type=int, default=8)
+    p.add_argument("--max_dim_Z", type=int, default=10)
     return p
 
 

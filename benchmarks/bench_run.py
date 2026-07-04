@@ -86,6 +86,17 @@ def load_config(path: str) -> dict:
     return cfg
 
 
+def _empty_accelerator_cache(device: torch.device) -> None:
+    """Free cached accelerator memory (CUDA or MPS); no-op on CPU."""
+    import gc
+
+    gc.collect()
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    elif device.type == "mps" and torch.backends.mps.is_available():
+        torch.mps.empty_cache()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Data
 # ─────────────────────────────────────────────────────────────────────────────
@@ -410,9 +421,12 @@ def run_neural_model(
     name = model_cfg["name"]
     ckpt_dir = Path(model_cfg["checkpoint"])
     run_all = model_cfg.get("all", False)
-    # Number of feature-permutation views to average over at inference.
+    # Number of feature-transformed views to average over at inference.
     # <= 1 (or unset) means a single plain predict; > 1 enables ensemble prediction.
     n_ensemble = int(model_cfg.get("ensemble", 1) or 1)
+    # Optional bijective value transforms cycled across ensemble views (e.g.
+    # [sign, signed_log, arcsinh, quantile]). Unset/empty => permutation-only.
+    ensemble_transforms = model_cfg.get("transforms", None) or None
 
     # 1. Identify which checkpoints we want to process
     targets = []  # Elements: (display_suffix, target_ckpt_path)
@@ -518,7 +532,13 @@ def run_neural_model(
         model.load_state_dict(clean_state_dict, strict=False)
         model.eval()
 
-        ensemble_note = f", ensemble×{n_ensemble}" if n_ensemble > 1 else ""
+        if n_ensemble > 1:
+            tf_note = (
+                f" [{'+'.join(ensemble_transforms)}]" if ensemble_transforms else ""
+            )
+            ensemble_note = f", ensemble×{n_ensemble}{tf_note}"
+        else:
+            ensemble_note = ""
         console.print(
             f"    [green]✓[/] Processing {output_name!r} (step {ckpt.get('curr_step', '?')}{ensemble_note})"
         )
@@ -527,7 +547,21 @@ def run_neural_model(
         times = np.zeros(N_BATCH, dtype=np.float32)
         chunk = 3
 
-        with torch.no_grad():
+        neural_progress = Progress(
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(bar_width=30),
+            MofNCompleteColumn(),
+            TextColumn("·"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        )
+
+        with torch.no_grad(), neural_progress:
+            task = neural_progress.add_task(
+                f"    [magenta]{output_name:<28}[/]", total=N_BATCH
+            )
             for start in range(0, N_BATCH, chunk):
                 end = min(start + chunk, N_BATCH)
                 t0 = time.perf_counter()
@@ -557,7 +591,7 @@ def run_neural_model(
                 y_ctx = micro_Y_obs[:, :N_TRAIN]
 
                 if n_ensemble > 1:
-                    # Average CATE over `n_ensemble` feature-permuted views.
+                    # Average CATE over `n_ensemble` feature-transformed views.
                     pred_cate = model.predict_ensemble(
                         X=micro_X,
                         Z=micro_Z,
@@ -570,6 +604,7 @@ def run_neural_model(
                         target="cate",
                         output_type="mean",
                         n_estimators=n_ensemble,
+                        value_transforms=ensemble_transforms,
                     )
                 else:
                     pred_cate = model.predict(
@@ -592,9 +627,19 @@ def run_neural_model(
                 times[start:end] = avg_time
                 preds[start:end] = pred_cate.cpu().numpy()
 
+                neural_progress.advance(task, chunk_size)
+
         np.savez(pred_file, preds=preds, times=times)
         console.print(f"    [green]✓[/] {output_name} saved → {pred_file}")
         completed_runs.append((output_name, preds, times))
+
+        # Release the model and free accelerator memory before the next
+        # checkpoint/model. Without this, sequentially loaded checkpoints (and
+        # the extra forward passes done by ensemble runs) accumulate on the
+        # device; on MPS this can surface as spurious "index out of bounds"
+        # errors once memory is exhausted.
+        del model
+        _empty_accelerator_cache(device)
 
     return completed_runs
 
@@ -736,6 +781,7 @@ def main() -> None:
             if results is not None:
                 for name, preds, times in results:
                     accumulated[name] = (preds, times)
+                    print_partial_results(accumulated, true_ITEs)
 
     # ── Step 4: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 4  Evaluation[/]"))

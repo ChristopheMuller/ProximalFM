@@ -227,9 +227,26 @@ methods:
 
 models:
   - name:       ProximalFM
-    checkpoint: mc_run_1/
-    all: false
-
-  - name:       ProximalFM2
     checkpoint: mc_run_2/
     all: false
+
+  - name:       ProximalFM-E2
+    checkpoint: mc_run_2/
+    all: false
+    ensemble: 2
+
+  - name:       ProximalFM-E2-T
+    checkpoint: mc_run_2/
+    all: false
+    ensemble: 2
+    transforms: [sign, signed_log, arcsinh, quantile]
+  
+  - name:       ProximalFM-E3
+    checkpoint: mc_run_2/
+    all: false
+    ensemble: 3
+
+  - name:       ProximalFM-E5
+    checkpoint: mc_run_2/
+    all: false
+    ensemble: 5
