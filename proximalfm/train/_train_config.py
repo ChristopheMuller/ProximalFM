@@ -508,6 +508,29 @@ def build_parser():
         help="Path to specific checkpoint file to load",
     )
     parser.add_argument(
+        "--save_best",
+        default=True,
+        type=str2bool,
+        help="Save a 'best_model.ckpt' (overwriting the previous one) whenever the "
+        "monitored validation metric improves. Runs in addition to the regular "
+        "step-based checkpoints.",
+    )
+    parser.add_argument(
+        "--best_metric",
+        default="val_cate/npehe",
+        type=str,
+        help="Validation metric key to monitor for best-model checkpointing "
+        "(e.g. 'val_cate/rmse', 'val_ate/rmse', 'val_cate/r2'). See CausalEvaluator "
+        "for available keys.",
+    )
+    parser.add_argument(
+        "--best_metric_mode",
+        default="min",
+        choices=["min", "max"],
+        help="Whether a lower ('min', e.g. an RMSE) or higher ('max', e.g. an R2) "
+        "value of --best_metric is considered better.",
+    )
+    parser.add_argument(
         "--only_load_model",
         default=True,
         type=str2bool,

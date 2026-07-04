@@ -336,6 +336,14 @@ class Trainer:
             or self.config.micro_batch_size
         )
 
+        self.save_best = getattr(self.config, "save_best", True)
+        self.best_metric = getattr(self.config, "best_metric", "val_cate/npehe")
+        self.best_metric_mode = getattr(self.config, "best_metric_mode", "min")
+        self.best_metric_value = None
+        self._warned_missing_metric = False
+        self._check_best_metric_config()
+        self._load_best_metric_value()
+
     def configure_ddp(self):
         """Set up distributed training and system configuration."""
         self.ddp = int(os.environ.get("RANK", -1)) != -1
@@ -750,13 +758,17 @@ class Trainer:
             self.curr_step = checkpoint["curr_step"]
         print(f"Resuming optimizer state at step {self.curr_step}")
 
-    def save_checkpoint(self, name: str):
+    def save_checkpoint(self, name: str, extra: dict | None = None):
         """Save model and training state to checkpoint file.
 
         Parameters
         ----------
         name : str
             Filename for the checkpoint
+        extra : dict, optional
+            Additional key/value pairs to store in the checkpoint (e.g. the
+            monitored metric value for the best-model checkpoint). Values must be
+            ``weights_only``-loadable primitives (numbers, strings, tensors).
         """
 
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
@@ -768,7 +780,119 @@ class Trainer:
             "scheduler_state": self.scheduler.state_dict(),
             "curr_step": self.curr_step,
         }
+        if extra:
+            checkpoint.update(extra)
         torch.save(checkpoint, checkpoint_path)
+
+    def _check_best_metric_config(self):
+        """Warn (once, on master) about best-model configs that silently no-op.
+
+        Catches the two common footguns: (a) ``save_best`` requested but no
+        validation set, so no best model can ever be saved; and (b) a
+        ``best_metric`` whose name implies a direction opposite to the chosen
+        ``best_metric_mode`` (e.g. an R2 tracked with ``min``).
+        """
+        if not self.save_best or not self.master_process:
+            return
+
+        if getattr(self.config, "val_dir", None) is None:
+            print(
+                "[save_best] Warning: save_best is enabled but val_dir is None; "
+                "validation never runs, so no best_model.ckpt will be saved."
+            )
+
+        name = self.best_metric.lower()
+        higher_is_better = any(k in name for k in ("r2", "sign_agreement"))
+        lower_is_better = any(
+            k in name for k in ("rmse", "npehe", "mse", "bias", "loss")
+        )
+        if higher_is_better and self.best_metric_mode == "min":
+            print(
+                f"[save_best] Warning: best_metric '{self.best_metric}' looks "
+                "higher-is-better but best_metric_mode is 'min'. Did you mean 'max'?"
+            )
+        elif lower_is_better and self.best_metric_mode == "max":
+            print(
+                f"[save_best] Warning: best_metric '{self.best_metric}' looks "
+                "lower-is-better but best_metric_mode is 'max'. Did you mean 'min'?"
+            )
+
+    def _load_best_metric_value(self):
+        """Recover the best-so-far metric from an existing ``best_model.ckpt``.
+
+        Lets best-model tracking survive a resume: if a best checkpoint already
+        exists we only overwrite it when a genuinely better metric is seen.
+        """
+        if not self.save_best or not self.master_process:
+            return
+        if not getattr(self.config, "checkpoint_dir", None):
+            return
+
+        best_path = os.path.join(self.config.checkpoint_dir, "best_model.ckpt")
+        if not os.path.exists(best_path):
+            return
+
+        try:
+            ckpt = torch.load(best_path, map_location="cpu", weights_only=True)
+            value = ckpt.get("best_metric_value", None)
+            if value is not None:
+                self.best_metric_value = float(value)
+                print(
+                    f"Resuming best-model tracking: best {self.best_metric} so far "
+                    f"= {self.best_metric_value:.6f}"
+                )
+        except Exception as e:
+            print(f"Could not read best metric from {best_path}: {e}")
+
+    def _maybe_save_best(self, val_results: dict):
+        """Save ``best_model.ckpt`` if the monitored metric improved.
+
+        Called on the master process only, right after a validation pass. The
+        file is overwritten in place so only the single best checkpoint is kept.
+        """
+        metric = val_results.get(self.best_metric, None)
+        if metric is None:
+            # Metric absent this pass (e.g. all-homogeneous episodes for an R2
+            # metric, or a mistyped best_metric). Nothing to compare against;
+            # skip, but warn once so a permanent typo isn't silently ignored.
+            if not self._warned_missing_metric:
+                available = ", ".join(sorted(val_results)) or "(none)"
+                print(
+                    f"[save_best] Warning: monitored metric '{self.best_metric}' "
+                    f"not found in validation results; not saving best model. "
+                    f"Available keys: {available}"
+                )
+                self._warned_missing_metric = True
+            return
+
+        metric = float(metric)
+        if not math.isfinite(metric):
+            return
+
+        if self.best_metric_value is None:
+            improved = True
+        elif self.best_metric_mode == "max":
+            improved = metric > self.best_metric_value
+        else:
+            improved = metric < self.best_metric_value
+
+        if not improved:
+            return
+
+        prev = self.best_metric_value
+        self.best_metric_value = metric
+        self.save_checkpoint(
+            name="best_model.ckpt",
+            extra={
+                "best_metric_value": metric,
+                "best_metric_name": self.best_metric,
+            },
+        )
+        prev_str = "n/a" if prev is None else f"{prev:.6f}"
+        print(
+            f"[Step {self.curr_step}] New best {self.best_metric} = {metric:.6f} "
+            f"(prev {prev_str}). Saved best_model.ckpt"
+        )
 
     def manage_checkpoint(self):
         """Manage temporary checkpoints by deleting the oldest when limit is exceeded."""
@@ -871,6 +995,12 @@ class Trainer:
         ):
             val_results = self.validate()
             results.update(val_results)
+
+            # Overwrite best_model.ckpt if the monitored metric improved. Saving
+            # is master-only (like the step checkpoints); val_results is already
+            # DDP-synced so every rank agrees on the value.
+            if self.master_process and self.save_best:
+                self._maybe_save_best(val_results)
 
         # Route training logs through the new Logger class
         results["lr"] = self.scheduler.get_last_lr()[0]
