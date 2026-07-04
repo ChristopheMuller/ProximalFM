@@ -8,24 +8,15 @@ DEFAULT_FIXED_HP = {
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
-    # Reg2Cls
-    "balanced": False,
-    "multiclass_ordered_prob": 0.0,
+    # Feature corruption (process_features): applied to X, W, Z (and optionally U)
     "cat_prob": 0.2,
     "max_categories": float("inf"),
-    "scale_by_max_features": False,
-    "permute_features": True,
-    "permute_labels": True,
+    "corrupt_U": False,
     "propensity_epsilon": 1e-3,
     "prior_mc_mem_budget": 50_000_000,
 }
 
 DEFAULT_SAMPLED_HP = {
-    # Reg2Cls
-    "multiclass_type": {
-        "distribution": "meta_choice",
-        "choice_values": ["value", "rank"],
-    },
     # MLPSCM
     "mlp_activations": {
         "distribution": "meta_choice_mixed",

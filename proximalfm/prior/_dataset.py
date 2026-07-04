@@ -27,8 +27,11 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   clamping to ensure treatment overlap (P(A|X,U) > 0).
 # - Robust Padding: Replaced dynamic filtering with 'filter_constant_features_and_pad'
 #   to maintain fixed block sizes for X, W, and Z across datasets.
-# - Regression Alignment: Removed classification logic (Reg2Cls) and class-balance
-#   sanity checks to facilitate continuous CATE estimation.
+# - Regression Alignment: Dropped the target-side reg-to-cls transform to keep Y
+#   continuous for CATE estimation. Only the feature-side corruptions of Reg2Cls
+#   (categorization / outlier clamping / scaling via process_features) are reused,
+#   applied to X, W, Z (and optionally U) at their generation step so the observed
+#   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
 ####
@@ -63,7 +66,7 @@ from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
 from ._hp_sampling import HpSamplerList
-from ._reg2cls import Reg2Cls, standard_scaling, outlier_removing
+from ._reg2cls import process_features
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -685,6 +688,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             X = f_X(eps_X)
+            X = process_features(X, params)
             X_ = safe_normalize(X)
 
             X_rep_ = (
@@ -726,6 +730,8 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             U_mc = f_U(input_U)
+            if params.get("corrupt_U", False):
+                U_mc = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
 
             input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
@@ -737,6 +743,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             W_mc = f_W(input_W)
+            W_mc = process_features(W_mc, params)
             W_mc_ = safe_normalize(W_mc)
 
             input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
@@ -748,6 +755,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             Z_mc = f_Z(input_Z)
+            Z_mc = process_features(Z_mc, params)
             Z_mc_ = safe_normalize(Z_mc)
 
             p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)

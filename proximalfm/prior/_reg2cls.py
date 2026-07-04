@@ -6,7 +6,6 @@ import warnings
 import numpy as np
 import torch
 from torch import nn, Tensor
-import torch.nn.functional as F
 
 
 def torch_nanstd(input, dim=None, keepdim=False, ddof=0, *, dtype=None) -> Tensor:
@@ -151,28 +150,6 @@ def permute_classes(input: Tensor) -> Tensor:
     return permuted
 
 
-class BalancedBinarize(nn.Module):
-    """Binarizes the input based on its median value."""
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input: Tensor) -> Tensor:
-        """Binarize input based on median.
-
-        Parameters
-        ----------
-        input : Tensor
-            Input of shape ``(T,)``.
-
-        Returns
-        -------
-        Tensor
-            Binarized output (0 or 1) of shape ``(T,)``.
-        """
-        return (input > torch.median(input)).float()
-
-
 class MulticlassAssigner(nn.Module):
     """Transform the input into discrete classes using rank-based or value-based thresholding.
 
@@ -244,164 +221,69 @@ class MulticlassAssigner(nn.Module):
         return classes
 
 
-class Reg2Cls(nn.Module):
-    """Transform a regression dataset into a classification format.
+def num2cat(X: Tensor, hp: dict) -> Tensor:
+    """Convert some feature columns to categorical based on hyperparameters.
 
-    Applies feature processing (categorical conversion, normalization) and target
-    transformation (regression-to-classification) to features X and targets y.
+    With probability ``hp["cat_prob"]`` the tensor becomes eligible for
+    categorization; each column is then independently discretized (with a shared
+    per-call probability) into a random number of categories using rank-based
+    thresholds via :class:`MulticlassAssigner`. The input tensor is modified in
+    place and also returned.
 
     Parameters
     ----------
-    hp : dict
-        Configuration dictionary containing settings for feature processing and
-        target transformation. Expected keys include:
-        - num_classes (int): Number of classes for classification conversion.
-        - max_features (int): Maximum number of features allowed (defines output
-          feature dim).
-        - multiclass_type (str): Strategy for multiclass conversion ('rank' or
-          'value').
-        - balanced (bool): Whether to enforce balanced classes (currently only
-          for binary).
-        - multiclass_ordered_prob (float): Prob. of keeping natural class order.
-        - cat_prob (float, optional): Probability of converting features to
-          categorical.
-        - max_categories (int, optional): Max categories for categorical
-          conversion.
-        - scale_by_max_features (bool): Whether to scale features by proportion
-          used.
-        - permute_features (bool, optional): Whether to randomly permute features.
-          Defaults to True.
-        - permute_labels (bool, optional): Whether to randomly permute final class
-          labels. Defaults to True.
+    X : Tensor
+        Feature tensor of shape ``(T, H)``.
 
-    Attributes
-    ----------
     hp : dict
-        Hyperparameters for the Reg2Cls module.
+        Hyperparameters. Uses ``cat_prob`` (default 0.2) as the probability the
+        tensor is eligible, and ``max_categories`` (default 10) as the upper
+        bound on categories per column.
 
-    class_assigner : nn.Module or None
-        The module responsible for converting regression targets to class labels.
-        None if num_classes is 0.
+    Returns
+    -------
+    Tensor
+        Feature tensor with some columns potentially converted to categorical,
+        of shape ``(T, H)``.
     """
+    if random.random() < hp.get("cat_prob", 0.2):
+        col_prob = random.random()  # Probability for converting a specific column
+        max_categories = hp.get("max_categories", 10)
+        for col in range(X.shape[1]):
+            if random.random() < col_prob:
+                # Determine number of categories for this feature
+                num_cats = min(
+                    max(round(random.gammavariate(1, 10)), 2), max_categories
+                )
+                # Use MulticlassAssigner to convert this column
+                assigner = MulticlassAssigner(num_cats, mode="rank", ordered_prob=0.3)
+                X[:, col] = assigner(X[:, col]).float()
+    return X
 
-    def __init__(self, hp: dict):
-        super().__init__()
-        self.hp = hp
 
-        num_classes = self.hp["num_classes"]
-        if num_classes == 0:
-            self.class_assigner = None
-        elif num_classes == 2 and self.hp.get("balanced", False):
-            self.class_assigner = BalancedBinarize()
-        elif num_classes >= 2:
-            self.class_assigner = MulticlassAssigner(
-                num_classes,
-                mode=self.hp["multiclass_type"],
-                ordered_prob=self.hp["multiclass_ordered_prob"],
-            )
-        else:
-            raise ValueError(f"Invalid number of classes: {num_classes}")
+def process_features(X: Tensor, hp: dict) -> Tensor:
+    """Apply the prior's feature corruptions: categorization, outlier clamping, scaling.
 
-    def forward(self, X: Tensor, y: Tensor) -> tuple[Tensor, Tensor]:
-        """Process a single dataset (X, y) according to the initialized hyperparameters.
+    This is the feature-only pipeline shared by the proximal prior. Unlike the
+    removed ``Reg2Cls`` pipeline, it does **not** pad, permute, or scale by the
+    max-feature count, and it never touches the target ``y`` — padding and
+    active-dimension tracking are handled separately by the dataset via
+    ``filter_constant_features_and_pad``.
 
-        Parameters
-        ----------
-        X : Tensor
-            Features of shape ``(T, H)``, where H is the number of features.
+    Parameters
+    ----------
+    X : Tensor
+        Feature tensor of shape ``(T, H)``.
 
-        y : Tensor
-            Targets of shape ``(T,)``.
+    hp : dict
+        Hyperparameters (see :func:`num2cat`).
 
-        Returns
-        -------
-        X_out : Tensor
-            Processed features of shape ``(T, max_features)``.
-
-        y_out : Tensor
-            Processed targets of shape ``(T,)``.
-        """
-        if X.ndim != 2 or y.ndim != 1 or X.shape[0] != y.shape[0]:
-            raise ValueError(
-                f"Input shapes mismatch or incorrect dims. X: {X.shape}, y: {y.shape}"
-            )
-
-        X = self._num2cat(X)
-        X = self._process_features(X)
-
-        y = standard_scaling(y.unsqueeze(-1)).squeeze(-1)
-        if self.class_assigner is not None:
-            y = self.class_assigner(y)
-            if self.hp.get("permute_labels", True):
-                y = permute_classes(y)
-
-        return X.float(), y.float()
-
-    def _num2cat(self, X: Tensor) -> Tensor:
-        """Convert some features to categorical based on hyperparameters.
-
-        Operates inplace conceptually, returns the modified tensor.
-
-        Parameters
-        ----------
-        X : Tensor
-            Feature tensor of shape ``(T, H)``.
-
-        Returns
-        -------
-        Tensor
-            Feature tensor with some columns potentially converted to categorical
-            of shape ``(T, H)``.
-        """
-
-        if random.random() < self.hp.get("cat_prob", 0.2):
-            col_prob = random.random()  # Probability for converting a specific column
-            max_categories = self.hp.get("max_categories", 10)
-            for col in range(X.shape[1]):
-                if random.random() < col_prob:
-                    # Determine number of categories for this feature
-                    num_cats = min(
-                        max(round(random.gammavariate(1, 10)), 2), max_categories
-                    )
-                    # Use MulticlassAssigner to convert this column
-                    assigner = MulticlassAssigner(
-                        num_cats, mode="rank", ordered_prob=0.3
-                    )
-                    X[:, col] = assigner(X[:, col]).float()
-        return X
-
-    def _process_features(self, X: Tensor) -> Tensor:
-        """Process inputs through outlier removal, shuffling, scaling, and padding to max features.
-
-        Parameters
-        ----------
-        X : Tensor
-            Feature tensor of shape ``(T, H)``.
-
-        Returns
-        -------
-        Tensor
-            Normalized feature tensor of shape ``(T, H)``.
-        """
-
-        num_features = X.shape[1]
-        max_features = self.hp["max_features"]
-
-        X = outlier_removing(X, threshold=4)
-        X = standard_scaling(X)
-
-        # Permute features if specified
-        if self.hp.get("permute_features", True):
-            perm = torch.randperm(num_features, device=X.device)
-            X = X[:, perm]
-
-        # Scale by the proportion of features used relative to max features
-        if self.hp.get("scale_by_max_features", False):
-            scaling_factor = num_features / max_features
-            X = X / scaling_factor
-
-        # Add empty features if needed to match max features
-        if num_features < max_features:
-            X = F.pad(X, (0, max_features - num_features), mode="constant", value=0.0)
-
-        return X
+    Returns
+    -------
+    Tensor
+        Processed feature tensor of shape ``(T, H)``.
+    """
+    X = num2cat(X, hp)
+    X = outlier_removing(X, threshold=4)
+    X = standard_scaling(X)
+    return X
