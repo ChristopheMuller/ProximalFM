@@ -9,9 +9,12 @@ from proximalfm.prior._genload import (
     SliceNestedTensor,
     cat_slice_nested_tensors,
 )
+from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 
 
 import pytest
+
+FAST_FIXED_HP = {**DEFAULT_FIXED_HP, "mcmc_cate": 2}
 
 
 class ArgsMock:
@@ -39,11 +42,12 @@ def test_scm_prior_get_batch():
         max_dim_Z=4,
         min_dim_X=3,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mlp_scm",
+        fixed_hp=FAST_FIXED_HP,
     )
     (
         U,
@@ -55,6 +59,8 @@ def test_scm_prior_get_batch():
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -70,7 +76,10 @@ def test_scm_prior_get_batch():
     assert Y_obs.shape[0] == 4
     assert Y0.shape[0] == 4
     assert Y1.shape[0] == 4
+    assert MU0.shape[0] == 4
+    assert MU1.shape[0] == 4
 
+    assert d_U.shape[0] == 4
     assert d_X.shape[0] == 4
     assert d_W.shape[0] == 4
     assert d_Z.shape[0] == 4
@@ -91,11 +100,12 @@ def test_scm_prior_mix_scm():
         max_dim_Z=4,
         min_dim_X=3,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mix_scm",
+        fixed_hp=FAST_FIXED_HP,
     )
     (
         U,
@@ -107,6 +117,8 @@ def test_scm_prior_mix_scm():
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -129,11 +141,12 @@ def test_scm_prior_tree_scm():
         max_dim_Z=4,
         min_dim_X=3,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="tree_scm",
+        fixed_hp=FAST_FIXED_HP,
     )
     (
         U,
@@ -145,6 +158,8 @@ def test_scm_prior_tree_scm():
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -167,12 +182,13 @@ def test_scm_prior_seq_len_per_gp():
         max_dim_Z=4,
         min_dim_X=3,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         min_train_size=0.1,
         max_train_size=0.8,
         seq_len_per_gp=True,
         prior_type="mlp_scm",
+        fixed_hp=FAST_FIXED_HP,
     )
     (
         U,
@@ -184,6 +200,8 @@ def test_scm_prior_seq_len_per_gp():
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -193,6 +211,7 @@ def test_scm_prior_seq_len_per_gp():
     ) = prior.get_batch()
 
     # When seq_len_per_gp=True, the tensors should be nested tensors
+    assert U.is_nested
     assert X.is_nested
     assert W.is_nested
     assert Z.is_nested
@@ -200,6 +219,8 @@ def test_scm_prior_seq_len_per_gp():
     assert Y_obs.is_nested
     assert Y0.is_nested
     assert Y1.is_nested
+    assert MU0.is_nested
+    assert MU1.is_nested
 
     assert X.size(0) == 4
     assert len(seq_lens) == 4
@@ -216,9 +237,10 @@ def test_prior_dataset():
         max_dim_Z=4,
         min_dim_X=3,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         prior_type="mlp_scm",
+        scm_fixed_hp=FAST_FIXED_HP,
     )
 
     (
@@ -231,6 +253,8 @@ def test_prior_dataset():
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
@@ -255,14 +279,15 @@ def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):
         max_dim_Z=4,
         min_dim_X=5,
         max_dim_X=5,
-        min_seq_len=50,
-        max_seq_len=100,
+        min_seq_len=20,
+        max_seq_len=30,
         log_seq_len=False,
         seq_len_per_gp=True,
-        min_train_size=10,
-        max_train_size=40,
+        min_train_size=5,
+        max_train_size=15,
         replay_small=False,
         prior_type="mlp_scm",
+        mcmc_cate=2,
         num_batches=2,
         resume_from=0,
         n_jobs=1,
