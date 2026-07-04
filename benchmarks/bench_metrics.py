@@ -7,7 +7,7 @@ before any method runs.  The metrics below are *additionally* scale-free w.r.t.
 the treatment effect itself (everything is expressed relative to SD(τ)), so the
 numbers are directly comparable across episodes and can be aggregated.
 
-The summary table keeps six numbers per method:
+The summary table keeps these numbers per method:
 
 1. nPEHE  (median over episodes)
        npehe = √( mean((τ̂ − τ)²) / Var(τ) )
@@ -16,6 +16,11 @@ The summary table keeps six numbers per method:
    work.  Var(τ)→0 episodes would blow this up, so (a) homogeneous episodes
    (Var(τ) < ITE_VAR_THRESHOLD) are excluded and (b) we report the MEDIAN,
    which is robust to the remaining small-Var(τ) tail.
+
+1b. CATE R²  (median over episodes)
+       cate_r2 = 1 − mean((τ̂ − τ)²) / Var(τ)  == 1 − npehe²
+   The same overall accuracy as nPEHE, expressed on the familiar R² scale
+   (1 = perfect, 0 = constant-ATE baseline).
 
 2. Shape R²  (median over episodes)
        shape_r2 = 1 − Var(τ̂ − τ) / Var(τ)
@@ -29,9 +34,15 @@ The summary table keeps six numbers per method:
    The level component of the same decomposition.  Signed, so systematic
    over/under-estimation is visible.
 
+3b. ATE RMSE  (normalised, over episodes)
+       ate_rmse = √( mean( ((mean(τ̂) − mean(τ)) / SD(τ))² ) )
+   The unsigned magnitude of the ATE-level error, pooling both bias and
+   episode-to-episode spread of the ATE estimate.
+
 4. Mean rank  (by nPEHE)
    Per episode, methods are ranked by nPEHE (1 = best); averaged over episodes.
-   Robust head-to-head ordering that ignores metric magnitudes.
+   Robust head-to-head ordering that ignores metric magnitudes.  The summary
+   table is ordered by this column (best mean rank first).
 
 5. Failure rate
    Fraction of episodes where the method produced no usable prediction (all
@@ -84,6 +95,7 @@ class EpisodeMetrics:
 
     # ── CATE ─────────────────────────────────────────────────────────────────
     npehe: Optional[float]  # √(mean(resid²) / Var(τ))
+    cate_r2: Optional[float]  # 1 − mean(resid²) / Var(τ)  == 1 − npehe²
     shape_r2: Optional[float]  # 1 − Var(resid) / Var(τ)
 
     # ── Bookkeeping ──────────────────────────────────────────────────────────
@@ -118,7 +130,7 @@ def compute_episode_metrics(
         ate_pred = float("nan")
         ate_bias = float("nan")
         ate_bias_norm = None
-        npehe = shape_r2 = None
+        npehe = cate_r2 = shape_r2 = None
     else:
         ate_pred = float(np.nanmean(pred))
         ate_bias = ate_pred - ate_true
@@ -130,10 +142,11 @@ def compute_episode_metrics(
         if homogeneous:
             # Var(τ) ≈ 0 → scale-free quantities are undefined; report None.
             ate_bias_norm = None
-            npehe = shape_r2 = None
+            npehe = cate_r2 = shape_r2 = None
         else:
             ate_bias_norm = ate_bias / sd_tau
             npehe = float(np.sqrt((residuals**2).mean() / ite_var))
+            cate_r2 = float(1.0 - (residuals**2).mean() / ite_var)
             shape_r2 = float(1.0 - residuals.var() / ite_var)
 
     return EpisodeMetrics(
@@ -144,6 +157,7 @@ def compute_episode_metrics(
         ate_bias=ate_bias,
         ate_bias_norm=ate_bias_norm,
         npehe=npehe,
+        cate_r2=cate_r2,
         shape_r2=shape_r2,
         ite_var=ite_var,
         homogeneous=homogeneous,
@@ -184,7 +198,8 @@ def compute_all_metrics(
 def build_summary_table(all_results: pd.DataFrame) -> pd.DataFrame:
     """Collapse the per-episode frame into one row per method.
 
-    Columns: nPEHE, Shape R², ATE Bias, Mean Rank, Failure Rate, Time (s).
+    Columns: nPEHE, CATE R², Shape R², ATE Bias, ATE RMSE, Mean Rank,
+    Failure Rate, Time (s).  Rows are ordered by the mean nPEHE rank.
     """
     df = all_results.copy()
 
@@ -196,8 +211,10 @@ def build_summary_table(all_results: pd.DataFrame) -> pd.DataFrame:
         return pd.Series(
             {
                 "nPEHE": g["npehe"].median(),
+                "CATE R²": g["cate_r2"].median(),
                 "Shape R²": g["shape_r2"].median(),
                 "ATE Bias": g["ate_bias_norm"].median(),
+                "ATE RMSE": float(np.sqrt((g["ate_bias_norm"] ** 2).mean())),
                 "Mean Rank": g["npehe_rank"].mean(),
                 "Failure Rate": g["failed"].mean(),
                 "Time (s)": g["time"].mean(),
@@ -206,8 +223,9 @@ def build_summary_table(all_results: pd.DataFrame) -> pd.DataFrame:
 
     summary = df.groupby("method", sort=False).apply(_agg)
 
-    # Order by the workhorse metric (best nPEHE first); push all-NaN to the end.
-    summary = summary.sort_values("nPEHE", ascending=True, na_position="last")
+    # Order by the mean nPEHE rank (best head-to-head first); push all-NaN to
+    # the end.
+    summary = summary.sort_values("Mean Rank", ascending=True, na_position="last")
     return summary
 
 
@@ -222,6 +240,16 @@ def _style_npehe(v: float) -> str:
     if v < 0.75:
         return "green"
     if v < 1.0:
+        return "yellow"
+    return "red"
+
+
+def _style_cate_r2(v: float) -> str:
+    if pd.isna(v):
+        return ""
+    if v > 0.5:
+        return "green"
+    if v > 0.0:
         return "yellow"
     return "red"
 
@@ -264,10 +292,12 @@ def make_summary_rich_table(
 
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
+    tbl.add_column("Mean Rank", justify="right")
     tbl.add_column("nPEHE", justify="right")
+    tbl.add_column("CATE R²", justify="right")
     tbl.add_column("Shape R²", justify="right")
     tbl.add_column("ATE Bias", justify="right")
-    tbl.add_column("Mean Rank", justify="right")
+    tbl.add_column("ATE RMSE", justify="right")
     tbl.add_column("Fail %", justify="right")
     tbl.add_column("Time (s)", justify="right")
 
@@ -280,10 +310,12 @@ def make_summary_rich_table(
     for method, row in summary.iterrows():
         tbl.add_row(
             str(method),
+            styled(row["Mean Rank"], "", "{:.2f}"),
             styled(row["nPEHE"], _style_npehe(row["nPEHE"])),
+            styled(row["CATE R²"], _style_cate_r2(row["CATE R²"])),
             styled(row["Shape R²"], _style_shape_r2(row["Shape R²"])),
             styled(row["ATE Bias"], _style_bias(row["ATE Bias"]), "{:+.3f}"),
-            styled(row["Mean Rank"], "", "{:.2f}"),
+            styled(row["ATE RMSE"], _style_bias(row["ATE RMSE"])),
             styled(row["Failure Rate"], _style_failure(row["Failure Rate"]), "{:.0%}"),
             styled(row["Time (s)"], "", "{:.2f}"),
         )
