@@ -4,8 +4,8 @@
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  load: synthetic/test1/benchmark
-  output_dir: synthetic/test1/benchmark
+  load: synthetic/validation_datasets/benchmark
+  output_dir: synthetic/validation_datasets/benchmark
 
   # ── Dataset sizes ────────────────────────────────────────────────────────
   n_rows: 500
@@ -180,31 +180,31 @@ methods:
     loss:       "v_stat"
     strategy:   paired
 
-  - name: DFPV-XW
-    cls:        DFPV
-    strategy:   paired
+  # - name: DFPV-XW
+  #   cls:        DFPV
+  #   strategy:   paired
 
-  - name: DFPV-X-Wind
-    cls:        DFPV
-    strategy:   independent
+  # - name: DFPV-X-Wind
+  #   cls:        DFPV
+  #   strategy:   independent
 
-  - name: DFPV-X-cond
-    cls:        DFPV
-    strategy:   conditional
+  # - name: DFPV-X-cond
+  #   cls:        DFPV
+  #   strategy:   conditional
 
-  - name: DFPV-ATE
-    cls:        DFPV
-    strategy:   marginal
+  # - name: DFPV-ATE
+  #   cls:        DFPV
+  #   strategy:   marginal
 
-  - name: CausalForest
-    cls:  CausalForest
-    n_trees: 100
-    min_leaf_size: 10
-    max_depth: 10
-    subsample_ratio: 0.7
-    use_W: false
-    use_Z: false
-    n_jobs: 1
+  # - name: CausalForest
+  #   cls:  CausalForest
+  #   n_trees: 100
+  #   min_leaf_size: 10
+  #   max_depth: 10
+  #   subsample_ratio: 0.7
+  #   use_W: false
+  #   use_Z: false
+  #   n_jobs: 1
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
   - name: CausalFM
@@ -213,10 +213,10 @@ methods:
     use_W: false
     use_Z: false
 
-  - name: DoPFN
-    cls:  DoPFN
-    use_W: false
-    use_Z: false
+  # - name: DoPFN
+  #   cls:  DoPFN
+  #   use_W: false
+  #   use_Z: false
 
   - name: CausalPFN
     cls:  CausalPFN
@@ -226,6 +226,10 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       ProximalFM_check12
-    checkpoint: check12backup/
+  - name:       ProximalFM
+    checkpoint: mc_run_1/
+    all: false
+
+  - name:       ProximalFM2
+    checkpoint: mc_run_2/
     all: false
