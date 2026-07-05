@@ -498,7 +498,7 @@ def build_parser():
     parser.add_argument(
         "--max_checkpoints",
         type=int,
-        default=5,
+        default=3,
         help="Maximum number of temporary checkpoints to keep. Permanent checkpoints are not counted.",
     )
     parser.add_argument(
