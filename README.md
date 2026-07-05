@@ -17,6 +17,51 @@ In standard causal inference, we assume **Unconfoundedness**: that we observe al
 
 ---
 
+## The Prior: A Synthetic Proximal SCM
+
+Like other tabular foundation models, ProximalFM is never trained on real data. Instead it learns *in-context* over an infinite stream of synthetic datasets drawn from a **Structural Causal Model (SCM) prior** (see [`proximalfm/prior/_dataset.py`](proximalfm/prior/_dataset.py)). Each synthetic dataset is one draw of an SCM whose graph is deliberately built to satisfy the **proximal causal identification assumptions**, so that the model learns the mapping *"(observed proximal tuple) → CATE"* that proximal inference licenses.
+
+### What the SCM encodes
+
+Every dataset is generated from a randomly-parameterized DAG over $(X, U, Z, W, A, Y)$, where the mechanisms $f_U, f_W, f_Z, f_A, f_Y$ are random neural nets (`mlp_scm`) or trees (`tree_scm`). The edges encode the proximal roles directly:
+
+- $U$ is an **unobserved confounder** feeding into $Z, W, A, Y$ (it is generated and stored, but hidden from the model at training time).
+- $Z$ (**treatment-inducing proxy**) is driven by $U, X$ and feeds the treatment $A$, but *not* $Y$ directly.
+- $W$ (**outcome-inducing proxy**) is driven by $U, X$ and feeds $Y$, but *not* $A$ directly.
+- $A$ is drawn from a calibrated propensity (`sample_A`) with temperature/shift/clamp controls that enforce **positivity** (overlap).
+- The generator also enforces the **completeness** heuristic $\dim(W) \ge \dim(U)$ and $\dim(Z) \ge \dim(U)$, a necessary condition for proximal identification.
+
+Because $U$ influences both the treatment and the outcome while being unobserved, naive unconfoundedness fails on these datasets by construction — the only way to recover the effect is *through the proxies*, which is exactly the skill we want the model to learn.
+
+### Sampling convenience: $X$ as a root ($X \to U$)
+
+For *identification*, the natural graph has $U \to X$. For *generation*, we flip this edge to $X \to U$ and make $X$ an ancestral root. This flip is purely a **sampling convenience** and is believed to remain compatible with the proximal identification assumptions: with $X$ as a root we can fix $X = x$, replicate it, and ancestrally forward-sample everything downstream, obtaining **exact i.i.d. draws from $P(\cdot \mid X = x)$**. That is what makes the Monte-Carlo CATE labels below computable.
+
+### Why Monte-Carlo CATE labels (MU0 / MU1) and not the ITE
+
+The estimand is the proximal CATE, a **difference of conditional means**:
+
+$$Q(x) = \mathbb{E}[Y(1) - Y(0) \mid X = x] = \underbrace{\mathbb{E}[Y(1)\mid x]}_{\mu_1(x)} - \underbrace{\mathbb{E}[Y(0)\mid x]}_{\mu_0(x)}.$$
+
+A tempting shortcut is to train against a single per-unit contrast (the **ITE**, $\tau_i = Y_i(1) - Y_i(0)$). Its mean is unbiased for $Q(x)$, so it is a valid target under an MSE loss — but its *spread* is not a meaningful uncertainty. Writing $Y(a) = f_a(X, W, Z) + \eta_a$,
+
+$$\mathrm{Var}(\tau \mid x) = \mathrm{Var}(Y(1)\mid x) + \mathrm{Var}(Y(0)\mid x) - 2\,\mathrm{Cov}(Y(0), Y(1)\mid x),$$
+
+and the cross-covariance term is **never identified from data**: no unit ever reveals both potential outcomes, so the coupling of $\eta_0, \eta_1$ is fixed only by arbitrary structural choices of the generator. Placing a *distributional* loss on the ITE therefore learns exactly the part of the world the data cannot determine.
+
+The fix, enabled by the $X$-root flip, is to estimate the **identified** functionals directly by Monte Carlo. For each covariate row $x$ we replicate it $K$ times (`mcmc_cate`, default 200), forward-sample $K$ independent completions of $(U, W, Z, A, \varepsilon_Y)$, evaluate both potential outcomes per replicate, and average:
+
+$$\widehat{\mu}_0(x) = \frac{1}{K}\sum_{k=1}^{K} Y^{(k)}(0), \qquad \widehat{\mu}_1(x) = \frac{1}{K}\sum_{k=1}^{K} Y^{(k)}(1), \qquad \widehat{Q}(x) = \widehat{\mu}_1(x) - \widehat{\mu}_0(x).$$
+
+These are the `MU0` / `MU1` tensors returned by the prior. Averaging over the $K$ replicates integrates out both the outcome noise and the unidentified coupling, leaving clean per-SCM labels for the identified means (with only $O(1/K)$ Monte-Carlo error). A single observed outcome $Y_{obs}$ per row is still drawn (one replicate picked at random, consistent with its treatment $A$) to serve as the in-context training signal.
+
+This has two payoffs:
+
+- **Point CATE:** regressing on $\widehat{Q}(x)$ makes the model converge to the posterior mean $\mathbb{E}[Q(x)\mid \mathcal{D}_n]$.
+- **Posterior over CATE:** putting a distributional/histogram loss on the per-SCM label $\widehat{Q}(x)$ — rather than on the ITE — makes the learned distribution converge to the genuine Bayesian posterior $P(Q(x)\mid \mathcal{D}_n)$ over the *identified* estimand, since finite contexts $\mathcal{D}_n$ underdetermine which SCM produced them. We expect this posterior to be tighter than the ITE spread and to contract as the context grows.
+
+---
+
 ## Architecture
 
 ProximalFM is built on top of the **TabICLv2** foundation model architecture (Qu et al., 2026), refactored strictly for continuous regression and proximal causal learning. The execution pipeline is divided into three sequential transformer stages:
