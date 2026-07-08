@@ -449,10 +449,24 @@ def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot True vs Predicted ATE")
 
-    parser.add_argument("--exp", default="first_test", help="Experiment name")
+    parser.add_argument(
+        "--exp",
+        default="first_test",
+        help="Experiment name (resolved under results/<exp>).",
+    )
+    parser.add_argument(
+        "--path",
+        default=None,
+        help=(
+            "Path to an experiment directory (containing data.pt and a results/ "
+            "sub-folder), e.g. synthetic/validation_datasets/foo. Overrides --exp "
+            "and lets you plot experiments that are not stored under results/."
+        ),
+    )
     args = parser.parse_args()
 
-    results_dir = Path("results") / args.exp / "results"
+    exp_dir = Path(args.path) if args.path else Path("results") / args.exp
+    results_dir = exp_dir / "results"
     full_csv_path = results_dir / "results.csv"
 
     # Existing Plots
@@ -463,4 +477,4 @@ if __name__ == "__main__":
     plot_cd_diagram(full_csv_path)
 
     for i in range(5):
-        plot_single_episode_cate(full_csv_path.parent.parent, episode_idx=i)
+        plot_single_episode_cate(exp_dir, episode_idx=i)
