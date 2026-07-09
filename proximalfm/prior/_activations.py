@@ -23,8 +23,12 @@ class StdScaleLayer(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # fit the info on the first batch
         if self.mean is None or self.std is None:
-            self.mean = x.mean(dim=0, keepdim=True)
-            self.std = x.std(dim=0, keepdim=True) + 1e-6
+            # std_mean computes both statistics in a single fused reduction pass
+            # instead of two separate scans over x. This layer sits inside every
+            # scaled activation, so it runs on the (T*K, hidden_dim) activations.
+            std, mean = torch.std_mean(x, dim=0, keepdim=True)
+            self.mean = mean
+            self.std = std + 1e-6
 
         return (x - self.mean) / self.std
 
@@ -130,7 +134,7 @@ class RandomFunctionActivation(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stdscaler(x)
         x = torch.sin(self.freqs * x[..., None] + self.bias)
-        x = (self.l2_weights * x).sum(dim=-1)
+        x = x @ self.l2_weights
         return x
 
 
