@@ -662,9 +662,10 @@ class SCMPrior(Prior):
 
         def safe_normalize(tensor: Tensor) -> Tensor:
             """Normalize a tensor while avoiding division by zero."""
-            mean = tensor.mean(dim=0, keepdim=True)
-            std = tensor.std(dim=0, keepdim=True) + 1e-8
-            return (tensor - mean) / std
+            # One fused reduction for both stats instead of two separate scans;
+            # runs on the (T*K)-row U/W/Z blocks.
+            std, mean = torch.std_mean(tensor, dim=0, keepdim=True)
+            return (tensor - mean) / (std + 1e-8)
 
         T = params["seq_len"]
         K = int(params.get("mcmc_cate", 200))
