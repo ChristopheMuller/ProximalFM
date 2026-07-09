@@ -261,6 +261,46 @@ class NMMREstimator:
 
         return self
 
+    def score(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+        length_scale: float = 1.0,
+        loss: Literal["u_stat", "v_stat"] = "v_stat",
+    ) -> float:
+        """Held-out kernel moment loss (lower is better) for model selection.
+
+        The NMMR objective is E[(Y - h(A,W,X)) k(A,Z,X)] = 0, so the natural
+        validation metric is the same kernel-weighted moment loss evaluated on
+        rows the model was not trained on.
+
+        Crucially, scoring uses a *fixed* kernel bandwidth and the V-statistic
+        regardless of the trained model's own ``length_scale``/``loss``. This
+        keeps scores comparable across candidates whose kernel knobs differ
+        during a hyperparameter search — otherwise a wider training bandwidth
+        would trivially rescale the loss.
+        """
+        if self._model is None:
+            raise RuntimeError("Call fit() before score().")
+
+        X_t, A_t, Y_t, W_t, Z_t = self._to_tensors(X, A, Y, W, Z)
+
+        self._model.eval()
+        with torch.no_grad():
+            pred = self._model(torch.cat([A_t, W_t, X_t], dim=1))
+            k_input = torch.cat(
+                [A_t, Z_t / self._Z_scale, X_t / self._X_scale],
+                dim=1,
+            )
+            K = _rbf_kernel_matrix(k_input, length_scale=length_scale)
+            val = _nmmr_loss(pred, Y_t, K, loss)
+
+        return float(val)
+
     def predict(
         self,
         X: np.ndarray,

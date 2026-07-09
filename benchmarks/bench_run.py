@@ -281,7 +281,20 @@ def build_batches(data: dict) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
+def method_output_names(method_cfg: dict) -> list[str]:
+    """Return the list of prediction-set names a single method config yields.
+
+    A plain config produces one output named after ``cfg['name']``. A config
+    with an ``outputs`` list (multi-output methods, e.g. NMMR emitting several
+    CATE variants from one trained model) produces one output per entry.
+    """
+    outputs = method_cfg.get("outputs")
+    if outputs:
+        return [o["name"] for o in outputs]
+    return [method_cfg["name"]]
+
+
+def _worker(args: tuple) -> tuple[int, dict[str, np.ndarray] | None, float, str | None]:
     b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
     try:
         try:
@@ -300,9 +313,17 @@ def _worker(args: tuple) -> tuple[int, np.ndarray | None, float, str | None]:
         # ------------------------
 
         method.fit(X_ctx, A_ctx, Y_ctx, W=W_ctx, Z=Z_ctx)
-        preds = method.predict(X_q, W=W_q, Z=Z_q)
+
+        # One fit → one or more named prediction sets. The default estimator
+        # returns a single output keyed by None, which we map to the config name.
+        variants = method.predict_variants(X_q, W=W_q, Z=Z_q)
+        name = method_cfg["name"]
+        result = {
+            (name if k is None else k): np.asarray(v).astype(np.float32)
+            for k, v in variants.items()
+        }
         t1 = time.perf_counter()
-        return b, preds.astype(np.float32), t1 - t0, None
+        return b, result, t1 - t0, None
     except Exception as exc:
         return b, None, 0.0, str(exc)
 
@@ -313,10 +334,14 @@ def run_method_parallel(
     n_test: int,
     n_workers: int,
     progress: Progress,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     n_batch = len(batches)
-    preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
-    times = np.zeros(n_batch, dtype=np.float32)
+    output_names = method_output_names(method_cfg)
+    preds = {
+        name: np.full((n_batch, n_test), np.nan, dtype=np.float32)
+        for name in output_names
+    }
+    times = {name: np.zeros(n_batch, dtype=np.float32) for name in output_names}
     n_errors = 0
 
     task = progress.add_task(f"  [cyan]{method_cfg['name']:<28}[/]", total=n_batch)
@@ -343,8 +368,10 @@ def run_method_parallel(
         for future in as_completed(futures):
             b_idx, result, elapsed, err = future.result()
             if result is not None:
-                preds[b_idx] = result
-                times[b_idx] = elapsed
+                # All variants share the single fit, so record the same elapsed.
+                for name, arr in result.items():
+                    preds[name][b_idx] = arr
+                    times[name][b_idx] = elapsed
             else:
                 n_errors += 1
             progress.advance(task)
@@ -361,10 +388,14 @@ def run_method_sequential(
     batches: list[dict],
     n_test: int,
     progress: Progress,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     n_batch = len(batches)
-    preds = np.full((n_batch, n_test), np.nan, dtype=np.float32)
-    times = np.zeros(n_batch, dtype=np.float32)
+    output_names = method_output_names(method_cfg)
+    preds = {
+        name: np.full((n_batch, n_test), np.nan, dtype=np.float32)
+        for name in output_names
+    }
+    times = {name: np.zeros(n_batch, dtype=np.float32) for name in output_names}
 
     task = progress.add_task(
         f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]", total=n_batch
@@ -387,8 +418,9 @@ def run_method_sequential(
         )
         b_idx, result, elapsed, err = _worker(args)
         if result is not None:
-            preds[b_idx] = result
-            times[b_idx] = elapsed
+            for name, arr in result.items():
+                preds[name][b_idx] = arr
+                times[name][b_idx] = elapsed
         if err:
             console.print(f"    [red]✗[/] batch {b_idx}: {err}")
         progress.advance(task)
@@ -745,28 +777,37 @@ def main() -> None:
     with progress:
         for mcfg in method_cfgs:
             name = mcfg["name"]
-            pred_file = preds_dir / f"{name}_preds.npz"
+            output_names = method_output_names(mcfg)
+            pred_files = {n: preds_dir / f"{n}_preds.npz" for n in output_names}
 
-            if pred_file.exists() and not force:
-                loaded = np.load(pred_file)
-                preds = loaded["preds"]
-                times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
-                console.print(f"  [dim]↩  {name:<28} loaded from cache[/]")
-                accumulated[name] = (preds, times)
+            # Skip only when every output of this config is already cached.
+            if not force and all(f.exists() for f in pred_files.values()):
+                for out_name, f in pred_files.items():
+                    loaded = np.load(f)
+                    preds = loaded["preds"]
+                    times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
+                    console.print(f"  [dim]↩  {out_name:<28} loaded from cache[/]")
+                    accumulated[out_name] = (preds, times)
                 continue
 
             t0 = time.perf_counter()
             if args.no_parallel:
-                preds, times = run_method_sequential(mcfg, batches, N_TEST, progress)
+                preds_map, times_map = run_method_sequential(
+                    mcfg, batches, N_TEST, progress
+                )
             else:
-                preds, times = run_method_parallel(
+                preds_map, times_map = run_method_parallel(
                     mcfg, batches, N_TEST, n_workers, progress
                 )
 
             elapsed = time.perf_counter() - t0
-            np.savez(pred_file, preds=preds, times=times)
-            console.print(f"  [green]✓[/] {name:<28} saved  [dim]({elapsed:.1f}s)[/]")
-            accumulated[name] = (preds, times)
+            for out_name in output_names:
+                preds, times = preds_map[out_name], times_map[out_name]
+                np.savez(pred_files[out_name], preds=preds, times=times)
+                console.print(
+                    f"  [green]✓[/] {out_name:<28} saved  [dim]({elapsed:.1f}s)[/]"
+                )
+                accumulated[out_name] = (preds, times)
 
             print_partial_results(accumulated, true_ITEs)
 

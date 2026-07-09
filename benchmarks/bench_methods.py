@@ -24,6 +24,7 @@ Design principles
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Callable, Optional
 import warnings
 
@@ -222,6 +223,26 @@ class CATEEstimator:
     ) -> np.ndarray:
         """Return estimated ITE (τ̂) for each row of X, shape (n,)."""
         raise NotImplementedError
+
+    def predict_variants(
+        self,
+        X: np.ndarray,
+        *,
+        W: Optional[np.ndarray] = None,
+        Z: Optional[np.ndarray] = None,
+    ) -> dict[Optional[str], np.ndarray]:
+        """Return one or more named prediction sets from a single fitted model.
+
+        This is the generic "one fit → many outputs" entry point used by the
+        benchmark runner. The default implementation yields a single output
+        under the key ``None``; the runner maps that to the config's ``name``.
+
+        Multi-output estimators (e.g. NMMR producing paired / independent /
+        conditional CATE from one trained network) override this to return
+        several arrays keyed by their full output display names, reusing the
+        model trained in a single ``fit()`` call — no retraining per variant.
+        """
+        return {None: self.predict(X, W=W, Z=Z)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,6 +633,9 @@ class NMMR_Wrapper(CATEEstimator):
 
     def __init__(self, **kwargs):
         from benchmarks.baselines.nmmr import NMMRConfig, NMMREstimator
+        from benchmarks.bench_tuning import TuningConfig
+
+        self._NMMREstimator = NMMREstimator
 
         cfg = NMMRConfig(
             hidden_dim=kwargs.get("hidden_dim", 64),
@@ -628,6 +652,10 @@ class NMMR_Wrapper(CATEEstimator):
             x_cond_top_k=kwargs.get("x_cond_top_k", 512),
             seed=kwargs.get("seed", 42),
         )
+        # Base config; a hyperparameter search (if enabled) overrides fields on
+        # a copy of this and refits the winner on the full context.
+        self._base_cfg = cfg
+        self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
         self.model = NMMREstimator(cfg)
 
         self.strategy = kwargs.get("strategy", "paired")
@@ -637,17 +665,83 @@ class NMMR_Wrapper(CATEEstimator):
                 f"choose from {sorted(self._VALID_STRATEGIES)}."
             )
 
+        self._outputs = kwargs.get("outputs", None)
+        if self._outputs:
+            for o in self._outputs:
+                strat = o.get("strategy")
+                if strat not in self._VALID_STRATEGIES:
+                    raise ValueError(
+                        f"Unknown NMMR strategy {strat!r} in outputs entry {o!r}; "
+                        f"choose from {sorted(self._VALID_STRATEGIES)}."
+                    )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("NMMR requires W and Z proxies.")
+
+        cfg = self._base_cfg
+        if self._tune_cfg.enabled and self._tune_cfg.grid:
+            best = self._tune(X, A, Y, W, Z)
+            cfg = replace(self._base_cfg, **best)
+
+        # Train the (possibly tuned) model once on the full context. Every
+        # output variant later reuses this single fit — no retraining.
+        self.model = self._NMMREstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
-    def predict(self, X, *, W=None, Z=None):
+    def _tune(self, X, A, Y, W, Z) -> dict:
+        """Random/grid search over `tune.grid`; return the best field overrides.
+
+        Candidates are trained on a train split and ranked by held-out moment
+        loss (a fixed-kernel score, so bandwidth choices stay comparable).
+        """
+        from benchmarks.bench_tuning import sample_candidates, search, train_val_split
+
+        tc = self._tune_cfg
+        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        train_idx, val_idx = train_val_split(X.shape[0], tc.val_frac, tc.seed)
+
+        Xtr, Atr, Ytr, Wtr, Ztr = (
+            X[train_idx],
+            A[train_idx],
+            Y[train_idx],
+            W[train_idx],
+            Z[train_idx],
+        )
+        Xva, Ava, Yva, Wva, Zva = (
+            X[val_idx],
+            A[val_idx],
+            Y[val_idx],
+            W[val_idx],
+            Z[val_idx],
+        )
+
+        def fit_score(hparams: dict) -> float:
+            est = self._NMMREstimator(replace(self._base_cfg, **hparams))
+            est.fit(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+            return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+
+        best, _, _ = search(candidates, fit_score)
+        return best
+
+    def _predict_strategy(self, strategy, X, *, W=None):
         # Paired uses the query-time W; the marginalising strategies ignore it.
-        if self.strategy == "paired":
+        if strategy == "paired":
             return self.model.predict(X, W=W)
-        return self.model.predict(X, W=None, strategy=self.strategy)
+        return self.model.predict(X, W=None, strategy=strategy)
+
+    def predict(self, X, *, W=None, Z=None):
+        return self._predict_strategy(self.strategy, X, W=W)
+
+    def predict_variants(self, X, *, W=None, Z=None):
+        if not self._outputs:
+            return {None: self.predict(X, W=W, Z=Z)}
+        # Single trained model reused across every requested strategy.
+        return {
+            o["name"]: self._predict_strategy(o["strategy"], X, W=W)
+            for o in self._outputs
+        }
 
 
 class DFPV_Wrapper(CATEEstimator):
