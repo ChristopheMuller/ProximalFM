@@ -130,7 +130,8 @@ class XSampler:
         probs = torch.rand(n_categories, device=self.device)
         x = torch.multinomial(probs, self.seq_len, replacement=True)
         x = x.float()
-        return (x - x.mean()) / x.std()
+        std, mean = torch.std_mean(x)
+        return (x - mean) / std
 
     def sample_zipf(self):
         """Generate Zipf-distributed features."""
