@@ -51,7 +51,20 @@ class KPVConfig:
     # ── Kernel ────────────────────────────────────────────────────────────────
     # Multiplicative rescaling applied to the median-heuristic bandwidth σ.
     # Values < 1 → narrower kernel (more local); > 1 → wider (smoother).
+    # Used directly when tune_kernel_scale is False; otherwise it is the centre
+    # (1.0 = plain median heuristic) that the search grid is spread around.
     kernel_scale: float = 1.0
+
+    # ── Kernel length-scale search ────────────────────────────────────────────
+    # When True, search a geometric grid of scale multipliers around the median
+    # heuristic and keep the one minimising the Stage-2 LOOCV loss (λ₁, λ₂ are
+    # retuned inside each candidate). The Stage-2 loss is used because its target
+    # (Y) is fixed across scales, so scores are comparable — unlike the Stage-1
+    # loss, whose K_WW target itself changes with the W bandwidth.
+    tune_kernel_scale: bool = False
+    kernel_scale_min: float = 0.5
+    kernel_scale_max: float = 2.0
+    n_kernel_scale_search: int = 5
 
     # ── Stage 1 regularisation ────────────────────────────────────────────────
     # Set lam1 to a fixed value to skip cross-validation.
@@ -161,6 +174,7 @@ class KPVEstimator:
 
         self.lam1_: float | None = None
         self.lam2_: float | None = None
+        self.kernel_scale_: float | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -209,71 +223,33 @@ class KPVEstimator:
         n1, n2 = len(i1), len(i2)
         has_x = X1.shape[1] > 0
 
-        # ── Fit kernel bandwidths on D1 ────────────────────────────────────
-        k_A = BinaryKernel()
-        k_Z = ColumnWiseGaussianKernel()
-        k_W = ColumnWiseGaussianKernel()
-        k_X = ColumnWiseGaussianKernel()
-
-        k_A.fit(A1, scale=cfg.kernel_scale)
-        k_Z.fit(Z1, scale=cfg.kernel_scale)
-        k_W.fit(W1, scale=cfg.kernel_scale)
-        if has_x:
-            k_X.fit(X1, scale=cfg.kernel_scale)
-
-        # X-kernel factor: an empty (d_X = 0) covariate set contributes a
-        # neutral factor of 1 (empty product), so the bridge collapses to the
-        # (A, Z, W)-only model without ever touching the unfitted k_X.
-        def kx(a: np.ndarray, b: np.ndarray) -> np.ndarray | float:
-            return k_X(a, b) if has_x else 1.0
-
-        # ── Stage 1 ────────────────────────────────────────────────────────
-        # K_ZAX(D1, D1) — product kernel over (A, Z, X)
-        K_ZAX_11 = k_A(A1, A1) * k_Z(Z1, Z1) * kx(X1, X1)
-        K_W1W1 = k_W(W1, W1)
-
-        lam1 = cfg.lam1
-        if lam1 is None:
-            lam1 = self._tune(
-                lambda l: _loocv_stage1(K_ZAX_11, K_W1W1, l),
-                cfg.lam1_min,
-                cfg.lam1_max,
-                cfg.n_lam1_search,
+        # ── Select the kernel length-scale ─────────────────────────────────
+        # Either the single fixed scale, or a geometric grid around the median
+        # heuristic (see KPVConfig). Each candidate refits both stages (with
+        # their own λ tuning) and is ranked by the Stage-2 LOOCV loss.
+        if cfg.tune_kernel_scale:
+            scales = np.logspace(
+                np.log10(cfg.kernel_scale_min),
+                np.log10(cfg.kernel_scale_max),
+                cfg.n_kernel_scale_search,
             )
-        self.lam1_ = lam1
+        else:
+            scales = [cfg.kernel_scale]
 
-        # Cross-split kernel: (n1, n2) — needed to form Γ
-        K_ZAX_12 = k_A(A1, A2) * k_Z(Z1, Z2) * kx(X1, X2)
-
-        # Γ = (K_ZAX_11 + λ₁ n₁ I)⁻¹ K_ZAX_12  → (n1, n2)
-        Gamma = solve(
-            K_ZAX_11 + lam1 * n1 * np.eye(n1),
-            K_ZAX_12,
-            assume_a="pos",
-        )
-
-        # ── Stage 2 ────────────────────────────────────────────────────────
-        # gKg = Γᵀ K_W Γ  → (n2, n2)
-        gKg = Gamma.T @ K_W1W1 @ Gamma
-
-        K_A2 = k_A(A2, A2)
-        Sigma = gKg * K_A2 * kx(X2, X2)
-
-        lam2 = cfg.lam2
-        if lam2 is None:
-            lam2 = self._tune(
-                lambda l: _loocv_stage2(Sigma, Y2, l),
-                cfg.lam2_min,
-                cfg.lam2_max,
-                cfg.n_lam2_search,
+        best = None
+        for scale in scales:
+            res = self._fit_stages(
+                float(scale), A1, A2, W1, Z1, Z2, X1, X2, Y2, n1, n2, has_x
             )
-        self.lam2_ = lam2
+            if best is None or res["score"] < best["score"]:
+                best = res
 
-        # v = (Σ + λ₂ n₂ I)⁻¹ Y₂  → (n2,)
-        v = solve(Sigma + lam2 * n2 * np.eye(n2), Y2, assume_a="pos")
+        self.kernel_scale_ = best["scale"]
+        self.lam1_ = best["lam1"]
+        self.lam2_ = best["lam2"]
+        self._alpha = best["alpha"]  # (n1, n2)
 
-        # α[i, j] = Γ[i, j] * v[j]  → (n1, n2)
-        self._alpha = Gamma * v[np.newaxis, :]
+        k_A, k_W, k_X = best["k_A"], best["k_W"], best["k_X"]
 
         # Store bridge basis points
         self._A2 = A2
@@ -307,6 +283,112 @@ class KPVEstimator:
             self._marginal_xw_mean = self._w_marginal_mean[:, np.newaxis]  # (n1, 1)
 
         return self
+
+    # ── Two-stage fit for a single kernel scale ─────────────────────────────────
+
+    def _fit_stages(
+        self,
+        scale: float,
+        A1: np.ndarray,
+        A2: np.ndarray,
+        W1: np.ndarray,
+        Z1: np.ndarray,
+        Z2: np.ndarray,
+        X1: np.ndarray,
+        X2: np.ndarray,
+        Y2: np.ndarray,
+        n1: int,
+        n2: int,
+        has_x: bool,
+    ) -> dict:
+        """
+        Run both KPV stages at a fixed kernel length-scale multiplier.
+
+        Fits the kernel bandwidths on D1 (rescaled by ``scale``), tunes λ₁/λ₂
+        by closed-form LOOCV, and returns the resulting bridge weights together
+        with the Stage-2 LOOCV score used to compare scales. Called once per
+        candidate scale by ``fit``.
+        """
+        cfg = self.cfg
+
+        # ── Fit kernel bandwidths on D1 ────────────────────────────────────
+        k_A = BinaryKernel()
+        k_Z = ColumnWiseGaussianKernel()
+        k_W = ColumnWiseGaussianKernel()
+        k_X = ColumnWiseGaussianKernel()
+
+        k_A.fit(A1, scale=scale)
+        k_Z.fit(Z1, scale=scale)
+        k_W.fit(W1, scale=scale)
+        if has_x:
+            k_X.fit(X1, scale=scale)
+
+        # X-kernel factor: an empty (d_X = 0) covariate set contributes a
+        # neutral factor of 1 (empty product), so the bridge collapses to the
+        # (A, Z, W)-only model without ever touching the unfitted k_X.
+        def kx(a: np.ndarray, b: np.ndarray) -> np.ndarray | float:
+            return k_X(a, b) if has_x else 1.0
+
+        # ── Stage 1 ────────────────────────────────────────────────────────
+        # K_ZAX(D1, D1) — product kernel over (A, Z, X)
+        K_ZAX_11 = k_A(A1, A1) * k_Z(Z1, Z1) * kx(X1, X1)
+        K_W1W1 = k_W(W1, W1)
+
+        lam1 = cfg.lam1
+        if lam1 is None:
+            lam1 = self._tune(
+                lambda l: _loocv_stage1(K_ZAX_11, K_W1W1, l),
+                cfg.lam1_min,
+                cfg.lam1_max,
+                cfg.n_lam1_search,
+            )
+
+        # Cross-split kernel: (n1, n2) — needed to form Γ
+        K_ZAX_12 = k_A(A1, A2) * k_Z(Z1, Z2) * kx(X1, X2)
+
+        # Γ = (K_ZAX_11 + λ₁ n₁ I)⁻¹ K_ZAX_12  → (n1, n2)
+        Gamma = solve(
+            K_ZAX_11 + lam1 * n1 * np.eye(n1),
+            K_ZAX_12,
+            assume_a="pos",
+        )
+
+        # ── Stage 2 ────────────────────────────────────────────────────────
+        # gKg = Γᵀ K_W Γ  → (n2, n2)
+        gKg = Gamma.T @ K_W1W1 @ Gamma
+
+        K_A2 = k_A(A2, A2)
+        Sigma = gKg * K_A2 * kx(X2, X2)
+
+        lam2 = cfg.lam2
+        if lam2 is None:
+            lam2 = self._tune(
+                lambda l: _loocv_stage2(Sigma, Y2, l),
+                cfg.lam2_min,
+                cfg.lam2_max,
+                cfg.n_lam2_search,
+            )
+
+        # Stage-2 LOOCV loss at the chosen λ₂ — the criterion for ranking
+        # scales. Comparable across scales because the target Y₂ is fixed.
+        score = _loocv_stage2(Sigma, Y2, lam2)
+
+        # v = (Σ + λ₂ n₂ I)⁻¹ Y₂  → (n2,)
+        v = solve(Sigma + lam2 * n2 * np.eye(n2), Y2, assume_a="pos")
+
+        # α[i, j] = Γ[i, j] * v[j]  → (n1, n2)
+        alpha = Gamma * v[np.newaxis, :]
+
+        return {
+            "scale": scale,
+            "lam1": lam1,
+            "lam2": lam2,
+            "alpha": alpha,
+            "k_A": k_A,
+            "k_W": k_W,
+            "k_X": k_X,
+            "score": score,
+        }
 
     # ── Prediction heads ──────────────────────────────────────────────────────
 

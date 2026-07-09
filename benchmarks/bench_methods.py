@@ -551,6 +551,10 @@ class KPV_Wrapper(CATEEstimator):
         cfg = KPVConfig(
             split_ratio=kwargs.get("split_ratio", 0.5),
             kernel_scale=kwargs.get("kernel_scale", 1.0),
+            tune_kernel_scale=kwargs.get("tune_kernel_scale", False),
+            kernel_scale_min=kwargs.get("kernel_scale_min", 0.5),
+            kernel_scale_max=kwargs.get("kernel_scale_max", 2.0),
+            n_kernel_scale_search=kwargs.get("n_kernel_scale_search", 5),
             lam1=kwargs.get("lam1", None),
             lam1_min=kwargs.get("lam1_min", 1e-5),
             lam1_max=kwargs.get("lam1_max", 1e1),
@@ -570,18 +574,43 @@ class KPV_Wrapper(CATEEstimator):
                 f"choose from {sorted(self._VALID_STRATEGIES)}."
             )
 
+        # Optional multi-output block: one fit → several named prediction sets,
+        # each a different strategy. Reuses the single expensive KPV fit (which
+        # now also runs the kernel-scale search) instead of refitting per output.
+        self._outputs = kwargs.get("outputs", None)
+        if self._outputs:
+            for o in self._outputs:
+                strat = o.get("strategy")
+                if strat not in self._VALID_STRATEGIES:
+                    raise ValueError(
+                        f"Unknown KPV strategy {strat!r} in outputs entry {o!r}; "
+                        f"choose from {sorted(self._VALID_STRATEGIES)}."
+                    )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("KPV requires W and Z proxies.")
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
-    def predict(self, X, *, W=None, Z=None):
+    def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other
         # strategies marginalise W internally and ignore it.
-        if self.strategy == "paired":
+        if strategy == "paired":
             return self.model.predict(X, W=W, mode="paired")
-        return self.model.predict(X, mode=self.strategy)
+        return self.model.predict(X, mode=strategy)
+
+    def predict(self, X, *, W=None, Z=None):
+        return self._predict_strategy(self.strategy, X, W=W)
+
+    def predict_variants(self, X, *, W=None, Z=None):
+        if not self._outputs:
+            return {None: self.predict(X, W=W, Z=Z)}
+        # Single trained model reused across every requested strategy.
+        return {
+            o["name"]: self._predict_strategy(o["strategy"], X, W=W)
+            for o in self._outputs
+        }
 
 
 class PMMR_Wrapper(CATEEstimator):
