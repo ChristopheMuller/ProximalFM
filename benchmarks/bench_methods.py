@@ -639,18 +639,43 @@ class PMMR_Wrapper(CATEEstimator):
                 f"choose from {sorted(self._VALID_STRATEGIES)}."
             )
 
+        # Optional multi-output block: one fit → several named prediction sets,
+        # each a different strategy. Reuses the single PMMR fit instead of
+        # refitting per output.
+        self._outputs = kwargs.get("outputs", None)
+        if self._outputs:
+            for o in self._outputs:
+                strat = o.get("strategy")
+                if strat not in self._VALID_STRATEGIES:
+                    raise ValueError(
+                        f"Unknown PMMR strategy {strat!r} in outputs entry {o!r}; "
+                        f"choose from {sorted(self._VALID_STRATEGIES)}."
+                    )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("PMMR requires W and Z proxies.")
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
-    def predict(self, X, *, W=None, Z=None):
+    def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other
         # strategies marginalise W internally and ignore it.
-        if self.strategy == "paired":
+        if strategy == "paired":
             return self.model.predict(X, W=W, strategy="paired")
-        return self.model.predict(X, strategy=self.strategy)
+        return self.model.predict(X, strategy=strategy)
+
+    def predict(self, X, *, W=None, Z=None):
+        return self._predict_strategy(self.strategy, X, W=W)
+
+    def predict_variants(self, X, *, W=None, Z=None):
+        if not self._outputs:
+            return {None: self.predict(X, W=W, Z=Z)}
+        # Single trained model reused across every requested strategy.
+        return {
+            o["name"]: self._predict_strategy(o["strategy"], X, W=W)
+            for o in self._outputs
+        }
 
 
 class NMMR_Wrapper(CATEEstimator):
