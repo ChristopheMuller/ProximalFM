@@ -9,7 +9,17 @@ from torch import nn, Tensor
 
 
 def torch_nanstd(input, dim=None, keepdim=False, ddof=0, *, dtype=None) -> Tensor:
-    """Calculate the standard deviation of a tensor, ignoring NaNs, using NumPy internally.
+    """Calculate the standard deviation of a tensor, ignoring NaNs.
+
+    Pure-torch implementation that stays on-device. The previous version routed
+    through ``input.cpu().numpy()`` -> ``np.nanstd`` -> ``torch.from_numpy``,
+    which forces a host copy (and dtype churn) on every call. This is a hot path:
+    ``process_features`` runs it 3x per proxy on ``(T * K)``-row tensors, so the
+    roundtrip dominated the feature-corruption cost.
+
+    A fully-masked-out column yields 0 here (rather than NumPy's NaN); every
+    caller either operates on finite data or already remaps that NaN to 0, so the
+    downstream result is unchanged.
 
     Parameters
     ----------
@@ -27,21 +37,32 @@ def torch_nanstd(input, dim=None, keepdim=False, ddof=0, *, dtype=None) -> Tenso
         Delta Degrees of Freedom.
 
     dtype : torch.dtype, optional
-        The desired data type of returned tensor.
+        Accumulation/return dtype. Defaults to float.
 
     Returns
     -------
     Tensor
         The standard deviation.
     """
-    device = input.device
-    np_input = input.cpu().numpy()
+    if dtype is not None:
+        input = input.to(dtype)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        std = np.nanstd(np_input, axis=dim, dtype=dtype, keepdims=keepdim, ddof=ddof)
+    reduce_dim = tuple(range(input.dim())) if dim is None else dim
 
-    return torch.from_numpy(std).to(dtype=torch.float, device=device)
+    mask = ~torch.isnan(input)
+    count = mask.sum(dim=reduce_dim, keepdim=True)
+    total = torch.nansum(input, dim=reduce_dim, keepdim=True)
+    mean = total / count.clamp(min=1)
+
+    centered = torch.where(mask, input - mean, torch.zeros((), device=input.device))
+    sq_sum = (centered * centered).sum(dim=reduce_dim, keepdim=True)
+    var = sq_sum / (count - ddof).clamp(min=1)
+    std = var.sqrt()
+
+    if not keepdim:
+        std = std.reshape(()) if dim is None else std.squeeze(dim)
+
+    return std.to(torch.float)
 
 
 def standard_scaling(input: Tensor, clip_value: float = 100) -> Tensor:
