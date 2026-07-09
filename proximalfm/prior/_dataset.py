@@ -392,13 +392,16 @@ class Prior:
             # Slice down to the true active feature width to prevent indexing out of bounds
             xi_active = xi[:, :actual_di]
             num_features = xi.shape[-1]
-            # Identify features with more than one unique value
-            unique_mask = [
-                len(torch.unique(xi_active[:, j])) > 1 for j in range(actual_di)
-            ]
-            di_new = sum(unique_mask)
+            # Identify non-constant features. A column has >1 unique value iff its
+            # max differs from its min -- a single vectorized reduction instead of a
+            # Python loop calling torch.unique (which sorts) once per column.
+            if actual_di > 0:
+                unique_mask = xi_active.amax(dim=0) != xi_active.amin(dim=0)
+            else:
+                unique_mask = torch.zeros(0, dtype=torch.bool, device=xi.device)
+            di_new = int(unique_mask.sum())
 
-            # Extract the unique features and pad back up to the original size
+            # Extract the non-constant features and pad back up to the original size
             xi_unique = xi_active[:, unique_mask]
             xi_new = F.pad(
                 xi_unique,
