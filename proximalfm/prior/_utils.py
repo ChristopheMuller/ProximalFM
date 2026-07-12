@@ -11,14 +11,15 @@ class GaussianNoise(nn.Module):
     def __init__(self, std):
         super().__init__()
         self.std = std
+        if torch.is_tensor(std):
+            self._is_zero = bool((std == 0).all())
+        else:
+            self._is_zero = std == 0
 
     def forward(self, X):
-        # Scale standard normal noise by ``std`` instead of ``torch.normal(mean, std)``.
-        # ``torch.normal`` with two tensor args requires matching element counts and
-        # does not broadcast, so a per-feature ``std`` of shape (1, hidden_dim) would
-        # crash against X of shape (rows, hidden_dim). Multiplication broadcasts and
-        # handles both a scalar float and a per-feature std tensor.
-        return X + torch.randn_like(X) * self.std
+        if self._is_zero:
+            return X
+        return X + torch.randn_like(X).mul_(self.std)
 
 
 class XSampler:
