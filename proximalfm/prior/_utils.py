@@ -143,20 +143,26 @@ class XSampler:
 
     def sample_mixed(self):
         """Generate features with mixed distributions."""
-        X = []
         zipf_p, multi_p, normal_p = (
             random.random() * 0.66,
             random.random() * 0.66,
             random.random() * 0.66,
         )
+        X = torch.empty(self.seq_len, self.num_features, device=self.device)
+        normal_cols = []
         for n in range(self.num_features):
             if random.random() > normal_p:
-                x = self.sample_normal(n)
+                normal_cols.append(n)
             elif random.random() > multi_p:
-                x = self.sample_multinomial()
+                X[:, n] = self.sample_multinomial()
             elif random.random() > zipf_p:
-                x = self.sample_zipf()
+                X[:, n] = self.sample_zipf()
             else:
-                x = torch.rand((self.seq_len,), device=self.device)
-            X.append(x)
-        return torch.stack(X, -1)
+                X[:, n] = torch.rand((self.seq_len,), device=self.device)
+        if normal_cols:
+            noise = torch.randn(self.seq_len, len(normal_cols), device=self.device)
+            if self.pre_stats:
+                cols = torch.tensor(normal_cols, device=self.device)
+                noise = self.means[0, cols] + self.stds[0, cols] * noise
+            X[:, normal_cols] = noise
+        return X
