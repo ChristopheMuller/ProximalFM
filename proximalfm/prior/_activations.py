@@ -30,7 +30,7 @@ class StdScaleLayer(nn.Module):
             self.mean = mean
             self.std = std + 1e-6
 
-        return (x - self.mean) / self.std
+        return (x - self.mean).div_(self.std)
 
 
 class SignActivation(nn.Module):
