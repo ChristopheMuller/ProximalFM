@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Callable, List
 
 import torch
@@ -131,11 +132,61 @@ class RandomFunctionActivation(nn.Module):
             freq_factors * torch.randn(n_frequencies), requires_grad=False
         )
 
+    # Lookup-table resolution: samples per period of the highest frequency
+    # component, and a hard cap on the table length for pathological ranges.
+    _LUT_SAMPLES_PER_PERIOD = 32
+    _LUT_MAX_GRID = 1 << 20
+
+    def _exact(self, x: torch.Tensor) -> torch.Tensor:
+        """Direct evaluation: sin over an (..., n_frequencies) expansion."""
+        return torch.sin(self.freqs * x[..., None] + self.bias) @ self.l2_weights
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.stdscaler(x)
-        x = torch.sin(self.freqs * x[..., None] + self.bias)
-        x = x @ self.l2_weights
-        return x
+
+        n_freq = self.freqs.numel()
+        if x.numel() <= 4 * self._LUT_SAMPLES_PER_PERIOD:
+            return self._exact(x)
+
+        finite_mask = torch.isfinite(x)
+        if bool(finite_mask.all()):
+            finite_mask = None
+            umin, umax = x.aminmax()
+        else:
+            x_finite = x[finite_mask]
+            if x_finite.numel() == 0:
+                return torch.full_like(x, float("nan"))
+            umin, umax = x_finite.aminmax()
+        umin, umax = float(umin), float(umax)
+        max_freq = float(self.freqs.max().clamp(min=1e-3))
+        step = (2 * math.pi) / (max_freq * self._LUT_SAMPLES_PER_PERIOD)
+        span = umax - umin
+        n_grid = int(span / step) + 2
+        if n_grid > self._LUT_MAX_GRID:
+            n_grid = self._LUT_MAX_GRID
+            step = span / (n_grid - 2)
+        if n_grid >= x.numel():
+            return self._exact(x)
+
+        grid = umin + step * torch.arange(n_grid, device=x.device, dtype=x.dtype)
+        chunk = max(1, (1 << 22) // max(n_freq, 1))
+        if n_grid <= chunk:
+            table = self._exact(grid)
+        else:
+            table = torch.cat([self._exact(g) for g in grid.split(chunk)])
+
+        if finite_mask is not None:
+            x = torch.where(finite_mask, x, torch.full_like(x, umin))
+
+        pos = (x - umin) / step
+        idx = pos.long().clamp_(0, n_grid - 2)
+        frac = pos - idx
+        lo = table[idx]
+        out = lo + (table[idx + 1] - lo) * frac
+
+        if finite_mask is not None:
+            out.masked_fill_(~finite_mask, float("nan"))
+        return out
 
 
 class FunctionActivation(nn.Module):
