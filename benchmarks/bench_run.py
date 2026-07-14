@@ -52,6 +52,7 @@ from rich.rule import Rule
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from benchmarks.bench_data import build_benchmark_dict, load_benchmark_from_val_dir
 from benchmarks.bench_methods import build_method
 from benchmarks.bench_metrics import (
     compute_all_metrics,
@@ -161,54 +162,23 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         train_size,
     ) = batch
 
-    # Ensure train_size is a standard integer for clean slicing
-    train_size = int(train_size[0].item())
-
-    # --- 1. Standardize Covariates (context-only stats, no test leakage) ---
-    # Statistics are computed strictly on the first `train_size` rows (the
-    # context the methods are allowed to see) and then applied to the whole
-    # episode, including the query rows.
-    def safe_standardize(x: torch.Tensor) -> torch.Tensor:
-        ctx = x[:, :train_size]
-        mu = ctx.mean(dim=1, keepdim=True)
-        std = ctx.std(dim=1, keepdim=True)
-        # Prevent division by zero for zero-variance or zero-padded features
-        std = torch.where(std < 1e-5, torch.ones_like(std), std)
-        return (x - mu) / std
-
-    X_std = safe_standardize(X)
-    W_std = safe_standardize(W)
-    Z_std = safe_standardize(Z)
-    U_std = safe_standardize(U)
-
-    # --- 2. Standardize Targets based ONLY on the observed training context ---
-    y_train_obs = Y_obs[:, :train_size]
-    y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
-    y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
-
-    # Scale the full Y_obs array (methods will slice their context off this later)
-    Y_obs_std = (Y_obs - y_context_mean) / y_context_std
-
-    # Compute explicit ITE for the test segment in the standardized space
-    y_test_0 = Y0[:, train_size:]
-    y_test_1 = Y1[:, train_size:]
-    true_ITEs_std = ((y_test_1 - y_test_0) / y_context_std).numpy()
-
-    data = {
-        "U": U_std.cpu(),
-        "X": X_std.cpu(),
-        "Z": Z_std.cpu(),
-        "W": W_std.cpu(),
-        "A": A.cpu(),  # Treatment is not standardized
-        "Y": Y_obs_std.cpu(),
-        "d_X": d_X.cpu(),
-        "d_Z": d_Z.cpu(),
-        "d_W": d_W.cpu(),
-        "true_ITEs": true_ITEs_std,
-        "N_TRAIN": train_size,
-        "N_TEST": n_rows - train_size,
-        "N_BATCH": n_batch,
-    }
+    # Standardize (context-only stats, no test leakage) and package into the
+    # benchmark dict; the shared builder is also used when loading val-format
+    # directories, so both data paths produce an identical schema.
+    data = build_benchmark_dict(
+        U=U,
+        X=X,
+        W=W,
+        Z=Z,
+        A=A,
+        Y_obs=Y_obs,
+        Y0=Y0,
+        Y1=Y1,
+        d_X=d_X,
+        d_W=d_W,
+        d_Z=d_Z,
+        train_size=int(train_size[0].item()),
+    )
 
     torch.save(data, output_dir / "data.pt")
     with open(output_dir / "prior_config.yaml", "w") as f:
@@ -219,12 +189,29 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
 
 
 def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
-    """Return dataset dict — generate or load depending on config."""
+    """Return dataset dict — generate or load depending on config.
+
+    Loading resolves in this order:
+      1. ``data.val_dir`` set and no cached ``data.pt`` (or --force): build the
+         standardized dict from the raw val-format directory (``batch_*.pt``,
+         as written by synthetic/build_proximal_datasets.py) and cache it as
+         ``data.pt`` in the run's output dir (bench_plots.py reads it there).
+      2. Otherwise fall back to an existing ``data.pt`` in the output dir.
+    """
     data_path = output_dir / "data.pt"
     source = cfg["data"].get("source", "generate")
+    val_dir = cfg["data"].get("val_dir")
 
     if source == "generate" and (force_regen or not data_path.exists()):
         return _generate_data(cfg["data"], cfg["run"], output_dir)
+
+    if val_dir and (force_regen or not data_path.exists()):
+        console.print(f"    Building benchmark data from val dir [cyan]{val_dir}[/]…")
+        data = load_benchmark_from_val_dir(val_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(data, data_path)
+        console.print(f"    [green]✓[/] Saved (Normalized) → {data_path}")
+        return data
 
     if data_path.exists():
         console.print(f"    Loading existing data from [cyan]{data_path}[/]…")
@@ -232,7 +219,8 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 
     raise FileNotFoundError(
         f"Data file not found at {data_path}. "
-        "Set data.source: generate in bench_config.yaml."
+        "Set data.source: generate, or point data.val_dir at a directory of "
+        "batch_*.pt files in bench_config.yaml."
     )
 
 
