@@ -151,6 +151,8 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         Y_obs,
         Y0,
         Y1,
+        MU0,
+        MU1,
         d_U,
         d_X,
         d_W,
