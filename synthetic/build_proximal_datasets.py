@@ -40,16 +40,27 @@ Example
     python synthetic/build_proximal_datasets.py \
         --name proximal_test_v1 --n_datasets 240 --seq_len 2048 \
         --prop_train 0.75 --seed 9999
+
+Each build also writes a fully-resolved ``config.yaml`` (all settings, including
+those left at their defaults). Re-run an earlier build exactly, even if defaults
+have since changed, by pointing ``--config`` at it (explicit flags still win):
+
+    python synthetic/build_proximal_datasets.py \
+        --config synthetic/proximal_val_v1/config.yaml --name proximal_val_v2
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import sys
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
+import yaml
 
 from realistic_proximal_mechanisms import (
     N_MECHANISMS,
@@ -297,6 +308,7 @@ def save_validation(
     out_dir: Path,
     cfg: RealisticGeneratorConfig,
     datasets_per_file: Optional[int],
+    cli_command: str,
 ) -> Tuple[int, int]:
     """Write the val_dir of sparse batch_*.pt files + metadata.json.
 
@@ -343,6 +355,7 @@ def save_validation(
         "min_train_size": cfg.train_size,
         "max_train_size": cfg.train_size,
         "replay_small": False,
+        "cli_command": cli_command,
     }
     with open(out_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -360,6 +373,7 @@ def write_manifest(
     mech_ids: Tensor,
     n_val_files: int,
     datasets_per_file: int,
+    cli_command: str,
 ) -> None:
     counts = {
         RealisticProximalGenerator.mechanism_name(m): int((mech_ids == m).sum())
@@ -371,6 +385,7 @@ def write_manifest(
         "seq_len": args.seq_len,
         "prop_train": args.prop_train,
         "seed": args.seed,
+        "cli_command": cli_command,
         "mechanisms": args.mechanisms,
         "datasets_per_mechanism": counts,
         "datasets_per_val_file": datasets_per_file,
@@ -380,6 +395,33 @@ def write_manifest(
     }
     with open(root / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
+
+
+# -----------------------------------------------------------------------------
+# Config (fully-resolved settings, incl. defaults, for reproducibility)
+# -----------------------------------------------------------------------------
+
+
+def write_config(
+    root: Path,
+    args: argparse.Namespace,
+    mechanisms: Sequence[int],
+    cli_command: str,
+) -> None:
+    """Dump every resolved setting (defaults filled in) to ``config.yaml``.
+
+    Unlike the CLI string, this captures the *effective* value of each argument
+    even when it was left at its default, so the build stays reproducible if the
+    defaults change later. Re-run with ``--config config.yaml`` to reproduce.
+    """
+    config = dict(vars(args))
+    # Drop the path to a *source* config; this file is the reproducible record.
+    config.pop("config", None)
+    # Persist the resolved mechanism list rather than the ``None`` sentinel.
+    config["mechanisms"] = list(mechanisms)
+    config["cli_command"] = cli_command
+    with open(root / "config.yaml", "w") as f:
+        yaml.safe_dump(config, f, sort_keys=True, default_flow_style=False)
 
 
 # -----------------------------------------------------------------------------
@@ -397,51 +439,71 @@ def build(args: argparse.Namespace) -> None:
     bench_dir = root / "benchmark"
     val_dir = root / "val"
 
-    cfg = RealisticGeneratorConfig(
-        save_dir=str(root / "_gen_scratch"),
-        K=args.n_datasets,
-        seq_len=args.seq_len,
-        train_size=args.prop_train,
-        min_dim_U=args.min_dim_U,
-        max_dim_U=args.max_dim_U,
-        min_dim_X=args.min_dim_X,
-        max_dim_X=args.max_dim_X,
-        min_dim_W=args.min_dim_W,
-        max_dim_W=args.max_dim_W,
-        min_dim_Z=args.min_dim_Z,
-        max_dim_Z=args.max_dim_Z,
-        seed=args.seed,
-        device="cpu",
-    )
-    gen = RealisticProximalGenerator(cfg)
+    # Record the exact CLI invocation that produced this dataset (for provenance).
+    cli_command = shlex.join([Path(sys.argv[0]).name, *sys.argv[1:]])
 
-    print(
-        f"Building '{args.name}': {args.n_datasets} datasets x T={args.seq_len} "
-        f"across {len(mechanisms)} mechanisms (seed={args.seed})…"
-    )
+    # RealisticProximalGenerator requires a save_dir and mkdir's it on init, but
+    # we never use its file-saving path (we call get_batch and save ourselves).
+    # Point it at a throwaway temp dir so no empty scratch folder pollutes root.
+    with tempfile.TemporaryDirectory(prefix="proximal_gen_") as scratch:
+        cfg = RealisticGeneratorConfig(
+            save_dir=scratch,
+            K=args.n_datasets,
+            seq_len=args.seq_len,
+            train_size=args.prop_train,
+            min_dim_U=args.min_dim_U,
+            max_dim_U=args.max_dim_U,
+            min_dim_X=args.min_dim_X,
+            max_dim_X=args.max_dim_X,
+            min_dim_W=args.min_dim_W,
+            max_dim_W=args.max_dim_W,
+            min_dim_Z=args.min_dim_Z,
+            max_dim_Z=args.max_dim_Z,
+            seed=args.seed,
+            device="cpu",
+        )
+        gen = RealisticProximalGenerator(cfg)
 
-    pool, mech_ids = generate_pool(
-        gen,
-        n_datasets=args.n_datasets,
-        seq_len=args.seq_len,
-        train_size=args.prop_train,
-        mechanisms=mechanisms,
-        shuffle=not args.no_shuffle,
-    )
+        print(
+            f"Building '{args.name}': {args.n_datasets} datasets x T={args.seq_len} "
+            f"across {len(mechanisms)} mechanisms (seed={args.seed})…"
+        )
+
+        pool, mech_ids = generate_pool(
+            gen,
+            n_datasets=args.n_datasets,
+            seq_len=args.seq_len,
+            train_size=args.prop_train,
+            mechanisms=mechanisms,
+            shuffle=not args.no_shuffle,
+        )
 
     bench_path = save_benchmark(pool, bench_dir)
     print(f"  [benchmark] {bench_path}  (source: load, output_dir: {bench_dir})")
 
-    n_val_files, dpf = save_validation(pool, val_dir, cfg, args.datasets_per_file)
+    n_val_files, dpf = save_validation(
+        pool, val_dir, cfg, args.datasets_per_file, cli_command
+    )
     print(f"  [validation] {n_val_files} file(s) in {val_dir}  (--val_dir {val_dir})")
 
-    write_manifest(root, args, mech_ids, n_val_files, dpf)
+    write_manifest(root, args, mech_ids, n_val_files, dpf, cli_command)
     print(f"  [manifest]  {root / 'manifest.json'}")
+
+    write_config(root, args, mechanisms, cli_command)
+    print(f"  [config]    {root / 'config.yaml'}")
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="YAML config file to seed argument defaults from (e.g. a "
+        "config.yaml written by a previous build). Any explicit CLI flag "
+        "overrides the corresponding value from the file.",
     )
     p.add_argument(
         "--name",
@@ -453,7 +515,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--out_root",
         type=str,
-        default="synthetic/datasets",
+        default="synthetic/",
         help="Root directory under which <name>/{benchmark,val} are written.",
     )
     p.add_argument(
@@ -508,5 +570,32 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Parse CLI args, seeding defaults from ``--config`` YAML if given.
+
+    Precedence (low -> high): argparse defaults < config file < explicit flags.
+    """
+    parser = build_parser()
+
+    # Pre-scan only for --config so we can turn its contents into defaults
+    # before the real parse (letting explicit CLI flags still override them).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=str, default=None)
+    known, _ = pre.parse_known_args(argv)
+
+    if known.config:
+        with open(known.config) as f:
+            file_cfg = yaml.safe_load(f) or {}
+        valid_dests = {a.dest for a in parser._actions}
+        overrides = {k: v for k, v in file_cfg.items() if k in valid_dests}
+        parser.set_defaults(**overrides)
+        # A value supplied by the config satisfies an otherwise-required arg.
+        for action in parser._actions:
+            if action.dest in overrides:
+                action.required = False
+
+    return parser.parse_args(argv)
+
+
 if __name__ == "__main__":
-    build(build_parser().parse_args())
+    build(parse_args())
