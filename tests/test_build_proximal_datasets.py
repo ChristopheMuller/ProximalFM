@@ -1,12 +1,13 @@
-"""Equivalence gate for dropping the duplicate benchmark/ output.
+"""Tests for synthetic/build_proximal_datasets.py.
 
-Proves that, for the same generated pool, the benchmark dict rebuilt from the
-val format (``save_validation`` → ``load_benchmark_from_val_dir``) is
-numerically identical to the ``data.pt`` written by the legacy
-``save_benchmark``. Once this holds, the ``benchmark/`` copy on disk is pure
-redundancy and ``save_benchmark`` can be deleted.
+The build script writes datasets to disk ONLY in the raw, sparse val format;
+the benchmark rebuilds its standardized dict from those files at load time.
+These tests pin the round-trip: ``save_validation`` →
+``load_benchmark_from_val_dir`` must equal ``build_benchmark_dict`` applied
+directly to the in-memory pool.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -22,8 +23,10 @@ from realistic_proximal_mechanisms import (  # noqa: E402
     RealisticProximalGenerator,
 )
 
-from benchmarks.bench_data import load_benchmark_from_val_dir  # noqa: E402
-
+from benchmarks.bench_data import (  # noqa: E402
+    build_benchmark_dict,
+    load_benchmark_from_val_dir,
+)
 
 N_DATASETS = 6
 SEQ_LEN = 64
@@ -57,22 +60,52 @@ def pool_and_cfg(tmp_path_factory):
     return pool, cfg
 
 
-def assert_equivalent(old: dict, new: dict):
-    """Old data.pt vs val-format rebuild: equal up to two inert shape details.
+def direct_build(pool):
+    """Standardized benchmark dict straight from the in-memory pool."""
+    (
+        U,
+        X,
+        W,
+        Z,
+        A,
+        A_probs,
+        Y_obs,
+        Y0,
+        Y1,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
+        seq_lens,
+        train_sizes,
+    ) = pool
+    return build_benchmark_dict(
+        U=U,
+        X=X,
+        W=W,
+        Z=Z,
+        A=A,
+        Y_obs=Y_obs,
+        Y0=Y0,
+        Y1=Y1,
+        d_X=d_X,
+        d_W=d_W,
+        d_Z=d_Z,
+        train_size=int(train_sizes[0].item()),
+    )
 
-    1. The rebuild drops trailing singleton dims on A/Y/true_ITEs ([B,T,1] →
-       [B,T]); both consumers (bench_run.build_batches, bench_plots) accept
-       either shape.
-    2. The rebuild pads U/X/W/Z to the max *attained* feature dim, while the
-       old path kept the generator's full padded width; any trimmed columns
-       must be all-zero padding.
+
+def assert_equivalent(direct: dict, rebuilt: dict):
+    """Direct build vs val-format rebuild: equal up to one inert shape detail.
+
+    The rebuild pads U/X/W/Z to the max *attained* feature dim, while the
+    direct build keeps the generator's full padded width; any trimmed columns
+    must be all-zero padding.
     """
-    assert set(old.keys()) == set(new.keys())
-    for k in old:
-        o, n = old[k], new[k]
+    assert set(direct.keys()) == set(rebuilt.keys())
+    for k in direct:
+        o, n = direct[k], rebuilt[k]
         if isinstance(o, torch.Tensor):
-            if o.dim() == n.dim() + 1 and o.shape[-1] == 1:
-                o = o.squeeze(-1)
             if o.dim() == 3 and o.shape[-1] > n.shape[-1]:
                 assert (o[..., n.shape[-1] :] == 0).all(), f"{k}: non-zero padding"
                 o = o[..., : n.shape[-1]]
@@ -80,38 +113,77 @@ def assert_equivalent(old: dict, new: dict):
                 n.double(), o.double(), atol=1e-5, rtol=1e-5, msg=lambda m: f"{k}: {m}"
             )
         elif isinstance(o, np.ndarray):
-            if o.ndim == n.ndim + 1 and o.shape[-1] == 1:
-                o = np.squeeze(o, -1)
             np.testing.assert_allclose(n, o, atol=1e-5, rtol=1e-5, err_msg=k)
         else:
             assert o == n, f"{k}: {o} != {n}"
 
 
-def test_val_roundtrip_equals_save_benchmark(pool_and_cfg, tmp_path):
+def test_val_roundtrip_equals_direct_build(pool_and_cfg, tmp_path):
     pool, cfg = pool_and_cfg
-
-    bench_path = bpd.save_benchmark(pool, tmp_path / "benchmark")
-    old = torch.load(bench_path, weights_only=False)
 
     n_files, _ = bpd.save_validation(
         pool, tmp_path / "val", cfg, datasets_per_file=None, cli_command="test"
     )
     assert n_files == 1
-    new = load_benchmark_from_val_dir(tmp_path / "val")
-
-    assert_equivalent(old, new)
+    assert_equivalent(direct_build(pool), load_benchmark_from_val_dir(tmp_path / "val"))
 
 
-def test_val_roundtrip_equals_save_benchmark_multifile(pool_and_cfg, tmp_path):
+def test_val_roundtrip_equals_direct_build_multifile(pool_and_cfg, tmp_path):
     """Splitting the val dir into several files must not change the rebuild."""
     pool, cfg = pool_and_cfg
-
-    old = torch.load(
-        bpd.save_benchmark(pool, tmp_path / "benchmark"), weights_only=False
-    )
 
     n_files, dpf = bpd.save_validation(
         pool, tmp_path / "val", cfg, datasets_per_file=2, cli_command="test"
     )
     assert (n_files, dpf) == (N_DATASETS // 2, 2)
-    assert_equivalent(old, load_benchmark_from_val_dir(tmp_path / "val"))
+    assert_equivalent(direct_build(pool), load_benchmark_from_val_dir(tmp_path / "val"))
+
+
+def test_build_writes_only_val_format(tmp_path):
+    """End-to-end build: val/ + manifest + config, and no benchmark/ copy."""
+    args = bpd.parse_args(
+        [
+            "--name",
+            "tiny",
+            "--out_root",
+            str(tmp_path),
+            "--n_datasets",
+            "4",
+            "--seq_len",
+            str(SEQ_LEN),
+            "--prop_train",
+            str(PROP_TRAIN),
+            "--seed",
+            "7",
+            "--mechanisms",
+            "1",
+            "2",
+            "--max_dim_U",
+            "2",
+            "--max_dim_X",
+            "2",
+            "--max_dim_W",
+            "2",
+            "--max_dim_Z",
+            "2",
+        ]
+    )
+    bpd.build(args)
+
+    root = tmp_path / "tiny"
+    assert sorted(p.name for p in root.iterdir()) == [
+        "config.yaml",
+        "manifest.json",
+        "val",
+    ]
+
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert "benchmark_dir" not in manifest
+    assert manifest["val_dir"] == str((root / "val").resolve())
+    assert manifest["n_datasets"] == 4
+
+    # The single val/ output feeds the benchmark loader directly.
+    data = load_benchmark_from_val_dir(root / "val")
+    assert data["N_BATCH"] == 4
+    assert data["N_TRAIN"] == int(SEQ_LEN * PROP_TRAIN)
+    assert data["N_TEST"] == SEQ_LEN - data["N_TRAIN"]
