@@ -101,32 +101,64 @@ All of these are exposed as CLI flags of the trainer (`proximalfm/train/_train_c
 
 ---
 
-## Architecture
+## The Model: Architecture, Loss & Inference
 
-ProximalFM is built on top of the **TabICLv2** foundation model architecture (Qu et al., 2026), refactored strictly for continuous regression and proximal causal learning. The execution pipeline is divided into three sequential transformer stages:
+ProximalFM is a PFN-style transformer $q_\theta$ that maps an observational dataset directly to a predictive distribution over causal effects. Given a context set $\mathcal{D}_N = \{(x_i, w_i, z_i, a_i, y_i)\}_{i=1}^N$ and query covariates $x^\star$, a single forward pass outputs predictive distributions over the conditional expected potential outcomes $\mu_0(x^\star)$ and $\mu_1(x^\star)$, from which the proximal CATE estimate $\hat{Q}(x^\star) = \hat\mu_1(x^\star) - \hat\mu_0(x^\star)$ is derived. Because the model is trained on datasets drawn from the proximal prior above, its output approximates the **posterior predictive distribution** of the CEPOs under that prior: the Bayesian inference that would classically require dataset-specific posterior computation is amortized once, at pre-training time. The backbone follows **TabICLv2** (Qu et al., 2026); the proximal-specific pieces are (i) **structural role embeddings** distinguishing the feature groups $X/Z/W/A$, (ii) a **treatment-aware target encoder** for the observed outcomes, and (iii) **two distributional (histogram) output heads** trained with a Gaussian histogram loss plus a mean-CATE regularizer. Implementation: [`proximalfm/_model/proximalfm.py`](proximalfm/_model/proximalfm.py), stages in [`embedding.py`](proximalfm/_model/embedding.py), [`interaction.py`](proximalfm/_model/interaction.py), [`learning.py`](proximalfm/_model/learning.py).
+
+<details>
+<summary><b>Full details — backbone stages, role embeddings, output heads & loss, inference</b></summary>
+
+### Backbone: three sequential transformer stages
+
+Refactored from TabICLv2 strictly for continuous regression and proximal causal learning:
 
 ```
 [Input Tables: X, Z, W, A] 
            │
            ▼
-┌──────────────────────────────────────┐
-│ 1. Column-Wise Embedding (ColEmbed)  │ ──► Sets causal role tokens & sorts valid features
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 1. ColEmbedding              │ ──► Sets causal role tokens & sorts valid features
+└──────────────────────────────┘
            │
            ▼
-┌──────────────────────────────────────┐
-│ 2. Row-Wise Interaction (RowInteract)│ ──► Aggregates feature tokens into single row-vectors via CLS
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 2. RowInteraction            │ ──► Aggregates feature tokens into single row-vectors via CLS
+└──────────────────────────────┘
            │
            ▼
-┌──────────────────────────────────────┐
-│ 3. In-Context Learning (ICLPredict)  │ ──► Bakes y_train context; outputs outcome/CATE statistics
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 3. ICLearning                │ ──► Bakes y_train context; outputs distributional heads
+└──────────────────────────────┘
 ```
 
-* **Causal Role Embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment Proxy } Z$, $2=\text{Outcome Proxy } W$, $3=\text{Treatment } A$) before processing.
-* **Validity Packing:** Features are processed using a padding-aware stable sorting strategy (`torch.gather`). Valid feature embeddings are packed at the front of the sequence, gracefully handling datasets with varying numbers of proxies.
-* **Target-Aware In-Context Learning:** During the embedding stage, the observed training targets ($Y_{train}$) are standard-scaled and encoded cleanly based on the assigned treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
+Query rows attend only to context rows (asymmetric masking), and no positional encoding is used across rows, preserving permutation invariance of the context set.
+
+### The input interface: where the causal structure enters
+
+The proximal estimand conditions on $X$ alone, while the proxies $W$ and $Z$ play distinct, non-exchangeable roles in identification — so the model must be told which feature group is which:
+
+* **Structural role embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment Proxy } Z$, $2=\text{Outcome Proxy } W$, $3=\text{Treatment } A$) before processing.
+* **Treatment-aware target encoder:** The observed context targets ($Y_{train}$) are standard-scaled and encoded by two distinct projections selected by the treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
+
+### Output heads & training loss
+
+The model has **two output heads**, predicting distributions over $\mu_0(x^\star)$ and $\mu_1(x^\star)$. Crucially, the training targets are the Monte-Carlo CEPO approximations `MU0`/`MU1` from the prior (see above), **not single ITE draws**: the model is trained on CATE-level quantities in which unit-level variation due to $U$, the proxies, and outcome noise has already been integrated out.
+
+Each head approximates its predictive distribution with a **quantized histogram**: the target space is standardized from the context outcomes and discretized into $B$ bins spanning $[-5, 5]$ standard deviations; the network projects each query token into $B$ logits per head, softmaxed into a distribution $q^{(a)}_\theta(\cdot \mid x^\star, \mathcal{D}_N)$. At each gradient update, a Gaussian with small width $\sigma$ is placed at the target $\widehat{\mu}_a(x_i)$ and integrated over the bins, and the heads minimize the **histogram loss** (cross-entropy against these Gaussian quantized probabilities):
+
+$$\texttt{HL}\bigl[\widehat{\mu}_a(x_i) \,\Vert\, q^{(a)}_\theta\bigr] = -\sum_{b=1}^{B} \mathcal{N}\bigl(\widehat{\mu}_a(x_i), \sigma^2\bigr)[b] \cdot \log q^{(a)}_\theta[b],$$
+
+averaged over both treatment arms and all query points. A **mean-CATE regularizer** additionally penalizes the squared error of the implied effect — the difference of the head means — against the Monte-Carlo CATE target:
+
+$$\mathcal{L} = \mathcal{L}_{\mathrm{HL}} + \lambda_{\mathrm{mean}} \cdot \frac{1}{n_q}\sum_i \Bigl( \bigl(\hat\mu^\theta_1(x_i) - \hat\mu^\theta_0(x_i)\bigr) - \bigl(\widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)\bigr) \Bigr)^2.$$
+
+The histogram term stabilizes distributional learning and carries the model's uncertainty representation; the mean term directly aligns the point prediction with the estimand $Q(x)$. In code: `--loss_type` selects the objective (`bins_po`, `hl`, `cate_decomposition`), and the smoothing width follows a schedule (`--hl_start_sigma`, `--hl_warmup_sigma_steps`, `--hl_linear_decay_steps`); see [`proximalfm/train/_train_config.py`](proximalfm/train/_train_config.py).
+
+### Inference
+
+The CATE point estimate is the difference of the head means, $\hat{Q}_\theta(x^\star) = \hat\mu^\theta_1(x^\star, \mathcal{D}_N) - \hat\mu^\theta_0(x^\star, \mathcal{D}_N)$. Beyond the point estimate, a predictive distribution over the CATE itself can be obtained by convolving the two head distributions (difference of independent draws from $q^{(1)}_\theta$ and $q^{(0)}_\theta$) — note this treats the two posteriors as independent given the context, which likely makes the resulting intervals conservative. Point, distributional, and interval outputs are exposed through the `predict` API (`target="cate"`, `output_type="mean"`, …); see the Usage section below and [`proximalfm/_model/inference.py`](proximalfm/_model/inference.py).
+
+</details>
 
 
 ---
