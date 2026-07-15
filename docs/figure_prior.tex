@@ -32,84 +32,84 @@ every node/.style={text=black}
 % -----------------------------------------------------------------------------
 % Plates (with soft background fills)
 % -----------------------------------------------------------------------------
-\draw[plate] (18,18) rectangle (350,448);
-\draw[plate] (42,132) rectangle (326,420);
-\node[tiny text, anchor=south east] at (338,440) {\textbf{units} $i=1,\ldots,T$};
-\node[tiny text, anchor=south east] at (314,412) {\textbf{replicates} $k=1,\ldots,K$};
+\draw[plate] (18,18) rectangle (350,368);
+\draw[plate] (42,108) rectangle (326,340);
+\node[tiny text, anchor=south east] at (338,360) {\textbf{units} $i=1,\ldots,T$};
+\node[tiny text, anchor=south east] at (314,332) {\textbf{replicates} $k=1,\ldots,K$};
 
 % -----------------------------------------------------------------------------
 % Causal edges (drawn behind nodes)
 % -----------------------------------------------------------------------------
-\draw[edge] (184,88) -- (184,158);
-\node[mechanism, anchor=west] at (193,127) {$f_U$};
-\draw[edge] (164,80)
-.. controls (96,105) and (74,183) .. (95,235);
-\draw[edge] (204,80)
-.. controls (272,105) and (294,183) .. (273,235);
-\draw[edge] (158,75)
-.. controls (62,116) and (55,270) .. (109,322);
-\draw[edge] (210,75)
-.. controls (306,116) and (313,270) .. (259,322);
-\draw[latent edge] (168,192) -- (119,241);
-\draw[latent edge] (200,192) -- (249,241);
-\draw[latent edge] (173,197)
-.. controls (154,238) and (139,286) .. (132,318);
-\draw[latent edge] (195,197)
-.. controls (216,238) and (233,286) .. (239,316);
-\draw[edge] (106,280) -- (121,317);
-\draw[edge] (262,280) -- (247,315);
+\draw[edge] (184,81) -- (184,123);
+\node[mechanism, anchor=west] at (193,102) {$f_U$};
+\draw[edge] (164,73)
+.. controls (96,95) and (76,160) .. (95,185);
+\draw[edge] (204,73)
+.. controls (272,95) and (292,160) .. (273,185);
+\draw[edge] (158,68)
+.. controls (62,100) and (55,225) .. (109,261);
+\draw[edge] (210,68)
+.. controls (306,100) and (313,225) .. (259,260);
+\draw[latent edge] (170,157) -- (115,192);
+\draw[latent edge] (198,157) -- (253,192);
+\draw[latent edge] (176,160)
+.. controls (158,195) and (140,230) .. (130,257);
+\draw[latent edge] (192,160)
+.. controls (212,195) and (230,230) .. (238,252);
+\draw[edge] (106,229) -- (121,258);
+\draw[edge] (262,229) -- (247,254);
 
 % -----------------------------------------------------------------------------
 % Variables (Nodes)
 % -----------------------------------------------------------------------------
-\draw[observed] (184,67) circle[radius=21];
-\node[node label] at (184,67) {$X$};
-\draw[latent] (184,176) circle[radius=19];
-\node[node label] at (184,176) {$U$};
-\draw[observed] (101,259) circle[radius=19];
-\node[node label] at (101,259) {$Z$};
-\draw[observed] (267,259) circle[radius=19];
-\node[node label] at (267,259) {$W$};
-\draw[observed] (127,337) circle[radius=19];
-\node[node label] at (127,337) {$A$};
-\draw[observed] (241,338) ellipse[x radius=33,y radius=23];
-\node[small text] at (241,333) {$Y(0)$};
-\node[small text] at (241,349) {$Y(1)$};
+\draw[observed] (184,60) circle[radius=21];
+\node[node label] at (184,60) {$X$};
+\draw[latent] (184,143) circle[radius=19];
+\node[node label] at (184,143) {$U$};
+\draw[observed] (101,208) circle[radius=19];
+\node[node label] at (101,208) {$Z$};
+\draw[observed] (267,208) circle[radius=19];
+\node[node label] at (267,208) {$W$};
+\draw[observed] (127,276) circle[radius=19];
+\node[node label] at (127,276) {$A$};
+\draw[observed] (241,276) ellipse[x radius=33,y radius=23];
+\node[small text] at (241,271) {$Y(0)$};
+\node[small text] at (241,287) {$Y(1)$};
 
 % Structural mechanism labels
-\node[mechanism, anchor=west] at (68,235) {$f_Z$};
-\node[mechanism, anchor=west] at (291,235) {$f_W$};
-\node[mechanism, anchor=west] at (91,369) {$f_A$};
-\node[mechanism, anchor=west] at (278,369) {$f_Y$};
+\node[mechanism, anchor=west] at (68,184) {$f_Z$};
+\node[mechanism, anchor=west] at (291,184) {$f_W$};
+\node[mechanism, anchor=west] at (91,308) {$f_A$};
+\node[mechanism, anchor=west] at (278,308) {$f_Y$};
 
 % -----------------------------------------------------------------------------
 % Upper branch: Observational Context (Draw One Replicate)
 % -----------------------------------------------------------------------------
-\draw[operation] (414,112) rectangle (580,162);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,130) {draw one replicate};
-\node[small text] at (497,147) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+\draw[operation] (414,95) rectangle (580,145);
+\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,113) {draw one replicate};
+\node[small text] at (497,130) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
 
-\draw[output] (608,102) rectangle (880,172);
-\node[output math] at (744,134) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
-\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,159) {observational context};
+\draw[output] (608,85) rectangle (880,155);
+\node[output math] at (744,117) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
+\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,142) {observational context};
 
 % Arrow starting from replicates inner box border (x=326) and crossing the outer box cleanly
-\draw[edge] (326,137) -- (414,137);
-\draw[edge] (580,137) -- (608,137);
+\draw[edge] (326,120) -- (414,120);
+\draw[edge] (580,120) -- (608,120);
 
 % -----------------------------------------------------------------------------
 % Lower branch: Target Construction (Average Over)
 % -----------------------------------------------------------------------------
-\draw[operation] (426,302) rectangle (568,352);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,320) {average over};
-\node[small text] at (497,337) {$k=1,\ldots,K$};
+\draw[operation] (426,260) rectangle (568,310);
+\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,278) {average over};
+\node[small text] at (497,295) {$k=1,\ldots,K$};
 
-\draw[output] (624,293) rectangle (864,361);
-\node[output math] at (744,321) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
-\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,343) {training targets ($\approx$ CEPOs)};
+\draw[output] (624,251) rectangle (864,319);
+\node[output math] at (744,279) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
+\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,301) {training targets ($\approx$ CEPOs)};
 
 % Curved connecting arrow from Y(0), Y(1)
-\draw[edge] (274,319) .. controls (325,305) and (375,315) .. (426,327);
-\draw[edge] (568,327) -- (624,327);
+\draw[edge] (274,272) .. controls (325,258) and (375,268) .. (426,285);
+\draw[edge] (568,285) -- (624,285);
 
 \end{tikzpicture}
