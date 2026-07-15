@@ -8,6 +8,7 @@ line join=round,
 % -----------------------------------------------------------------------------
 plate color/.style={draw=black!45, fill=gray!3, line width=0.5pt, rounded corners=3pt},
 observed color/.style={draw=cyan!50!blue!80!black, fill=cyan!5, line width=0.8pt},
+outcome color/.style={draw=blue!80!black, fill=blue!4, line width=0.8pt},
 latent color/.style={draw=red!70!black, fill=red!3, line width=0.8pt, dashed, dash pattern=on 2.5pt off 1.8pt},
 op color/.style={draw=teal!80!black, fill=teal!5, line width=0.6pt, rounded corners=2pt},
 out color/.style={draw=blue!80!black, fill=blue!3, line width=0.8pt, rounded corners=2pt},
@@ -16,6 +17,7 @@ out color/.style={draw=blue!80!black, fill=blue!3, line width=0.8pt, rounded cor
 % -----------------------------------------------------------------------------
 plate/.style={plate color},
 observed/.style={observed color},
+outcome/.style={outcome color},
 latent/.style={latent color},
 edge/.style={draw=black!75, line width=0.6pt, -{Latex[length=1.8mm,width=1.3mm]}},
 latent edge/.style={edge, draw=red!70!black, dashed, dash pattern=on 2.5pt off 1.8pt},
@@ -72,7 +74,7 @@ every node/.style={text=black}
 \node[node label] at (267,208) {$W$};
 \draw[observed] (127,276) circle[radius=19];
 \node[node label] at (127,276) {$A$};
-\draw[observed] (241,276) ellipse[x radius=33,y radius=23];
+\draw[outcome] (241,276) ellipse[x radius=33,y radius=23];
 \node[small text] at (241,271) {$Y(0)$};
 \node[small text] at (241,287) {$Y(1)$};
 
