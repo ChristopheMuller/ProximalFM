@@ -1,0 +1,115 @@
+\begin{tikzpicture}[
+x=0.018cm,
+y=-0.018cm,
+line cap=round,
+line join=round,
+% -----------------------------------------------------------------------------
+% Refined Color Palette
+% -----------------------------------------------------------------------------
+plate color/.style={draw=black!45, fill=gray!3, line width=0.5pt, rounded corners=3pt},
+observed color/.style={draw=cyan!50!blue!80!black, fill=cyan!5, line width=0.8pt},
+latent color/.style={draw=red!70!black, fill=red!3, line width=0.8pt, dashed, dash pattern=on 2.5pt off 1.8pt},
+op color/.style={draw=teal!80!black, fill=teal!5, line width=0.6pt, rounded corners=2pt},
+out color/.style={draw=blue!80!black, fill=blue!3, line width=0.8pt, rounded corners=2pt},
+% -----------------------------------------------------------------------------
+% Style Definitions
+% -----------------------------------------------------------------------------
+plate/.style={plate color},
+observed/.style={observed color},
+latent/.style={latent color},
+edge/.style={draw=black!75, line width=0.6pt, -{Latex[length=1.8mm,width=1.3mm]}},
+latent edge/.style={edge, draw=red!70!black, dashed, dash pattern=on 2.5pt off 1.8pt},
+operation/.style={op color},
+output/.style={out color},
+node label/.style={font=\large\itshape, inner sep=0pt, text=black!90},
+mechanism/.style={font=\scriptsize\color{teal!40!black}, inner sep=0pt},
+small text/.style={font=\scriptsize, inner sep=0pt, text=black!85},
+tiny text/.style={font=\fontsize{7}{8.5}\selectfont, inner sep=0pt, text=black!60},
+output math/.style={font=\footnotesize, inner sep=0pt, text=black!90},
+every node/.style={text=black}
+]
+
+% -----------------------------------------------------------------------------
+% Plates (with soft background fills)
+% -----------------------------------------------------------------------------
+\draw[plate] (18,18) rectangle (350,448);
+\draw[plate] (42,132) rectangle (326,420);
+\node[tiny text, anchor=south east] at (338,440) {\textbf{units} $i=1,\ldots,T$};
+\node[tiny text, anchor=south east] at (314,412) {\textbf{replicates} $k=1,\ldots,K$};
+
+% -----------------------------------------------------------------------------
+% Causal edges (drawn behind nodes)
+% -----------------------------------------------------------------------------
+\draw[edge] (184,88) -- (184,158);
+\node[mechanism, anchor=west] at (193,127) {$f_U$};
+\draw[edge] (164,80)
+.. controls (96,105) and (74,183) .. (95,235);
+\draw[edge] (204,80)
+.. controls (272,105) and (294,183) .. (273,235);
+\draw[edge] (158,75)
+.. controls (62,116) and (55,270) .. (109,322);
+\draw[edge] (210,75)
+.. controls (306,116) and (313,270) .. (259,322);
+\draw[latent edge] (168,192) -- (119,241);
+\draw[latent edge] (200,192) -- (249,241);
+\draw[latent edge] (173,197)
+.. controls (154,238) and (139,286) .. (132,318);
+\draw[latent edge] (195,197)
+.. controls (216,238) and (233,286) .. (239,316);
+\draw[edge] (106,280) -- (121,317);
+\draw[edge] (262,280) -- (247,315);
+
+% -----------------------------------------------------------------------------
+% Variables (Nodes)
+% -----------------------------------------------------------------------------
+\draw[observed] (184,67) circle[radius=21];
+\node[node label] at (184,67) {$X$};
+\draw[latent] (184,176) circle[radius=19];
+\node[node label] at (184,176) {$U$};
+\draw[observed] (101,259) circle[radius=19];
+\node[node label] at (101,259) {$Z$};
+\draw[observed] (267,259) circle[radius=19];
+\node[node label] at (267,259) {$W$};
+\draw[observed] (127,337) circle[radius=19];
+\node[node label] at (127,337) {$A$};
+\draw[observed] (241,338) ellipse[x radius=33,y radius=23];
+\node[small text] at (241,333) {$Y(0)$};
+\node[small text] at (241,349) {$Y(1)$};
+
+% Structural mechanism labels
+\node[mechanism, anchor=west] at (68,235) {$f_Z$};
+\node[mechanism, anchor=west] at (291,235) {$f_W$};
+\node[mechanism, anchor=west] at (91,369) {$f_A$};
+\node[mechanism, anchor=west] at (278,369) {$f_Y$};
+
+% -----------------------------------------------------------------------------
+% Upper branch: Observational Context (Draw One Replicate)
+% -----------------------------------------------------------------------------
+\draw[operation] (414,112) rectangle (580,162);
+\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,130) {draw one replicate};
+\node[small text] at (497,147) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+
+\draw[output] (608,102) rectangle (880,172);
+\node[output math] at (744,134) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
+\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,159) {observational context};
+
+% Arrow starting from replicates inner box border (x=326) and crossing the outer box cleanly
+\draw[edge] (326,137) -- (414,137);
+\draw[edge] (580,137) -- (608,137);
+
+% -----------------------------------------------------------------------------
+% Lower branch: Target Construction (Average Over)
+% -----------------------------------------------------------------------------
+\draw[operation] (426,302) rectangle (568,352);
+\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,320) {average over};
+\node[small text] at (497,337) {$k=1,\ldots,K$};
+
+\draw[output] (624,293) rectangle (864,361);
+\node[output math] at (744,321) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
+\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,343) {training targets ($\approx$ CEPOs)};
+
+% Curved connecting arrow from Y(0), Y(1)
+\draw[edge] (274,319) .. controls (325,305) and (375,315) .. (426,327);
+\draw[edge] (568,327) -- (624,327);
+
+\end{tikzpicture}
