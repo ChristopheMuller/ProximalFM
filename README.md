@@ -17,48 +17,87 @@ In standard causal inference, we assume **Unconfoundedness**: that we observe al
 
 ---
 
-## The Prior: A Synthetic Proximal SCM
+## The Prior: A Synthetic Prior over Proximal DGPs
 
-Like other tabular foundation models, ProximalFM is never trained on real data. Instead it learns *in-context* over an infinite stream of synthetic datasets drawn from a **Structural Causal Model (SCM) prior** (see [`proximalfm/prior/_dataset.py`](proximalfm/prior/_dataset.py)). Each synthetic dataset is one draw of an SCM whose graph is deliberately built to satisfy the **proximal causal identification assumptions**, so that the model learns the mapping *"(observed proximal tuple) → CATE"* that proximal inference licenses.
+ProximalFM is never trained on real data: it learns *in-context* from an infinite stream of synthetic datasets drawn from a prior $\Pi$ over structural causal models (SCMs). The prior must satisfy two competing requirements. **Validity** — whereas existing causal foundation models design their priors to *avoid* hidden confounding, ours deliberately *simulates* unmeasured confounding while structurally guaranteeing the proximal identification assumptions (latent ignorability, proxy exclusion, positivity, and a completeness heuristic), so the CATE remains identifiable from the observed proxies. **Diversity** — building on the TabICL prior, every causal mechanism is a freshly initialized random MLP (or random forest) with sampled depth, width, activations, and exogenous noise laws, covering a wide range of confounding strengths, proxy informativeness, effect heterogeneity, and realistic tabular structure. Each dataset also ships low-variance Monte-Carlo CATE labels (`MU0`/`MU1`), obtained by replicating every covariate row $K$ times and averaging the potential outcomes, so the model trains on the *identified* estimand $\mathbb{E}[Y(a)\mid X]$ rather than on noisy per-unit ITEs. Implementation: [`proximalfm/prior/_dataset.py`](proximalfm/prior/_dataset.py) (`SCMPrior.generate_dataset`), sampled hyperparameter ranges in [`_prior_config.py`](proximalfm/prior/_prior_config.py), pre-generation CLI in [`_genload.py`](proximalfm/prior/_genload.py).
 
-### What the SCM encodes
+<details>
+<summary><b>Full details — DAG generation, assumption enforcement, batch contents, hyperparameters</b></summary>
 
-Every dataset is generated from a randomly-parameterized DAG over $(X, U, Z, W, A, Y)$, where the mechanisms $f_U, f_W, f_Z, f_A, f_Y$ are random neural nets (`mlp_scm`) or trees (`tree_scm`). The edges encode the proximal roles directly:
-
-- $U$ is an **unobserved confounder** feeding into $Z, W, A, Y$ (it is generated and stored, but hidden from the model at training time).
-- $Z$ (**treatment-inducing proxy**) is driven by $U, X$ and feeds the treatment $A$, but *not* $Y$ directly.
-- $W$ (**outcome-inducing proxy**) is driven by $U, X$ and feeds $Y$, but *not* $A$ directly.
-- $A$ is drawn from a calibrated propensity (`sample_A`) with temperature/shift/clamp controls that enforce **positivity** (overlap).
-- The generator also enforces the **completeness** heuristic $\dim(W) \ge \dim(U)$ and $\dim(Z) \ge \dim(U)$, a necessary condition for proximal identification.
-
-Because $U$ influences both the treatment and the outcome while being unobserved, naive unconfoundedness fails on these datasets by construction — the only way to recover the effect is *through the proxies*, which is exactly the skill we want the model to learn.
-
-### Sampling convenience: $X$ as a root ($X \to U$)
-
-For *identification*, the natural graph has $U \to X$. For *generation*, we flip this edge to $X \to U$ and make $X$ an ancestral root. This flip is purely a **sampling convenience** and is believed to remain compatible with the proximal identification assumptions: with $X$ as a root we can fix $X = x$, replicate it, and ancestrally forward-sample everything downstream, obtaining **exact i.i.d. draws from $P(\cdot \mid X = x)$**. That is what makes the Monte-Carlo CATE labels below computable.
-
-### Why Monte-Carlo CATE labels (MU0 / MU1) and not the ITE
+### Why CATE labels, not the ITE
 
 The estimand is the proximal CATE, a **difference of conditional means**:
 
 $$Q(x) = \mathbb{E}[Y(1) - Y(0) \mid X = x] = \underbrace{\mathbb{E}[Y(1)\mid x]}_{\mu_1(x)} - \underbrace{\mathbb{E}[Y(0)\mid x]}_{\mu_0(x)}.$$
 
-A tempting shortcut is to train against a single per-unit contrast (the **ITE**, $\tau_i = Y_i(1) - Y_i(0)$). Its mean is unbiased for $Q(x)$, so it is a valid target under an MSE loss — but its *spread* is not a meaningful uncertainty. Writing $Y(a) = f_a(X, W, Z) + \eta_a$,
+A tempting shortcut is to train against the per-unit contrast (the **ITE**, $\tau_i = Y_i(1) - Y_i(0)$). Its mean is unbiased for $Q(x)$, but its *spread* is not a meaningful uncertainty:
 
 $$\mathrm{Var}(\tau \mid x) = \mathrm{Var}(Y(1)\mid x) + \mathrm{Var}(Y(0)\mid x) - 2\,\mathrm{Cov}(Y(0), Y(1)\mid x),$$
 
-and the cross-covariance term is **never identified from data**: no unit ever reveals both potential outcomes, so the coupling of $\eta_0, \eta_1$ is fixed only by arbitrary structural choices of the generator. Placing a *distributional* loss on the ITE therefore learns exactly the part of the world the data cannot determine.
+and the cross-covariance term is **never identified from data** — no unit ever reveals both potential outcomes, so the coupling of the outcome noises is fixed only by arbitrary structural choices of the generator. A distributional loss on the ITE would learn exactly the part of the world the data cannot determine. Since we fully control the synthetic DGP, we instead build **low-variance targets by Monte Carlo integration conditional on $X$**: a dual-track pipeline that generates the observational context on one track and clean CATE labels on the other.
 
-The fix, enabled by the $X$-root flip, is to estimate the **identified** functionals directly by Monte Carlo. For each covariate row $x$ we replicate it $K$ times (`mcmc_cate`, default 200), forward-sample $K$ independent completions of $(U, W, Z, A, \varepsilon_Y)$, evaluate both potential outcomes per replicate, and average:
+### DAG generation: one dataset, step by step
 
-$$\widehat{\mu}_0(x) = \frac{1}{K}\sum_{k=1}^{K} Y^{(k)}(0), \qquad \widehat{\mu}_1(x) = \frac{1}{K}\sum_{k=1}^{K} Y^{(k)}(1), \qquad \widehat{Q}(x) = \widehat{\mu}_1(x) - \widehat{\mu}_0(x).$$
+Each dataset of $T$ units (`seq_len`) is produced by `SCMPrior.generate_dataset` ([`_dataset.py`](proximalfm/prior/_dataset.py)). Once per dataset, we sample the causal mechanisms $f_X, f_U, f_W, f_Z, f_A, f_Y$ — each an independently initialized random network — together with the variable dimensions $d_U, d_X, d_W, d_Z$; mechanisms and dimensions are shared across the $K$ Monte-Carlo replicates below, so all replicates of a unit come from the *same* SCM. Then:
 
-These are the `MU0` / `MU1` tensors returned by the prior. Averaging over the $K$ replicates integrates out both the outcome noise and the unidentified coupling, leaving clean per-SCM labels for the identified means (with only $O(1/K)$ Monte-Carlo error). A single observed outcome $Y_{obs}$ per row is still drawn (one replicate picked at random, consistent with its treatment $A$) to serve as the in-context training signal.
+1. **Covariates (root).** $X = f_X(\epsilon_X) \in \mathbb{R}^{T \times d_X}$, where the exogenous noise base distribution is itself sampled per dataset (`sampling` ∈ {`normal`, `uniform`, `mixed`}). Columns are randomly discretized with probability `cat_prob = 0.2` (`process_features`), mimicking categorical tabular data. Each row is then replicated $K$ times (`mcmc_cate`, default **200**; auto-capped by `prior_mc_mem_budget` to bound memory).
+2. **Latent confounder.** $U = f_U(X, \epsilon_U)$ — generated and stored, but *hidden from the model*.
+3. **Proxies.** $W = f_W(U, X, \epsilon_W)$ and $Z = f_Z(U, X, \epsilon_Z)$, with amplified exogenous noise (`eps * 5` in code) so proxies are informative about $U$ without being deterministic images of $(U, X)$.
+4. **Confounding amplification.** Extra nonlinear transformations of $U$ (`f_u_augment`) are appended to the parents of $A$ and $Y$; how many is drawn per dataset via `confounding_duplication_of_U_in_A` / `_in_Y` $\sim \mathrm{Beta}(1,1)$ — a per-dataset dial for confounding strength.
+5. **Treatment.** Logits $\ell_A = f_A(U, X, Z, \epsilon_A)$ are standardized, rescaled by `propensity_scale` (log-scaled range ≈ 0.5–3.0), shifted by `propensity_shift` $\sim \mathcal{U}(-2.5, 2.5)$ (treatment imbalance), squashed through a sigmoid, and clamped to $[\epsilon, 1-\epsilon]$ with `propensity_epsilon = 1e-3`; then $A \sim \mathrm{Bernoulli}$.
+6. **Potential outcomes.** $\bigl(Y(0), Y(1)\bigr) = f_Y(U, X, W, \epsilon_Y)$ in a **single joint two-headed forward pass** — $A$ is never an input of $f_Y$. A per-dataset coefficient $\gamma \sim \mathcal{U}(0,1)$ then interpolates each pair between the raw heterogeneous heads and a constant-shift pair $(y_0,\, y_0 + \mathrm{ATE})$, sweeping effect heterogeneity from strong to near-homogeneous. Only $f_Y$ carries the sampled label noise `noise_std` (≈ 1e-4–0.3); all upstream mechanisms receive their stochasticity through the explicit $\epsilon$ inputs, drawn freshly for every unit and every replicate.
+7. **Labels and observation.** Averaging over replicates yields the Monte-Carlo conditional expected potential outcomes; one replicate $k_i \sim \mathrm{Unif}\{1,\dots,K\}$ per unit is retained as the observed row (see *Batch data* below). Constant feature columns are filtered, dimensions padded to their maxima, and degenerate draws rejected and resampled.
 
-This has two payoffs:
+**Note on the edge flip ($X \to U$).** The identification-natural graph has $U \to X$; generation reverses it so that $X$ is an ancestral root. This is immaterial for identification — the proximal conditions constrain only conditional independencies given $(X, U)$, unaffected by this edge's orientation — while making the conditional-on-$X$ Monte-Carlo scheme possible: fix $X = x$, replicate, forward-sample, and obtain exact i.i.d. draws from $P(\cdot \mid X = x)$.
 
-- **Point CATE:** regressing on $\widehat{Q}(x)$ makes the model converge to the posterior mean $\mathbb{E}[Q(x)\mid \mathcal{D}_n]$.
-- **Posterior over CATE:** putting a distributional/histogram loss on the per-SCM label $\widehat{Q}(x)$ — rather than on the ITE — makes the learned distribution converge to the genuine Bayesian posterior $P(Q(x)\mid \mathcal{D}_n)$ over the *identified* estimand, since finite contexts $\mathcal{D}_n$ underdetermine which SCM produced them. We expect this posterior to be tighter than the ITE spread and to contract as the context grows.
+### Where each proximal assumption is enforced
+
+| Assumption | How it holds | Where in code |
+|---|---|---|
+| **Latent ignorability** $\;(Y(0), Y(1)) \perp\!\!\!\perp A \mid (X, U)$ | *Exact by construction*: both potential outcomes are one evaluation of $f_Y$ with all inputs fixed; $A$ is not a parent of $Y$. | `input_y` excludes `A` |
+| **Proxy exclusion** | *Structural*: $Z$ is omitted from the inputs of $f_W$ and $f_Y$; $W$ is omitted from the inputs of $f_Z$ and $f_A$ — holds for any realization of the random mechanisms. | `input_W`, `input_Z`, `input_A`, `input_y` |
+| **Positivity** | Assignment probabilities clamped to $[10^{-3}, 1-10^{-3}]$ before sampling $A$. | `sample_A` (`propensity_epsilon`) |
+| **Completeness** | *Heuristic* (not enforceable for arbitrary nonlinear mechanisms; motivated by the categorical case, where each proxy needs at least as many categories as $U$): the sampler enforces $d_W \ge d_U$ and $d_Z \ge d_U$, and both $f_W, f_Z$ receive $U$ directly with independent fresh noise, making degenerate proxies unlikely. | dimension sampling in `get_batch` |
+
+Because $U$ confounds $A$ and $Y$ while being unobserved, naive unconfoundedness fails on these datasets *by construction* — the only route to the effect is through the proxies, which is exactly the skill the model must learn.
+
+### Batch data: what the model sees vs. what it is trained on
+
+Let $(w_{i,k}, z_{i,k}, a_{i,k}, y_{i,k}(0), y_{i,k}(1))$ be the $k$-th replicate of unit $i$ (covariates $x_i$ carry no replicate index — they are shared). Averaging over replicates gives the Monte-Carlo conditional expected potential outcomes (CEPOs):
+
+$$\widehat{\mu}_a(x_i) = \frac{1}{K}\sum_{k=1}^{K} y_{i,k}(a) \;\approx\; \mathbb{E}\bigl[Y(a) \mid X = x_i\bigr], \qquad a \in \{0,1\},$$
+
+hence the CATE target $\widehat{Q}(x_i) = \widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)$, in which unit-level variation due to $U, W, Z$ and the outcome noise has been integrated out (with only $O(1/K)$ Monte-Carlo error). Drawing one replicate $k_i$ per unit yields the training tuple
+
+$$\bigl(x_i,\; w_{i,k_i},\; z_{i,k_i},\; a_{i,k_i},\; y_{i,k_i},\; \widehat{\mu}_0(x_i),\; \widehat{\mu}_1(x_i)\bigr), \qquad y_{i,k_i} = y_{i,k_i}(a_{i,k_i}).$$
+
+**The transformer receives only the observational components** $(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i})$ as context; the CEPO approximations `MU0`/`MU1` are used exclusively as training targets on the query rows and are never observed by the model. In code, `PriorDataset` yields the 17-field tuple `(U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1, d_U, d_X, d_W, d_Z, seq_len, train_size)` — `U`, `A_probs`, `Y0`, `Y1` are stored for diagnostics and validation only.
+
+Two payoffs of training on $\widehat{Q}(x)$ instead of ITE draws: a point regression converges to the posterior mean $\mathbb{E}[Q(x)\mid \mathcal{D}_n]$; a distributional/histogram loss converges to the genuine Bayesian posterior $P(Q(x)\mid \mathcal{D}_n)$ over the *identified* estimand — expected to be tighter than the ITE spread and to contract as the context grows.
+
+### Sampled hyperparameters (diversity knobs)
+
+One draw per dataset (or per group of datasets sharing an SCM family); ranges from [`_prior_config.py`](proximalfm/prior/_prior_config.py):
+
+| Parameter | Distribution / range | Controls |
+|---|---|---|
+| `prior_type` | `mlp_scm` | mechanism family: random MLPs |
+| `num_layers` | log-scaled trunc-normal, ≥ 2 (mean up to 6) | mechanism depth |
+| `hidden_dim` | log-scaled trunc-normal, ≥ 4 (mean up to 130) | mechanism width |
+| `mlp_activations` | random diverse set, mixable across layers | nonlinearity of mechanisms |
+| `block_wise_dropout`, `mlp_dropout_prob` | choice / scaled Beta | sparsity of the mechanism graph |
+| `init_std` | log-scaled, ≈ 0.01–10 | weight scale (function roughness) |
+| `noise_std` | log-scaled, ≈ 1e-4–0.3 | outcome label noise (applied in $f_Y$ only) |
+| `sampling` | `normal` / `uniform` / `mixed` | exogenous noise base distributions |
+| `propensity_shift`, `propensity_scale` | $\mathcal{U}(-2.5, 2.5)$; log-scaled ≈ 0.5–3 | treatment imbalance and propensity sharpness |
+| `confounding_duplication_of_U_in_A` / `_in_Y` | $\mathrm{Beta}(1,1)$ | confounding strength |
+| `cat_prob` | fixed 0.2 | fraction of discretized (categorical-like) columns |
+| $d_U, d_X, d_W, d_Z$ | uniform in `--min_dim_*`/`--max_dim_*` (with $d_W, d_Z \ge d_U$) | variable dimensions |
+| `seq_len`, `train_size` | `--min/max_seq_len`, `--min/max_train_size` | episode length and context/query split |
+
+All of these are exposed as CLI flags of the trainer (`proximalfm/train/_train_config.py`). The prior can be consumed **on the fly** (`PriorDataset`, an infinite iterator) or **pre-generated to disk** with `python -m proximalfm.prior` ([`_genload.py`](proximalfm/prior/_genload.py): `SavePriorDataset` writes the sparse `batch_*.pt` stream, `LoadPriorDataset` replays it during training — the same format used by the fixed validation/benchmark builds below).
+
+</details>
 
 ---
 
