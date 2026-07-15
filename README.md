@@ -128,24 +128,6 @@ ProximalFM is built on top of the **TabICLv2** foundation model architecture (Qu
 * **Validity Packing:** Features are processed using a padding-aware stable sorting strategy (`torch.gather`). Valid feature embeddings are packed at the front of the sequence, gracefully handling datasets with varying numbers of proxies.
 * **Target-Aware In-Context Learning:** During the embedding stage, the observed training targets ($Y_{train}$) are standard-scaled and encoded cleanly based on the assigned treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
 
----
-
-## Output Objectives & Loss Functions
-
-The model bypasses traditional multi-class classification and quantile mapping. Output spacing is driven entirely by the `loss_type` flag configured during training:
-
-### 1. Potential Outcomes Binning (`loss_type="bins_po"`)
-The network outputs raw logits of dimension $\text{nbins} \times 2$. It models discrete probability distributions for both counterfactual profiles ($Y^0$ and $Y^1$) evaluated against a unified vector of histogram bin segments.
-* **Loss:** Optimized via a parameter-free **Discrete Continuous Ranked Probability Score (Discrete CRPS)** loss alongside a direct MSE penalty on the unscaled CATE profile.
-
-### 2. Additive CATE Decomposition (`loss_type="cate_decomposition"`)
-The network isolates structural variations by outputting a tensor of dimension $\text{nbins} + 2$:
-* **Index 0 & 1:** Maps the Average Treatment Effect ($\text{ATE}$) via a parametric Gaussian likelihood ($\mu$, $\log \sigma^2$).
-* **Remaining Indices:** Maps the heterogeneous residual effect ($\text{CATE} - \text{ATE}$) via a discrete histogram distribution.
-* **Loss:** Jointly optimized using standard **Gaussian Negative Log-Likelihood (NLL)** for the ATE component and **CRPS** for the heterogeneous profile.
-
-### 3. Histogram Loss with Gaussian Soft Targets (`loss_type="hl"`)
-Computes a cross-entropy loss against a smooth target distribution. For each scalar target, it constructs soft target assignments by integrating $\mathcal{N}(y, \sigma^2)$ over the specified histogram boundaries. The standard deviation $\sigma$ is managed dynamically using a linear warmup and decay schedule.
 
 ---
 
@@ -180,22 +162,6 @@ Rather than relying entirely on a static configuration, the orchestration enviro
 | `--min_dim_Z` / `--max_dim_Z` | `int` | Dimensionality boundaries for treatment proxies $Z$. |
 | `--min_dim_W` / `--max_dim_W` | `int` | Dimensionality boundaries for outcome proxies $W$. |
 | `--min_train_size` / `--max_train_size` | `float` | Proportion range of sequence allocated for training context. |
-
-## Output Objectives & Loss Functions
-The model bypasses traditional multi-class classification and quantile mapping. Output spacing is driven entirely by the `loss_type` flag configured during training:
-
-### 1. Potential Outcomes Binning (`loss_type="bins_po"`)
-The network outputs raw logits of dimension $\text{nbins} \times 2$. It models discrete probability distributions for both counterfactual profiles ($Y^0$ and $Y^1$) evaluated against a unified vector of histogram bin segments.
-* **Loss:** Optimized via a parameter-free **Discrete Continuous Ranked Probability Score** (Discrete CRPS) loss alongside a direct MSE penalty on the unscaled CATE profile.
-
-### 2. Additive CATE Decomposition (`loss_type="cate_decomposition"`)
-The network isolates structural variations by outputting a tensor of dimension $\text{nbins} + 2$:
-* **Index 0 & 1:** Maps the Average Treatment Effect ($\text{ATE}$) via a parametric Gaussian likelihood ($\mu$, $\log \sigma^2$).
-* **Remaining Indices:** Maps the heterogeneous residual effect ($\text{CATE} - \text{ATE}$) via a discrete histogram distribution.
-* **Loss:** Jointly optimized using standard Gaussian Negative Log-Likelihood (NLL) for the ATE component and CRPS for the heterogeneous profile.
-
-### 3. Histogram Loss with Gaussian Soft Targets (`loss_type="hl"`)
-Computes a cross-entropy loss against a smooth target distribution. For each scalar target, it constructs soft target assignments by integrating $\mathcal{N}(y, \sigma^2)$ over the specified histogram boundaries. The standard deviation $\sigma$ is managed dynamically using a linear warmup and decay schedule.
 
 ---
 
