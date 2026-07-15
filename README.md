@@ -187,6 +187,89 @@ cate_estimates = model.predict(
 )
 ```
 
+## 3. Fixed Datasets: Validation & Benchmark
+
+ProximalFM trains on an *infinite* synthetic stream, so model selection and method comparison need a **fixed, reproducible** set of datasets, **different from the prior**. The committed recipe [`synthetic/validation_data/config.yaml`](synthetic/validation_data/config.yaml) defines one such set: 480 realistic proximal datasets (2048 rows each, spread evenly across the 12 mechanisms of [`synthetic/realistic_proximal_mechanisms.py`](synthetic/realistic_proximal_mechanisms.py)). This data is useful for both: tuning and choosing a model, and comparing this model with other methods.
+
+<details>
+<summary><b>Full guide — rebuild the datasets, validate during training, run the benchmark</b></summary>
+
+### Step 1 — Rebuild the datasets locally
+
+```bash
+uv run synthetic/build_proximal_datasets.py --config synthetic/validation_data/config.yaml
+```
+
+This regenerates the exact same tensors on any machine (the build is deterministic in `--seed`; the config pins every parameter, including defaults). It writes:
+
+```
+synthetic/validation_data/
+├── config.yaml      # fully-resolved build recipe (the committed file)
+├── manifest.json    # what was built: per-mechanism counts, seed, exact CLI
+└── val/             # THE data: raw sparse batch_*.pt + metadata.json
+```
+
+`val/` is the single on-disk format for everything downstream. It is the raw, *unstandardized* layout of `proximalfm.prior._genload.SavePriorDataset` (read back by `LoadPriorDataset` for validation); the benchmark rebuilds its standardized view from these same files at load time (see [`benchmarks/bench_data.py`](benchmarks/bench_data.py) — context-only statistics, no test leakage).
+
+Explicit flags override the config, which is how you build a **held-out test batch** with the same characteristics but never-seen DGP draws:
+
+```bash
+uv run synthetic/build_proximal_datasets.py \
+    --config synthetic/validation_data/config.yaml \
+    --name test_data --seed 9999
+```
+
+### Step 2 — Use it as validation during training
+
+Point the trainer at the `val/` folder:
+
+```bash
+uv run python -m proximalfm.train \
+    <your usual training flags> \
+    --val_dir synthetic/validation_data/val \
+    --val_interval 50 \
+    --save_best true \
+    --best_metric val_cate/npehe \
+    --best_metric_mode min
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--val_dir` | `None` | Directory of `batch_*.pt` files to validate on (no validation if unset). |
+| `--val_interval` | `50` | Steps between validation passes. |
+| `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
+| `--best_metric` | `val_cate/npehe` | Metric key to monitor (e.g. `val_cate/rmse`, `val_ate/rmse`, `val_cate/r2`). |
+| `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |
+| `--val_micro_batch_size` | `--micro_batch_size` | Validation runs without backward, so it can afford a larger micro-batch. |
+
+### Step 3 — Benchmark against other methods
+
+[`benchmarks/bench_config_val.yaml`](benchmarks/bench_config_val.yaml) is a ready-made benchmark config pointing at this dataset. Its `data:` section is all it takes to consume a fixed build:
+
+```yaml
+data:
+  source: load                                  # never regenerates
+  val_dir: synthetic/validation_data/val        # the batch_*.pt directory from Step 1
+  output_dir: synthetic/validation_data/bench # where preds/, results/, data.pt cache go
+```
+
+Run it (after Step 1) with:
+
+```bash
+uv run benchmarks/bench_run.py --config benchmarks/bench_config_val.yaml
+```
+
+What happens:
+
+1. **Data** — on the first run the standardized benchmark dict is built from `val/` and cached as `<output_dir>/data.pt`; later runs reuse the cache (pass `--force` to rebuild and recompute predictions).
+2. **Methods** — every entry under `methods:` (S/T/X-learners, proximal baselines, tabular causal models…) is fit per episode in parallel; predictions are saved incrementally to `<output_dir>/preds/`, so finished methods are skipped on re-runs.
+3. **Models** — every checkpoint under `models:` (e.g. a `best_model.ckpt` selected in Step 2) is evaluated on the same episodes.
+4. **Report** — ATE and CATE summary tables are printed and written to `<output_dir>/results/`.
+
+Enable or disable baselines by (un)commenting entries in the `methods:` list of the config. For final held-out numbers, benchmark the *test* batch instead: copy the config and change `val_dir`/`output_dir` to the `--name test_data` build from Step 1.
+
+</details>
+
 ---
 
 ## Testing

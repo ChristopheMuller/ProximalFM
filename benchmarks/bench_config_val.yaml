@@ -4,36 +4,9 @@
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
-  load: synthetic/validation_datasets/benchmark
-  output_dir: synthetic/validation_datasets/benchmark
-
-  # ── Dataset sizes ────────────────────────────────────────────────────────
-  n_rows: 500
-  n_batch: 100
-  prop_train: 0.75
-
-  # ── Prior (only used when source=generate; paste the one from the checkpoints)
-  prior:
-    batch_size: 1
-    batch_size_per_gp: 1
-    min_dim_U: 1
-    max_dim_U: 1
-    min_dim_W: 1
-    max_dim_W: 1
-    min_dim_Z: 1
-    max_dim_Z: 1
-    min_dim_X: 1
-    max_dim_X: 1
-    min_seq_len: None
-    max_seq_len: 2048
-    log_seq_len: False
-    seq_len_per_gp: False
-    min_train_size: 0.5
-    max_train_size: 0.95
-    replay_small: False
-    prior_type: "mlp_scm"
-    device: "cpu"
-
+  source: load
+  val_dir: synthetic/validation_data/val
+  output_dir: synthetic/validation_data/bench
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 run:
@@ -41,7 +14,6 @@ run:
   n_workers: 6
   device: mps
   force_rerun: false
-
 
 # ── Methods ───────────────────────────────────────────────────────────────────
 methods:
@@ -92,19 +64,6 @@ methods:
     use_W: false
     use_Z: false
 
-  # - name: T-TabICL
-  #   cls:   T_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-
-  # - name: T-TabICL-Oracle
-  #   cls:   T_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   is_oracle: true
-
   # ── X-Learner baselines ──────────────────────────────────────────────────
   - name: X-RF
     cls:   X_Learner
@@ -113,72 +72,77 @@ methods:
     use_Z: false
     interactions: false
 
-  # - name: X-TabICL
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-
-  # - name: X-TabICL-Oracle
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   is_oracle: true
-
   # ── Proximal baselines ───────────────────────────────────────────────────
-  - name: P2SLS
-    cls:          P2SLS
-    interactions: false
+  # - name: P2SLS
+  #   cls:          P2SLS
+  #   interactions: false
 
-  - name: P-RF
-    cls:          PLearner
-    base:         rf
-    n_splits:     2
-    q_clip:       [-10.0, 10.0]
-    refit_full_nuisance: false
+  # - name: P-RF
+  #   cls:          PLearner
+  #   base:         rf
+  #   n_splits:     2
+  #   q_clip:       [-10.0, 10.0]
+  #   refit_full_nuisance: false
 
-  - name: KPV-XW
-    cls:         KernelPV
-    strategy:    paired
+  # - name: KPV
+  #   cls:         KernelPV
+  #   tune_kernel_scale: true
+  #   kernel_scale_min: 0.5
+  #   kernel_scale_max: 2.0
+  #   n_kernel_scale_search: 5
+  #   outputs:
+  #     - { name: KPV-XW,     strategy: paired }
+  #     - { name: KPV-X-Wind, strategy: independent }
+  #     - { name: KPV-X-Wcond, strategy: conditional }
+  #     - { name: KPV-ATE,    strategy: marginal }
 
-  - name: KPV-X-Wind
-    cls:         KernelPV
-    strategy:    independent
+  # - name: PMMR
+  #   cls:         PMMR
+  #   outputs:
+  #     - { name: PMMR-XW,     strategy: paired }
+  #     - { name: PMMR-X-Wind, strategy: independent }
+  #     - { name: PMMR-X-Wcond, strategy: conditional }
+  #     - { name: PMMR-ATE,    strategy: marginal }
 
-  - name: KPV-X-cond
-    cls:         KernelPV
-    strategy:    conditional
+  # - name: NMMR-V
+  #   cls:        NMMR
+  #   n_epochs:   100
+  #   tune:
+  #     enabled:  true
+  #     val_frac: 0.2
+  #     n_trials: 1
+  #     seed:     0
+  #     grid:
+  #       loss:         ["v_stat"]
+  #       hidden_dim:    [32, 64, 128]
+  #       n_layers:       [2, 3, 4]
+  #       n_epochs:       [50, 100, 200]
+  #       lr:           [0.001, 0.0005, 0.0001]
+  #       weight_decay: [0.0, 0.0001, 0.001]
+  #   outputs:
+  #     - { name: NMMR-V-XW,    strategy: paired }
+  #     - { name: NMMR-V-Wind,  strategy: independent }
+  #     - { name: NMMR-V-Wcond, strategy: conditional }
 
-  - name: KPV-ATE
-    cls:         KernelPV
-    strategy:    marginal
-
-  - name: PMMR-XW
-    cls:        PMMR
-    strategy:  paired
-
-  - name: PMMR-X-Wind
-    cls:        PMMR
-    strategy:   independent
-
-  - name: PMMR-X-cond
-    cls:        PMMR
-    strategy:   conditional
-
-  - name: PMMR-ATE
-    cls:        PMMR
-    strategy:   marginal
-
-  - name: NMMR-U
-    cls:        NMMR
-    loss:       "u_stat"
-    strategy:   paired
-
-  - name: NMMR-V
-    cls:        NMMR
-    loss:       "v_stat"
-    strategy:   paired
+  # - name: NMMR-U
+  #   cls:        NMMR
+  #   n_epochs:   100
+  #   tune:
+  #     enabled:  true
+  #     val_frac: 0.2
+  #     n_trials: 1
+  #     seed:     0
+  #     grid:
+  #       loss:         ["u_stat"]
+  #       hidden_dim:    [32, 64, 128]
+  #       n_layers:       [2, 3, 4]
+  #       n_epochs:       [50, 100, 200]
+  #       lr:          [0.001, 0.0005, 0.0001]
+  #       weight_decay: [0.0, 0.0001, 0.001]
+  #   outputs:
+  #     - { name: NMMR-U-XW,    strategy: paired }
+  #     - { name: NMMR-U-Wind,  strategy: independent }
+  #     - { name: NMMR-U-Wcond, strategy: conditional }
 
   # - name: DFPV-XW
   #   cls:        DFPV
@@ -213,10 +177,10 @@ methods:
     use_W: false
     use_Z: false
 
-  # - name: DoPFN
-  #   cls:  DoPFN
-  #   use_W: false
-  #   use_Z: false
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
 
   - name: CausalPFN
     cls:  CausalPFN
@@ -226,27 +190,7 @@ methods:
 # ── Neural model checkpoints ─────────────────────────────────────────────────
 
 models:
-  - name:       ProximalFM
-    checkpoint: mc_run_2/
-    all: false
-
-  - name:       ProximalFM-E2
-    checkpoint: mc_run_2/
-    all: false
-    ensemble: 2
-
-  - name:       ProximalFM-E2-T
-    checkpoint: mc_run_2/
-    all: false
-    ensemble: 2
-    transforms: [sign, signed_log, arcsinh, quantile]
   
-  - name:       ProximalFM-E3
-    checkpoint: mc_run_2/
+  - name:       ProximalFM3
+    checkpoint: mc_run_3_finetune/
     all: false
-    ensemble: 3
-
-  - name:       ProximalFM-E5
-    checkpoint: mc_run_2/
-    all: false
-    ensemble: 5
