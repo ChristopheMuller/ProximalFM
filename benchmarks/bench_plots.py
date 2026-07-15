@@ -49,28 +49,49 @@ METHOD_STYLES = {
     # ── KPV (Cyan) ──
     "KPV-XW": {"color": "#17becf", "marker": "o"},
     "KPV-X-Wind": {"color": "#17becf", "marker": "s"},
-    "KPV-X-cond": {"color": "#17becf", "marker": "^"},
+    "KPV-X-Wcond": {"color": "#17becf", "marker": "^"},
     "KPV-ATE": {"color": "#17becf", "marker": "D"},
     # ── PMMR (Brown) ──
     "PMMR-XW": {"color": "#8c564b", "marker": "o"},
     "PMMR-X-Wind": {"color": "#8c564b", "marker": "s"},
-    "PMMR-X-cond": {"color": "#8c564b", "marker": "^"},
+    "PMMR-X-Wcond": {"color": "#8c564b", "marker": "^"},
     "PMMR-ATE": {"color": "#8c564b", "marker": "D"},
-    # ── NMMR (Pink) ── (variant = loss statistic)
-    "NMMR-U": {"color": "#e377c2", "marker": "o"},
-    "NMMR-V": {"color": "#e377c2", "marker": "s"},
+    # ── NMMR (Pinks: V-statistic light, U-statistic dark) ──
+    "NMMR-V-XW": {"color": "#e377c2", "marker": "o"},
+    "NMMR-V-Wind": {"color": "#e377c2", "marker": "s"},
+    "NMMR-V-Wcond": {"color": "#e377c2", "marker": "^"},
+    "NMMR-U-XW": {"color": "#c51b8a", "marker": "o"},
+    "NMMR-U-Wind": {"color": "#c51b8a", "marker": "s"},
+    "NMMR-U-Wcond": {"color": "#c51b8a", "marker": "^"},
     # ── DFPV (Olive) ──
     "DFPV-XW": {"color": "#bcbd22", "marker": "o"},
     "DFPV-X-Wind": {"color": "#bcbd22", "marker": "s"},
     "DFPV-X-cond": {"color": "#bcbd22", "marker": "^"},
     "DFPV-ATE": {"color": "#bcbd22", "marker": "D"},
+    # ── Other forests ──
+    "CausalForest": {"color": "#2ca02c", "marker": "D"},
     # ── Tabular & Neural Models (Red) ──
     "CausalFM": {"color": "#d62728", "marker": "X"},  # cross
     "DoPFN": {"color": "#d62728", "marker": "D"},  # diamond
     "CausalPFN": {"color": "#d62728", "marker": "P"},  # plus
-    "ProximalFM": {"color": "#d62728", "marker": "*", "s": 200},  # big star
-    "ProximalFM_check12": {"color": "#d62728", "marker": "*", "s": 200},
+    "ProximalFM3": {"color": "#d62728", "marker": "*", "s": 200},  # big star
+    "ProximalFM4": {"color": "#d62728", "marker": "p", "s": 160},  # pentagon
+    "ProximalFM": {"color": "#d62728", "marker": "*", "s": 200},
 }
+
+
+def style_for(method: str) -> dict:
+    """Style lookup: exact name, else longest prefix match, else gray.
+
+    Prefix matching covers checkpoint-suffixed model names (e.g.
+    'ProximalFM3_55350' inherits the 'ProximalFM3' style).
+    """
+    if method in METHOD_STYLES:
+        return METHOD_STYLES[method]
+    prefixes = [k for k in METHOD_STYLES if method.startswith(k)]
+    if prefixes:
+        return METHOD_STYLES[max(prefixes, key=len)]
+    return {"color": "gray", "marker": "o"}
 
 
 def plot_ate_bias_vs_npehe(results_dir: Path):
@@ -89,12 +110,29 @@ def plot_ate_bias_vs_npehe(results_dir: Path):
     df = df[["ATE Bias", "nPEHE"]].dropna()
     df["abs_bias"] = df["ATE Bias"].abs()
 
+    # Group the legend by method family: follow METHOD_STYLES order (families
+    # are contiguous there), with unstyled stragglers appended alphabetically.
+    known = [k for k in METHOD_STYLES]
+    df = df.sort_index(
+        key=lambda idx: [
+            (
+                known.index(
+                    max((k for k in known if m.startswith(k)), key=len, default="")
+                )
+                if any(m.startswith(k) for k in known)
+                else len(known),
+                m,
+            )
+            for m in idx
+        ]
+    )
+
     plt.figure(figsize=(7, 7))
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
     for row in df.itertuples():
         method = row.Index
-        style = METHOD_STYLES.get(method, {"color": "gray", "marker": "o", "s": 100})
+        style = style_for(method)
 
         plt.scatter(
             row.abs_bias,
@@ -134,6 +172,8 @@ def plot_ate_bias_vs_npehe(results_dir: Path):
         borderaxespad=0.0,
         title="Methods",
         frameon=False,
+        fontsize=9,
+        ncol=2 if len(df) > 18 else 1,
     )
 
     output_file = results_dir / "plot_ate_bias_vs_npehe.png"
@@ -446,28 +486,53 @@ def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
     plt.close()
 
 
+def resolve_exp_dir(exp: str) -> Path:
+    """Resolve an experiment name to its benchmark output directory.
+
+    Two layouts exist:
+      * fixed synthetic builds  -> synthetic/<exp>/bench   (bench_config_val.yaml)
+      * generated-data runs     -> results/<exp>           (bench_config_gen.yaml)
+    The synthetic layout wins if both are present.
+    """
+    candidates = [Path("synthetic") / exp / "bench", Path("results") / exp]
+    for cand in candidates:
+        if cand.is_dir():
+            return cand
+    raise SystemExit(
+        f"No experiment directory found for '{exp}' "
+        f"(tried: {', '.join(str(c) for c in candidates)}). "
+        "Run benchmarks/bench_run.py first, or pass --path explicitly."
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Plot True vs Predicted ATE")
 
     parser.add_argument(
         "--exp",
         default="first_test",
-        help="Experiment name (resolved under results/<exp>).",
+        help="Experiment name, resolved to synthetic/<exp>/bench or results/<exp> "
+        "(first match wins).",
     )
     parser.add_argument(
         "--path",
         default=None,
         help=(
-            "Path to an experiment directory (containing data.pt and a results/ "
-            "sub-folder), e.g. synthetic/validation_datasets/foo. Overrides --exp "
-            "and lets you plot experiments that are not stored under results/."
+            "Path to a benchmark output directory (containing data.pt, preds/ and "
+            "a results/ sub-folder), e.g. synthetic/validation_data/bench. "
+            "Overrides --exp for experiments stored elsewhere."
         ),
     )
     args = parser.parse_args()
 
-    exp_dir = Path(args.path) if args.path else Path("results") / args.exp
+    exp_dir = Path(args.path) if args.path else resolve_exp_dir(args.exp)
     results_dir = exp_dir / "results"
     full_csv_path = results_dir / "results.csv"
+    if not full_csv_path.exists():
+        raise SystemExit(
+            f"{full_csv_path} not found — the benchmark has not produced results "
+            f"in {exp_dir} yet. Run benchmarks/bench_run.py first."
+        )
 
     # Existing Plots
     plot_true_vs_pred_ate(full_csv_path)
