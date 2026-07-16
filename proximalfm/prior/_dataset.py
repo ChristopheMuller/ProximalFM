@@ -880,7 +880,12 @@ class SCMPrior(Prior):
             X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
-            if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
+            if (
+                (d_U > 0).all()
+                and (d_X > 0).all()
+                and (d_W > 0).all()
+                and (d_Z > 0).all()
+            ):
                 U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
