@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 
 from proximalfm.prior._dataset import SCMPrior, PriorDataset, DisablePrinting
@@ -498,3 +499,53 @@ def test_completeness_give_up_terminates():
     d_X, d_W, d_Z = out[12], out[13], out[14]
     # Basic validity is always required, even when giving up on completeness.
     assert (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+
+
+# ---------------------------------------------------------------------------
+# dim_U distribution (Option B: triangular vs uniform)
+# ---------------------------------------------------------------------------
+
+
+def test_triangular_dim_pmf_exact():
+    vals, probs = SCMPrior.triangular_dim_pmf(1, 10)
+    assert vals.tolist() == list(range(1, 11))
+    # p(d) ∝ (11 - d): weights 10, 9, ..., 1 normalised by 55.
+    np.testing.assert_allclose(probs, np.arange(10, 0, -1) / 55.0)
+    assert probs.sum() == pytest.approx(1.0)
+    # Strictly decreasing: small dimensions are favoured.
+    assert np.all(np.diff(probs) < 0)
+
+
+def test_triangular_dim_pmf_respects_lower_bound():
+    vals, probs = SCMPrior.triangular_dim_pmf(3, 6)
+    assert vals.tolist() == [3, 4, 5, 6]
+    np.testing.assert_allclose(probs, np.array([4, 3, 2, 1]) / 10.0)
+
+
+def test_sample_dim_ranges_and_means():
+    np.random.seed(0)
+    tri = [SCMPrior.sample_dim(1, 10, "triangular") for _ in range(5000)]
+    uni = [SCMPrior.sample_dim(1, 10, "uniform") for _ in range(5000)]
+
+    assert min(tri) >= 1 and max(tri) <= 10
+    assert min(uni) >= 1 and max(uni) <= 10
+    # Theoretical means: triangular 4.0, uniform 5.5.
+    assert np.mean(tri) == pytest.approx(4.0, abs=0.2)
+    assert np.mean(uni) == pytest.approx(5.5, abs=0.2)
+    # The whole point of Option B: triangular skews d_U smaller.
+    assert np.mean(tri) < np.mean(uni)
+
+
+def test_sample_dim_rejects_unknown_distribution():
+    with pytest.raises(ValueError, match="Unknown dim distribution"):
+        SCMPrior.sample_dim(1, 10, "nope")
+
+
+def test_get_batch_respects_dim_U_distribution_flag():
+    # Both settings must produce a valid batch; the default is triangular.
+    for dist in ("uniform", "triangular"):
+        fixed_hp = {**DEFAULT_FIXED_HP, "dim_U_distribution": dist}
+        prior = _make_prior(fixed_hp)
+        d_U = prior.get_batch()[11]
+        assert d_U.shape[0] == 24
+        assert (d_U > 0).all()  # enforcement is still on

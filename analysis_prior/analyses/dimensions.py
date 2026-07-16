@@ -180,7 +180,7 @@ class DimensionsAnalysis(Analysis):
             ax.set_title(f"${key}$")
             ax.set_xlabel("active dimension")
         axes[0].set_ylabel("datasets")
-        fig.suptitle("Active feature dimensions across the prior")
+        fig.suptitle("Active feature dimensions across the prior", y=1.05)
         figures = save_figure(fig, outdir, "dimension_histograms")
 
         # --- Figure: joint distribution of d_U against each other block ---

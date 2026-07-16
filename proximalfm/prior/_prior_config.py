@@ -16,6 +16,7 @@ DEFAULT_FIXED_HP = {
     "prior_mc_mem_budget": 100_000_000,
     "enforce_completeness_heuristic": True,
     "completeness_max_attempts": 50,
+    "dim_U_distribution": "triangular",
 }
 
 DEFAULT_SAMPLED_HP = {

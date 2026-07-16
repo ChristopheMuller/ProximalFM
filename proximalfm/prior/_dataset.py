@@ -958,6 +958,39 @@ class SCMPrior(Prior):
         probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
         return torch.bernoulli(probs).long(), probs
 
+    @staticmethod
+    def triangular_dim_pmf(lo: int, hi: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Linearly-decreasing integer pmf on ``[lo, hi]``: ``p(d) ∝ (hi+1-d)``.
+
+        Skews the sampled dimension toward smaller values. Paired with the
+        conditional-uniform proxy sampling (``dim_W ~ U{dim_U..max}``), a
+        triangular ``dim_U`` makes the induced ``dim_W``/``dim_Z`` marginals a
+        gentle linear ramp rather than piling up at ``max_dim``. In particular,
+        for ``lo=1`` the proxy marginal is exactly ``p(w) = w / sum(1..hi)``.
+
+        Returns ``(values, probs)`` with ``probs`` summing to 1.
+        """
+        vals = np.arange(lo, hi + 1)
+        weights = (hi + 1 - vals).astype(float)
+        return vals, weights / weights.sum()
+
+    @classmethod
+    def sample_dim(cls, lo: int, hi: int, distribution: str) -> int:
+        """Sample an integer dimension in ``[lo, hi]``.
+
+        ``"uniform"`` draws flat over the range (the original behaviour);
+        ``"triangular"`` uses :meth:`triangular_dim_pmf` (Option B).
+        """
+        if distribution == "uniform":
+            return int(np.random.randint(lo, hi + 1))
+        if distribution == "triangular":
+            vals, probs = cls.triangular_dim_pmf(lo, hi)
+            return int(np.random.choice(vals, p=probs))
+        raise ValueError(
+            f"Unknown dim distribution {distribution!r} "
+            "(expected 'uniform' or 'triangular')"
+        )
+
     @torch.no_grad()
     def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
         """Generate a batch of proximal datasets.
@@ -1050,8 +1083,15 @@ class SCMPrior(Prior):
                     k: v() if callable(v) else v for k, v in group_sampled_hp.items()
                 }
 
-                # 1. Sample Latent Confounder Dimension
-                dim_U = np.random.randint(self.min_dim_U, self.max_dim_U + 1)
+                # 1. Sample Latent Confounder Dimension. A triangular pmf
+                # (Option B) skews d_U small so the conditional-uniform proxies
+                # below get a gentle linear marginal instead of piling up at
+                # max_dim; "uniform" restores the original flat d_U for A/B.
+                dim_U = self.sample_dim(
+                    self.min_dim_U,
+                    self.max_dim_U,
+                    self.fixed_hp.get("dim_U_distribution", "triangular"),
+                )
 
                 # 2. Enforce Completeness: dim(W) >= dim(U) and dim(Z) >= dim(U)
                 # We use max() to ensure the lower bound satisfies both the user's config and the DAG requirement
