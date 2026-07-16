@@ -11,6 +11,7 @@ from analysis_prior import generate as gen
 from analysis_prior.analyses.dimensions import (
     DimensionsAnalysis,
     completeness_stats,
+    joint_counts,
 )
 from analysis_prior.config import PriorSpec
 
@@ -73,6 +74,53 @@ def test_completeness_rejects_empty():
 
 
 # --------------------------------------------------------------------------
+# joint_counts
+# --------------------------------------------------------------------------
+
+
+def test_joint_counts_basic():
+    # (d_U, d_other) pairs: (1,2), (1,2), (2,3)
+    grid = joint_counts(np.array([1, 1, 2]), np.array([2, 2, 3]))
+    assert grid.shape == (3, 4)  # rows 0..2, cols 0..3
+    assert grid[1, 2] == 2
+    assert grid[2, 3] == 1
+    assert grid.sum() == 3
+
+
+def test_joint_counts_includes_zero_row():
+    # d_U == 0 must get its own row, not be dropped.
+    grid = joint_counts(np.array([0, 1]), np.array([1, 1]))
+    assert grid[0, 1] == 1
+    assert grid[1, 1] == 1
+
+
+def test_joint_counts_respects_explicit_max():
+    grid = joint_counts(np.array([1]), np.array([1]), row_max=5, col_max=7)
+    assert grid.shape == (6, 8)
+    assert grid[1, 1] == 1
+
+
+def test_joint_counts_rejects_too_small_max():
+    with pytest.raises(ValueError, match="must be >="):
+        joint_counts(np.array([4]), np.array([1]), row_max=2)
+
+
+def test_joint_counts_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="equal length"):
+        joint_counts(np.array([1, 2]), np.array([1]))
+
+
+def test_joint_counts_rejects_empty():
+    with pytest.raises(ValueError, match="at least one"):
+        joint_counts(np.array([]), np.array([]))
+
+
+def test_joint_counts_rejects_negative():
+    with pytest.raises(ValueError, match="non-negative"):
+        joint_counts(np.array([-1]), np.array([1]))
+
+
+# --------------------------------------------------------------------------
 # End-to-end on a tiny cache
 # --------------------------------------------------------------------------
 
@@ -114,6 +162,8 @@ def test_run_writes_expected_artifacts(tiny_cache, tmp_path):
     names = {p.name for p in artifacts.figures + artifacts.tables}
     assert "dimension_histograms.pdf" in names
     assert "dimension_histograms.png" in names
+    assert "dimension_joint_heatmaps.pdf" in names
+    assert "dimension_joint_heatmaps.png" in names
     assert "completeness_heuristic.tex" in names
     assert "completeness_heuristic.csv" in names
     for path in artifacts.figures + artifacts.tables:

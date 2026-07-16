@@ -73,6 +73,48 @@ def completeness_stats(
     }
 
 
+def joint_counts(
+    row_vals: np.ndarray,
+    col_vals: np.ndarray,
+    row_max: int = None,
+    col_max: int = None,
+) -> np.ndarray:
+    """Count matrix of paired integer dimensions.
+
+    Pure function so the heatmap contents can be tested exactly.
+
+    Returns a grid ``g`` where ``g[i, j]`` is the number of datasets with
+    ``row_vals == i`` and ``col_vals == j``. Indexing starts at 0 so that the
+    (rare) ``d_U == 0`` datasets get their own row rather than being dropped.
+
+    Parameters
+    ----------
+    row_vals, col_vals : array of int
+        Paired per-dataset dimensions (e.g. ``d_U`` and ``d_W``).
+
+    row_max, col_max : int, optional
+        Grid extent. Defaults to the observed maxima. Pass these to align grids
+        across panels that should share axes.
+    """
+    row_vals = np.asarray(row_vals, dtype=int)
+    col_vals = np.asarray(col_vals, dtype=int)
+    if len(row_vals) != len(col_vals):
+        raise ValueError("row_vals and col_vals must have equal length")
+    if len(row_vals) == 0:
+        raise ValueError("need at least one observation")
+    if (row_vals < 0).any() or (col_vals < 0).any():
+        raise ValueError("dimension counts must be non-negative")
+
+    r_max = int(row_vals.max()) if row_max is None else int(row_max)
+    c_max = int(col_vals.max()) if col_max is None else int(col_max)
+    if r_max < row_vals.max() or c_max < col_vals.max():
+        raise ValueError("row_max/col_max must be >= the observed maxima")
+
+    grid = np.zeros((r_max + 1, c_max + 1), dtype=int)
+    np.add.at(grid, (row_vals, col_vals), 1)
+    return grid
+
+
 @dataclass
 class DimensionResults:
     """Per-dataset active dimensions plus derived completeness statistics."""
@@ -140,6 +182,41 @@ class DimensionsAnalysis(Analysis):
         axes[0].set_ylabel("datasets")
         fig.suptitle("Active feature dimensions across the prior")
         figures = save_figure(fig, outdir, "dimension_histograms")
+
+        # --- Figure: joint distribution of d_U against each other block ---
+        # One figure, three heatmap panels. On the W/Z panels the completeness
+        # heuristic requires all mass on/below the diagonal d_U = d_proxy; the
+        # dashed line makes violations (mass above it) visible at a glance.
+        # d_X has no such constraint, so no line is drawn there.
+        d_U_max = int(results.d_U.max())
+        pairs = (
+            ("d_X", results.d_X, False),
+            ("d_W", results.d_W, True),
+            ("d_Z", results.d_Z, True),
+        )
+        jfig, jaxes = plt.subplots(1, 3, figsize=(15, 4.2))
+        for ax, (key, col_vals, has_bound) in zip(jaxes, pairs):
+            grid = joint_counts(results.d_U, col_vals, row_max=d_U_max)
+            im = ax.imshow(
+                grid,
+                origin="lower",
+                cmap="viridis",
+                aspect="auto",
+                interpolation="nearest",
+            )
+            jfig.colorbar(im, ax=ax, label="datasets")
+            ax.set_xticks(range(grid.shape[1]))
+            ax.set_yticks(range(grid.shape[0]))
+            ax.set_xlabel(f"${key}$")
+            ax.set_ylabel("$d_U$")
+            ax.set_title(f"$d_U$ vs ${key}$")
+            ax.grid(False)
+            if has_bound:
+                m = min(grid.shape) - 1
+                ax.plot([0, m], [0, m], "r--", lw=1.2, label="$d_U = " + key + "$")
+                ax.legend(loc="upper left", fontsize=8, framealpha=0.7)
+        jfig.suptitle("Joint distribution of $d_U$ and the other feature blocks")
+        figures += save_figure(jfig, outdir, "dimension_joint_heatmaps")
 
         summary = {
             "n_datasets": results.n_datasets,
