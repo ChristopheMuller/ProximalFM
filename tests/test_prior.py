@@ -429,3 +429,72 @@ def test_sparse2dense():
         AssertionError, match="data length must match sum of row_lengths"
     ):
         sparse2dense(sparse, torch.tensor([2, 2]))
+
+
+# ---------------------------------------------------------------------------
+# Completeness enforcement (min(d_W, d_Z) >= d_U > 0 after column filtering)
+# ---------------------------------------------------------------------------
+
+
+def _make_prior(fixed_hp, max_dim=8, batch_size=24):
+    """A prior with moderately high dims, where post-filter completeness
+    violations occur often enough to exercise the enforcement path."""
+    return SCMPrior(
+        batch_size=batch_size,
+        batch_size_per_gp=1,
+        min_dim_U=2,
+        max_dim_U=max_dim,
+        min_dim_W=2,
+        max_dim_W=max_dim,
+        min_dim_Z=2,
+        max_dim_Z=max_dim,
+        min_dim_X=2,
+        max_dim_X=max_dim,
+        min_seq_len=200,
+        max_seq_len=201,
+        prior_type="mlp_scm",
+        mcmc_cate=2,
+        fixed_hp=fixed_hp,
+        n_jobs=1,
+    )
+
+
+def test_enforce_completeness_heuristic_holds_by_default():
+    # Default DEFAULT_FIXED_HP has enforce_completeness_heuristic=True.
+    prior = _make_prior(DEFAULT_FIXED_HP)
+    out = prior.get_batch()
+    d_U, d_W, d_Z = out[11], out[13], out[14]
+
+    # Every delivered dataset must be confounded and satisfy the heuristic.
+    assert (d_U > 0).all()
+    assert (torch.minimum(d_W, d_Z) >= d_U).all()
+
+
+def test_enforce_completeness_heuristic_can_be_disabled():
+    # With enforcement off, unconfounded / violating datasets are allowed
+    # through again. We only assert it runs and returns the batch (violations
+    # are probabilistic, so we don't require them to appear).
+    fixed_hp = {**DEFAULT_FIXED_HP, "enforce_completeness_heuristic": False}
+    prior = _make_prior(fixed_hp)
+    out = prior.get_batch()
+    d_U, d_W, d_Z = out[11], out[13], out[14]
+    assert d_U.shape[0] == 24
+    # d_U > 0 is no longer guaranteed; the shape contract still holds.
+    assert (d_W > 0).all() and (d_Z > 0).all()
+
+
+def test_completeness_give_up_terminates():
+    # A max_attempts of 1 means the safety valve fires immediately: the very
+    # first basically-valid draw is accepted even if completeness fails. This
+    # must still terminate and return a full batch (regression guard against an
+    # infinite loop in the enforcement path).
+    fixed_hp = {
+        **DEFAULT_FIXED_HP,
+        "enforce_completeness_heuristic": True,
+        "completeness_max_attempts": 1,
+    }
+    prior = _make_prior(fixed_hp, max_dim=10)
+    out = prior.get_batch()
+    d_X, d_W, d_Z = out[12], out[13], out[14]
+    # Basic validity is always required, even when giving up on completeness.
+    assert (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()

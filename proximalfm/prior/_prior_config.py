@@ -13,7 +13,9 @@ DEFAULT_FIXED_HP = {
     "max_categories": float("inf"),
     "corrupt_U": False,
     "propensity_epsilon": 1e-3,
-    "prior_mc_mem_budget": 50_000_000,
+    "prior_mc_mem_budget": 100_000_000,
+    "enforce_completeness_heuristic": True,
+    "completeness_max_attempts": 50,
 }
 
 DEFAULT_SAMPLED_HP = {

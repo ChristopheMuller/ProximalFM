@@ -675,7 +675,11 @@ class SCMPrior(Prior):
         # Memory safeguard
         K = self._cap_mc_samples(K, T, params)
 
+        # Counts resamples triggered by the completeness check below.
+        attempt = 0
+
         while True:
+            attempt += 1
             eps_X_sampler = XSampler(
                 seq_len=T,
                 num_features=params["dim_X"],
@@ -880,12 +884,31 @@ class SCMPrior(Prior):
             X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
-            if (
-                (d_U > 0).all()
-                and (d_X > 0).all()
-                and (d_W > 0).all()
-                and (d_Z > 0).all()
-            ):
+
+            # Basic validity: every observed block needs at least one active
+            # (non-constant) column, else the dataset is unusable.
+            basic_ok = (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+
+            # Proximal validity: the completeness heuristic must survive column
+            # filtering. dim_W, dim_Z >= dim_U holds at sampling time, but the
+            # filtering above acts on each block independently, so a proxy can
+            # drop below d_U afterwards. Reject and resample those. Requiring
+            # d_U > 0 also rejects the rare unconfounded draws where U collapsed
+            # to constants.
+            if params.get("enforce_completeness_heuristic", True):
+                proximal_ok = bool(
+                    (d_U > 0).all() and (torch.minimum(d_W, d_Z) >= d_U).all()
+                )
+            else:
+                proximal_ok = True
+
+            # Safety valve: for pathological hyperparameters (e.g. heavy dropout
+            # that reliably kills proxy columns) completeness may never hold.
+            # After completeness_max_attempts resamples, accept the last
+            # basically-valid draw rather than looping forever.
+            give_up = attempt >= int(params.get("completeness_max_attempts", 50))
+
+            if basic_ok and (proximal_ok or give_up):
                 U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
