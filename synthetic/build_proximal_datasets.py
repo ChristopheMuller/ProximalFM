@@ -378,6 +378,7 @@ def build(args: argparse.Namespace) -> None:
             max_dim_W=args.max_dim_W,
             min_dim_Z=args.min_dim_Z,
             max_dim_Z=args.max_dim_Z,
+            dim_U_distribution=args.dim_U_distribution,
             seed=args.seed,
             device="cpu",
         )
@@ -487,6 +488,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max_dim_W", type=int, default=10)
     p.add_argument("--min_dim_Z", type=int, default=1)
     p.add_argument("--max_dim_Z", type=int, default=10)
+    p.add_argument(
+        "--dim_U_distribution",
+        type=str,
+        default="triangular",
+        choices=["triangular", "uniform"],
+        help="How dim_U is drawn over [min_dim_U, max_dim_U]: 'triangular' "
+        "(default; linearly-decreasing pmf that skews dim_U small, matching "
+        "the SCM prior) or 'uniform' (flat).",
+    )
     return p
 
 
