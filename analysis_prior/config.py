@@ -255,6 +255,20 @@ def pinned(value: float) -> Dict[str, Any]:
 #: baseline they are compared against.
 PRESETS: Dict[str, PriorSpec] = {
     "default": PriorSpec(name="default"),
+    "general_ite": PriorSpec(
+        name="general_ite",
+        n_datasets=256,
+        seq_len=2048,
+        mcmc_cate=1,
+        min_dim_U=1,
+        max_dim_U=10,
+        min_dim_W=1,
+        max_dim_W=10,
+        min_dim_Z=1,
+        max_dim_Z=10,
+        min_dim_X=1,
+        max_dim_X=10,
+    ),
     "smoke": PriorSpec(
         name="smoke",
         n_datasets=4,
