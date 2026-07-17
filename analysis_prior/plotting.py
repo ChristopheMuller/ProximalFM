@@ -1,10 +1,14 @@
-"""Shared plotting and output helpers for the prior audits.
+"""Output helpers for the prior audits: backend and saving.
 
-Centralises three things so individual analyses don't repeat them:
+This module owns *where things go*; :mod:`analysis_prior.design` owns *how they
+look*. Keeping them apart means a change to the visual identity never risks
+touching the I/O, and the design module can import ``plt`` from here without a
+cycle.
+
+Centralises two things so individual analyses don't repeat them:
 
 - A headless Matplotlib backend. Analyses run in scripts, CI and notebooks; none
   of them should require a display, and importing this module guarantees that.
-- A consistent figure style.
 - Save helpers that write each artifact in the paper-ready *and* the
   machine-readable format at once: figures as both ``.pdf`` (for LaTeX) and
   ``.png`` (for quick viewing), tables as both ``.tex`` and ``.csv``.
@@ -24,26 +28,13 @@ import matplotlib.pyplot as plt  # noqa: E402  (import after backend selection)
 import pandas as pd  # noqa: E402
 
 
-def apply_style() -> None:
-    """Apply the shared figure style. Idempotent."""
-    plt.rcParams.update(
-        {
-            "figure.dpi": 120,
-            "savefig.bbox": "tight",
-            "axes.grid": True,
-            "grid.alpha": 0.25,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-            "font.size": 10,
-        }
-    )
-
-
 def save_figure(fig: "plt.Figure", outdir: Path, name: str) -> List[Path]:
     """Save ``fig`` as both PDF and PNG under ``outdir``; return the paths.
 
-    The figure is closed afterwards so that generating many analyses in one
-    process does not leak figure handles.
+    The figure is saved at exactly the size it was created with -- see
+    :mod:`analysis_prior.design` for why that matters and how to pick it. The
+    figure is closed afterwards so that generating many analyses in one process
+    does not leak figure handles.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)

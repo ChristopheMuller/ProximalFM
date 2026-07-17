@@ -20,8 +20,18 @@ import pandas as pd
 
 from proximalfm.prior._dataset import SCMPrior
 
+from ..design import (
+    COUNT_CMAP,
+    apply_style,
+    block_color,
+    constraint_line,
+    figsize_grid,
+    grouped_bar_offsets,
+    theory_line,
+    variant_styles,
+)
 from ..generate import PriorCache
-from ..plotting import apply_style, plt, save_figure, save_table
+from ..plotting import plt, save_figure, save_table
 from .base import Analysis, AnalysisArtifacts, ComparisonAnalysis, register
 
 
@@ -212,20 +222,21 @@ class DimensionsAnalysis(Analysis):
         )
 
         # --- Figure: histograms of the four active dimensions -------------
-        fig, axes = plt.subplots(1, 4, figsize=(14, 3), sharey=True)
-        for ax, key, colour in zip(
-            axes,
-            ("d_U", "d_X", "d_W", "d_Z"),
-            ("tab:red", "tab:blue", "tab:green", "tab:orange"),
-        ):
+        fig, axes = plt.subplots(
+            1,
+            4,
+            figsize=figsize_grid(ncols=4, panel_aspect=1.15, extra_height_in=0.3),
+            sharey=True,
+        )
+        for ax, key in zip(axes, ("d_U", "d_X", "d_W", "d_Z")):
             values = getattr(results, key)
             # Integer-aligned bins so each dimension count gets its own bar.
             bins = np.arange(values.min(), values.max() + 2) - 0.5
-            ax.hist(values, bins=bins, color=colour, alpha=0.8)
+            ax.hist(values, bins=bins, color=block_color(key), alpha=0.85)
             ax.set_title(f"${key}$")
             ax.set_xlabel("active dimension")
         axes[0].set_ylabel("datasets")
-        fig.suptitle("Active feature dimensions across the prior", y=1.05)
+        fig.suptitle("Active feature dimensions across the prior")
         figures = save_figure(fig, outdir, "dimension_histograms")
 
         # --- Figure: joint distribution of d_U against each other block ---
@@ -239,13 +250,15 @@ class DimensionsAnalysis(Analysis):
             ("d_W", results.d_W, True),
             ("d_Z", results.d_Z, True),
         )
-        jfig, jaxes = plt.subplots(1, 3, figsize=(15, 4.2))
+        jfig, jaxes = plt.subplots(
+            1, 3, figsize=figsize_grid(ncols=3, panel_aspect=1.0, extra_height_in=0.3)
+        )
         for ax, (key, col_vals, has_bound) in zip(jaxes, pairs):
             grid = joint_counts(results.d_U, col_vals, row_max=d_U_max)
             im = ax.imshow(
                 grid,
                 origin="lower",
-                cmap="viridis",
+                cmap=COUNT_CMAP,
                 aspect="auto",
                 interpolation="nearest",
             )
@@ -257,9 +270,7 @@ class DimensionsAnalysis(Analysis):
             ax.set_title(f"$d_U$ vs ${key}$")
             ax.grid(False)
             if has_bound:
-                m = min(grid.shape) - 1
-                ax.plot([0, m], [0, m], "r--", lw=1.2, label="$d_U = " + key + "$")
-                ax.legend(loc="upper left", fontsize=8, framealpha=0.7)
+                constraint_line(ax, 0, min(grid.shape) - 1, label=f"$d_U = {key}$")
         jfig.suptitle("Joint distribution of $d_U$ and the other feature blocks")
         figures += save_figure(jfig, outdir, "dimension_joint_heatmaps")
 
@@ -377,8 +388,15 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
         self, results: DimensionComparisonResults, outdir: Path
     ) -> list:
         """Grouped empirical bars per variant + one analytic overlay per scheme."""
-        fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+        fig, axes = plt.subplots(
+            1,
+            3,
+            figsize=figsize_grid(ncols=3, panel_aspect=0.95, extra_height_in=0.5),
+            sharey=True,
+        )
         n = len(results.variants)
+        styles = variant_styles(results.variants)
+        offsets = grouped_bar_offsets(n)
         width = 0.8 / n
 
         for ax, key in zip(axes, ("d_U", "d_W", "d_Z")):
@@ -390,37 +408,37 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             positions = {v: i for i, v in enumerate(support)}
             x = np.arange(len(support))
 
-            for i, (label, var) in enumerate(results.variants.items()):
+            for offset, (label, var) in zip(offsets, results.variants.items()):
                 observed = getattr(var.results, key)
                 counts = np.zeros(len(support))
                 for value, count in zip(*np.unique(observed, return_counts=True)):
                     counts[positions[int(value)]] = count
                 ax.bar(
-                    x + (i - (n - 1) / 2) * width,
+                    x + offset,
                     counts / max(1, len(observed)),
                     width,
                     label=label,
                     alpha=0.85,
+                    **styles[label],
                 )
 
             # One theory line per distinct sampling law (variants sharing a
             # scheme share a line; the overlay describes the *sampled* dims,
             # so delivered bars may sit slightly below it after filtering).
-            seen = set()
+            # Solid/dotted separates the laws where two are shown at once.
+            seen = {}
             for var in results.variants.values():
                 pmf = var.theory[key]
                 signature = (var.scheme, tuple(sorted(pmf.items())))
                 if signature in seen:
                     continue
-                seen.add(signature)
-                ax.plot(
+                seen[signature] = var.scheme
+                theory_line(
+                    ax,
                     [positions[v] for v in pmf],
                     list(pmf.values()),
-                    marker="o",
-                    markersize=4,
-                    linestyle="--",
-                    color="black" if var.scheme == "triangular" else "dimgray",
                     label=f"theory ({var.scheme})",
+                    linestyle="--" if len(seen) == 1 else ":",
                 )
 
             ax.set_xticks(x)
@@ -428,8 +446,8 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             ax.set_xlabel(f"${key}$")
             ax.set_title(f"${key}$")
         axes[0].set_ylabel("probability")
-        axes[0].legend(fontsize=8)
-        fig.suptitle("Delivered dimension marginals vs analytic sampling laws")
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, labels, loc="outside upper center", ncol=3, frameon=True)
         return save_figure(fig, outdir, "dimension_marginals")
 
     def _render_joint_heatmaps(
@@ -445,7 +463,14 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             for key in ("d_X", "d_W", "d_Z")
         }
 
-        fig, axes = plt.subplots(n, 3, figsize=(15, 4.2 * n), squeeze=False)
+        fig, axes = plt.subplots(
+            n,
+            3,
+            figsize=figsize_grid(
+                ncols=3, nrows=n, panel_aspect=1.0, extra_height_in=0.3
+            ),
+            squeeze=False,
+        )
         for row, (label, var) in enumerate(results.variants.items()):
             for col, (key, has_bound) in enumerate(
                 (("d_X", False), ("d_W", True), ("d_Z", True))
@@ -460,7 +485,7 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 im = ax.imshow(
                     grid,
                     origin="lower",
-                    cmap="viridis",
+                    cmap=COUNT_CMAP,
                     aspect="auto",
                     interpolation="nearest",
                 )
@@ -472,12 +497,8 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 ax.set_title(f"{label}: $d_U$ vs ${key}$")
                 ax.grid(False)
                 if has_bound:
-                    m = min(grid.shape) - 1
-                    ax.plot([0, m], [0, m], "r--", lw=1.2, label=f"$d_U = {key}$")
-                    ax.legend(loc="upper left", fontsize=8, framealpha=0.7)
+                    constraint_line(ax, 0, min(grid.shape) - 1, label=f"$d_U = {key}$")
         fig.suptitle("Joint distribution of $d_U$ and the other blocks, per variant")
-        # Row titles collide with the x-labels of the row above without this.
-        fig.tight_layout(rect=(0, 0, 1, 0.96))
         return save_figure(fig, outdir, "dimension_joint_heatmaps_comparison")
 
     def _render_sampling_table(
