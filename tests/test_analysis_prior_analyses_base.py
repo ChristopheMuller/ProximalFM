@@ -112,3 +112,72 @@ def test_real_registry_contains_dimensions():
     import analysis_prior.analyses  # noqa: F401
 
     assert "dimensions" in all_analyses()
+
+
+# --------------------------------------------------------------------------
+# ComparisonAnalysis
+# --------------------------------------------------------------------------
+
+
+class _DummyComparison(base.ComparisonAnalysis):
+    name = "dummy_comparison"
+    description = "dummy comparison analysis"
+
+    def compute(self, caches):
+        # A real comparison would contrast the variants; recording the labels
+        # is enough to prove the full dict arrived, in order.
+        return {"labels": list(caches)}
+
+    def render(self, results, outdir):
+        (outdir / "artifact.txt").write_text(",".join(results["labels"]))
+        return AnalysisArtifacts(
+            summary={"n_variants": len(results["labels"])},
+            figures=[outdir / "artifact.txt"],
+        )
+
+
+class _FakeCacheNamed:
+    class _Spec:
+        def __init__(self, name):
+            self.name = name
+
+        def to_dict(self):
+            return {"name": self.name}
+
+    def __init__(self, name):
+        self.spec = self._Spec(name)
+
+
+def test_comparison_run_receives_all_caches_and_writes_specs_json(tmp_path):
+    caches = {
+        "triangular": _FakeCacheNamed("base_triangular"),
+        "uniform": _FakeCacheNamed("base_uniform"),
+    }
+    artifacts = _DummyComparison().run(caches, tmp_path)
+
+    assert artifacts.summary == {"n_variants": 2}
+    # Label order is preserved end to end (renderers rely on it).
+    assert (tmp_path / "artifact.txt").read_text() == "triangular,uniform"
+
+    # Provenance is specs.json (one spec per variant), not spec.json.
+    with open(tmp_path / "specs.json") as f:
+        specs = json.load(f)
+    assert specs == {
+        "triangular": {"name": "base_triangular"},
+        "uniform": {"name": "base_uniform"},
+    }
+    assert not (tmp_path / "spec.json").exists()
+
+    with open(tmp_path / "summary.json") as f:
+        assert json.load(f) == {"n_variants": 2}
+
+
+def test_comparison_run_rejects_empty_caches(tmp_path):
+    with pytest.raises(ValueError, match="no caches"):
+        _DummyComparison().run({}, tmp_path)
+
+
+def test_comparison_registers_like_any_analysis(isolated_registry):
+    register(_DummyComparison)
+    got = get_analysis("dummy_comparison")
+    assert isinstance(got, base.ComparisonAnalysis)

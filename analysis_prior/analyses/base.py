@@ -83,6 +83,44 @@ class Analysis:
         return artifacts
 
 
+class ComparisonAnalysis(Analysis):
+    """An audit that contrasts several prior variants in one set of figures.
+
+    Where a plain :class:`Analysis` sees one :class:`PriorCache` (and is run
+    once per variant when driven by a family), a comparison analysis receives
+    **all** the family's caches at once as ``{label: PriorCache}``, because its
+    output is the contrast itself -- e.g. dimension marginals under triangular
+    vs uniform ``d_U`` on shared axes.
+
+    The dict preserves the family's intervention order; renderers can rely on
+    it for consistent series ordering. Provenance is ``specs.json`` (one spec
+    per variant) instead of ``spec.json``.
+    """
+
+    def compute(self, caches: Dict[str, PriorCache]) -> Any:
+        """Return a results object from the labelled caches. Pure."""
+        raise NotImplementedError
+
+    def run(self, caches: Dict[str, PriorCache], outdir: Path) -> AnalysisArtifacts:
+        """Compute, render, and write provenance for a multi-variant run."""
+        if not caches:
+            raise ValueError(f"{self.name}: no caches supplied")
+        outdir = Path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        results = self.compute(caches)
+        artifacts = self.render(results, outdir)
+
+        with open(outdir / "specs.json", "w") as f:
+            json.dump(
+                {label: c.spec.to_dict() for label, c in caches.items()}, f, indent=2
+            )
+        with open(outdir / "summary.json", "w") as f:
+            json.dump(artifacts.summary, f, indent=2)
+
+        return artifacts
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ Design choices that differ from the training-time prior, and why:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import json
 from dataclasses import asdict, dataclass, field
@@ -314,5 +315,129 @@ PRESETS: Dict[str, PriorSpec] = {
     "no_categorization": PriorSpec(
         name="no_categorization",
         fixed_hp_overrides={"cat_prob": 0.0},
+    ),
+}
+
+
+@dataclass(frozen=True)
+class SpecFamily:
+    """A base spec plus named interventions on it, for comparison studies.
+
+    A family answers "what does changing one knob do to the prior?": each
+    intervention is a small dict of :class:`PriorSpec` field overrides applied
+    on top of ``base``. The comparison axis lives here in config -- inspectable
+    and reusable -- rather than being hardcoded inside any analysis; a dimension
+    ablation, a ``mcmc_cate`` sweep and a ``seq_len`` sweep are all the same
+    object with different interventions.
+
+    Merge semantics: within an intervention, the dict-valued fields
+    ``fixed_hp_overrides`` and ``sampled_hp_overrides`` are **deep-merged** over
+    the base's (so intervening on ``dim_U_distribution`` atop a base that pins
+    ``cat_prob`` keeps both); every other field **replaces** the base value.
+    Consequence: an intervention cannot *remove* a base override, only add or
+    change keys.
+
+    The baseline is not implicit: include it as an explicit identity entry
+    (``{}``), which also fixes its label and the plotting order (dict order is
+    preserved by :meth:`resolve`).
+
+    Parameters
+    ----------
+    name : str
+        Family label; names the output directory (``results/<name>/...``).
+
+    base : PriorSpec
+        The spec every intervention starts from.
+
+    interventions : dict
+        ``label -> {PriorSpec field: value}``. ``{}`` is the identity. ``name``
+        may not be intervened on (resolve derives variant names).
+    """
+
+    name: str
+    base: PriorSpec
+    interventions: Dict[str, Dict[str, Any]]
+
+    def __post_init__(self) -> None:
+        if not self.name or not all(c.isalnum() or c in "_-" for c in self.name):
+            raise ValueError(
+                f"family name must be non-empty and contain only alphanumerics, "
+                f"'_' or '-'; got {self.name!r}"
+            )
+        if not self.interventions:
+            raise ValueError("a SpecFamily needs at least one intervention")
+        for label, overrides in self.interventions.items():
+            if not label or not all(c.isalnum() or c in "_-" for c in label):
+                raise ValueError(
+                    f"intervention label must be non-empty and contain only "
+                    f"alphanumerics, '_' or '-'; got {label!r}"
+                )
+            if "name" in overrides:
+                raise ValueError(
+                    f"intervention {label!r} sets 'name'; variant names are "
+                    "derived from the base name and the label"
+                )
+            unknown = set(overrides) - set(PriorSpec.__dataclass_fields__)
+            if unknown:
+                raise ValueError(
+                    f"intervention {label!r} has unknown PriorSpec fields: "
+                    f"{sorted(unknown)}"
+                )
+        # Eagerly resolve so an invalid override value (e.g. seq_len=1) fails at
+        # construction time, not mid-run after other variants were generated.
+        self.resolve()
+
+    def resolve(self) -> Dict[str, PriorSpec]:
+        """Materialise ``label -> PriorSpec``, preserving intervention order."""
+        variants = {}
+        for label, overrides in self.interventions.items():
+            fields = dict(overrides)
+            merged: Dict[str, Any] = {}
+            for key in ("fixed_hp_overrides", "sampled_hp_overrides"):
+                if key in fields:
+                    merged[key] = {**getattr(self.base, key), **fields.pop(key)}
+            variants[label] = dataclasses.replace(
+                self.base,
+                name=f"{self.base.name}_{label}",
+                **merged,
+                **fields,
+            )
+        return variants
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serialisable provenance: the resolved spec of every variant."""
+        return {
+            "name": self.name,
+            "base": self.base.to_dict(),
+            "variants": {
+                label: spec.to_dict() for label, spec in self.resolve().items()
+            },
+        }
+
+
+#: Named comparison studies. Referenced from the CLI via ``--family <name>``, so
+#: a comparison figure is reproducible from the family name alone.
+FAMILIES: Dict[str, SpecFamily] = {
+    # Justifies the two prior modifications (triangular d_U, completeness
+    # enforcement) by contrast with the prior as it was before each.
+    "dim_ablation": SpecFamily(
+        name="dim_ablation",
+        base=PRESETS["general_ite"],
+        interventions={
+            "triangular": {},
+            "uniform": {"fixed_hp_overrides": {"dim_U_distribution": "uniform"}},
+            "unenforced": {
+                "fixed_hp_overrides": {"enforce_completeness_heuristic": False}
+            },
+        },
+    ),
+    # Tiny end-to-end family for tests and dry runs.
+    "smoke_family": SpecFamily(
+        name="smoke_family",
+        base=PRESETS["smoke"],
+        interventions={
+            "triangular": {},
+            "uniform": {"fixed_hp_overrides": {"dim_U_distribution": "uniform"}},
+        },
     ),
 }

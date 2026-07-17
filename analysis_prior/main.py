@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import json
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from .analyses import all_analyses, get_analysis
-from .config import PRESETS, PriorSpec
+from .analyses import ComparisonAnalysis, all_analyses, get_analysis
+from .config import FAMILIES, PRESETS, PriorSpec, SpecFamily
 from .generate import DEFAULT_CACHE_DIR, list_caches, load_or_generate
 
 #: Default location for rendered figures and tables.
@@ -57,6 +58,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--spec",
         default="default",
         help=f"Preset spec to start from. One of: {sorted(PRESETS)}.",
+    )
+    parser.add_argument(
+        "--family",
+        default=None,
+        help=(
+            f"Run a comparison family instead of a single spec. One of: "
+            f"{sorted(FAMILIES)}. Overrides --spec; spec overrides like "
+            "--n-datasets apply to the family's base."
+        ),
     )
     parser.add_argument(
         "--analysis",
@@ -97,8 +107,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list-caches", action="store_true", help="List cached specs and exit."
     )
+    parser.add_argument(
+        "--list-families",
+        action="store_true",
+        help="List comparison families and exit.",
+    )
 
     return parser
+
+
+def _cli_overrides(args: argparse.Namespace) -> dict:
+    """Collect the spec-field overrides given on the command line."""
+    overrides = {}
+    for field in _SPEC_OVERRIDE_FIELDS:
+        value = getattr(args, field)
+        if value is not None:
+            overrides[field] = value
+    if args.name is not None:
+        overrides["name"] = args.name
+    return overrides
 
 
 def build_spec(args: argparse.Namespace) -> PriorSpec:
@@ -108,17 +135,29 @@ def build_spec(args: argparse.Namespace) -> PriorSpec:
             f"Unknown --spec {args.spec!r}. Available presets: {sorted(PRESETS)}"
         )
 
-    overrides = {}
-    for field in _SPEC_OVERRIDE_FIELDS:
-        value = getattr(args, field)
-        if value is not None:
-            overrides[field] = value
-    if args.name is not None:
-        overrides["name"] = args.name
-
     # dataclasses.replace re-runs __post_init__, so an invalid override (e.g.
     # seq_len=1) is rejected here with the same validation as direct construction.
-    return dataclasses.replace(PRESETS[args.spec], **overrides)
+    return dataclasses.replace(PRESETS[args.spec], **_cli_overrides(args))
+
+
+def build_family(args: argparse.Namespace) -> SpecFamily:
+    """Build a :class:`SpecFamily` from a registered family plus CLI overrides.
+
+    Overrides apply to the family's *base*, so ``--family dim_ablation
+    --n-datasets 32`` runs the whole comparison at a smaller size.
+    """
+    if args.family not in FAMILIES:
+        raise SystemExit(
+            f"Unknown --family {args.family!r}. Available: {sorted(FAMILIES)}"
+        )
+
+    family = FAMILIES[args.family]
+    overrides = _cli_overrides(args)
+    if overrides:
+        family = dataclasses.replace(
+            family, base=dataclasses.replace(family.base, **overrides)
+        )
+    return family
 
 
 def resolve_analyses(names: Sequence[str]) -> List[str]:
@@ -156,19 +195,39 @@ def _print_caches(cache_dir: Path) -> None:
         )
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+def _print_families() -> None:
+    print("Available families:")
+    for name, family in sorted(FAMILIES.items()):
+        labels = ", ".join(family.interventions)
+        print(f"  {name:16s} base={family.base.name}  variants: {labels}")
 
-    if args.list_analyses:
-        _print_analyses()
-        return 0
-    if args.list_caches:
-        _print_caches(args.cache_dir)
-        return 0
+
+def _print_summary(name: str, description: str, summary: dict) -> None:
+    print(f"\n[{name}] {description}")
+    for key, value in summary.items():
+        formatted = f"{value:.4f}" if isinstance(value, float) else value
+        print(f"    {key}: {formatted}")
+
+
+def _run_single(args: argparse.Namespace, analysis_names: List[str]) -> int:
+    """Run analyses against one spec (the pre-family behaviour)."""
+    # Comparison analyses contrast several variants; a single spec cannot feed
+    # them. Skip them under the implicit 'all', but treat an explicit request
+    # as a user error rather than silently doing nothing.
+    explicit = list(args.analysis) != ["all"]
+    comparisons = [
+        n for n in analysis_names if isinstance(get_analysis(n), ComparisonAnalysis)
+    ]
+    if comparisons:
+        if explicit:
+            raise SystemExit(
+                f"Analyses {comparisons} compare prior variants; run them with "
+                "--family instead of --spec."
+            )
+        analysis_names = [n for n in analysis_names if n not in comparisons]
+        print(f"Skipping comparison analyses (need --family): {', '.join(comparisons)}")
 
     spec = build_spec(args)
-    analysis_names = resolve_analyses(args.analysis)
-
     cache = load_or_generate(
         spec, cache_dir=args.cache_dir, force=args.force, n_jobs=args.n_jobs
     )
@@ -182,12 +241,66 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for name in analysis_names:
         analysis = get_analysis(name)
         artifacts = analysis.run(cache, spec_out / name)
-        print(f"\n[{name}] {analysis.description}")
-        for key, value in artifacts.summary.items():
-            formatted = f"{value:.4f}" if isinstance(value, float) else value
-            print(f"    {key}: {formatted}")
+        _print_summary(name, analysis.description, artifacts.summary)
 
     return 0
+
+
+def _run_family(args: argparse.Namespace, analysis_names: List[str]) -> int:
+    """Run analyses across every variant of a comparison family.
+
+    Plain analyses run once per variant, into ``<family>/<label>/<analysis>/``;
+    comparison analyses run once with all caches, into ``<family>/<analysis>/``.
+    """
+    family = build_family(args)
+    variants = family.resolve()
+
+    caches = {
+        label: load_or_generate(
+            spec, cache_dir=args.cache_dir, force=args.force, n_jobs=args.n_jobs
+        )
+        for label, spec in variants.items()
+    }
+
+    family_out = Path(args.out_dir) / family.name
+    family_out.mkdir(parents=True, exist_ok=True)
+    with open(family_out / "specs.json", "w") as f:
+        json.dump(family.to_dict(), f, indent=2)
+    print(f"\nWriting results to {family_out}")
+
+    for name in analysis_names:
+        analysis = get_analysis(name)
+        if isinstance(analysis, ComparisonAnalysis):
+            artifacts = analysis.run(caches, family_out / name)
+            _print_summary(name, analysis.description, artifacts.summary)
+        else:
+            for label, cache in caches.items():
+                artifacts = analysis.run(cache, family_out / label / name)
+                _print_summary(
+                    f"{name} · {label}", analysis.description, artifacts.summary
+                )
+
+    return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.list_analyses:
+        _print_analyses()
+        return 0
+    if args.list_caches:
+        _print_caches(args.cache_dir)
+        return 0
+    if args.list_families:
+        _print_families()
+        return 0
+
+    analysis_names = resolve_analyses(args.analysis)
+
+    if args.family is not None:
+        return _run_family(args, analysis_names)
+    return _run_single(args, analysis_names)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,6 @@ Layout:
 - :mod:`analysis_prior.main` -- CLI entry point.
 """
 
-from .config import PriorSpec
+from .config import PriorSpec, SpecFamily
 
-__all__ = ["PriorSpec"]
+__all__ = ["PriorSpec", "SpecFamily"]

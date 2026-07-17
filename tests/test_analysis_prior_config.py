@@ -232,3 +232,114 @@ def test_presets_are_valid_and_self_named():
     assert PRESETS  # guard against an accidentally emptied registry
     for key, spec in PRESETS.items():
         assert spec.name == key, f"preset {key!r} is registered under a different name"
+
+
+# --------------------------------------------------------------------------
+# SpecFamily
+# --------------------------------------------------------------------------
+
+
+def _family(**kwargs):
+    from analysis_prior.config import SpecFamily
+
+    defaults = dict(
+        name="fam",
+        base=PriorSpec(name="base", fixed_hp_overrides={"cat_prob": 0.0}),
+        interventions={
+            "identity": {},
+            "uniform": {"fixed_hp_overrides": {"dim_U_distribution": "uniform"}},
+        },
+    )
+    return SpecFamily(**{**defaults, **kwargs})
+
+
+def test_family_resolve_names_and_order():
+    variants = _family().resolve()
+    # Intervention order is preserved (renderers rely on it for series order)
+    # and variant names are derived from the base name and the label.
+    assert list(variants) == ["identity", "uniform"]
+    assert variants["identity"].name == "base_identity"
+    assert variants["uniform"].name == "base_uniform"
+
+
+def test_family_identity_variant_generates_the_same_data():
+    fam = _family()
+    identity = fam.resolve()["identity"]
+    assert identity.same_data_as(fam.base)
+    # Content-addressed caching makes the identity variant free: same cache key.
+    assert identity.cache_key == fam.base.cache_key
+
+
+def test_family_overrides_deep_merge_within_hp_dicts():
+    variants = _family().resolve()
+    merged = variants["uniform"].fixed_hp_overrides
+    # The base's own override survives the intervention on a sibling key...
+    assert merged == {"cat_prob": 0.0, "dim_U_distribution": "uniform"}
+
+
+def test_family_intervention_wins_on_conflicting_keys():
+    fam = _family(interventions={"recat": {"fixed_hp_overrides": {"cat_prob": 0.7}}})
+    assert fam.resolve()["recat"].fixed_hp_overrides == {"cat_prob": 0.7}
+
+
+def test_family_non_dict_fields_replace():
+    fam = _family(interventions={"short": {"seq_len": 64, "mcmc_cate": 3}})
+    variant = fam.resolve()["short"]
+    assert variant.seq_len == 64
+    assert variant.mcmc_cate == 3
+    # Untouched fields come from the base.
+    assert variant.fixed_hp_overrides == {"cat_prob": 0.0}
+
+
+def test_family_resolve_does_not_mutate_base():
+    fam = _family()
+    fam.resolve()
+    assert fam.base.fixed_hp_overrides == {"cat_prob": 0.0}
+    assert fam.base.name == "base"
+
+
+def test_family_rejects_empty_interventions():
+    with pytest.raises(ValueError, match="at least one intervention"):
+        _family(interventions={})
+
+
+@pytest.mark.parametrize("label", ["", "has space", "has.dot"])
+def test_family_rejects_bad_labels(label):
+    with pytest.raises(ValueError, match="label"):
+        _family(interventions={label: {}})
+
+
+def test_family_rejects_name_intervention():
+    with pytest.raises(ValueError, match="derived from the base name"):
+        _family(interventions={"renamed": {"name": "sneaky"}})
+
+
+def test_family_rejects_unknown_fields():
+    with pytest.raises(ValueError, match="unknown PriorSpec fields"):
+        _family(interventions={"typo": {"seq_length": 10}})
+
+
+def test_family_rejects_invalid_override_values_at_construction():
+    # Eager resolve: a bad value fails when the family is built, not mid-run.
+    with pytest.raises(ValueError, match="seq_len"):
+        _family(interventions={"bad": {"seq_len": 1}})
+
+
+def test_family_to_dict_is_json_serialisable():
+    payload = json.loads(json.dumps(_family().to_dict()))
+    assert set(payload["variants"]) == {"identity", "uniform"}
+    assert payload["base"]["name"] == "base"
+
+
+def test_families_registry_is_self_consistent():
+    from analysis_prior.config import FAMILIES
+
+    assert "dim_ablation" in FAMILIES
+    for key, family in FAMILIES.items():
+        assert family.name == key, f"family {key!r} registered under another name"
+    # The dim ablation carries the three variants the appendix compares.
+    assert list(FAMILIES["dim_ablation"].interventions) == [
+        "triangular",
+        "uniform",
+        "unenforced",
+    ]
