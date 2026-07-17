@@ -48,12 +48,25 @@ def save_figure(fig: "plt.Figure", outdir: Path, name: str) -> List[Path]:
 
 
 def save_table(
-    df: pd.DataFrame, outdir: Path, name: str, caption: str = ""
+    df: pd.DataFrame,
+    outdir: Path,
+    name: str,
+    caption: str = "",
+    label: str = None,
+    escape: bool = True,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
-    The ``.tex`` is paper-ready (it is the only tracked format -- ``.csv`` is
-    gitignored). The ``.csv`` is for eyeballing and downstream reuse.
+    The ``.tex`` is a complete float (``\\begin{table}...\\end{table}``) so a
+    section can ``\\input`` it and refer to it with ``\\Cref{<label>}``; it is
+    the only tracked format, the ``.csv`` (gitignored) being for eyeballing and
+    downstream reuse. A ``label`` is baked in only when given, so tables keep a
+    single source of truth for their caption and reference key.
+
+    ``escape`` (default ``True``) protects plain-text cells that contain LaTeX
+    specials such as underscores. Pass ``escape=False`` when the frame's cells
+    and headers are *deliberately* LaTeX (e.g. ``$d_U$``); with escaping on,
+    that math would be printed verbatim rather than typeset.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -64,7 +77,11 @@ def save_table(
     tex_path = outdir / f"{name}.tex"
     tex_path.write_text(
         df.to_latex(
-            index=False, escape=True, caption=caption or None, float_format="%.3f"
+            index=False,
+            escape=escape,
+            caption=caption or None,
+            label=label,
+            float_format="%.3f",
         )
     )
     return [tex_path, csv_path]

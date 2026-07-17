@@ -318,6 +318,11 @@ def test_comparison_run_writes_expected_artifacts(tiny_family_caches, tmp_path):
     assert "completeness_survival_unenforced.tex" in names
     for path in artifacts.figures + artifacts.tables:
         assert path.exists()
+
+    # Tables carry a \label so the appendix can \input and \Cref them.
+    sampling_tex = (tmp_path / "dimension_sampling.tex").read_text()
+    assert "\\label{tab:prior_dim_sampling}" in sampling_tex
+    assert "\\caption" in sampling_tex
     # Comparison provenance: one spec per variant.
     import json
 

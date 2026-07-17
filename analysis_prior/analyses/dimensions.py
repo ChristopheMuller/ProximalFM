@@ -240,29 +240,32 @@ class DimensionsAnalysis(Analysis):
         figures = save_figure(fig, outdir, "dimension_histograms")
 
         # --- Figure: joint distribution of d_U against each other block ---
-        # One figure, three heatmap panels. On the W/Z panels the completeness
-        # heuristic requires all mass on/below the diagonal d_U = d_proxy; the
-        # dashed line makes violations (mass above it) visible at a glance.
-        # d_X has no such constraint, so no line is drawn there.
         d_U_max = int(results.d_U.max())
         pairs = (
             ("d_X", results.d_X, False),
             ("d_W", results.d_W, True),
             ("d_Z", results.d_Z, True),
         )
+        grids = {
+            key: joint_counts(results.d_U, col_vals, row_max=d_U_max)
+            for key, col_vals, _ in pairs
+        }
+        vmax = max(grid.max() for grid in grids.values())
+
         jfig, jaxes = plt.subplots(
             1, 3, figsize=figsize_grid(ncols=3, panel_aspect=1.0, extra_height_in=0.3)
         )
-        for ax, (key, col_vals, has_bound) in zip(jaxes, pairs):
-            grid = joint_counts(results.d_U, col_vals, row_max=d_U_max)
+        for ax, (key, _, has_bound) in zip(jaxes, pairs):
+            grid = grids[key]
             im = ax.imshow(
                 grid,
                 origin="lower",
                 cmap=COUNT_CMAP,
                 aspect="auto",
                 interpolation="nearest",
+                vmin=0,
+                vmax=vmax,
             )
-            jfig.colorbar(im, ax=ax, label="datasets")
             ax.set_xticks(range(grid.shape[1]))
             ax.set_yticks(range(grid.shape[0]))
             ax.set_xlabel(f"${key}$")
@@ -271,6 +274,7 @@ class DimensionsAnalysis(Analysis):
             ax.grid(False)
             if has_bound:
                 constraint_line(ax, 0, min(grid.shape) - 1, label=f"$d_U = {key}$")
+        jfig.colorbar(im, ax=jaxes, label="datasets", shrink=0.8)
         jfig.suptitle("Joint distribution of $d_U$ and the other feature blocks")
         figures += save_figure(jfig, outdir, "dimension_joint_heatmaps")
 
@@ -453,43 +457,61 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
     def _render_joint_heatmaps(
         self, results: DimensionComparisonResults, outdir: Path
     ) -> list:
-        """One row per variant: d_U vs d_X / d_W / d_Z, on shared axes."""
+        """One row per variant: d_U vs d_X / d_W / d_Z, on shared axes.
+
+        Colour scale is shared *within* each column (across variants) rather
+        than globally, since variants can differ in ``n_datasets`` and a
+        single scale across all three dimensions would let the biggest one
+        wash out the others. Sharing per column is what the figure is for:
+        comparing a variant against the baseline on the same dimension.
+        """
         n = len(results.variants)
         d_U_max = max(int(v.results.d_U.max()) for v in results.variants.values())
+        columns = (("d_X", False), ("d_W", True), ("d_Z", True))
         col_max = {
             key: max(
                 int(getattr(v.results, key).max()) for v in results.variants.values()
             )
-            for key in ("d_X", "d_W", "d_Z")
+            for key, _ in columns
+        }
+        grids = {
+            (label, key): joint_counts(
+                var.results.d_U,
+                getattr(var.results, key),
+                row_max=d_U_max,
+                col_max=col_max[key],
+            )
+            for label, var in results.variants.items()
+            for key, _ in columns
+        }
+        col_vmax = {
+            key: max(grids[(label, key)].max() for label in results.variants)
+            for key, _ in columns
         }
 
         fig, axes = plt.subplots(
             n,
             3,
+            # Headroom for the suptitle plus the row of colorbars along the
+            # bottom.
             figsize=figsize_grid(
-                ncols=3, nrows=n, panel_aspect=1.0, extra_height_in=0.3
+                ncols=3, nrows=n, panel_aspect=1.0, extra_height_in=0.8
             ),
             squeeze=False,
         )
         for row, (label, var) in enumerate(results.variants.items()):
-            for col, (key, has_bound) in enumerate(
-                (("d_X", False), ("d_W", True), ("d_Z", True))
-            ):
+            for col, (key, has_bound) in enumerate(columns):
                 ax = axes[row][col]
-                grid = joint_counts(
-                    var.results.d_U,
-                    getattr(var.results, key),
-                    row_max=d_U_max,
-                    col_max=col_max[key],
-                )
+                grid = grids[(label, key)]
                 im = ax.imshow(
                     grid,
                     origin="lower",
                     cmap=COUNT_CMAP,
                     aspect="auto",
                     interpolation="nearest",
+                    vmin=0,
+                    vmax=col_vmax[key],
                 )
-                fig.colorbar(im, ax=ax, label="datasets")
                 ax.set_xticks(range(grid.shape[1]))
                 ax.set_yticks(range(grid.shape[0]))
                 ax.set_xlabel(f"${key}$")
@@ -498,6 +520,18 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 ax.grid(False)
                 if has_bound:
                     constraint_line(ax, 0, min(grid.shape) - 1, label=f"$d_U = {key}$")
+        # One colorbar per column, placed *below* the column rather than to its
+        # right: a right-side bar would be squeezed into the inter-column gap and
+        # overlap the next column's panels and titles.
+        for col, (key, _) in enumerate(columns):
+            fig.colorbar(
+                axes[0][col].images[0],
+                ax=axes[:, col],
+                location="bottom",
+                label="datasets",
+                shrink=0.8,
+                aspect=40,
+            )
         fig.suptitle("Joint distribution of $d_U$ and the other blocks, per variant")
         return save_figure(fig, outdir, "dimension_joint_heatmaps_comparison")
 
@@ -547,6 +581,9 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 "constant-column filtering and completeness enforcement, so a "
                 "small downward gap is expected."
             ),
+            label="tab:prior_dim_sampling",
+            # Cells are intentional LaTeX ($d_U$, $p(d)\propto\dots$).
+            escape=False,
         )
 
     def _render_survival_table(
@@ -569,15 +606,35 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             frame = var.results.completeness["by_d_U"].copy()
             frame.insert(0, "variant", label)
             frames.append(frame)
+        table = pd.concat(frames, ignore_index=True)
+
+        # Paper-ready headers: math for d_U, no raw underscores (so escape can be
+        # off and $d_U$ typesets). Drop the redundant "variant" column when there
+        # is only one unenforced variant.
+        if table["variant"].nunique() == 1:
+            table = table.drop(columns="variant")
+        table = table.rename(
+            columns={
+                "variant": "variant",
+                "d_U": "$d_U$",
+                "n_datasets": "datasets",
+                "n_hold": "holding",
+                "fraction_hold": "fraction",
+            }
+        )
 
         return save_table(
-            pd.concat(frames, ignore_index=True),
+            table,
             outdir,
             "completeness_survival_unenforced",
             caption=(
                 "Survival of the completeness heuristic $\\min(d_W, d_Z) \\ge "
                 "d_U$ under constant-column filtering, measured with the "
-                "accept/reject enforcement switched off. With enforcement on "
-                "(the default), survival is 100\\% by construction."
+                "accept/reject enforcement switched off. Each row is the share "
+                "of datasets at that $d_U$ whose delivered proxies still satisfy "
+                "the constraint. With enforcement on (the default), survival is "
+                "100\\% by construction."
             ),
+            label="tab:prior_completeness_survival",
+            escape=False,
         )
