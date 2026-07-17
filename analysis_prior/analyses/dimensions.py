@@ -18,9 +18,11 @@ from typing import Any, Dict
 import numpy as np
 import pandas as pd
 
+from proximalfm.prior._dataset import SCMPrior
+
 from ..generate import PriorCache
 from ..plotting import apply_style, plt, save_figure, save_table
-from .base import Analysis, AnalysisArtifacts, register
+from .base import Analysis, AnalysisArtifacts, ComparisonAnalysis, register
 
 
 def completeness_stats(
@@ -115,6 +117,46 @@ def joint_counts(
     return grid
 
 
+def dim_U_pmf(lo: int, hi: int, distribution: str) -> Dict[int, float]:
+    """Analytic pmf of the sampled confounder dimension on ``{lo..hi}``.
+
+    Delegates the triangular case to :meth:`SCMPrior.triangular_dim_pmf` so the
+    audit can never drift from what the generator actually samples.
+    """
+    if distribution == "uniform":
+        return {d: 1.0 / (hi - lo + 1) for d in range(lo, hi + 1)}
+    if distribution == "triangular":
+        vals, probs = SCMPrior.triangular_dim_pmf(lo, hi)
+        return {int(d): float(p) for d, p in zip(vals, probs)}
+    raise ValueError(f"Unknown dim_U distribution {distribution!r}")
+
+
+def proxy_marginal_pmf(
+    u_pmf: Dict[int, float], min_proxy: int, max_proxy: int, max_dim_U: int
+) -> Dict[int, float]:
+    """Analytic marginal pmf of a proxy dimension under conditional-uniform sampling.
+
+    Mirrors the generator's rule (``SCMPrior.get_batch``): given ``d_U = u``,
+    the proxy is uniform on ``{max(min_proxy, u), ..., max(max_proxy', lower)}``
+    with ``max_proxy' = max(max_proxy, max_dim_U)``. Marginalising over
+    ``u_pmf`` gives the induced pmf.
+
+    For the canonical case (``min_proxy = 1``, common bound ``m``) this
+    reproduces the closed forms: a triangular ``u_pmf`` yields the linear ramp
+    ``p(w) = w / (m(m+1)/2)`` and a uniform ``u_pmf`` yields the harmonic pmf
+    ``p(w) = (H_m - H_{m-w}) / m`` -- both pinned by tests.
+    """
+    effective_max = max(max_proxy, max_dim_U)
+    pmf: Dict[int, float] = {}
+    for u, pu in u_pmf.items():
+        lower = max(min_proxy, u)
+        upper = max(effective_max, lower)
+        width = upper - lower + 1
+        for w in range(lower, upper + 1):
+            pmf[w] = pmf.get(w, 0.0) + pu / width
+    return dict(sorted(pmf.items()))
+
+
 @dataclass
 class DimensionResults:
     """Per-dataset active dimensions plus derived completeness statistics."""
@@ -130,24 +172,27 @@ class DimensionResults:
         return len(self.d_U)
 
 
+def extract_dimension_results(cache: PriorCache) -> DimensionResults:
+    """Collect delivered (post-filter) dimensions from a cache."""
+    dims = {k: [] for k in ("d_U", "d_X", "d_W", "d_Z")}
+    for record in cache:
+        for key, value in record.dims.items():
+            dims[key].append(value)
+    arrays = {k: np.asarray(v, dtype=int) for k, v in dims.items()}
+
+    return DimensionResults(
+        completeness=completeness_stats(arrays["d_U"], arrays["d_W"], arrays["d_Z"]),
+        **arrays,
+    )
+
+
 @register
 class DimensionsAnalysis(Analysis):
     name = "dimensions"
     description = "Active feature dimensions and completeness-heuristic survival."
 
     def compute(self, cache: PriorCache) -> DimensionResults:
-        dims = {k: [] for k in ("d_U", "d_X", "d_W", "d_Z")}
-        for record in cache:
-            for key, value in record.dims.items():
-                dims[key].append(value)
-        arrays = {k: np.asarray(v, dtype=int) for k, v in dims.items()}
-
-        return DimensionResults(
-            completeness=completeness_stats(
-                arrays["d_U"], arrays["d_W"], arrays["d_Z"]
-            ),
-            **arrays,
-        )
+        return extract_dimension_results(cache)
 
     def render(self, results: DimensionResults, outdir: Path) -> AnalysisArtifacts:
         outdir = Path(outdir)
@@ -231,3 +276,287 @@ class DimensionsAnalysis(Analysis):
         }
 
         return AnalysisArtifacts(summary=summary, figures=figures, tables=tables)
+
+
+@dataclass
+class VariantDimensions:
+    """One variant's delivered dimensions plus its analytic sampling laws."""
+
+    results: DimensionResults
+    #: The variant's ``dim_U_distribution`` ("triangular" or "uniform").
+    scheme: str
+    #: Whether post-filter completeness enforcement was on.
+    enforced: bool
+    #: Analytic pmfs of the *sampled* dims: key ("d_U"/"d_W"/"d_Z") -> pmf.
+    theory: Dict[str, Dict[int, float]]
+
+
+@dataclass
+class DimensionComparisonResults:
+    """Per-variant dimension results, in family (intervention) order."""
+
+    variants: Dict[str, VariantDimensions]
+
+    @property
+    def baseline(self) -> str:
+        """First label = the family's baseline, by the identity-first convention."""
+        return next(iter(self.variants))
+
+
+def _theory_mean(pmf: Dict[int, float]) -> float:
+    return float(sum(k * p for k, p in pmf.items()))
+
+
+@register
+class DimensionComparisonAnalysis(ComparisonAnalysis):
+    name = "dimension_comparison"
+    description = (
+        "Dimension marginals vs their analytic sampling laws, and "
+        "completeness-heuristic survival, across prior variants."
+    )
+
+    def compute(self, caches: Dict[str, PriorCache]) -> DimensionComparisonResults:
+        variants: Dict[str, VariantDimensions] = {}
+        for label, cache in caches.items():
+            spec = cache.spec
+            fixed_hp = spec.resolved_hp()[0]
+            scheme = fixed_hp.get("dim_U_distribution", "triangular")
+
+            u_pmf = dim_U_pmf(spec.min_dim_U, spec.max_dim_U, scheme)
+            theory = {
+                "d_U": u_pmf,
+                "d_W": proxy_marginal_pmf(
+                    u_pmf, spec.min_dim_W, spec.max_dim_W, spec.max_dim_U
+                ),
+                "d_Z": proxy_marginal_pmf(
+                    u_pmf, spec.min_dim_Z, spec.max_dim_Z, spec.max_dim_U
+                ),
+                # d_X has no completeness coupling: plain uniform.
+                "d_X": dim_U_pmf(spec.min_dim_X, spec.max_dim_X, "uniform"),
+            }
+
+            variants[label] = VariantDimensions(
+                results=extract_dimension_results(cache),
+                scheme=scheme,
+                enforced=bool(fixed_hp.get("enforce_completeness_heuristic", True)),
+                theory=theory,
+            )
+        return DimensionComparisonResults(variants=variants)
+
+    # -- rendering ---------------------------------------------------------
+
+    def render(
+        self, results: DimensionComparisonResults, outdir: Path
+    ) -> AnalysisArtifacts:
+        outdir = Path(outdir)
+        apply_style()
+
+        figures = self._render_marginals(results, outdir)
+        figures += self._render_joint_heatmaps(results, outdir)
+        tables = self._render_sampling_table(results, outdir)
+        tables += self._render_survival_table(results, outdir)
+
+        summary: Dict[str, Any] = {"baseline": results.baseline}
+        for label, var in results.variants.items():
+            res = var.results
+            summary[label] = {
+                "scheme": var.scheme,
+                "enforced": var.enforced,
+                "n_datasets": res.n_datasets,
+                "mean_d_U": float(res.d_U.mean()),
+                "mean_d_W": float(res.d_W.mean()),
+                "mean_d_Z": float(res.d_Z.mean()),
+                "mean_d_X": float(res.d_X.mean()),
+                "violation_fraction": 1.0 - res.completeness["overall_fraction"],
+                "n_unconfounded": int((res.d_U == 0).sum()),
+            }
+
+        return AnalysisArtifacts(summary=summary, figures=figures, tables=tables)
+
+    def _render_marginals(
+        self, results: DimensionComparisonResults, outdir: Path
+    ) -> list:
+        """Grouped empirical bars per variant + one analytic overlay per scheme."""
+        fig, axes = plt.subplots(1, 3, figsize=(15, 4), sharey=True)
+        n = len(results.variants)
+        width = 0.8 / n
+
+        for ax, key in zip(axes, ("d_U", "d_W", "d_Z")):
+            support_vals: set = set()
+            for var in results.variants.values():
+                support_vals |= set(np.unique(getattr(var.results, key)).tolist())
+                support_vals |= set(var.theory[key])
+            support = sorted(support_vals)
+            positions = {v: i for i, v in enumerate(support)}
+            x = np.arange(len(support))
+
+            for i, (label, var) in enumerate(results.variants.items()):
+                observed = getattr(var.results, key)
+                counts = np.zeros(len(support))
+                for value, count in zip(*np.unique(observed, return_counts=True)):
+                    counts[positions[int(value)]] = count
+                ax.bar(
+                    x + (i - (n - 1) / 2) * width,
+                    counts / max(1, len(observed)),
+                    width,
+                    label=label,
+                    alpha=0.85,
+                )
+
+            # One theory line per distinct sampling law (variants sharing a
+            # scheme share a line; the overlay describes the *sampled* dims,
+            # so delivered bars may sit slightly below it after filtering).
+            seen = set()
+            for var in results.variants.values():
+                pmf = var.theory[key]
+                signature = (var.scheme, tuple(sorted(pmf.items())))
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                ax.plot(
+                    [positions[v] for v in pmf],
+                    list(pmf.values()),
+                    marker="o",
+                    markersize=4,
+                    linestyle="--",
+                    color="black" if var.scheme == "triangular" else "dimgray",
+                    label=f"theory ({var.scheme})",
+                )
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(support)
+            ax.set_xlabel(f"${key}$")
+            ax.set_title(f"${key}$")
+        axes[0].set_ylabel("probability")
+        axes[0].legend(fontsize=8)
+        fig.suptitle("Delivered dimension marginals vs analytic sampling laws")
+        return save_figure(fig, outdir, "dimension_marginals")
+
+    def _render_joint_heatmaps(
+        self, results: DimensionComparisonResults, outdir: Path
+    ) -> list:
+        """One row per variant: d_U vs d_X / d_W / d_Z, on shared axes."""
+        n = len(results.variants)
+        d_U_max = max(int(v.results.d_U.max()) for v in results.variants.values())
+        col_max = {
+            key: max(
+                int(getattr(v.results, key).max()) for v in results.variants.values()
+            )
+            for key in ("d_X", "d_W", "d_Z")
+        }
+
+        fig, axes = plt.subplots(n, 3, figsize=(15, 4.2 * n), squeeze=False)
+        for row, (label, var) in enumerate(results.variants.items()):
+            for col, (key, has_bound) in enumerate(
+                (("d_X", False), ("d_W", True), ("d_Z", True))
+            ):
+                ax = axes[row][col]
+                grid = joint_counts(
+                    var.results.d_U,
+                    getattr(var.results, key),
+                    row_max=d_U_max,
+                    col_max=col_max[key],
+                )
+                im = ax.imshow(
+                    grid,
+                    origin="lower",
+                    cmap="viridis",
+                    aspect="auto",
+                    interpolation="nearest",
+                )
+                fig.colorbar(im, ax=ax, label="datasets")
+                ax.set_xticks(range(grid.shape[1]))
+                ax.set_yticks(range(grid.shape[0]))
+                ax.set_xlabel(f"${key}$")
+                ax.set_ylabel("$d_U$")
+                ax.set_title(f"{label}: $d_U$ vs ${key}$")
+                ax.grid(False)
+                if has_bound:
+                    m = min(grid.shape) - 1
+                    ax.plot([0, m], [0, m], "r--", lw=1.2, label=f"$d_U = {key}$")
+                    ax.legend(loc="upper left", fontsize=8, framealpha=0.7)
+        fig.suptitle("Joint distribution of $d_U$ and the other blocks, per variant")
+        # Row titles collide with the x-labels of the row above without this.
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+        return save_figure(fig, outdir, "dimension_joint_heatmaps_comparison")
+
+    def _render_sampling_table(
+        self, results: DimensionComparisonResults, outdir: Path
+    ) -> list:
+        """Table 4: sampling law and theory-vs-delivered means, baseline variant.
+
+        The theory column describes the *sampled* dimensions; the delivered
+        column is measured after constant-column filtering and completeness
+        enforcement, so a small downward gap is expected and meaningful.
+        """
+        var = results.variants[results.baseline]
+        law_u = (
+            "triangular $p(d) \\propto (d^{\\max}+1-d)$"
+            if var.scheme == "triangular"
+            else "uniform"
+        )
+
+        rows = []
+        for key, law in (
+            ("d_U", law_u),
+            ("d_W", "cond.\\ uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
+            ("d_Z", "cond.\\ uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
+            ("d_X", "uniform"),
+        ):
+            observed = getattr(var.results, key)
+            pmf = var.theory[key]
+            rows.append(
+                {
+                    "variable": f"${key}$",
+                    "support": f"{min(pmf)}--{max(pmf)}",
+                    "sampling law": law,
+                    "mean (theory)": _theory_mean(pmf),
+                    "mean (delivered)": float(observed.mean()),
+                }
+            )
+
+        return save_table(
+            pd.DataFrame(rows),
+            outdir,
+            "dimension_sampling",
+            caption=(
+                "Dimension sampling laws and their means (baseline variant "
+                f"``{results.baseline}''). Theory describes the sampled "
+                "dimensions; delivered values are measured after "
+                "constant-column filtering and completeness enforcement, so a "
+                "small downward gap is expected."
+            ),
+        )
+
+    def _render_survival_table(
+        self, results: DimensionComparisonResults, outdir: Path
+    ) -> list:
+        """Table 5: completeness-heuristic survival, from unenforced variants.
+
+        With enforcement on the constraint holds by construction (trivially
+        100\\%), so the informative measurement is what filtering does when the
+        accept/reject loop is switched off.
+        """
+        unenforced = {
+            label: var for label, var in results.variants.items() if not var.enforced
+        }
+        if not unenforced:
+            return []
+
+        frames = []
+        for label, var in unenforced.items():
+            frame = var.results.completeness["by_d_U"].copy()
+            frame.insert(0, "variant", label)
+            frames.append(frame)
+
+        return save_table(
+            pd.concat(frames, ignore_index=True),
+            outdir,
+            "completeness_survival_unenforced",
+            caption=(
+                "Survival of the completeness heuristic $\\min(d_W, d_Z) \\ge "
+                "d_U$ under constant-column filtering, measured with the "
+                "accept/reject enforcement switched off. With enforcement on "
+                "(the default), survival is 100\\% by construction."
+            ),
+        )
