@@ -72,9 +72,28 @@ def test_digest_changes_with_every_field(kwargs):
     assert PriorSpec(**kwargs).digest() != PriorSpec().digest()
 
 
-def test_cache_key_contains_name_and_digest():
+def test_cache_key_is_content_addressed():
+    # The cache key is the generative digest: specs that produce identical data
+    # must share one cache file regardless of their name or how many datasets
+    # were requested.
     spec = PriorSpec(name="abc")
-    assert spec.cache_key == f"abc-{spec.digest()}"
+    assert spec.cache_key == spec.generative_digest()
+    assert spec.cache_key == PriorSpec(name="xyz", n_datasets=999).cache_key
+    # ...but a genuinely different configuration must not collide.
+    assert spec.cache_key != PriorSpec(name="abc", seed=1).cache_key
+
+
+def test_generative_dict_excludes_non_generative_fields():
+    d = PriorSpec(name="abc", n_datasets=7).generative_dict()
+    assert "name" not in d and "n_datasets" not in d
+    assert d["seq_len"] == PriorSpec().seq_len
+
+
+def test_same_data_as():
+    assert PriorSpec(name="a", n_datasets=2).same_data_as(
+        PriorSpec(name="b", n_datasets=9)
+    )
+    assert not PriorSpec(seed=0).same_data_as(PriorSpec(seed=1))
 
 
 @pytest.mark.parametrize("name", ["", "has space", "has.dot", "has/slash"])

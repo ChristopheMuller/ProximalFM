@@ -144,13 +144,15 @@ def _print_caches(cache_dir: Path) -> None:
     if not entries:
         print(f"No caches in {cache_dir}")
         return
+    # Caches are content-addressed, so they have no name -- identify them by the
+    # generative fields that distinguish them.
     print(f"Caches in {cache_dir}:")
     for entry in entries:
-        spec = entry["spec"]
+        spec = entry["generative_spec"]
         print(
-            f"  {spec.get('name'):20s} "
-            f"n={spec.get('n_datasets'):<5} T={spec.get('seq_len'):<6} "
-            f"K={spec.get('mcmc_cate'):<5} {Path(entry['path']).name}"
+            f"  n={entry.get('n_stored'):<5} T={spec.get('seq_len'):<6} "
+            f"K={spec.get('mcmc_cate'):<5} {spec.get('prior_type'):<9} "
+            f"{Path(entry['path']).name}"
         )
 
 
@@ -171,8 +173,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         spec, cache_dir=args.cache_dir, force=args.force, n_jobs=args.n_jobs
     )
 
-    # Group outputs by spec so multiple specs never clobber each other.
-    spec_out = Path(args.out_dir) / spec.cache_key
+    # Results are grouped by the spec's *name*: caches are content-addressed
+    # (an opaque hash), but output directories should stay human-browsable.
+    # spec.json inside each directory records the exact configuration.
+    spec_out = Path(args.out_dir) / spec.name
     print(f"\nWriting results to {spec_out}")
 
     for name in analysis_names:

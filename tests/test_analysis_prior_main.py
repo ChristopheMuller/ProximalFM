@@ -121,9 +121,10 @@ def test_full_run_generates_cache_and_writes_results(tmp_path, capsys):
     # Cache was created.
     assert list(cache_dir.glob("*.pt"))
 
-    # Results were grouped under the spec key, then the analysis name.
+    # Results are grouped under the human-readable spec name (caches are
+    # content-addressed, but output directories stay browsable).
     spec = cli.build_spec(parse(["--spec", "smoke"]))
-    analysis_dir = out_dir / spec.cache_key / "dimensions"
+    analysis_dir = out_dir / spec.name / "dimensions"
     assert (analysis_dir / "summary.json").exists()
     assert (analysis_dir / "spec.json").exists()
 

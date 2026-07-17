@@ -188,23 +188,41 @@ class PriorSpec:
         """Stable short hash of the whole spec, used as the cache key."""
         return self._hash({"version": CACHE_FORMAT_VERSION, **self.to_dict()})
 
+    def generative_dict(self) -> Dict[str, Any]:
+        """The spec fields that determine the *content* of each dataset.
+
+        Excludes ``name`` (a cosmetic label) and ``n_datasets`` (how many draws
+        we want, not what each draw looks like).
+        """
+        return {
+            k: v for k, v in self.to_dict().items() if k not in _NON_GENERATIVE_FIELDS
+        }
+
     def generative_digest(self) -> str:
         """Hash of the fields that determine the *content* of a dataset.
 
-        Excludes ``name`` (a cosmetic label) and ``n_datasets`` (how many draws
-        we want, not what each draw looks like). Per-dataset seeds derive from
-        this rather than from :meth:`digest` so that growing ``n_datasets`` or
-        renaming a spec extends or relabels the sample instead of resampling it.
+        Per-dataset seeds derive from this rather than from :meth:`digest`, so
+        growing ``n_datasets`` or renaming a spec extends or relabels the sample
+        instead of resampling it.
         """
-        payload = {
-            k: v for k, v in self.to_dict().items() if k not in _NON_GENERATIVE_FIELDS
-        }
-        return self._hash({"version": CACHE_FORMAT_VERSION, **payload})
+        return self._hash({"version": CACHE_FORMAT_VERSION, **self.generative_dict()})
+
+    def same_data_as(self, other: "PriorSpec") -> bool:
+        """Whether ``other`` generates the same datasets, ignoring name/count."""
+        return self.generative_dict() == other.generative_dict()
 
     @property
     def cache_key(self) -> str:
-        """Filename stem for this spec's cache entry."""
-        return f"{self.name}-{self.digest()}"
+        """Filename stem for this spec's cache entry.
+
+        Content-addressed: the key is the *generative* digest, so two specs that
+        differ only by ``name`` or ``n_datasets`` share one cache. Renaming a
+        spec never invalidates data, and a cache of 256 datasets can serve a
+        request for 64 (a prefix) or be extended to 512 -- dataset ``i``'s
+        content does not depend on how many were asked for (see
+        :meth:`dataset_seed`).
+        """
+        return self.generative_digest()
 
     def resolved_hp(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return ``(fixed_hp, sampled_hp)`` with overrides applied.

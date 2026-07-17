@@ -24,7 +24,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import joblib
 import numpy as np
@@ -240,8 +240,13 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
     return PriorDatasetRecord.from_dict(payload)
 
 
-def generate(spec: PriorSpec, n_jobs: int = 1, progress: bool = True) -> PriorCache:
-    """Draw all datasets for ``spec``.
+def generate(
+    spec: PriorSpec,
+    n_jobs: int = 1,
+    progress: bool = True,
+    indices: Optional[Iterable[int]] = None,
+) -> PriorCache:
+    """Draw datasets for ``spec``.
 
     The result is identical for any ``n_jobs`` because each dataset is seeded
     from the spec rather than from inherited RNG state.
@@ -257,14 +262,19 @@ def generate(spec: PriorSpec, n_jobs: int = 1, progress: bool = True) -> PriorCa
     progress : bool, default=True
         Print a line before starting. Generation of a large spec is slow enough
         that silence is confusing.
+
+    indices : iterable of int, optional
+        Which dataset indices to draw. Defaults to ``range(spec.n_datasets)``.
+        Used by :func:`load_or_generate` to fill only the gap when extending an
+        existing cache.
     """
-    if progress:
+    indices = list(range(spec.n_datasets) if indices is None else indices)
+    if progress and indices:
         print(
-            f"Generating {spec.n_datasets} datasets for spec {spec.cache_key!r} "
+            f"Generating {len(indices)} datasets for cache {spec.cache_key} "
             f"(T={spec.seq_len}, K={spec.mcmc_cate}, n_jobs={n_jobs})"
         )
 
-    indices = range(spec.n_datasets)
     if n_jobs == 1:
         records = [_generate_one(spec, i) for i in indices]
     else:
@@ -276,25 +286,35 @@ def generate(spec: PriorSpec, n_jobs: int = 1, progress: bool = True) -> PriorCa
 
 
 def cache_path(spec: PriorSpec, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
-    """Path of the cache file for ``spec``."""
+    """Path of the cache file for ``spec``.
+
+    Content-addressed (see :attr:`PriorSpec.cache_key`): specs differing only by
+    ``name`` or ``n_datasets`` map to the same file.
+    """
     return Path(cache_dir) / f"{spec.cache_key}.pt"
 
 
 def save(cache: PriorCache, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
     """Write ``cache`` to disk, atomically.
 
-    Also writes a ``.json`` sidecar holding the spec, so a cache directory can be
-    inspected without loading tensors.
+    Stores only the *generative* spec fields: ``name`` and ``n_datasets`` are
+    excluded, because the file is shared by every spec with the same generative
+    configuration. The stored record count is what ``n_datasets`` would mean for
+    this file, and it is simply ``len(cache)``.
+
+    Also writes a ``.json`` sidecar, so a cache directory can be inspected
+    without loading tensors.
     """
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_path(cache.spec, cache_dir)
 
-    payload = {
+    meta = {
         "version": CACHE_FORMAT_VERSION,
-        "spec": cache.spec.to_dict(),
-        "records": [r.to_dict() for r in cache.records],
+        "generative_spec": cache.spec.generative_dict(),
+        "n_stored": len(cache),
     }
+    payload = {**meta, "records": [r.to_dict() for r in cache.records]}
 
     # Write-then-rename: a cache file either exists complete or not at all, so an
     # interrupted run cannot leave a truncated file that later loads as valid.
@@ -303,30 +323,32 @@ def save(cache: PriorCache, cache_dir: Path = DEFAULT_CACHE_DIR) -> Path:
     tmp.replace(path)
 
     with open(path.with_suffix(".json"), "w") as f:
-        json.dump(
-            {"version": CACHE_FORMAT_VERSION, "spec": cache.spec.to_dict()}, f, indent=2
-        )
+        json.dump(meta, f, indent=2)
 
     return path
 
 
 def load(spec: PriorSpec, cache_dir: Path = DEFAULT_CACHE_DIR) -> PriorCache:
-    """Load the cache for ``spec``.
+    """Load the cached datasets for ``spec``'s generative configuration.
+
+    Returns whatever is stored, which may hold *more or fewer* datasets than
+    ``spec.n_datasets``; use :func:`load_or_generate` to get exactly
+    ``n_datasets``. The returned cache carries ``spec`` itself, so the caller's
+    name is preserved.
 
     Raises
     ------
     FileNotFoundError
-        If no cache exists for this spec.
+        If no cache exists for this generative configuration.
 
     ValueError
-        If the stored spec does not match the requested one, or the format
-        version differs. Either means the cache key collided or the file was
-        written by incompatible code; both are worth failing loudly on rather
-        than silently analysing the wrong data.
+        If the format version differs, or the stored generative spec does not
+        match the request -- a hash collision. Both are worth failing loudly on
+        rather than silently analysing the wrong data.
     """
     path = cache_path(spec, cache_dir)
     if not path.exists():
-        raise FileNotFoundError(f"No cache for spec {spec.cache_key!r} at {path}")
+        raise FileNotFoundError(f"No cache for {spec.cache_key} at {path}")
 
     payload = torch.load(path, weights_only=False)
 
@@ -336,15 +358,16 @@ def load(spec: PriorSpec, cache_dir: Path = DEFAULT_CACHE_DIR) -> PriorCache:
             f"expected {CACHE_FORMAT_VERSION}. Regenerate with --force."
         )
 
-    stored = PriorSpec.from_dict(payload["spec"])
-    if stored != spec:
+    stored = payload.get("generative_spec")
+    if stored != spec.generative_dict():
         raise ValueError(
-            f"Cache {path} holds spec {stored!r}, which does not match the "
-            f"requested {spec!r}. Regenerate with --force."
+            f"Cache {path} holds generative spec {stored!r}, which does not "
+            f"match the requested {spec.generative_dict()!r}. This is a hash "
+            "collision; regenerate with --force."
         )
 
     records = [PriorDatasetRecord.from_dict(r) for r in payload["records"]]
-    return PriorCache(spec=stored, records=records)
+    return PriorCache(spec=spec, records=records)
 
 
 def load_or_generate(
@@ -354,25 +377,47 @@ def load_or_generate(
     n_jobs: int = 1,
     progress: bool = True,
 ) -> PriorCache:
-    """Return the cache for ``spec``, generating and saving it if absent.
+    """Return exactly ``spec.n_datasets`` datasets, using the cache where possible.
+
+    Because dataset ``i``'s content depends only on the generative configuration
+    and ``i`` (never on how many were requested), a cache can be reused three
+    ways:
+
+    - **hit**: it holds at least ``n_datasets`` -- return the first ``n``.
+    - **extend**: it holds fewer -- generate only the missing indices, append,
+      and re-save. The existing datasets are untouched.
+    - **miss**: no cache -- generate all of them.
 
     Parameters
     ----------
     force : bool, default=False
-        Regenerate and overwrite even if a cache exists.
+        Ignore any existing cache and regenerate from scratch.
     """
+    n = spec.n_datasets
+    existing: List[PriorDatasetRecord] = []
+
     if not force:
         try:
-            cache = load(spec, cache_dir)
-            if progress:
-                print(
-                    f"Loaded {len(cache)} cached datasets from {cache_path(spec, cache_dir)}"
-                )
-            return cache
+            existing = list(load(spec, cache_dir).records)
         except FileNotFoundError:
             pass
 
-    cache = generate(spec, n_jobs=n_jobs, progress=progress)
+    if len(existing) >= n:
+        if progress:
+            print(
+                f"Loaded {n} of {len(existing)} cached datasets from "
+                f"{cache_path(spec, cache_dir)}"
+            )
+        return PriorCache(spec=spec, records=existing[:n])
+
+    # Generate only what is missing; existing indices are reused as-is.
+    if existing and progress:
+        print(f"Extending cache {spec.cache_key} from {len(existing)} to {n} datasets")
+    fresh = generate(
+        spec, n_jobs=n_jobs, progress=progress, indices=range(len(existing), n)
+    )
+
+    cache = PriorCache(spec=spec, records=existing + list(fresh.records))
     path = save(cache, cache_dir)
     if progress:
         print(f"Cached {len(cache)} datasets to {path}")
@@ -399,7 +444,10 @@ def list_caches(cache_dir: Path = DEFAULT_CACHE_DIR) -> List[Dict[str, Any]]:
             {
                 "path": str(sidecar.with_suffix(".pt")),
                 "version": meta.get("version"),
-                "spec": meta.get("spec", {}),
+                "n_stored": meta.get("n_stored"),
+                # Generative fields only: caches are content-addressed and shared
+                # across every spec name that resolves to them.
+                "generative_spec": meta.get("generative_spec", {}),
             }
         )
     return entries

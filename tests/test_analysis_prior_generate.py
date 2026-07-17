@@ -238,7 +238,11 @@ def test_save_writes_json_sidecar(tiny_spec, tiny_cache, tmp_path):
 
     with open(sidecar) as f:
         meta = json.load(f)
-    assert PriorSpec.from_dict(meta["spec"]) == tiny_spec
+    # The file is shared by every spec with this generative config, so it stores
+    # the generative fields and the record count -- not a name or n_datasets.
+    assert meta["generative_spec"] == tiny_spec.generative_dict()
+    assert meta["n_stored"] == len(tiny_cache)
+    assert "name" not in meta["generative_spec"]
 
 
 def test_save_leaves_no_temporary_file(tiny_cache, tmp_path):
@@ -273,13 +277,13 @@ def test_load_rejects_version_mismatch(tiny_spec, tiny_cache, tmp_path):
         gen.load(tiny_spec, tmp_path)
 
 
-def test_load_rejects_spec_mismatch(tiny_spec, tiny_cache, tmp_path):
+def test_load_rejects_generative_spec_mismatch(tiny_spec, tiny_cache, tmp_path):
     import torch
 
-    # Simulate a stale or colliding cache: right filename, wrong contents.
+    # Simulate a hash collision: right filename, wrong contents.
     path = gen.save(tiny_cache, tmp_path)
     payload = torch.load(path, weights_only=False)
-    payload["spec"]["seed"] = tiny_spec.seed + 1
+    payload["generative_spec"]["seed"] = tiny_spec.seed + 1
     torch.save(payload, path)
 
     with pytest.raises(ValueError, match="does not match"):
@@ -337,7 +341,8 @@ def test_list_caches(tiny_spec, tiny_cache, tmp_path):
     gen.save(tiny_cache, tmp_path)
     entries = gen.list_caches(tmp_path)
     assert len(entries) == 1
-    assert PriorSpec.from_dict(entries[0]["spec"]) == tiny_spec
+    assert entries[0]["generative_spec"] == tiny_spec.generative_dict()
+    assert entries[0]["n_stored"] == len(tiny_cache)
 
 
 def test_list_caches_missing_dir(tmp_path):
@@ -348,3 +353,95 @@ def test_list_caches_ignores_sidecar_without_data(tiny_spec, tiny_cache, tmp_pat
     path = gen.save(tiny_cache, tmp_path)
     path.unlink()  # leave the sidecar orphaned
     assert gen.list_caches(tmp_path) == []
+
+
+# --------------------------------------------------------------------------
+# Content-addressed caching: name/n_datasets do not affect the cache
+# --------------------------------------------------------------------------
+
+
+def _renamed(spec, name, **kwargs):
+    return PriorSpec(**{**spec.to_dict(), "name": name, **kwargs})
+
+
+def test_renaming_a_spec_hits_the_same_cache(
+    tiny_spec, tiny_cache, tmp_path, monkeypatch
+):
+    # The whole point of content addressing: a rename must not regenerate a byte.
+    gen.save(tiny_cache, tmp_path)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("regenerated after a rename")
+
+    monkeypatch.setattr(gen, "generate", fail)
+    renamed = _renamed(tiny_spec, "totally_different_name")
+    loaded = gen.load_or_generate(renamed, tmp_path, progress=False)
+
+    assert len(loaded) == len(tiny_cache)
+    np.testing.assert_array_equal(loaded[0].X, tiny_cache[0].X)
+    # The caller's own name is preserved on the returned cache.
+    assert loaded.spec.name == "totally_different_name"
+
+
+def test_cache_serves_a_prefix_when_it_holds_more_than_requested(
+    tiny_spec, tiny_cache, tmp_path, monkeypatch
+):
+    gen.save(tiny_cache, tmp_path)  # 2 datasets
+
+    def fail(*args, **kwargs):
+        raise AssertionError("regenerated instead of slicing the cache")
+
+    monkeypatch.setattr(gen, "generate", fail)
+    smaller = _renamed(tiny_spec, "smaller", n_datasets=1)
+    loaded = gen.load_or_generate(smaller, tmp_path, progress=False)
+
+    assert len(loaded) == 1
+    np.testing.assert_array_equal(loaded[0].X, tiny_cache[0].X)
+
+
+def test_cache_extends_when_it_holds_fewer_than_requested(
+    tiny_spec, tiny_cache, tmp_path
+):
+    gen.save(tiny_cache, tmp_path)  # 2 datasets
+
+    bigger = _renamed(tiny_spec, "bigger", n_datasets=4)
+    grown = gen.load_or_generate(bigger, tmp_path, n_jobs=1, progress=False)
+
+    assert len(grown) == 4
+    # The already-cached datasets must be reused untouched...
+    for i in range(2):
+        np.testing.assert_array_equal(grown[i].X, tiny_cache[i].X)
+    # ...and the new ones must match a from-scratch generation of those indices.
+    fresh = gen.generate(bigger, n_jobs=1, progress=False, indices=[2, 3])
+    for got, want in zip(grown.records[2:], fresh.records):
+        np.testing.assert_array_equal(got.X, want.X)
+        assert got.index == want.index
+
+    # The extension is persisted, so the next request is a plain hit.
+    assert len(gen.load(bigger, tmp_path)) == 4
+
+
+def test_extend_only_generates_the_missing_indices(
+    tiny_spec, tiny_cache, tmp_path, monkeypatch
+):
+    gen.save(tiny_cache, tmp_path)  # 2 datasets
+
+    seen = {}
+    real = gen.generate
+
+    def spy(spec, **kwargs):
+        seen["indices"] = list(kwargs.get("indices"))
+        return real(spec, **kwargs)
+
+    monkeypatch.setattr(gen, "generate", spy)
+    gen.load_or_generate(
+        _renamed(tiny_spec, "bigger", n_datasets=3), tmp_path, n_jobs=1, progress=False
+    )
+    assert seen["indices"] == [2]  # not [0, 1, 2]
+
+
+def test_generate_honours_explicit_indices(tiny_spec):
+    out = gen.generate(tiny_spec, n_jobs=1, progress=False, indices=[1])
+    assert len(out) == 1
+    assert out[0].index == 1
+    assert out[0].seed == tiny_spec.dataset_seed(1)
