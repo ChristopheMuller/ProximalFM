@@ -17,6 +17,7 @@ from .base import (
 # Importing each analysis module runs its @register decorator. Keep this list in
 # sync when adding analyses; the import is the registration.
 from . import dimensions  # noqa: E402,F401
+from . import hyperparameters  # noqa: E402,F401
 
 __all__ = [
     "Analysis",

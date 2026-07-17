@@ -54,6 +54,8 @@ def save_table(
     caption: str = "",
     label: str = None,
     escape: bool = True,
+    wrap_columns: List[str] = None,
+    small: bool = False,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
@@ -67,6 +69,19 @@ def save_table(
     specials such as underscores. Pass ``escape=False`` when the frame's cells
     and headers are *deliberately* LaTeX (e.g. ``$d_U$``); with escaping on,
     that math would be printed verbatim rather than typeset.
+
+    ``wrap_columns`` names the columns that should line-wrap to fit
+    ``\\textwidth`` instead of forcing the table wider than the page -- pass the
+    ones holding prose or long identifiers (e.g. long ``\\texttt{...}`` names,
+    free-text descriptions). Plain ``l`` columns in a LaTeX ``tabular`` never
+    break a line no matter how long the cell is; wrapped columns render as
+    ragged-right ``tabularx`` ``X`` columns instead, which is a portrait-page
+    fix for an over-wide table and preferable to rotating the page (landscape
+    breaks the reading flow of an appendix meant to be read section by
+    section). Requires ``\\usepackage{tabularx}`` in the document preamble.
+
+    ``small`` wraps the table body in ``\\small`` -- combine with
+    ``wrap_columns`` for tables with many columns of running text.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -74,14 +89,34 @@ def save_table(
     csv_path = outdir / f"{name}.csv"
     df.to_csv(csv_path, index=False)
 
-    tex_path = outdir / f"{name}.tex"
-    tex_path.write_text(
-        df.to_latex(
-            index=False,
-            escape=escape,
-            caption=caption or None,
-            label=label,
-            float_format="%.3f",
+    column_format = None
+    if wrap_columns:
+        unknown = set(wrap_columns) - set(df.columns)
+        if unknown:
+            raise ValueError(f"wrap_columns not in frame: {sorted(unknown)}")
+        column_format = "".join(
+            ">{\\raggedright\\arraybackslash}X" if col in wrap_columns else "l"
+            for col in df.columns
         )
+
+    latex = df.to_latex(
+        index=False,
+        escape=escape,
+        caption=caption or None,
+        label=label,
+        float_format="%.3f",
+        column_format=column_format,
     )
+    if wrap_columns:
+        # to_latex always emits `tabular`; swap in `tabularx` for the same
+        # column_format string, which the substitution above already primed
+        # with X columns. `{\textwidth}` is tabularx's extra mandatory arg.
+        latex = latex.replace("\\begin{tabular}", "\\begin{tabularx}{\\textwidth}")
+        latex = latex.replace("\\end{tabular}", "\\end{tabularx}")
+    if small:
+        env = "tabularx" if wrap_columns else "tabular"
+        latex = latex.replace(f"\\begin{{{env}}}", f"\\small\n\\begin{{{env}}}")
+
+    tex_path = outdir / f"{name}.tex"
+    tex_path.write_text(latex)
     return [tex_path, csv_path]
