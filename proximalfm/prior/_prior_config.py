@@ -76,22 +76,6 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
-    "cate_strength": {
-        "distribution": "meta_trunc_norm_log_scaled",
-        "min_mean": 0.05,
-        "max_mean": 0.5,
-        "min_std": 0.05,
-        "max_std": 0.3,
-        "lower_bound": 0.01,
-        "round": False,
-    },
-    "ate_strength": {
-        "distribution": "meta_gamma",
-        "max_alpha": 2.5,
-        "max_scale": 1.0,
-        "lower_bound": 0.0,
-        "round": False,
-    },
     "propensity_shift": {
         "distribution": "uniform",
         "min": -2.5,
