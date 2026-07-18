@@ -16,6 +16,41 @@ generation across all cores.
 
 ---
 
+## `PriorSpec`, `SpecFamily`, and how caching works
+
+`config.py` defines two dataclasses that drive everything above:
+
+- **`PriorSpec`** is the single source of truth for "which datasets are we analysing" —
+  dimension ranges, `seq_len`, `prior_type`, `mcmc_cate`, HP overrides, etc. It's JSON-serialisable
+  and hashes to a stable cache key. `--spec <name>` looks one up from `config.PRESETS` (e.g.
+  `general_ite`, `smoke`, `no_u_augment`).
+- **`SpecFamily`** is a base `PriorSpec` plus a dict of named interventions (small field overrides)
+  used for comparison studies — "what does changing one knob do to the prior?" `--family <name>`
+  looks one up from `config.FAMILIES` (e.g. `dim_ablation`, which compares `triangular` /
+  `uniform` / `unenforced` dimension sampling against the same `general_ite` base). Each
+  intervention resolves to its own `PriorSpec` via `SpecFamily.resolve()`.
+
+**Cache keys are content-addressed, not name-addressed.** A spec's `name` and `n_datasets` are
+cosmetic — they don't affect what any individual dataset looks like — so they're excluded from the
+cache key. `PriorSpec.cache_key` is the hash of the *generative* fields only (`generative_digest()`
+in `config.py`). Practically:
+
+- Two specs that differ only by `name` or `n_datasets` share the same cache file under
+  `cache/<hash>.pt` (+ a `.json` sidecar with the generative spec, for `--list-caches`).
+- Each dataset's seed is derived from `(generative_digest, index)`, not from `n_datasets`, so
+  dataset `i` is bit-identical regardless of how many datasets were requested. Asking for fewer
+  just takes a prefix; asking for more (`load_or_generate` in `generate.py`) generates only the
+  missing indices and appends them — existing datasets are never touched or regenerated.
+- Bumping `CACHE_FORMAT_VERSION` in `config.py` invalidates every existing cache file (it's
+  folded into the hash), for when a generation-code change would make an old cache wrong instead
+  of just differently-labelled.
+
+This is why `--family dim_ablation`'s `triangular` variant (the identity intervention, `{}`) and
+`--spec general_ite` resolve to the *same* cache file: they're generatively identical specs that
+only differ in name.
+
+---
+
 ## Implemented and wired into the tex
 
 ### B.2 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
