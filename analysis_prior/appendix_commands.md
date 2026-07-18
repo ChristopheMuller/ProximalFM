@@ -1,0 +1,112 @@
+# Appendix B reproduction commands
+
+Maps every table/figure currently used (or planned) in `docs/latex/appendices/B_prior.tex`
+to the exact `analysis_prior` CLI invocation that produces it. See
+[`docs/prior_appendix_plan.md`](../docs/prior_appendix_plan.md) for the full status/tracking doc —
+this file is just the "how do I regenerate artifact X" cheat sheet.
+
+All commands run from the repo root:
+
+```
+uv run python -m analysis_prior.main <args>
+```
+
+Add `--force` to regenerate the cache instead of reusing it, and `--n-jobs -1` to parallelise
+generation across all cores.
+
+---
+
+## Implemented and wired into the tex
+
+### B.2 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis hyperparameters` |
+| **Config group** | preset `general_ite` (`config.PRESETS["general_ite"]`) |
+| **Analysis module** | `analyses/hyperparameters.py` → `HyperparametersAnalysis` (`name="hyperparameters"`) |
+| **Output dir** | `results/general_ite/hyperparameters/` |
+| **Table outputs** | `sampled_hyperparameters.tex` → `tab:prior_sampled_hp`; `fixed_hyperparameters.tex` → `tab:prior_fixed_hp` |
+| **Appendix location** | §B.2 "Hyperparameters" (`app:prior_hyperparams`) |
+
+### B.2.1 Prior Dimensions — `fig:prior_dim_marginals`, `tab:prior_dim_sampling`
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison` |
+| **Config group** | family `dim_ablation` (base preset `general_ite`, variants `triangular` / `uniform` / `unenforced`) |
+| **Analysis module** | `analyses/dimensions.py` → `DimensionComparisonAnalysis` (`name="dimension_comparison"`) |
+| **Output dir** | `results/dim_ablation/dimension_comparison/` |
+| **Figure output** | `dimension_marginals.pdf` → `fig:prior_dim_marginals` |
+| **Table output** | `dimension_sampling.tex` → `tab:prior_dim_sampling` |
+| **Appendix location** | §B.2.1 "Prior Dimensions" (`app:prior_dimensions`) |
+
+### B.3 Postprocessing — `fig:prior_dimension_joint_heatmaps`, `tab:prior_completeness_survival`
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison` |
+| **Config group** | family `dim_ablation` (same run as above — one invocation produces both B.2.1 and B.3 artifacts) |
+| **Analysis module** | `analyses/dimensions.py` → `DimensionComparisonAnalysis` (`name="dimension_comparison"`) |
+| **Output dir** | `results/dim_ablation/dimension_comparison/` |
+| **Figure output** | `dimension_joint_heatmaps_comparison.pdf` → `fig:prior_dimension_joint_heatmaps` |
+| **Table output** | `completeness_survival_unenforced.tex` → `tab:prior_completeness_survival` |
+| **Appendix location** | §B.3 "Postprocessing" (`app:prior_postprocessing`) |
+
+**Note:** `figures_app/prior/` doesn't exist yet in the LaTeX tree — copy/symlink the two PDFs above
+from `results/dim_ablation/dimension_comparison/` before building (Track A item 1 in the plan).
+
+---
+
+## Implemented but not currently referenced in the tex
+
+### Single-spec dimension audit (no comparison)
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis dimensions` |
+| **Config group** | preset `general_ite` (any single preset works — swap `--spec`) |
+| **Analysis module** | `analyses/dimensions.py` → `DimensionsAnalysis` (`name="dimensions"`) |
+| **Output dir** | `results/<spec-name>/dimensions/` |
+| **Outputs** | `dimension_histograms.*`, `dimension_joint_heatmaps.*` (marginal/joint dim plots for one spec, not a comparison across variants) |
+| **Appendix location** | none — superseded by the family comparison above |
+
+---
+
+## Planned, not yet implemented (Track B–F of the appendix plan)
+
+No CLI command exists yet — the modules below are named in `docs/prior_appendix_plan.md` §1/§5 as
+future `analyses/` additions, not currently in `analyses/__init__.py`'s registry
+(only `dimensions` and `hyperparameters` are registered today). Listed here so the mapping is
+complete once they land.
+
+| Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact |
+|---|---|---|---|---|
+| B.4 assembly | `app:prior_audit` | `audit_summary` | `general_ite` (K=1) | Table 6 |
+| B.4.1 Overlap | `app:prior_overlap` | `overlap` | `general_ite` | Fig audit(b) |
+| B.4.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) |
+| B.4.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), Table 7 |
+| B.4.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) |
+| B.4.5 Ill-posedness | `app:prior_illposed` | `illposedness` | `general_ite` | Fig A4 |
+| B.4.6 Identification stress test | `app:prior_identification` | `identification` | `general_ite` | Fig A5 |
+| B.5.1 Input duplication | `app:prior_duplication` | `confounding_duplication` | new K=1 family off `no_u_augment` | Fig A7 |
+| B.5.2 Heterogeneity remix | `app:prior_heterogeneity` | `heterogeneity` | new K>1 preset | Fig A6 |
+| B.6 MC error | *(no label yet)* | `mc_error` | K-sweep family, K∈{1,5,25,100,200,5000} | Fig A8 |
+| B.6 memory budget | *(no label yet)* | `mem_budget` | `default` (T=2048) | Table 9 |
+| B.6 structural coverage | *(no label yet)* | *(hand-written, no module)* | — | Table 10 |
+
+**Note on `general_ite` vs. final data.** All the `general_ite`-based commands above (K=1) are fine
+for drafting. For the final version there's no need to keep `mc_error`'s K-sweep on a *separate*
+high-K dataset from the rest of B.4/B.5 — the K-sweep family can reuse the same underlying SCMs as
+the other sections (base spec identical to `general_ite` apart from `mcmc_cate`), rather than
+generating a second, unrelated batch of complete datasets just for Fig A8.
+
+---
+
+## Discovery commands
+
+```
+uv run python -m analysis_prior.main --list-analyses   # registered analyses
+uv run python -m analysis_prior.main --list-caches     # cached specs on disk
+uv run python -m analysis_prior.main --list-families   # registered comparison families
+```
