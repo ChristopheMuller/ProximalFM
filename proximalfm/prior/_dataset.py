@@ -696,7 +696,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             X = f_X(eps_X)
-            X = process_features(X, params)
+            X, _ = process_features(X, params)
             X_ = safe_normalize(X)
 
             X_rep_ = (
@@ -739,7 +739,7 @@ class SCMPrior(Prior):
 
             U_mc = f_U(input_U)
             if params.get("corrupt_U", False):
-                U_mc = process_features(U_mc, params)
+                U_mc, _ = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
 
             input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
@@ -751,7 +751,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             W_mc = f_W(input_W)
-            W_mc = process_features(W_mc, params)
+            W_mc, _ = process_features(W_mc, params)
             W_mc_ = safe_normalize(W_mc)
 
             input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
@@ -763,7 +763,7 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             Z_mc = f_Z(input_Z)
-            Z_mc = process_features(Z_mc, params)
+            Z_mc, _ = process_features(Z_mc, params)
             Z_mc_ = safe_normalize(Z_mc)
 
             p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)

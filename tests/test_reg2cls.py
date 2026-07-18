@@ -9,6 +9,9 @@ from proximalfm.prior._reg2cls import (
     num2cat,
     process_features,
     MulticlassAssigner,
+    BlockProfile,
+    block_profile,
+    dominates,
 )
 
 
@@ -134,10 +137,11 @@ def test_num2cat_identity_when_cat_prob_zero():
     X = torch.randn(64, 5)
     original = X.clone()
 
-    out = num2cat(X, {"cat_prob": 0.0})
+    out, meta = num2cat(X, {"cat_prob": 0.0})
 
-    # No column is touched, and the tensor is returned as-is.
+    # No column is touched, the tensor is returned as-is, and metadata is empty.
     torch.testing.assert_close(out, original)
+    assert meta == {}
 
 
 def test_num2cat_respects_max_categories():
@@ -150,11 +154,34 @@ def test_num2cat_respects_max_categories():
     # invariant holds for every column across several forced-conversion runs.
     for _ in range(20):
         X = torch.randn(T, H)
-        out = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
         assert out.shape == (T, H)
         for col in range(H):
             n_unique = out[:, col].unique().numel()
             assert n_unique <= max_categories or n_unique == T
+        # Reported category counts also honour the cap.
+        assert all(2 <= c <= max_categories for c in meta.values())
+
+
+def test_num2cat_metadata_matches_converted_columns():
+    torch.manual_seed(0)
+    T, H = 200, 5
+    max_categories = 6
+
+    # Metadata must list exactly the categorised columns, with the right counts.
+    for _ in range(30):
+        X = torch.randn(T, H)
+        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        for col in range(H):
+            n_unique = out[:, col].unique().numel()
+            if col in meta:
+                # A reported categorical column holds integer labels and its
+                # realised distinct count never exceeds the reported count.
+                torch.testing.assert_close(out[:, col], torch.round(out[:, col]))
+                assert n_unique <= meta[col]
+            else:
+                # Unreported columns are left continuous (all T distinct here).
+                assert n_unique == T
 
 
 def test_num2cat_actually_converts_some_columns():
@@ -167,15 +194,70 @@ def test_num2cat_actually_converts_some_columns():
     converted = False
     for _ in range(30):
         X = torch.randn(T, H)
-        out = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
-        for col in range(H):
-            n_unique = out[:, col].unique().numel()
-            if n_unique <= max_categories:
-                converted = True
-                # Discretized columns hold integer-valued class labels.
+        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        if meta:
+            converted = True
+            for col in meta:
                 vals = out[:, col]
                 torch.testing.assert_close(vals, torch.round(vals))
     assert converted
+
+
+# ---------------------------------------------------------------------------
+# block_profile / dominates (categorical completeness heuristic, Track F)
+# ---------------------------------------------------------------------------
+
+
+def test_block_profile_derives_continuous_and_sorted_cats():
+    # 5 total columns, columns 1 and 3 categorised into 2 and 5 categories.
+    prof = block_profile(5, {1: 2, 3: 5})
+    assert prof.continuous == 3
+    # Category counts are sorted descending for a canonical form.
+    assert prof.categorical == (5, 2)
+
+
+def test_block_profile_all_continuous():
+    prof = block_profile(4, {})
+    assert prof == BlockProfile(continuous=4, categorical=())
+
+
+def test_dominates_reduces_to_dimension_heuristic_when_no_cats():
+    # With nothing categorised, dominance is exactly c_P >= c_U.
+    assert dominates(BlockProfile(5, ()), BlockProfile(5, ()))
+    assert dominates(BlockProfile(6, ()), BlockProfile(5, ()))
+    assert not dominates(BlockProfile(4, ()), BlockProfile(5, ()))
+
+
+def test_dominates_worked_examples_from_heuristic():
+    # U = 2 continuous + 1 categorical(3)  (the worked example in the plan).
+    u = BlockProfile(continuous=2, categorical=(3,))
+
+    # Each row of the plan's truth table.
+    assert dominates(BlockProfile(3, ()), u)  # 3 continuous: wildcard covers [3]
+    assert dominates(BlockProfile(4, ()), u)  # surplus continuous
+    assert dominates(BlockProfile(3, (2,)), u)  # wildcard covers [3]; cat(2) surplus
+    assert dominates(BlockProfile(2, (3,)), u)  # exact categorical match
+    assert dominates(BlockProfile(2, (4,)), u)  # richer categorical
+    assert dominates(BlockProfile(2, (3, 2)), u)  # cat(3) dominates; cat(2) surplus
+
+    # 1 continuous + 3 categorical: fails the continuous slot (c_P=1 < c_U=2).
+    assert not dominates(BlockProfile(1, (9, 9, 9)), u)
+    # 2 continuous + 1 categorical(2): c_P ok but cats [2] cannot cover [3].
+    assert not dominates(BlockProfile(2, (2,)), u)
+
+
+def test_dominates_multi_categorical_requirement():
+    # U = 1 continuous + categoricals [4, 3].
+    u = BlockProfile(continuous=1, categorical=(4, 3))
+    # Exact element-wise match after sorting descending.
+    assert dominates(BlockProfile(1, (4, 3)), u)
+    assert dominates(BlockProfile(1, (5, 3)), u)
+    # One wildcard (extra continuous) can cover the largest requirement.
+    assert dominates(BlockProfile(2, (3,)), u)  # wildcard->4, cat(3)->3
+    # [4, 2] fails: the 2 cannot cover the required 3.
+    assert not dominates(BlockProfile(1, (4, 2)), u)
+    # Too few categorical slots and no spare wildcard.
+    assert not dominates(BlockProfile(1, (9,)), u)
 
 
 # ---------------------------------------------------------------------------
@@ -187,10 +269,12 @@ def test_process_features_preserves_shape_no_padding():
     torch.manual_seed(0)
     X = torch.randn(128, 3)
 
-    out = process_features(X, {"cat_prob": 0.0})
+    out, prof = process_features(X, {"cat_prob": 0.0})
 
     # No padding, permutation, or feature-count change.
     assert out.shape == X.shape
+    # cat_prob=0 -> everything stays continuous.
+    assert prof == BlockProfile(continuous=3, categorical=())
 
 
 def test_process_features_standardizes_continuous_input():
@@ -198,7 +282,7 @@ def test_process_features_standardizes_continuous_input():
     X = torch.randn(500, 4) * 7.0 + 3.0
 
     # cat_prob=0 -> pipeline is outlier_removing + standard_scaling only.
-    out = process_features(X, {"cat_prob": 0.0})
+    out, _ = process_features(X, {"cat_prob": 0.0})
 
     mean = torch.nanmean(out, dim=0)
     std = torch_nanstd(out, dim=0, ddof=1)
@@ -210,10 +294,138 @@ def test_process_features_finite_with_categorization():
     torch.manual_seed(0)
     X = torch.randn(256, 5)
 
-    out = process_features(X, {"cat_prob": 1.0, "max_categories": 5})
+    out, prof = process_features(X, {"cat_prob": 1.0, "max_categories": 5})
 
     assert out.shape == X.shape
     assert torch.isfinite(out).all()
+    # Profile columns account for the full feature count.
+    assert prof.continuous + len(prof.categorical) == 5
+
+
+# ---------------------------------------------------------------------------
+# process_features / num2cat construct-by-design (require_profile)
+# ---------------------------------------------------------------------------
+
+
+def test_num2cat_enforced_profile_dominates_requirement():
+    torch.manual_seed(0)
+    T = 300
+    max_categories = 8
+
+    # A spread of U-profiles the proxy must dominate, all feasible given H cols.
+    requirements = [
+        BlockProfile(continuous=2, categorical=(3,)),
+        BlockProfile(continuous=1, categorical=(4, 3)),
+        BlockProfile(continuous=3, categorical=()),
+        BlockProfile(continuous=0, categorical=(5, 2, 2)),
+    ]
+
+    for req in requirements:
+        need = req.continuous + len(req.categorical)
+        for H in (need, need + 2, need + 4):
+            for _ in range(15):
+                X = torch.randn(T, H)
+                _, meta = num2cat(
+                    X,
+                    {"cat_prob": 1.0, "max_categories": max_categories},
+                    require_profile=req,
+                )
+                prof = block_profile(H, meta)
+                assert dominates(prof, req), (req, H, prof)
+
+
+def test_process_features_enforced_profile_dominates_and_finite():
+    torch.manual_seed(0)
+    req = BlockProfile(continuous=2, categorical=(4, 3))
+
+    for _ in range(20):
+        X = torch.randn(256, 7)
+        out, prof = process_features(
+            X, {"cat_prob": 0.5, "max_categories": 10}, require_profile=req
+        )
+        assert out.shape == (256, 7)
+        assert torch.isfinite(out).all()
+        assert dominates(prof, req)
+
+
+def test_num2cat_enforced_all_continuous_requirement_keeps_enough_continuous():
+    torch.manual_seed(0)
+    # U all continuous -> proxy just needs c_P >= c_U, even under forced cat.
+    req = BlockProfile(continuous=4, categorical=())
+    for _ in range(30):
+        X = torch.randn(200, 6)
+        _, meta = num2cat(
+            X, {"cat_prob": 1.0, "max_categories": 5}, require_profile=req
+        )
+        prof = block_profile(6, meta)
+        assert prof.continuous >= 4
+        assert dominates(prof, req)
+
+
+def test_num2cat_enforced_raises_when_infeasible():
+    torch.manual_seed(0)
+    # Requirement needs 4 columns (2 continuous + 2 categorical) but block has 3.
+    req = BlockProfile(continuous=2, categorical=(3, 2))
+    X = torch.randn(100, 3)
+    with pytest.raises(ValueError):
+        num2cat(X, {"cat_prob": 1.0, "max_categories": 5}, require_profile=req)
+
+
+def test_num2cat_enforced_continuous_coverage_can_avoid_categorical():
+    torch.manual_seed(0)
+    # proxy_cat_cover_prob=0 -> every U categorical requirement is covered by a
+    # continuous wildcard, so the proxy can be fully continuous yet still dominate.
+    req = BlockProfile(continuous=1, categorical=(4, 3))
+    saw_fully_continuous = False
+    for _ in range(30):
+        X = torch.randn(200, 5)
+        _, meta = num2cat(
+            X,
+            {"cat_prob": 0.0, "max_categories": 8, "proxy_cat_cover_prob": 0.0},
+            require_profile=req,
+        )
+        prof = block_profile(5, meta)
+        assert dominates(prof, req)  # still complete, via wildcards
+        if len(prof.categorical) == 0:
+            saw_fully_continuous = True
+    # With cat_prob=0 and cover_prob=0, no column is ever categorised.
+    assert saw_fully_continuous
+
+
+def test_num2cat_enforced_full_categorical_coverage_mirrors_u():
+    torch.manual_seed(0)
+    # proxy_cat_cover_prob=1 -> every requirement gets a categorical column, so
+    # the proxy has at least as many categorical columns as U.
+    req = BlockProfile(continuous=2, categorical=(5, 3))
+    for _ in range(30):
+        X = torch.randn(200, 6)
+        _, meta = num2cat(
+            X,
+            {"cat_prob": 0.0, "max_categories": 10, "proxy_cat_cover_prob": 1.0},
+            require_profile=req,
+        )
+        prof = block_profile(6, meta)
+        assert dominates(prof, req)
+        assert len(prof.categorical) >= len(req.categorical)
+
+
+def test_num2cat_enforced_dominates_across_cover_probs():
+    torch.manual_seed(0)
+    # Whatever the coverage probability, the result must always dominate.
+    req = BlockProfile(continuous=1, categorical=(4, 3, 2))
+    for cover in (0.0, 0.25, 0.5, 0.75, 1.0):
+        for _ in range(15):
+            X = torch.randn(200, 7)
+            _, meta = num2cat(
+                X,
+                {
+                    "cat_prob": 0.5,
+                    "max_categories": 8,
+                    "proxy_cat_cover_prob": cover,
+                },
+                require_profile=req,
+            )
+            assert dominates(block_profile(7, meta), req)
 
 
 # ---------------------------------------------------------------------------
