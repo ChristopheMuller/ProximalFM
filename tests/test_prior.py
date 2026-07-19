@@ -1,4 +1,5 @@
 import contextlib
+import math
 import random
 
 import numpy as np
@@ -600,6 +601,9 @@ def test_categorical_completeness_defaults_on():
     # Track F is on by default: U is categorised and proxies are enforced.
     assert DEFAULT_FIXED_HP["corrupt_U"] is True
     assert DEFAULT_FIXED_HP["enforce_categorical_completeness"] is True
+    # Finite category cap keeps categorical columns discrete and distinguishable
+    # from continuous ones by distinct-value count (well below the sequence length).
+    assert math.isfinite(DEFAULT_FIXED_HP["max_categories"])
     prior = _make_prior(DEFAULT_FIXED_HP)
     out = prior.get_batch()
     d_U, d_W, d_Z = out[11], out[13], out[14]

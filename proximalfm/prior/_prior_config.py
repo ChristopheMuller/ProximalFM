@@ -8,9 +8,8 @@ DEFAULT_FIXED_HP = {
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
-    # Feature corruption (process_features): applied to X, W, Z (and optionally U)
     "cat_prob": 0.2,
-    "max_categories": float("inf"),
+    "max_categories": 50,
     "corrupt_U": True,
     "enforce_categorical_completeness": True,
     "proxy_cat_cover_prob": 0.5,
