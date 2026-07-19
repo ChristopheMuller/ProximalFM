@@ -1,8 +1,10 @@
+import contextlib
 import random
 
 import numpy as np
 import torch
 
+import proximalfm.prior._dataset as _dataset_mod
 from proximalfm.prior._dataset import SCMPrior, PriorDataset, DisablePrinting
 from proximalfm.prior._reg2cls import BlockProfile, dominates
 from proximalfm.prior._genload import (
@@ -509,30 +511,51 @@ def test_completeness_give_up_terminates():
 # ---------------------------------------------------------------------------
 
 
-def _reconstruct_profile(
-    block: torch.Tensor, d: int, max_categories: int
-) -> BlockProfile:
-    """Rebuild a block's profile from realised (post-filter, padded) values.
+@contextlib.contextmanager
+def _capture_accepted_profiles(prior):
+    """Capture the *declared* U/W/Z profiles the generator validates against.
 
-    With a small finite ``max_categories`` a categorical column realises at most
-    ``max_categories`` distinct values, while a continuous column realises ~T,
-    so a distinct-count threshold separates them cleanly. This mirrors the
-    profile the generator enforces internally via ``observed_block_profile``.
+    Reconstructing a block's profile from its realised tensor values is lossy:
+    whether a column is continuous or categorical is a *decision* the generator
+    records in ``num2cat`` metadata, and it cannot be recovered from the values
+    alone. A genuinely continuous column can, under saturating activations plus
+    outlier clamping, realise only a handful of distinct values -- indistinguishable
+    from a true categorical column by any distinct-count threshold. Guessing thus
+    misclassifies such columns as categorical, which spuriously fails the
+    dominance check even though the generator's own (metadata-based) check passed.
+
+    The generator computes the authoritative profiles via ``observed_block_profile``
+    (on the observed, post-constant-filter blocks) immediately before accepting a
+    sample. We intercept that call so the test asserts against the exact profiles
+    the generator used. Relies on ``n_jobs=1`` (sequential generation) and on
+    ``generate_dataset`` computing ``(U, W, Z)`` profiles, in that order, on its
+    accepted attempt -- both true for the priors built by ``_make_prior``.
     """
-    active = block[:, : int(d)]
-    cats: list[int] = []
-    continuous = 0
-    for col in range(active.shape[1]):
-        n = int(active[:, col].unique().numel())
-        if n <= 1:
-            continue  # constant padding / dropped column
-        if n <= max_categories:
-            cats.append(n)
-        else:
-            continuous += 1
-    return BlockProfile(
-        continuous=continuous, categorical=tuple(sorted(cats, reverse=True))
-    )
+    accepted: list[tuple[BlockProfile, BlockProfile, BlockProfile]] = []
+    per_dataset: list[BlockProfile] = []
+    real_obp = _dataset_mod.observed_block_profile
+    real_generate = prior.generate_dataset
+
+    def spy_obp(block, meta):
+        profile = real_obp(block, meta)
+        per_dataset.append(profile)
+        return profile
+
+    def spy_generate(params):
+        per_dataset.clear()
+        result = real_generate(params)
+        # The accepted attempt records exactly (U, W, Z) just before returning,
+        # so the last three profiles belong to the delivered dataset.
+        accepted.append(tuple(per_dataset[-3:]))
+        return result
+
+    _dataset_mod.observed_block_profile = spy_obp
+    prior.generate_dataset = spy_generate
+    try:
+        yield accepted
+    finally:
+        _dataset_mod.observed_block_profile = real_obp
+        del prior.generate_dataset  # restore the bound method on the class
 
 
 def test_enforce_categorical_completeness_holds():
@@ -551,19 +574,19 @@ def test_enforce_categorical_completeness_holds():
         "completeness_max_attempts": 200,  # keep give-ups (which may violate) rare
     }
     prior = _make_prior(fixed_hp, max_dim=8, batch_size=24)
-    out = prior.get_batch()
-    U, W, Z = out[0], out[2], out[3]
+    with _capture_accepted_profiles(prior) as profiles:
+        out = prior.get_batch()
     d_U, d_W, d_Z = out[11], out[13], out[14]
 
     # Dimension heuristic still holds.
     assert (d_U > 0).all()
     assert (torch.minimum(d_W, d_Z) >= d_U).all()
 
+    # One captured (U, W, Z) profile triple per delivered dataset.
+    assert len(profiles) == d_U.shape[0]
+
     saw_categorical_U = False
-    for i in range(d_U.shape[0]):
-        u_prof = _reconstruct_profile(U[i], int(d_U[i]), max_categories)
-        w_prof = _reconstruct_profile(W[i], int(d_W[i]), max_categories)
-        z_prof = _reconstruct_profile(Z[i], int(d_Z[i]), max_categories)
+    for i, (u_prof, w_prof, z_prof) in enumerate(profiles):
         assert dominates(w_prof, u_prof), (i, w_prof, u_prof)
         assert dominates(z_prof, u_prof), (i, z_prof, u_prof)
         if u_prof.categorical:
