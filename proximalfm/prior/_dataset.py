@@ -766,7 +766,7 @@ class SCMPrior(Prior):
             f_W = prior_cls(
                 in_dim=input_W.shape[-1],
                 num_outputs=params["dim_W"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             W_mc = f_W(input_W)
@@ -780,7 +780,7 @@ class SCMPrior(Prior):
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
                 num_outputs=params["dim_Z"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             Z_mc = f_Z(input_Z)

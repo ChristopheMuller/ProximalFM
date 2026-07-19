@@ -1,0 +1,222 @@
+"""Tests for the categorical-completeness analysis.
+
+The profile reconstruction and the dominance/survival math are tested exactly on
+hand-built inputs; the full comparison analysis is exercised once end-to-end on a
+tiny three-arm family.
+"""
+
+import numpy as np
+import pytest
+
+from proximalfm.prior._reg2cls import BlockProfile
+
+from analysis_prior import generate as gen
+from analysis_prior.analyses.categorical import (
+    CategoricalCompletenessAnalysis,
+    categorical_survival_stats,
+    category_count_distribution,
+    reconstruct_profile,
+)
+from analysis_prior.config import PriorSpec, SpecFamily
+
+
+# --------------------------------------------------------------------------
+# reconstruct_profile
+# --------------------------------------------------------------------------
+
+
+def test_reconstruct_profile_separates_continuous_from_categorical():
+    # Col 0: many distinct values -> continuous. Col 1: 3 distinct -> categorical.
+    block = np.column_stack(
+        [
+            np.arange(20, dtype=float),  # 20 distinct
+            np.array([0, 1, 2] * 6 + [0, 1], dtype=float),  # 3 distinct
+        ]
+    )
+    profile = reconstruct_profile(block, max_categories=5)
+    assert profile == BlockProfile(continuous=1, categorical=(3,))
+
+
+def test_reconstruct_profile_cap_pushes_high_cardinality_to_continuous():
+    # A 6-distinct column is categorical at cap 10 but continuous at cap 5.
+    block = np.array([[float(i % 6)] for i in range(30)])
+    assert reconstruct_profile(block, max_categories=10) == BlockProfile(0, (6,))
+    assert reconstruct_profile(block, max_categories=5) == BlockProfile(1, ())
+
+
+def test_reconstruct_profile_sorts_categories_descending():
+    block = np.column_stack(
+        [
+            np.array([0, 1] * 15, dtype=float),  # 2 distinct
+            np.array([0, 1, 2, 3] * 7 + [0, 1], dtype=float),  # 4 distinct
+        ]
+    )
+    profile = reconstruct_profile(block, max_categories=10)
+    assert profile == BlockProfile(continuous=0, categorical=(4, 2))
+
+
+def test_reconstruct_profile_empty_block():
+    profile = reconstruct_profile(np.empty((10, 0)), max_categories=5)
+    assert profile == BlockProfile(continuous=0, categorical=())
+
+
+# --------------------------------------------------------------------------
+# categorical_survival_stats
+# --------------------------------------------------------------------------
+
+
+def test_survival_all_hold_when_proxies_dominate():
+    u = [BlockProfile(2, (3,))]
+    w = [BlockProfile(3, ())]  # 1 continuous wildcard covers the categorical(3)
+    z = [BlockProfile(2, (4,))]  # exact continuous + categorical(4) >= (3)
+    stats = categorical_survival_stats(u, w, z)
+    assert stats["holds"].tolist() == [True]
+    assert stats["overall_fraction"] == 1.0
+
+
+def test_survival_detects_cardinality_violation():
+    # Matching column counts but insufficient cardinality: categorical(2) < (3).
+    u = [BlockProfile(2, (3,))]
+    w = [BlockProfile(2, (2,))]  # continuous ok, but 2 < 3 -> fails
+    z = [BlockProfile(3, ())]  # fine on its own
+    stats = categorical_survival_stats(u, w, z)
+    assert stats["holds"].tolist() == [False]  # both must dominate; W fails
+
+
+def test_survival_requires_both_proxies():
+    u = [BlockProfile(1, ())]
+    w = [BlockProfile(1, ())]  # dominates
+    z = [BlockProfile(0, (2,))]  # 0 continuous < 1 -> fails continuous slot
+    stats = categorical_survival_stats(u, w, z)
+    assert stats["holds"].tolist() == [False]
+
+
+def test_survival_breakdown_by_n_cat_U():
+    u = [BlockProfile(1, (3,)), BlockProfile(1, (3,)), BlockProfile(1, ())]
+    w = [BlockProfile(2, ()), BlockProfile(1, (2,)), BlockProfile(1, ())]
+    z = [BlockProfile(2, ()), BlockProfile(2, ()), BlockProfile(1, ())]
+    stats = categorical_survival_stats(u, w, z)
+    table = stats["by_n_cat_U"].set_index("n_cat_U")
+    # n_cat_U == 1: first holds (wildcard covers 3), second fails (2 < 3).
+    assert table.loc[1, "n_datasets"] == 2
+    assert table.loc[1, "n_hold"] == 1
+    assert table.loc[1, "fraction_hold"] == 0.5
+    # n_cat_U == 0: continuous U, dimension-style check holds.
+    assert table.loc[0, "fraction_hold"] == 1.0
+
+
+def test_survival_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="equal length"):
+        categorical_survival_stats([BlockProfile(1, ())], [], [BlockProfile(1, ())])
+
+
+def test_survival_rejects_empty():
+    with pytest.raises(ValueError, match="at least one"):
+        categorical_survival_stats([], [], [])
+
+
+# --------------------------------------------------------------------------
+# category_count_distribution
+# --------------------------------------------------------------------------
+
+
+def test_category_count_distribution_pools_columns():
+    profiles = [BlockProfile(2, (3, 2)), BlockProfile(1, (3,))]
+    dist = category_count_distribution(profiles, max_categories=10)
+    assert dist["continuous"] == 3  # 2 + 1
+    assert dist[3] == 2
+    assert dist[2] == 1
+
+
+# --------------------------------------------------------------------------
+# End-to-end on a tiny three-arm family
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tiny_family_caches():
+    """full / ablation / baseline, mirroring the shipped cat_ablation family."""
+    base = PriorSpec(
+        name="cattest",
+        n_datasets=3,
+        seq_len=80,
+        mcmc_cate=1,
+        min_dim_U=1,
+        max_dim_U=3,
+        min_dim_W=1,
+        max_dim_W=3,
+        min_dim_Z=1,
+        max_dim_Z=3,
+        min_dim_X=1,
+        max_dim_X=3,
+        seed=0,
+    )
+    family = SpecFamily(
+        name="cat_family",
+        base=base,
+        interventions={
+            "full": {},
+            "ablation": {
+                "fixed_hp_overrides": {"enforce_categorical_completeness": False}
+            },
+            "baseline": {
+                "fixed_hp_overrides": {
+                    "corrupt_U": False,
+                    "enforce_categorical_completeness": False,
+                }
+            },
+        },
+    )
+    return {
+        label: gen.generate(spec, n_jobs=1, progress=False)
+        for label, spec in family.resolve().items()
+    }
+
+
+def test_compute_reads_flags_from_specs(tiny_family_caches):
+    results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
+
+    assert list(results.variants) == ["full", "ablation", "baseline"]
+    assert results.baseline == "full"
+    assert results.variants["full"].corrupt_U and results.variants["full"].enforced
+    assert results.variants["ablation"].corrupt_U
+    assert not results.variants["ablation"].enforced
+    assert not results.variants["baseline"].corrupt_U
+    for var in results.variants.values():
+        assert set(var.profiles) == {"U", "W", "Z"}
+        assert var.n_datasets == 3
+
+
+def test_full_arm_dominance_holds_by_construction(tiny_family_caches):
+    results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
+    # The enforced arm accepts only datasets whose proxies dominate U.
+    assert results.variants["full"].survival["overall_fraction"] == 1.0
+
+
+def test_run_writes_survival_table(tiny_family_caches, tmp_path):
+    artifacts = CategoricalCompletenessAnalysis().run(tiny_family_caches, tmp_path)
+
+    names = {p.name for p in artifacts.tables}
+    assert "categorical_completeness_survival.tex" in names
+    assert "categorical_completeness_survival.csv" in names
+    for path in artifacts.tables:
+        assert path.exists()
+
+    tex = (tmp_path / "categorical_completeness_survival.tex").read_text()
+    assert "\\label{tab:prior_categorical_completeness_survival}" in tex
+    assert "\\caption" in tex
+
+
+def test_summary_is_per_arm(tiny_family_caches, tmp_path):
+    summary = (
+        CategoricalCompletenessAnalysis().run(tiny_family_caches, tmp_path).summary
+    )
+    assert summary["baseline_label"] == "full"
+    for label in ("full", "ablation", "baseline"):
+        stats = summary[label]
+        assert stats["n_datasets"] == 3
+        assert 0.0 <= stats["dominance_fraction"] <= 1.0
+        assert stats["violation_fraction"] == pytest.approx(
+            1.0 - stats["dominance_fraction"]
+        )
+    assert summary["full"]["dominance_fraction"] == 1.0

@@ -431,6 +431,22 @@ FAMILIES: Dict[str, SpecFamily] = {
             },
         },
     ),
+    "cat_ablation": SpecFamily(
+        name="cat_ablation",
+        base=PRESETS["general_ite"],
+        interventions={
+            "full": {},
+            "ablation": {
+                "fixed_hp_overrides": {"enforce_categorical_completeness": False}
+            },
+            "baseline": {
+                "fixed_hp_overrides": {
+                    "corrupt_U": False,
+                    "enforce_categorical_completeness": False,
+                }
+            },
+        },
+    ),
     # Tiny end-to-end family for tests and dry runs.
     "smoke_family": SpecFamily(
         name="smoke_family",
