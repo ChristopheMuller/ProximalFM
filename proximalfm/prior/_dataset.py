@@ -66,7 +66,12 @@ from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
 from ._hp_sampling import HpSamplerList
-from ._reg2cls import process_features
+from ._reg2cls import (
+    process_features,
+    block_profile,
+    observed_block_profile,
+    dominates,
+)
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -699,6 +704,14 @@ class SCMPrior(Prior):
             X, _ = process_features(X, params)
             X_ = safe_normalize(X)
 
+            categorize_U = params.get("corrupt_U", False)
+            enforce_cat = params.get("enforce_categorical_completeness", False)
+            if enforce_cat and not categorize_U:
+                raise ValueError(
+                    "enforce_categorical_completeness=True requires corrupt_U=True: "
+                    "categorical completeness is defined relative to a categorised U."
+                )
+
             X_rep_ = (
                 X_[:, None, :]
                 .expand(T, K, params["dim_X"])
@@ -738,9 +751,15 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             U_mc = f_U(input_U)
-            if params.get("corrupt_U", False):
-                U_mc, _ = process_features(U_mc, params)
+            u_meta: dict[int, int] = {}
+            if categorize_U:
+                U_mc, u_meta = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
+
+            # Proxies must dominate U's pre-filter profile when enforcing.
+            require_profile = (
+                block_profile(params["dim_U"], u_meta) if enforce_cat else None
+            )
 
             input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
 
@@ -751,7 +770,9 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             W_mc = f_W(input_W)
-            W_mc, _ = process_features(W_mc, params)
+            W_mc, w_meta = process_features(
+                W_mc, params, require_profile=require_profile
+            )
             W_mc_ = safe_normalize(W_mc)
 
             input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
@@ -763,7 +784,9 @@ class SCMPrior(Prior):
             ).to(self.device)
 
             Z_mc = f_Z(input_Z)
-            Z_mc, _ = process_features(Z_mc, params)
+            Z_mc, z_meta = process_features(
+                Z_mc, params, require_profile=require_profile
+            )
             Z_mc_ = safe_normalize(Z_mc)
 
             p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)
@@ -860,6 +883,14 @@ class SCMPrior(Prior):
 
             y = torch.where(A == 1, y1, y0)
 
+            # Categorical-completeness profiles are computed on the realised
+            # (observed, pre-padding) blocks so they reflect exactly what
+            # survives the constant-column filtering below.
+            if enforce_cat:
+                u_profile = observed_block_profile(U, u_meta)
+                w_profile = observed_block_profile(W, w_meta)
+                z_profile = observed_block_profile(Z, z_meta)
+
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
             U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1 = (
                 U.unsqueeze(0),
@@ -902,10 +933,11 @@ class SCMPrior(Prior):
             else:
                 proximal_ok = True
 
-            # Safety valve: for pathological hyperparameters (e.g. heavy dropout
-            # that reliably kills proxy columns) completeness may never hold.
-            # After completeness_max_attempts resamples, accept the last
-            # basically-valid draw rather than looping forever.
+            if enforce_cat:
+                proximal_ok = proximal_ok and (
+                    dominates(w_profile, u_profile) and dominates(z_profile, u_profile)
+                )
+
             give_up = attempt >= int(params.get("completeness_max_attempts", 50))
 
             if basic_ok and (proximal_ok or give_up):

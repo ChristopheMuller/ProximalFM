@@ -11,7 +11,9 @@ DEFAULT_FIXED_HP = {
     # Feature corruption (process_features): applied to X, W, Z (and optionally U)
     "cat_prob": 0.2,
     "max_categories": float("inf"),
-    "corrupt_U": False,
+    "corrupt_U": True,
+    "enforce_categorical_completeness": True,
+    "proxy_cat_cover_prob": 0.5,
     "propensity_epsilon": 1e-3,
     "prior_mc_mem_budget": 100_000_000,
     "enforce_completeness_heuristic": True,

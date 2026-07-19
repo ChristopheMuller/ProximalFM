@@ -457,7 +457,7 @@ def _num2cat_enforced(
 
 def process_features(
     X: Tensor, hp: dict, require_profile: BlockProfile | None = None
-) -> tuple[Tensor, BlockProfile]:
+) -> tuple[Tensor, dict[int, int]]:
     """Apply the prior's feature corruptions: categorization, outlier clamping, scaling.
 
     This is the feature-only pipeline shared by the proximal prior. Unlike the
@@ -475,19 +475,62 @@ def process_features(
         Hyperparameters (see :func:`num2cat`).
 
     require_profile : BlockProfile, optional
-        When given, categorisation is constrained so the returned profile is
+        When given, categorisation is constrained so the block's profile is
         guaranteed to :func:`dominates` ``require_profile`` (before any
         downstream constant-column filtering). See :func:`num2cat`.
 
     Returns
     -------
-    tuple[Tensor, BlockProfile]
-        The processed feature tensor of shape ``(T, H)`` and its
-        :class:`BlockProfile`. The profile reflects the categorisation applied
-        here; downstream constant-column filtering may reduce it, so callers
-        that enforce completeness must re-check post-filter.
+    tuple[Tensor, dict[int, int]]
+        The processed feature tensor of shape ``(T, H)`` and the categorisation
+        metadata ``{column index -> number of categories}``. The metadata
+        reflects the categorisation applied here; downstream constant-column
+        filtering may drop columns, so callers that enforce completeness must
+        re-derive the profile post-filter (see :func:`observed_block_profile`).
+        Use :func:`block_profile` to summarise this (pre-filter) metadata.
     """
     X, meta = num2cat(X, hp, require_profile=require_profile)
     X = outlier_removing(X, threshold=4)
     X = standard_scaling(X)
-    return X, block_profile(X.shape[1], meta)
+    return X, meta
+
+
+def observed_block_profile(block: Tensor, meta: dict[int, int]) -> BlockProfile:
+    """Profile of a block *after* constant-column filtering, from realised values.
+
+    Mirrors :meth:`SCMPrior.filter_constant_features_and_pad`: a column survives
+    iff it is non-constant (``amax != amin``). Surviving columns listed in
+    ``meta`` are categorical; their cardinality is measured from the realised
+    distinct values (not the intended count in ``meta``) so the profile reflects
+    what actually survives observation subsampling and filtering. This is the
+    profile to feed :func:`dominates` when enforcing completeness post-filter.
+
+    Parameters
+    ----------
+    block : Tensor
+        Realised (pre-padding) feature block of shape ``(T, H)`` -- e.g. the
+        observed ``U``/``W``/``Z`` before ``filter_constant_features_and_pad``.
+
+    meta : dict[int, int]
+        Categorisation metadata from :func:`process_features` for this block
+        (column indices align, since row subsampling preserves columns).
+
+    Returns
+    -------
+    BlockProfile
+        Continuous count and category-counts (sorted descending) of the columns
+        that survive filtering.
+    """
+    keep = block.amax(dim=0) != block.amin(dim=0)  # non-constant survive filtering
+    cats: list[int] = []
+    continuous = 0
+    for col in range(block.shape[1]):
+        if not bool(keep[col]):
+            continue
+        if col in meta:
+            cats.append(int(block[:, col].unique().numel()))
+        else:
+            continuous += 1
+    return BlockProfile(
+        continuous=continuous, categorical=tuple(sorted(cats, reverse=True))
+    )

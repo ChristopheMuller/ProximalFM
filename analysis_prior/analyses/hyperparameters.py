@@ -111,6 +111,8 @@ NOTES: Dict[str, str] = {
     "cat_prob": "per-column categorisation probability",
     "max_categories": "cap on categories per column",
     "corrupt_U": "categorise $U$ as well as the proxies",
+    "enforce_categorical_completeness": "accept/reject on each proxy dominating $U$'s category profile",
+    "proxy_cat_cover_prob": "chance a proxy mirrors a $U$ category (vs.\\ a continuous wildcard)",
     "propensity_epsilon": "positivity clamp on the propensity",
     "prior_mc_mem_budget": "memory cap on the MC-CATE pass",
     "enforce_completeness_heuristic": "accept/reject on $\\min(d_W, d_Z) \\ge d_U$",

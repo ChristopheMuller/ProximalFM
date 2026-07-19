@@ -12,6 +12,7 @@ from proximalfm.prior._reg2cls import (
     BlockProfile,
     block_profile,
     dominates,
+    observed_block_profile,
 )
 
 
@@ -246,6 +247,32 @@ def test_dominates_worked_examples_from_heuristic():
     assert not dominates(BlockProfile(2, (2,)), u)
 
 
+def test_observed_block_profile_drops_constant_and_measures_cardinality():
+    # Columns: 0 continuous, 1 categorical(3), 2 constant (dropped), 3 categorical(2).
+    T = 60
+    col0 = torch.randn(T)
+    col1 = torch.tensor([0.0, 1.0, 2.0] * (T // 3))
+    col2 = torch.full((T,), 5.0)  # constant -> filtered out
+    col3 = torch.tensor([0.0, 1.0] * (T // 2))
+    block = torch.stack([col0, col1, col2, col3], dim=1)
+    meta = {1: 3, 3: 2}  # constant col2 is not categorical; col0 continuous
+
+    prof = observed_block_profile(block, meta)
+    # col2 dropped; col0 continuous survives; col1->3 cats, col3->2 cats.
+    assert prof.continuous == 1
+    assert prof.categorical == (3, 2)
+
+
+def test_observed_block_profile_drops_collapsed_categorical():
+    # A "categorical" column that realised a single value is constant -> dropped.
+    T = 40
+    col0 = torch.randn(T)
+    col1 = torch.full((T,), 1.0)  # categorical in meta but collapsed to 1 value
+    block = torch.stack([col0, col1], dim=1)
+    prof = observed_block_profile(block, {1: 4})
+    assert prof == BlockProfile(continuous=1, categorical=())
+
+
 def test_dominates_multi_categorical_requirement():
     # U = 1 continuous + categoricals [4, 3].
     u = BlockProfile(continuous=1, categorical=(4, 3))
@@ -269,12 +296,15 @@ def test_process_features_preserves_shape_no_padding():
     torch.manual_seed(0)
     X = torch.randn(128, 3)
 
-    out, prof = process_features(X, {"cat_prob": 0.0})
+    out, meta = process_features(X, {"cat_prob": 0.0})
 
     # No padding, permutation, or feature-count change.
     assert out.shape == X.shape
-    # cat_prob=0 -> everything stays continuous.
-    assert prof == BlockProfile(continuous=3, categorical=())
+    # cat_prob=0 -> everything stays continuous, no categorisation metadata.
+    assert meta == {}
+    assert block_profile(out.shape[1], meta) == BlockProfile(
+        continuous=3, categorical=()
+    )
 
 
 def test_process_features_standardizes_continuous_input():
@@ -294,11 +324,12 @@ def test_process_features_finite_with_categorization():
     torch.manual_seed(0)
     X = torch.randn(256, 5)
 
-    out, prof = process_features(X, {"cat_prob": 1.0, "max_categories": 5})
+    out, meta = process_features(X, {"cat_prob": 1.0, "max_categories": 5})
 
     assert out.shape == X.shape
     assert torch.isfinite(out).all()
-    # Profile columns account for the full feature count.
+    # Metadata columns account for a subset of the full feature count.
+    prof = block_profile(out.shape[1], meta)
     assert prof.continuous + len(prof.categorical) == 5
 
 
@@ -340,12 +371,12 @@ def test_process_features_enforced_profile_dominates_and_finite():
 
     for _ in range(20):
         X = torch.randn(256, 7)
-        out, prof = process_features(
+        out, meta = process_features(
             X, {"cat_prob": 0.5, "max_categories": 10}, require_profile=req
         )
         assert out.shape == (256, 7)
         assert torch.isfinite(out).all()
-        assert dominates(prof, req)
+        assert dominates(block_profile(out.shape[1], meta), req)
 
 
 def test_num2cat_enforced_all_continuous_requirement_keeps_enough_continuous():

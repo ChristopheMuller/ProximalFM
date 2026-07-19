@@ -1,7 +1,10 @@
+import random
+
 import numpy as np
 import torch
 
 from proximalfm.prior._dataset import SCMPrior, PriorDataset, DisablePrinting
+from proximalfm.prior._reg2cls import BlockProfile, dominates
 from proximalfm.prior._genload import (
     SavePriorDataset,
     LoadPriorDataset,
@@ -499,6 +502,112 @@ def test_completeness_give_up_terminates():
     d_X, d_W, d_Z = out[12], out[13], out[14]
     # Basic validity is always required, even when giving up on completeness.
     assert (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+
+
+# ---------------------------------------------------------------------------
+# Categorical completeness enforcement (Track F)
+# ---------------------------------------------------------------------------
+
+
+def _reconstruct_profile(
+    block: torch.Tensor, d: int, max_categories: int
+) -> BlockProfile:
+    """Rebuild a block's profile from realised (post-filter, padded) values.
+
+    With a small finite ``max_categories`` a categorical column realises at most
+    ``max_categories`` distinct values, while a continuous column realises ~T,
+    so a distinct-count threshold separates them cleanly. This mirrors the
+    profile the generator enforces internally via ``observed_block_profile``.
+    """
+    active = block[:, : int(d)]
+    cats: list[int] = []
+    continuous = 0
+    for col in range(active.shape[1]):
+        n = int(active[:, col].unique().numel())
+        if n <= 1:
+            continue  # constant padding / dropped column
+        if n <= max_categories:
+            cats.append(n)
+        else:
+            continuous += 1
+    return BlockProfile(
+        continuous=continuous, categorical=tuple(sorted(cats, reverse=True))
+    )
+
+
+def test_enforce_categorical_completeness_holds():
+    # Every delivered proxy must be categorically complete w.r.t. U (its profile
+    # dominates U's), on top of the dimension heuristic.
+    random.seed(0)
+    np.random.seed(0)
+    torch.manual_seed(0)
+
+    max_categories = 6
+    fixed_hp = {
+        **DEFAULT_FIXED_HP,
+        "enforce_categorical_completeness": True,
+        "max_categories": max_categories,
+        "cat_prob": 0.8,  # exercise the categorical path often
+        "completeness_max_attempts": 200,  # keep give-ups (which may violate) rare
+    }
+    prior = _make_prior(fixed_hp, max_dim=8, batch_size=24)
+    out = prior.get_batch()
+    U, W, Z = out[0], out[2], out[3]
+    d_U, d_W, d_Z = out[11], out[13], out[14]
+
+    # Dimension heuristic still holds.
+    assert (d_U > 0).all()
+    assert (torch.minimum(d_W, d_Z) >= d_U).all()
+
+    saw_categorical_U = False
+    for i in range(d_U.shape[0]):
+        u_prof = _reconstruct_profile(U[i], int(d_U[i]), max_categories)
+        w_prof = _reconstruct_profile(W[i], int(d_W[i]), max_categories)
+        z_prof = _reconstruct_profile(Z[i], int(d_Z[i]), max_categories)
+        assert dominates(w_prof, u_prof), (i, w_prof, u_prof)
+        assert dominates(z_prof, u_prof), (i, z_prof, u_prof)
+        if u_prof.categorical:
+            saw_categorical_U = True
+
+    # The categorical machinery was actually exercised (U had categorical cols).
+    assert saw_categorical_U
+
+
+def test_categorical_completeness_defaults_on():
+    # Track F is on by default: U is categorised and proxies are enforced.
+    assert DEFAULT_FIXED_HP["corrupt_U"] is True
+    assert DEFAULT_FIXED_HP["enforce_categorical_completeness"] is True
+    prior = _make_prior(DEFAULT_FIXED_HP)
+    out = prior.get_batch()
+    d_U, d_W, d_Z = out[11], out[13], out[14]
+    assert (torch.minimum(d_W, d_Z) >= d_U).all()
+
+
+def test_categorical_completeness_ablation_arm_runs():
+    # corrupt_U on, enforce off: U is categorised but proxies are unconstrained
+    # (the ablation arm). Must still run and satisfy the dimension heuristic.
+    fixed_hp = {
+        **DEFAULT_FIXED_HP,
+        "corrupt_U": True,
+        "enforce_categorical_completeness": False,
+    }
+    prior = _make_prior(fixed_hp)
+    out = prior.get_batch()
+    d_U, d_W, d_Z = out[11], out[13], out[14]
+    assert (torch.minimum(d_W, d_Z) >= d_U).all()
+
+
+def test_enforce_requires_corrupt_U():
+    # enforce=True with corrupt_U=False is contradictory (completeness is defined
+    # relative to a categorised U) and must raise.
+    fixed_hp = {
+        **DEFAULT_FIXED_HP,
+        "corrupt_U": False,
+        "enforce_categorical_completeness": True,
+    }
+    prior = _make_prior(fixed_hp)
+    with pytest.raises(ValueError, match="requires corrupt_U"):
+        prior.get_batch()
 
 
 # ---------------------------------------------------------------------------
