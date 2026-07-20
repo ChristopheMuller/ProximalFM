@@ -8,7 +8,7 @@ DEFAULT_FIXED_HP = {
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
-    "cat_prob": 0.2,
+    "cat_prob": 0.40,
     "max_categories": 50,
     "corrupt_U": True,
     "enforce_categorical_completeness": True,

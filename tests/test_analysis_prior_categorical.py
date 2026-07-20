@@ -13,8 +13,11 @@ from proximalfm.prior._reg2cls import BlockProfile
 from analysis_prior import generate as gen
 from analysis_prior.analyses.categorical import (
     CategoricalCompletenessAnalysis,
+    binned_category_marginals,
     categorical_survival_stats,
     category_count_distribution,
+    composition_by_demand,
+    proxy_stats_by_u_feature,
     reconstruct_profile,
 )
 from analysis_prior.config import PriorSpec, SpecFamily
@@ -129,6 +132,83 @@ def test_category_count_distribution_pools_columns():
 
 
 # --------------------------------------------------------------------------
+# binned_category_marginals
+# --------------------------------------------------------------------------
+
+
+def test_binned_category_marginals_proportions_sum_to_one():
+    dist = {"continuous": 6, 2: 2, 3: 1, 15: 1}  # 10 columns total
+    rows = binned_category_marginals(dist, [(2, 2), (3, 10), (11, 50)])
+    labels = [r[0] for r in rows]
+    props = dict(rows)
+    assert labels == ["cont.", "2", "3–10", "11–50"]
+    assert props["cont."] == 0.6
+    assert props["2"] == 0.2
+    assert props["3–10"] == 0.1  # only the k=3 column
+    assert props["11–50"] == 0.1  # the k=15 column
+    assert sum(props.values()) == pytest.approx(1.0)
+
+
+def test_binned_category_marginals_empty_block():
+    rows = binned_category_marginals({}, [(2, 2)])
+    assert dict(rows) == {"cont.": 0.0, "2": 0.0}
+
+
+# --------------------------------------------------------------------------
+# composition_by_demand
+# --------------------------------------------------------------------------
+
+
+def test_composition_by_demand_aggregates_by_u_cat_count():
+    # Two datasets with |cats(U)|=1, one with |cats(U)|=0.
+    u = [BlockProfile(2, (3,)), BlockProfile(2, (4,)), BlockProfile(3, ())]
+    p = [BlockProfile(4, (5,)), BlockProfile(2, (5, 6)), BlockProfile(5, ())]
+    df = composition_by_demand(u, p).set_index("n_cat_U")
+    # |cats(U)|=1 bin: proxies have 1 and 2 categorical cols -> mean 1.5.
+    assert df.loc[1, "n_datasets"] == 2
+    assert df.loc[1, "mean_n_cat_P"] == 1.5
+    # fractions categorical: 1/5 and 2/4 -> mean 0.35.
+    assert df.loc[1, "mean_frac_cat_P"] == pytest.approx(0.35)
+    # |cats(U)|=0 bin: single dataset, sem 0.
+    assert df.loc[0, "n_datasets"] == 1
+    assert df.loc[0, "mean_n_cat_P"] == 0.0
+    assert df.loc[0, "sem_n_cat_P"] == 0.0
+
+
+def test_composition_by_demand_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="equal length"):
+        composition_by_demand([BlockProfile(1, ())], [])
+
+
+# --------------------------------------------------------------------------
+# proxy_stats_by_u_feature
+# --------------------------------------------------------------------------
+
+
+def test_proxy_stats_by_u_feature_emits_one_row_per_u_column():
+    # U: 2 continuous + 1 categorical(3). Proxy: 3 continuous + 1 categorical(5).
+    u = [BlockProfile(2, (3,))]
+    p = [BlockProfile(3, (5,))]
+    df = proxy_stats_by_u_feature(u, p)
+    # One row per U column: 2 continuous (-1) + 1 categorical (3).
+    assert sorted(df["u_card"].tolist()) == [-1, -1, 3]
+    # Proxy block: 3/4 columns continuous, mean categorical cardinality 5.
+    assert (df["prop_num"] == 0.75).all()
+    assert (df["mean_card"] == 5.0).all()
+
+
+def test_proxy_stats_by_u_feature_nan_when_proxy_all_continuous():
+    df = proxy_stats_by_u_feature([BlockProfile(0, (2,))], [BlockProfile(4, ())])
+    assert df["prop_num"].tolist() == [1.0]
+    assert df["mean_card"].isna().all()
+
+
+def test_proxy_stats_by_u_feature_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="equal length"):
+        proxy_stats_by_u_feature([BlockProfile(1, ())], [])
+
+
+# --------------------------------------------------------------------------
 # End-to-end on a tiny three-arm family
 # --------------------------------------------------------------------------
 
@@ -205,6 +285,23 @@ def test_run_writes_survival_table(tiny_family_caches, tmp_path):
     tex = (tmp_path / "categorical_completeness_survival.tex").read_text()
     assert "\\label{tab:prior_categorical_completeness_survival}" in tex
     assert "\\caption" in tex
+
+
+def test_run_writes_category_figures(tiny_family_caches, tmp_path):
+    artifacts = CategoricalCompletenessAnalysis().run(tiny_family_caches, tmp_path)
+
+    names = {p.name for p in artifacts.figures}
+    for stem in (
+        "category_count_marginals",
+        "proxy_composition_vs_u_demand",
+        "proxy_stats_by_u_cardinality",
+    ):
+        assert f"{stem}.pdf" in names
+        assert f"{stem}.png" in names
+    # The joint-count heatmap was removed; make sure it does not come back.
+    assert "category_profile_joint_heatmaps.pdf" not in names
+    for path in artifacts.figures:
+        assert path.exists()
 
 
 def test_summary_is_per_arm(tiny_family_caches, tmp_path):

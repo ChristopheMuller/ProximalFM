@@ -177,6 +177,8 @@ VARIANT_COLORS = {
     "uniform": OKABE_ITO["orange"],  # pre-Option-B d_U sampling
     "unenforced": OKABE_ITO["green"],  # completeness enforcement off
     "full": OKABE_ITO["blue"],  # the unablated prior
+    "ablation": OKABE_ITO["orange"],  # cat_ablation: enforcement off
+    "baseline": OKABE_ITO["green"],  # cat_ablation: continuous U
 }
 
 
