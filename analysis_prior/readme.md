@@ -91,6 +91,31 @@ only differ in name.
 **Note:** `figures_app/prior/` doesn't exist yet in the LaTeX tree — copy/symlink the two PDFs above
 from `results/dim_ablation/dimension_comparison/` before building (Track A item 1 in the plan).
 
+### B.3 Categorical completeness — `fig:prior_category_count_marginals`, `fig:prior_proxy_stats_by_u_cardinality`, `fig:prior_proxy_composition_vs_u_demand`, `tab:prior_categorical_completeness_survival`
+
+Discrete analogue of the dimension heuristic above: a proxy block is *categorically complete* w.r.t.
+`U` when every column of `U` can be matched one-to-one to a proxy column that is at least as
+informative (continuous dominates any finite categorical; a categorical column dominates another only
+if its category count is `>=`). Since the categorisation metadata isn't persisted in the cache, each
+block's profile is reconstructed from realised values (a column with `<= max_categories` distinct
+values counts as categorical) — see the module docstring in `analyses/categorical.py` for why that's
+unambiguous at the shipped cap.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --family cat_ablation --analysis categorical_completeness` |
+| **Config group** | family `cat_ablation` (base preset `general_ite`, variants `full` / `ablation` / `baseline` — enforcement and `U`-categorisation toggled via `enforce_categorical_completeness` / `corrupt_U`) |
+| **Analysis module** | `analyses/categorical.py` → `CategoricalCompletenessAnalysis` (`name="categorical_completeness"`) |
+| **Output dir** | `results/cat_ablation/categorical_completeness/` |
+| **Figure outputs** | `category_count_marginals.pdf` → `fig:prior_category_count_marginals`; `proxy_stats_by_u_cardinality.pdf` → `fig:prior_proxy_stats_by_u_cardinality`; `proxy_composition_vs_u_demand.pdf` → `fig:prior_proxy_composition_vs_u_demand` |
+| **Table output** | `categorical_completeness_survival.tex` → `tab:prior_categorical_completeness_survival` |
+| **Appendix location** | §B.3 "Postprocessing" (`app:prior_postprocessing`), paragraphs "Categorical completeness" / "Enforcement tracks `U`'s categorical demand" / "Survival of categorical completeness" |
+
+The composition and cardinality figures (`proxy_composition_vs_u_demand`, `proxy_stats_by_u_cardinality`)
+only plot the categorised-`U` arms (`full`, `ablation`) — `baseline` has a continuous `U` by
+construction and is dropped from those two views, though it still appears in the category-marginals
+figure and the survival table.
+
 ---
 
 ## Implemented but not currently referenced in the tex
