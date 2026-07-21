@@ -13,6 +13,7 @@ from analysis_prior.analyses.hyperparameters import (
     FIXED_GROUPS,
     NOTES,
     SAMPLED_GROUPS,
+    TREE_SCM_FIXED_HP,
     build_fixed_table,
     build_sampled_table,
     describe_sampled,
@@ -122,10 +123,11 @@ def test_sampled_table_covers_every_default_sampled_hp():
     assert listed == set(DEFAULT_SAMPLED_HP)
 
 
-def test_fixed_table_covers_every_default_fixed_hp():
+def test_fixed_table_covers_every_default_fixed_hp_except_tree_scm():
     table = build_fixed_table(PriorSpec(name="default"))
     listed = {_bare_key(cell) for cell in table["hyperparameter"]}
-    assert listed == set(DEFAULT_FIXED_HP)
+    assert listed == set(DEFAULT_FIXED_HP) - TREE_SCM_FIXED_HP
+    assert listed.isdisjoint(TREE_SCM_FIXED_HP)
 
 
 def test_group_label_printed_once_per_group():
@@ -170,4 +172,4 @@ def test_tables_are_not_empty_and_have_expected_columns():
     ]
     assert list(fixed.columns) == ["group", "hyperparameter", "value", "description"]
     assert len(sampled) == len(DEFAULT_SAMPLED_HP)
-    assert len(fixed) == len(DEFAULT_FIXED_HP)
+    assert len(fixed) == len(DEFAULT_FIXED_HP) - len(TREE_SCM_FIXED_HP)

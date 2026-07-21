@@ -66,10 +66,11 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
     ),
 ]
 
-#: Fixed hyperparameters, grouped and ordered.
+#: Fixed hyperparameters, grouped and ordered. TreeSCM-only knobs (mixture
+#: weights + tree-specific parameters, see :class:`proximalfm.prior._dataset`)
+#: are dropped from the table entirely by :func:`build_fixed_table`, not just
+#: left ungrouped, since this paper's spec never exercises the tree-SCM branch.
 FIXED_GROUPS: List[Tuple[str, List[str]]] = [
-    ("SCM mixture", ["mix_probs"]),
-    ("Tree SCM", ["tree_model", "tree_depth_lambda", "tree_n_estimators_lambda"]),
     ("Feature corruption", ["cat_prob", "max_categories", "corrupt_U"]),
     ("Positivity", ["propensity_epsilon"]),
     ("Monte Carlo", ["prior_mc_mem_budget"]),
@@ -82,6 +83,17 @@ FIXED_GROUPS: List[Tuple[str, List[str]]] = [
         ],
     ),
 ]
+
+#: Fixed hyperparameters tied to the TreeSCM mechanism family (see
+#: :class:`proximalfm.prior._dataset.SCMPrior`). Excluded from
+#: :func:`build_fixed_table` rather than merely left out of ``FIXED_GROUPS``,
+#: so they don't resurface as an "Other" group.
+TREE_SCM_FIXED_HP = {
+    "mix_probs",
+    "tree_model",
+    "tree_depth_lambda",
+    "tree_n_estimators_lambda",
+}
 
 #: One-line gloss per hyperparameter. Kept deliberately terse (fits a table
 #: cell) and free of LaTeX specials so it can be printed without escaping.
@@ -265,8 +277,15 @@ def build_sampled_table(spec: PriorSpec) -> pd.DataFrame:
 
 
 def build_fixed_table(spec: PriorSpec) -> pd.DataFrame:
-    """Table of the *fixed* hyperparameters for ``spec``."""
+    """Table of the *fixed* hyperparameters for ``spec``.
+
+    TreeSCM-only knobs (:data:`TREE_SCM_FIXED_HP`) are dropped unconditionally:
+    this paper's spec never exercises the tree-SCM branch, so they'd otherwise
+    show up as noise (an "Other" group, since they're absent from
+    ``FIXED_GROUPS``).
+    """
     fixed, _ = spec.resolved_hp()
+    fixed = {k: v for k, v in fixed.items() if k not in TREE_SCM_FIXED_HP}
     return _grouped_rows(fixed, FIXED_GROUPS, format_fixed, "value")
 
 
@@ -316,6 +335,7 @@ class HyperparametersAnalysis(Analysis):
             escape=False,
             wrap_columns=["hyperparameter", "sampling law", "description"],
             small=True,
+            centering=True,
         )
         tables += save_table(
             results.fixed,
@@ -330,6 +350,7 @@ class HyperparametersAnalysis(Analysis):
             escape=False,
             wrap_columns=["hyperparameter", "description"],
             small=True,
+            centering=True,
         )
 
         summary = {

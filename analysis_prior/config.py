@@ -276,7 +276,7 @@ PRESETS: Dict[str, PriorSpec] = {
     "default": PriorSpec(name="default"),
     "general_ite": PriorSpec(
         name="general_ite",
-        n_datasets=256,
+        n_datasets=4096,
         seq_len=2048,
         mcmc_cate=1,
         min_dim_U=1,

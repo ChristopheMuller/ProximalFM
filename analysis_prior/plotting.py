@@ -56,6 +56,7 @@ def save_table(
     escape: bool = True,
     wrap_columns: List[str] = None,
     small: bool = False,
+    centering: bool = True,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
@@ -82,6 +83,8 @@ def save_table(
 
     ``small`` wraps the table body in ``\\small`` -- combine with
     ``wrap_columns`` for tables with many columns of running text.
+
+    ``centering`` inserts ``\\centering`` right after ``\\begin{table}``.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +119,8 @@ def save_table(
     if small:
         env = "tabularx" if wrap_columns else "tabular"
         latex = latex.replace(f"\\begin{{{env}}}", f"\\small\n\\begin{{{env}}}")
+    if centering:
+        latex = latex.replace("\\begin{table}", "\\begin{table}\n\\centering", 1)
 
     tex_path = outdir / f"{name}.tex"
     tex_path.write_text(latex)
