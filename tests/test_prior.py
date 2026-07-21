@@ -685,3 +685,155 @@ def test_get_batch_respects_dim_U_distribution_flag():
         d_U = prior.get_batch()[11]
         assert d_U.shape[0] == 24
         assert (d_U > 0).all()  # enforcement is still on
+
+
+# ---------------------------------------------------------------------------
+# Confounding-dim control (share-targeted U input width for f_Y / f_A)
+# ---------------------------------------------------------------------------
+
+
+def test_confounding_input_dim_floor_and_cap():
+    # Tiny share: the count would round to 0, so the floor of 2 bites.
+    assert SCMPrior.confounding_input_dim(0.001, 20) == 2
+    # Share clamped at 0.75, so k is capped at 3 * n_other regardless of s.
+    assert SCMPrior.confounding_input_dim(0.99, 20) == 60
+    assert SCMPrior.confounding_input_dim(0.75, 20) == 60
+    # Monotone non-decreasing in the share.
+    ks = [SCMPrior.confounding_input_dim(s, 20) for s in np.linspace(0, 1, 50)]
+    assert all(a <= b for a, b in zip(ks, ks[1:]))
+
+
+def test_confounding_input_dim_round_trip():
+    # Away from floor and cap, the realised input share k / (k + n) must sit
+    # near the targeted share (up to integer rounding).
+    for s in (0.2, 0.3, 0.5, 0.7):
+        for n in (10, 20, 31):
+            k = SCMPrior.confounding_input_dim(s, n)
+            assert k / (k + n) == pytest.approx(s, abs=0.5 / n)
+
+
+def test_split_confounding_inputs_regimes():
+    perm = (3, 0, 4, 1, 2)  # dim_U = 5
+
+    # Both sides subsample: no augmentation, nested raw-U subsets.
+    idx_y, idx_a, aug_y, aug_a = SCMPrior.split_confounding_inputs(2, 4, 5, perm)
+    assert idx_y == (3, 0) and idx_a == (3, 0, 4, 1)
+    assert aug_y == 0 and aug_a == 0
+
+    # Both sides augment: full U each, nested aug prefixes carry the rest.
+    idx_y, idx_a, aug_y, aug_a = SCMPrior.split_confounding_inputs(7, 9, 5, perm)
+    assert idx_y == perm and idx_a == perm
+    assert aug_y == 2 and aug_a == 4
+
+    # Mixed: one side subsamples, the other augments; nesting still holds.
+    idx_y, idx_a, aug_y, aug_a = SCMPrior.split_confounding_inputs(3, 8, 5, perm)
+    assert idx_y == (3, 0, 4) and idx_a == perm
+    assert aug_y == 0 and aug_a == 3
+    assert set(idx_y) <= set(idx_a)
+
+
+@contextlib.contextmanager
+def _capture_mechanism_widths():
+    """Record (in_dim, num_outputs) of every MLPSCM the generator builds.
+
+    ``generate_dataset`` looks MLPSCM up as a module global, so patching the
+    module attribute intercepts every mechanism. f_A is the only mechanism with
+    num_outputs=1 and f_Y the only one with num_outputs=2 (keep block dims >= 3
+    so they cannot collide).
+    """
+    records: list[tuple[int, int]] = []
+    real = _dataset_mod.MLPSCM
+
+    class SpyMLPSCM(real):
+        def __init__(self, in_dim, num_outputs, **kwargs):
+            records.append((in_dim, num_outputs))
+            super().__init__(in_dim=in_dim, num_outputs=num_outputs, **kwargs)
+
+    _dataset_mod.MLPSCM = SpyMLPSCM
+    try:
+        yield records
+    finally:
+        _dataset_mod.MLPSCM = real
+
+
+def _make_pinned_dims_prior(fixed_hp, sampled_hp, dim=5):
+    """A prior with every block dimension pinned to ``dim`` so the expected
+    f_A / f_Y input widths are deterministic."""
+    from proximalfm.prior._prior_config import DEFAULT_SAMPLED_HP
+
+    return SCMPrior(
+        batch_size=2,
+        batch_size_per_gp=1,
+        min_dim_U=dim,
+        max_dim_U=dim,
+        min_dim_W=dim,
+        max_dim_W=dim,
+        min_dim_Z=dim,
+        max_dim_Z=dim,
+        min_dim_X=dim,
+        max_dim_X=dim,
+        min_seq_len=200,
+        max_seq_len=201,
+        prior_type="mlp_scm",
+        mcmc_cate=2,
+        fixed_hp=fixed_hp,
+        sampled_hp={**DEFAULT_SAMPLED_HP, **sampled_hp},
+        n_jobs=1,
+    )
+
+
+def _pinned_share(value):
+    return {"distribution": "uniform", "min": value, "max": value}
+
+
+def test_confounding_dim_control_subsample_regime():
+    # s = 0.01 -> k = max(2, round(0.01/0.99 * 11)) = 2 < dim_U = 5: both
+    # mechanisms see 2 subsampled U columns and no augmentation, so
+    # in_dim = k + dim_X + dim_{W/Z} + 1 = 13.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_pinned_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {13} and y_widths == {13}
+
+
+def test_confounding_dim_control_augment_regime():
+    # s = 0.7 -> k = round(0.7/0.3 * 11) = 26 > dim_U = 5: full U plus 21
+    # augmented columns, so in_dim = k + dim_X + dim_{W/Z} + 1 = 37.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_pinned_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.7),
+            "confounding_share_of_U_in_A": _pinned_share(0.7),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {37} and y_widths == {37}
+
+
+def test_confounding_dim_control_off_feeds_raw_U():
+    # Flag off: raw full U, no subsampling, no augmentation --
+    # in_dim = dim_U + dim_X + dim_{W/Z} + 1 = 16.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    fixed_hp = {**DEFAULT_FIXED_HP, "confounding_dim_control": False}
+    prior = _make_pinned_dims_prior(fixed_hp, {})
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {16} and y_widths == {16}

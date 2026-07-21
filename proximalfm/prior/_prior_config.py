@@ -18,6 +18,7 @@ DEFAULT_FIXED_HP = {
     "enforce_completeness_heuristic": True,
     "completeness_max_attempts": 50,
     "dim_U_distribution": "triangular",
+    "confounding_dim_control": True,
 }
 
 DEFAULT_SAMPLED_HP = {
@@ -89,14 +90,17 @@ DEFAULT_SAMPLED_HP = {
         "lower_bound": 0.1,
         "round": False,
     },
-    "confounding_duplication_of_U_in_Y": {
+    # Target share of f_Y / f_A input columns that are U-derived (Beta with
+    # mean 0.30; P(s > 0.5) = 0.18, P(s > 0.75) = 0.028). Converted to a column
+    # count by SCMPrior.confounding_input_dim.
+    "confounding_share_of_U_in_Y": {
         "distribution": "beta",
-        "a": 1.0,
-        "b": 1.0,
+        "a": 1.2,
+        "b": 2.8,
     },
-    "confounding_duplication_of_U_in_A": {
+    "confounding_share_of_U_in_A": {
         "distribution": "beta",
-        "a": 1.0,
-        "b": 1.0,
+        "a": 1.2,
+        "b": 2.8,
     },
 }

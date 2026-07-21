@@ -610,11 +610,14 @@ class SCMPrior(Prior):
         # Per-row width of the concurrently live (T * K)-row tensors: the widest
         # MLP-SCM pool plus the proxy/confounder blocks kept in raw + normalized
         # form, plus the X replication and eps draws. A small constant covers the
-        # scalar A / y columns. This is an estimate, deliberately on the high side.
+        # scalar A / y columns. The confounding-dim augmentation contributes at
+        # most 3x the competing input width (share capped at 0.75 in
+        # confounding_input_dim). This is an estimate, deliberately high-side.
         per_row = (
             num_layers * hidden_dim
             + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
+            + 3 * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
             + 8
         )
 
@@ -789,40 +792,43 @@ class SCMPrior(Prior):
             )
             Z_mc_ = safe_normalize(Z_mc)
 
-            p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)
-            p_dim_u_augment_A = params.get("confounding_duplication_of_U_in_A", 0.5)
-
-            dim_u_augment_Y = (
-                torch.distributions.binomial.Binomial(
-                    total_count=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                    probs=p_dim_u_augment_Y,
+            if params.get("confounding_dim_control", True):
+                k_Y = self.confounding_input_dim(
+                    params.get("confounding_share_of_U_in_Y", 0.3),
+                    params["dim_X"] + params["dim_W"] + 1,
                 )
-                .sample()
-                .long()
-            )
-            dim_u_augment_A = (
-                torch.distributions.binomial.Binomial(
-                    total_count=params["dim_U"] + params["dim_X"] + params["dim_Z"],
-                    probs=p_dim_u_augment_A,
+                k_A = self.confounding_input_dim(
+                    params.get("confounding_share_of_U_in_A", 0.3),
+                    params["dim_X"] + params["dim_Z"] + 1,
                 )
-                .sample()
-                .long()
-            )
+                perm = tuple(torch.randperm(params["dim_U"]).tolist())
+                idx_y, idx_a, aug_dim_y, aug_dim_a = self.split_confounding_inputs(
+                    k_Y, k_A, params["dim_U"], perm
+                )
+                U_sel_y = U_mc_[:, idx_y]
+                U_sel_a = U_mc_[:, idx_a]
 
-            f_u_augment_out_dim = torch.max(dim_u_augment_Y, dim_u_augment_A)
-            f_u_augment = prior_cls(
-                in_dim=U_mc_.shape[-1],
-                num_outputs=int(f_u_augment_out_dim),
-                num_layers=3,
-                hidden_dim=max(10, int(f_u_augment_out_dim)),
-            ).to(self.device)
+                aug_out_dim = max(aug_dim_y, aug_dim_a)
+                if aug_out_dim > 0:
+                    f_u_augment = prior_cls(
+                        in_dim=U_mc_.shape[-1],
+                        num_outputs=aug_out_dim,
+                        num_layers=3,
+                        hidden_dim=max(10, aug_out_dim),
+                    ).to(self.device)
+                    u_aug = f_u_augment(U_mc_)
+                else:
+                    u_aug = U_mc_[:, :0]
 
-            u_aug = f_u_augment(U_mc_)
+                u_aug_y = u_aug[:, :aug_dim_y]
+                u_aug_a = u_aug[:, :aug_dim_a]
+            else:
+                U_sel_y = U_mc_
+                U_sel_a = U_mc_
+                u_aug_y = U_mc_[:, :0]
+                u_aug_a = U_mc_[:, :0]
 
-            u_aug_y = u_aug[:, :dim_u_augment_Y]
-            u_aug_a = u_aug[:, :dim_u_augment_A]
-
-            input_A = torch.cat([U_mc_, X_rep_, Z_mc_, eps_A, u_aug_a], dim=-1)
+            input_A = torch.cat([U_sel_a, X_rep_, Z_mc_, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
@@ -840,7 +846,7 @@ class SCMPrior(Prior):
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
 
-            input_y = torch.cat([U_mc_, X_rep_, W_mc_, eps_Y, u_aug_y], dim=-1)
+            input_y = torch.cat([U_sel_y, X_rep_, W_mc_, eps_Y, u_aug_y], dim=-1)
 
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],
@@ -989,6 +995,50 @@ class SCMPrior(Prior):
         probs = torch.sigmoid(logits)
         probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
         return torch.bernoulli(probs).long(), probs
+
+    @staticmethod
+    def confounding_input_dim(
+        share: float, n_other: int, floor: int = 2, max_share: float = 0.75
+    ) -> int:
+        """Number of U-derived input columns targeting a given input ``share``.
+
+        The confounding strength of ``U`` in a random MLP mechanism scales with
+        the fraction of the mechanism's input width that is U-derived. Given a
+        target ``share`` s and the width ``n_other`` of the competing (non-U)
+        inputs, the count k solving k / (k + n_other) = s is
+        ``k = s / (1 - s) * n_other``. ``dim_U`` is deliberately absent: the
+        knob controls U's *total* effective input width (subsampling U below
+        ``dim_U``, augmenting above it), decoupling confounding strength from
+        the confounder's dimension.
+
+        ``share`` is clamped to ``max_share`` (bounding k at 3 * n_other for
+        the default 0.75, a memory cap on the augmentation network) and the
+        result floored at ``floor`` so every mechanism sees at least that many
+        U-derived columns.
+        """
+        s = min(float(share), max_share)
+        return max(floor, round(s / (1.0 - s) * n_other))
+
+    @staticmethod
+    def split_confounding_inputs(
+        k_y: int, k_a: int, dim_U: int, perm: Tuple[int, ...]
+    ) -> Tuple[Tuple[int, ...], Tuple[int, ...], int, int]:
+        """Split per-side U-input budgets into raw-U columns and aug widths.
+
+        Each side (Y, A) consumes the first ``min(k, dim_U)`` columns of the
+        shared permutation ``perm`` of U's columns, plus ``max(0, k - dim_U)``
+        columns of the shared augmentation network's output. Taking prefixes of
+        the *same* permutation (and the same aug output) makes the two sides'
+        U-derived inputs nested: the smaller side's columns are all shared with
+        the larger side, and only the difference is side-exclusive -- so the
+        common confounding channel has width ``min(k_y, k_a)`` by construction.
+
+        Returns ``(idx_y, idx_a, aug_y, aug_a)``: the raw-U column indices per
+        side and the number of augmentation columns per side.
+        """
+        idx_y = tuple(perm[: min(k_y, dim_U)])
+        idx_a = tuple(perm[: min(k_a, dim_U)])
+        return idx_y, idx_a, max(0, k_y - dim_U), max(0, k_a - dim_U)
 
     @staticmethod
     def triangular_dim_pmf(lo: int, hi: int) -> Tuple[np.ndarray, np.ndarray]:

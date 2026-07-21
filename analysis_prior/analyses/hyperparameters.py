@@ -60,8 +60,8 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
         [
             "propensity_shift",
             "propensity_scale",
-            "confounding_duplication_of_U_in_Y",
-            "confounding_duplication_of_U_in_A",
+            "confounding_share_of_U_in_Y",
+            "confounding_share_of_U_in_A",
         ],
     ),
 ]
@@ -113,8 +113,8 @@ NOTES: Dict[str, str] = {
     # sampled -- causal knobs
     "propensity_shift": "treatment-logit bias (marginal treated fraction)",
     "propensity_scale": "treatment-logit gain (overlap vs.\\ confounding)",
-    "confounding_duplication_of_U_in_Y": "share of $U$ re-encoded into $f_Y$",
-    "confounding_duplication_of_U_in_A": "share of $U$ re-encoded into $f_A$",
+    "confounding_share_of_U_in_Y": "target share of $f_Y$ inputs drawn from $U$",
+    "confounding_share_of_U_in_A": "target share of $f_A$ inputs drawn from $U$",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
     "tree_model": "tree SCM family",
@@ -130,6 +130,7 @@ NOTES: Dict[str, str] = {
     "enforce_completeness_heuristic": "accept/reject on $\\min(d_W, d_Z) \\ge d_U$",
     "completeness_max_attempts": "resample budget before giving up",
     "dim_U_distribution": "sampling law for $d_U$",
+    "confounding_dim_control": "subsample/augment $U$'s inputs to $f_Y$, $f_A$ to a target share",
 }
 
 
@@ -151,7 +152,7 @@ def _tt(text: str) -> str:
     r"""``\texttt`` with underscores escaped, for a config key or string value.
 
     Also inserts ``\allowbreak`` after each underscore. Typewriter identifiers
-    like ``confounding_duplication_of_U_in_Y`` are otherwise a single
+    like ``confounding_share_of_U_in_Y`` are otherwise a single
     unbreakable box: fine in an ``l`` column, but once the cell lives in a
     wrapped ``tabularx`` ``X`` column (see :func:`save_table`'s
     ``wrap_columns``) a long name would still force the column wide unless it

@@ -90,8 +90,8 @@ class PriorSpec:
         Overrides merged over ``DEFAULT_SAMPLED_HP``. Each value is a
         distribution config, so pinning a hyperparameter to a constant is done by
         replacing it with a degenerate distribution, e.g.
-        ``{"confounding_duplication_of_U_in_Y": {"distribution": "uniform",
-        "min": 0.0, "max": 0.0}}`` to switch off confounding duplication.
+        ``{"confounding_share_of_U_in_Y": {"distribution": "uniform",
+        "min": 0.75, "max": 0.75}}`` to pin the targeted U input share.
 
         Note that ``DEFAULT_SAMPLED_HP`` contains non-JSON-serialisable entries
         (activation classes), so only the *overrides* participate in the cache
@@ -302,14 +302,12 @@ PRESETS: Dict[str, PriorSpec] = {
         min_dim_X=2,
         max_dim_X=4,
     ),
-    # Ablation: no confounding duplication (see appendix A.5.2). Isolates how
-    # much of the prior's confounding strength comes from f_u_augment.
+    # Ablation: confounding-dim control off, so f_A / f_Y see raw full U with
+    # no subsampling or augmentation. Isolates how much of the prior's
+    # confounding strength comes from the share-targeting mechanism.
     "no_u_augment": PriorSpec(
         name="no_u_augment",
-        sampled_hp_overrides={
-            "confounding_duplication_of_U_in_Y": pinned(0.0),
-            "confounding_duplication_of_U_in_A": pinned(0.0),
-        },
+        fixed_hp_overrides={"confounding_dim_control": False},
     ),
     # Ablation: no feature categorization (see appendix A.3).
     "no_categorization": PriorSpec(
