@@ -582,6 +582,7 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 "small downward gap is expected."
             ),
             label="tab:prior_dim_sampling",
+            centering=True,
             # Cells are intentional LaTeX ($d_U$, $p(d)\propto\dots$).
             escape=False,
         )
