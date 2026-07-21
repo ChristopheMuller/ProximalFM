@@ -637,4 +637,5 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             ),
             label="tab:prior_completeness_survival",
             escape=False,
+            centering=True,
         )

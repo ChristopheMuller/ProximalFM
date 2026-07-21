@@ -646,4 +646,5 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
             ),
             label="tab:prior_categorical_completeness_survival",
             escape=False,
+            centering=True,
         )
