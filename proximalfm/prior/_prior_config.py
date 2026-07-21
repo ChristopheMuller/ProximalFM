@@ -19,6 +19,7 @@ DEFAULT_FIXED_HP = {
     "completeness_max_attempts": 50,
     "dim_U_distribution": "triangular",
     "confounding_dim_control": True,
+    "proxy_edge_subsampling": True,
 }
 
 DEFAULT_SAMPLED_HP = {
@@ -102,5 +103,15 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "beta",
         "a": 1.2,
         "b": 2.8,
+    },
+    "direct_edge_share_of_W_in_Y": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "direct_edge_share_of_Z_in_A": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
     },
 }

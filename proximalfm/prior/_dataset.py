@@ -792,14 +792,33 @@ class SCMPrior(Prior):
             )
             Z_mc_ = safe_normalize(Z_mc)
 
+            if params.get("proxy_edge_subsampling", True):
+                m_W = int(
+                    torch.distributions.binomial.Binomial(
+                        total_count=params["dim_W"],
+                        probs=float(params.get("direct_edge_share_of_W_in_Y", 1.0)),
+                    ).sample()
+                )
+                m_Z = int(
+                    torch.distributions.binomial.Binomial(
+                        total_count=params["dim_Z"],
+                        probs=float(params.get("direct_edge_share_of_Z_in_A", 1.0)),
+                    ).sample()
+                )
+                W_direct = W_mc_[:, torch.randperm(params["dim_W"])[:m_W]]
+                Z_direct = Z_mc_[:, torch.randperm(params["dim_Z"])[:m_Z]]
+            else:
+                W_direct = W_mc_
+                Z_direct = Z_mc_
+
             if params.get("confounding_dim_control", True):
                 k_Y = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_Y", 0.3),
-                    params["dim_X"] + params["dim_W"] + 1,
+                    params["dim_X"] + W_direct.shape[-1] + 1,
                 )
                 k_A = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_A", 0.3),
-                    params["dim_X"] + params["dim_Z"] + 1,
+                    params["dim_X"] + Z_direct.shape[-1] + 1,
                 )
                 perm = tuple(torch.randperm(params["dim_U"]).tolist())
                 idx_y, idx_a, aug_dim_y, aug_dim_a = self.split_confounding_inputs(
@@ -828,7 +847,7 @@ class SCMPrior(Prior):
                 u_aug_y = U_mc_[:, :0]
                 u_aug_a = U_mc_[:, :0]
 
-            input_A = torch.cat([U_sel_a, X_rep_, Z_mc_, eps_A, u_aug_a], dim=-1)
+            input_A = torch.cat([U_sel_a, X_rep_, Z_direct, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
@@ -846,7 +865,7 @@ class SCMPrior(Prior):
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
 
-            input_y = torch.cat([U_sel_y, X_rep_, W_mc_, eps_Y, u_aug_y], dim=-1)
+            input_y = torch.cat([U_sel_y, X_rep_, W_direct, eps_Y, u_aug_y], dim=-1)
 
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],

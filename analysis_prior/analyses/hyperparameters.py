@@ -62,6 +62,8 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
             "propensity_scale",
             "confounding_share_of_U_in_Y",
             "confounding_share_of_U_in_A",
+            "direct_edge_share_of_W_in_Y",
+            "direct_edge_share_of_Z_in_A",
         ],
     ),
 ]
@@ -115,6 +117,8 @@ NOTES: Dict[str, str] = {
     "propensity_scale": "treatment-logit gain (overlap vs.\\ confounding)",
     "confounding_share_of_U_in_Y": "target share of $f_Y$ inputs drawn from $U$",
     "confounding_share_of_U_in_A": "target share of $f_A$ inputs drawn from $U$",
+    "direct_edge_share_of_W_in_Y": "per-column keep probability of the direct $W \\to Y$ edge",
+    "direct_edge_share_of_Z_in_A": "per-column keep probability of the direct $Z \\to A$ edge",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
     "tree_model": "tree SCM family",
@@ -131,6 +135,7 @@ NOTES: Dict[str, str] = {
     "completeness_max_attempts": "resample budget before giving up",
     "dim_U_distribution": "sampling law for $d_U$",
     "confounding_dim_control": "subsample/augment $U$'s inputs to $f_Y$, $f_A$ to a target share",
+    "proxy_edge_subsampling": "make the direct $W \\to Y$ / $Z \\to A$ edges per-column optional",
 }
 
 

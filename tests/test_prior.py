@@ -786,6 +786,15 @@ def _pinned_share(value):
     return {"distribution": "uniform", "min": value, "max": value}
 
 
+def _full_direct_edges():
+    """Pin the proxy direct-edge keep probabilities to 1 so f_Y / f_A see the
+    full W / Z blocks and the expected input widths are deterministic."""
+    return {
+        "direct_edge_share_of_W_in_Y": _pinned_share(1.0),
+        "direct_edge_share_of_Z_in_A": _pinned_share(1.0),
+    }
+
+
 def test_confounding_dim_control_subsample_regime():
     # s = 0.01 -> k = max(2, round(0.01/0.99 * 11)) = 2 < dim_U = 5: both
     # mechanisms see 2 subsampled U columns and no augmentation, so
@@ -797,6 +806,7 @@ def test_confounding_dim_control_subsample_regime():
         {
             "confounding_share_of_U_in_Y": _pinned_share(0.01),
             "confounding_share_of_U_in_A": _pinned_share(0.01),
+            **_full_direct_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -816,6 +826,7 @@ def test_confounding_dim_control_augment_regime():
         {
             "confounding_share_of_U_in_Y": _pinned_share(0.7),
             "confounding_share_of_U_in_A": _pinned_share(0.7),
+            **_full_direct_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -831,9 +842,63 @@ def test_confounding_dim_control_off_feeds_raw_U():
     torch.manual_seed(0)
     np.random.seed(0)
     fixed_hp = {**DEFAULT_FIXED_HP, "confounding_dim_control": False}
-    prior = _make_pinned_dims_prior(fixed_hp, {})
+    prior = _make_pinned_dims_prior(fixed_hp, _full_direct_edges())
     with _capture_mechanism_widths() as records:
         prior.get_batch()
     a_widths = {w for w, n_out in records if n_out == 1}
     y_widths = {w for w, n_out in records if n_out == 2}
     assert a_widths == {16} and y_widths == {16}
+
+
+# ---------------------------------------------------------------------------
+# Proxy direct-edge subsampling (optional W -> Y and Z -> A edges)
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_edge_subsampling_pure_proxy_regime():
+    # Keep probability 0: no W column enters f_Y and no Z column enters f_A
+    # (the classical negative-control setting). With the U share pinned at
+    # 0.01, the competing width is d_X + 0 + 1 = 6, so k = 2 and
+    # in_dim = k + d_X + 0 + 1 = 8 for both mechanisms.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_pinned_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
+            "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        out = prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {8} and y_widths == {8}
+    # The full proxy blocks are still generated, delivered and non-degenerate:
+    # subsampling only prunes the direct edges, not the proxies themselves.
+    d_W, d_Z = out[13], out[14]
+    assert (d_W > 0).all() and (d_Z > 0).all()
+
+
+def test_proxy_edge_subsampling_flag_off_feeds_full_proxies():
+    # Flag off: f_A / f_Y see the full Z / W blocks regardless of the share
+    # HPs -- same widths as keep probability 1 (in_dim = 2 + 5 + 5 + 1 = 13).
+    torch.manual_seed(0)
+    np.random.seed(0)
+    fixed_hp = {**DEFAULT_FIXED_HP, "proxy_edge_subsampling": False}
+    prior = _make_pinned_dims_prior(
+        fixed_hp,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
+            "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {13} and y_widths == {13}
