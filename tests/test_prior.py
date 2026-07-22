@@ -16,7 +16,7 @@ from proximalfm.prior._genload import (
     SliceNestedTensor,
     cat_slice_nested_tensors,
 )
-from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
+from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
 import pytest
@@ -1037,9 +1037,13 @@ def test_covariate_edge_subsampling_is_independent_per_mechanism():
 
 
 def test_covariate_edge_subsampling_mean_kept_fraction():
-    # The realised kept fraction of X should track the Beta(2, 1.2) mean 0.625.
+    # The realised kept fraction of X should track the configured
+    # covariate_share_of_X_in_W Beta mean, read live so this can't drift out
+    # of sync with _prior_config.py.
     # Measured on f_W's X contribution: in_dim(f_W) = U(3) + |X_W| + eps_W(4),
     # so |X_W| = in_dim - 7, over X of width 5.
+    beta_cfg = DEFAULT_SAMPLED_HP["covariate_share_of_X_in_W"]
+    expected_mean = beta_cfg["a"] / (beta_cfg["a"] + beta_cfg["b"])
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_distinct_dims_prior(
@@ -1057,4 +1061,4 @@ def test_covariate_edge_subsampling_mean_kept_fraction():
     frac = np.array(x_widths) / 5.0
     # 40 batches x 2 datasets = 80 draws; wide tolerance for the small sample.
     assert 0.0 <= frac.min() and frac.max() <= 1.0
-    assert frac.mean() == pytest.approx(0.625, abs=0.12)
+    assert frac.mean() == pytest.approx(expected_mean, abs=0.12)
