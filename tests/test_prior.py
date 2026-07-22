@@ -796,11 +796,13 @@ def _full_direct_edges():
 
 
 def _full_covariate_edges():
-    """Pin every covariate keep probability to 1 so all mechanisms see the full
-    X block and the expected input widths are deterministic. Covariate edge
-    subsampling is on by default, so any width assertion must pin these."""
+    """Pin every covariate keep probability to 1 so all mechanisms (including
+    f_U) see the full X block and the expected input widths are deterministic.
+    Covariate edge subsampling is on by default, so any width assertion must
+    pin these."""
     return {
-        f"covariate_share_of_X_in_{k}": _pinned_share(1.0) for k in ("W", "Z", "A", "Y")
+        f"covariate_share_of_X_in_{k}": _pinned_share(1.0)
+        for k in ("U", "W", "Z", "A", "Y")
     }
 
 
@@ -808,7 +810,7 @@ def _pinned_covariate_edges(value):
     """Pin every covariate keep probability to ``value``."""
     return {
         f"covariate_share_of_X_in_{k}": _pinned_share(value)
-        for k in ("W", "Z", "A", "Y")
+        for k in ("U", "W", "Z", "A", "Y")
     }
 
 
@@ -1088,6 +1090,50 @@ def test_covariate_edge_subsampling_mean_kept_fraction():
     assert frac.mean() == pytest.approx(expected_mean, abs=0.12)
 
 
+def test_covariate_edge_subsampling_includes_x_to_u():
+    # X -> U is subsampled like the peripheral edges. With distinct dims f_U is
+    # identifiable (num_outputs=3) and the noise share pinned to the floor
+    # (eps_U = dim_U = 3), so f_U in_dim = |X_U*| + 3: 8 when X is kept, 3 when
+    # X is dropped (U then a pure function of its exogenous noise).
+    for share, expected in [(1.0, 8), (0.0, 3)]:
+        torch.manual_seed(0)
+        np.random.seed(0)
+        prior = _make_distinct_dims_prior(
+            DEFAULT_FIXED_HP,
+            {
+                "confounding_share_of_U_in_Y": _pinned_share(0.01),
+                "confounding_share_of_U_in_A": _pinned_share(0.01),
+                "covariate_share_of_X_in_U": _pinned_share(share),
+                **_pinned_noise_shares(),
+            },
+        )
+        with _capture_mechanism_widths() as records:
+            prior.get_batch()
+        u_widths = {w for w, n_out in records if n_out == 3}
+        assert u_widths == {expected}
+
+
+def test_covariate_edge_subsampling_flag_off_feeds_full_x_to_u():
+    # Flag off: f_U sees the full X regardless of the X->U share --
+    # in_dim = X(5) + eps_U(3) = 8.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    fixed_hp = {**DEFAULT_FIXED_HP, "covariate_edge_subsampling": False}
+    prior = _make_distinct_dims_prior(
+        fixed_hp,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            "covariate_share_of_X_in_U": _pinned_share(0.0),
+            **_pinned_noise_shares(),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    u_widths = {w for w, n_out in records if n_out == 3}
+    assert u_widths == {8}
+
+
 # ---------------------------------------------------------------------------
 # Exogenous-noise (eps) width control
 # ---------------------------------------------------------------------------
@@ -1121,10 +1167,11 @@ def test_noise_share_widens_mechanism_inputs():
 
 
 def test_eps_U_width_floors_at_dim_U():
-    # f_U's in_dim is dim_X + eps_U. With distinct dims (dim_U=3, dim_X=5),
-    # a tiny share would give a single eps column, but eps_U is floored at
-    # dim_U so U keeps dim_U genuinely exogenous dimensions: in_dim = 5+3 = 8.
-    # A large share overrides the floor: s = 0.7 on n_signal = dim_X = 5 gives
+    # f_U's in_dim is |X_U*| + eps_U. Pin X -> U full (|X_U*| = dim_X = 5) to
+    # isolate the eps floor. With distinct dims (dim_U=3, dim_X=5), a tiny share
+    # would give a single eps column, but eps_U is floored at dim_U so U keeps
+    # dim_U genuinely exogenous dimensions: in_dim = 5+3 = 8. A large share
+    # overrides the floor: s = 0.7 on n_signal = |X_U*| = 5 gives
     # k = round(0.7/0.3 * 5) = 12, so in_dim = 17.
     torch.manual_seed(0)
     np.random.seed(0)
@@ -1135,6 +1182,7 @@ def test_eps_U_width_floors_at_dim_U():
             {
                 "confounding_share_of_U_in_Y": _pinned_share(0.01),
                 "confounding_share_of_U_in_A": _pinned_share(0.01),
+                "covariate_share_of_X_in_U": _pinned_share(1.0),
                 **_pinned_noise_shares(),
                 "noise_share_of_input_in_U": _pinned_share(share),
             },
@@ -1146,13 +1194,18 @@ def test_eps_U_width_floors_at_dim_U():
     assert widths[0.7] == {17}
 
 
-def test_mechanisms_receive_no_layer_noise():
-    # Within-layer noise is disabled everywhere: every mechanism the generator
-    # builds (including f_W / f_Z / f_Y and the U augmentation network) must
-    # end up with noise_std == 0. All exogenous randomness enters as eps
-    # input columns instead.
+def test_mechanisms_receive_only_the_dither_layer_noise():
+    # All meaningful randomness enters as eps input columns; within-layer noise
+    # is pinned to the tiny fixed dither (DEFAULT_FIXED_HP["noise_std"], 1e-3),
+    # whose only job is to keep continuous columns at ~T*K distinct values
+    # under saturating/discretising activations so the distinct-count profile
+    # classification cannot misread them as categorical. Every params-built
+    # mechanism must carry exactly the dither; the U augmentation network
+    # (built with explicit args, its output never profiled) stays at 0.
     torch.manual_seed(0)
     np.random.seed(0)
+    dither = DEFAULT_FIXED_HP["noise_std"]
+    assert 0.0 < dither <= 1e-2  # a tie-breaker, not a noise model
     stds = []
     real = _dataset_mod.MLPSCM
 
@@ -1167,4 +1220,5 @@ def test_mechanisms_receive_no_layer_noise():
         prior.get_batch()
     finally:
         _dataset_mod.MLPSCM = real
-    assert stds and all(s == 0.0 for s in stds)
+    assert stds and all(s in (dither, 0.0) for s in stds)
+    assert any(s == dither for s in stds)

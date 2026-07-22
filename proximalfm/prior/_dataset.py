@@ -34,11 +34,14 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
-# - Exogenous-Noise Model: All randomness enters each mechanism as explicit eps
-#   input columns whose count is proportional to the mechanism's signal input
-#   width (sampled 'noise_share_of_input_in_*' converted via
-#   confounding_input_dim). Within-layer GaussianNoise ('noise_std') is disabled
-#   for every mechanism, so mechanisms are deterministic given their inputs.
+# - Exogenous-Noise Model: All meaningful randomness enters each mechanism as
+#   explicit eps input columns whose count is proportional to the mechanism's
+#   signal input width (sampled 'noise_share_of_input_in_*' converted via
+#   confounding_input_dim). Within-layer GaussianNoise ('noise_std') is kept at
+#   a tiny fixed dither (1e-3, see DEFAULT_FIXED_HP) purely so continuous
+#   columns realise distinct values under saturating/discretising activations;
+#   it is a tie-breaker for the distinct-count profile classification, not part
+#   of the noise model.
 ####
 
 
@@ -632,7 +635,7 @@ class SCMPrior(Prior):
                 * 3
                 * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
             )
-            + 4 * params["dim_X"]
+            + 5 * params["dim_X"]
             + 8
         )
 
@@ -739,7 +742,7 @@ class SCMPrior(Prior):
             if params.get("covariate_edge_subsampling", True):
 
                 def _cov_subsample(key: str) -> Tensor:
-                    p = float(params.get(f"covariate_share_of_X_in_{key}", 0.625))
+                    p = float(params.get(f"covariate_share_of_X_in_{key}", 0.5))
                     m = int(
                         torch.distributions.binomial.Binomial(
                             total_count=params["dim_X"], probs=p
@@ -747,18 +750,14 @@ class SCMPrior(Prior):
                     )
                     return X_rep_[:, torch.randperm(params["dim_X"])[:m]]
 
+                X_U_ = _cov_subsample("U")
                 X_W_ = _cov_subsample("W")
                 X_Z_ = _cov_subsample("Z")
                 X_A_ = _cov_subsample("A")
                 X_Y_ = _cov_subsample("Y")
             else:
-                X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
+                X_U_ = X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
 
-            # All exogenous randomness enters the mechanisms as explicit eps
-            # input columns (within-layer noise is disabled). Each eps block's
-            # width targets a sampled share of the mechanism's total input,
-            # computed relative to its non-noise ("signal") columns, so the
-            # effective noise level does not shrink as the signal width grows.
             def sample_eps(key: str, n_signal: int, floor: int = 1) -> Tensor:
                 share = float(params.get(f"noise_share_of_input_in_{key}", 0.3))
                 k = self.confounding_input_dim(share, n_signal, floor=floor)
@@ -770,13 +769,9 @@ class SCMPrior(Prior):
                     device=self.device,
                 ).sample()
 
-            # eps_U is floored at dim_U so U keeps dim_U genuinely exogenous
-            # dimensions regardless of the sampled share; otherwise U would be
-            # rank-deficient given X and the completeness heuristic
-            # dim_W, dim_Z >= dim_U would lose its meaning.
-            eps_U = sample_eps("U", params["dim_X"], floor=params["dim_U"])
+            eps_U = sample_eps("U", X_U_.shape[-1], floor=params["dim_U"])
 
-            input_U = torch.cat([X_rep_, eps_U], dim=-1)
+            input_U = torch.cat([X_U_, eps_U], dim=-1)
 
             f_U = prior_cls(
                 in_dim=input_U.shape[-1],

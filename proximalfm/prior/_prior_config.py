@@ -21,6 +21,7 @@ DEFAULT_FIXED_HP = {
     "confounding_dim_control": True,
     "proxy_edge_subsampling": True,
     "covariate_edge_subsampling": True,
+    "noise_std": 1e-3,
 }
 
 DEFAULT_SAMPLED_HP = {
@@ -103,6 +104,11 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "beta",
         "a": 1.0,
         "b": 1.0,
+    },
+    "covariate_share_of_X_in_U": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.0,
     },
     "covariate_share_of_X_in_W": {
         "distribution": "beta",

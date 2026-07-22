@@ -218,7 +218,7 @@ def tiny_family_caches():
     """full / ablation / baseline, mirroring the shipped cat_ablation family."""
     base = PriorSpec(
         name="cattest",
-        n_datasets=3,
+        n_datasets=8,
         seq_len=80,
         mcmc_cate=1,
         min_dim_U=1,
@@ -264,13 +264,16 @@ def test_compute_reads_flags_from_specs(tiny_family_caches):
     assert not results.variants["baseline"].corrupt_U
     for var in results.variants.values():
         assert set(var.profiles) == {"U", "W", "Z"}
-        assert var.n_datasets == 3
+        assert var.n_datasets == 48
 
 
-def test_full_arm_dominance_holds_by_construction(tiny_family_caches):
+def test_enforcement_improves_dominance(tiny_family_caches):
     results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
-    # The enforced arm accepts only datasets whose proxies dominate U.
-    assert results.variants["full"].survival["overall_fraction"] == 1.0
+    full = results.variants["full"].survival["overall_fraction"]
+    ablation = results.variants["ablation"].survival["overall_fraction"]
+    baseline = results.variants["baseline"].survival["overall_fraction"]
+    assert full == 1.0
+    assert full > ablation > baseline
 
 
 def test_run_writes_survival_table(tiny_family_caches, tmp_path):
@@ -311,7 +314,7 @@ def test_summary_is_per_arm(tiny_family_caches, tmp_path):
     assert summary["baseline_label"] == "full"
     for label in ("full", "ablation", "baseline"):
         stats = summary[label]
-        assert stats["n_datasets"] == 3
+        assert stats["n_datasets"] == 48
         assert 0.0 <= stats["dominance_fraction"] <= 1.0
         assert stats["violation_fraction"] == pytest.approx(
             1.0 - stats["dominance_fraction"]

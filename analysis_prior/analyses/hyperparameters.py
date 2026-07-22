@@ -71,6 +71,7 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
             "confounding_share_of_U_in_A",
             "direct_edge_share_of_W_in_Y",
             "direct_edge_share_of_Z_in_A",
+            "covariate_share_of_X_in_U",
             "covariate_share_of_X_in_W",
             "covariate_share_of_X_in_Z",
             "covariate_share_of_X_in_A",
@@ -133,6 +134,7 @@ NOTES: Dict[str, str] = {
     "confounding_share_of_U_in_A": "target share of $f_A$ inputs drawn from $U$",
     "direct_edge_share_of_W_in_Y": "per-column keep probability of the direct $W \\to Y$ edge",
     "direct_edge_share_of_Z_in_A": "per-column keep probability of the direct $Z \\to A$ edge",
+    "covariate_share_of_X_in_U": "keep probability of the confounding $X \\to U$ edge (observed share of $U$)",
     "covariate_share_of_X_in_W": "per-column keep probability of the direct $X \\to W$ edge",
     "covariate_share_of_X_in_Z": "per-column keep probability of the direct $X \\to Z$ edge",
     "covariate_share_of_X_in_A": "per-column keep probability of the direct $X \\to A$ edge",
@@ -154,7 +156,8 @@ NOTES: Dict[str, str] = {
     "dim_U_distribution": "sampling law for $d_U$",
     "confounding_dim_control": "subsample/augment $U$'s inputs to $f_Y$, $f_A$ to a target share",
     "proxy_edge_subsampling": "make the direct $W \\to Y$ / $Z \\to A$ edges per-column optional",
-    "covariate_edge_subsampling": "make the direct $X \\to \\{W,Z,A,Y\\}$ edges per-column optional",
+    "covariate_edge_subsampling": "make the $X \\to \\{U,W,Z,A,Y\\}$ edges per-column optional",
+    "noise_std": "tiny fixed per-layer dither so continuous columns realise distinct values",
 }
 
 
