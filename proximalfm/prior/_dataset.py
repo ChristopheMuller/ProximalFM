@@ -607,17 +607,12 @@ class SCMPrior(Prior):
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
 
-        # Per-row width of the concurrently live (T * K)-row tensors: the widest
-        # MLP-SCM pool plus the proxy/confounder blocks kept in raw + normalized
-        # form, plus the X replication and eps draws. A small constant covers the
-        # scalar A / y columns. The confounding-dim augmentation contributes at
-        # most 3x the competing input width (share capped at 0.75 in
-        # confounding_input_dim). This is an estimate, deliberately high-side.
         per_row = (
             num_layers * hidden_dim
             + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
             + 3 * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
+            + 4 * params["dim_X"]
             + 8
         )
 
@@ -721,6 +716,24 @@ class SCMPrior(Prior):
                 .reshape(T * K, params["dim_X"])
             )
 
+            if params.get("covariate_edge_subsampling", True):
+
+                def _cov_subsample(key: str) -> Tensor:
+                    p = float(params.get(f"covariate_share_of_X_in_{key}", 0.625))
+                    m = int(
+                        torch.distributions.binomial.Binomial(
+                            total_count=params["dim_X"], probs=p
+                        ).sample()
+                    )
+                    return X_rep_[:, torch.randperm(params["dim_X"])[:m]]
+
+                X_W_ = _cov_subsample("W")
+                X_Z_ = _cov_subsample("Z")
+                X_A_ = _cov_subsample("A")
+                X_Y_ = _cov_subsample("Y")
+            else:
+                X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
+
             eps_sampler = XSampler(
                 seq_len=T * K,
                 num_features=params["dim_U"] + params["dim_W"] + params["dim_Z"] + 2,
@@ -764,7 +777,7 @@ class SCMPrior(Prior):
                 block_profile(params["dim_U"], u_meta) if enforce_cat else None
             )
 
-            input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
+            input_W = torch.cat([U_mc_, X_W_, eps_W * 5], dim=-1)
 
             f_W = prior_cls(
                 in_dim=input_W.shape[-1],
@@ -778,7 +791,7 @@ class SCMPrior(Prior):
             )
             W_mc_ = safe_normalize(W_mc)
 
-            input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
+            input_Z = torch.cat([U_mc_, X_Z_, eps_Z * 5], dim=-1)
 
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
@@ -814,11 +827,11 @@ class SCMPrior(Prior):
             if params.get("confounding_dim_control", True):
                 k_Y = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_Y", 0.3),
-                    params["dim_X"] + W_direct.shape[-1] + 1,
+                    X_Y_.shape[-1] + W_direct.shape[-1] + 1,
                 )
                 k_A = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_A", 0.3),
-                    params["dim_X"] + Z_direct.shape[-1] + 1,
+                    X_A_.shape[-1] + Z_direct.shape[-1] + 1,
                 )
                 perm = tuple(torch.randperm(params["dim_U"]).tolist())
                 idx_y, idx_a, aug_dim_y, aug_dim_a = self.split_confounding_inputs(
@@ -847,7 +860,7 @@ class SCMPrior(Prior):
                 u_aug_y = U_mc_[:, :0]
                 u_aug_a = U_mc_[:, :0]
 
-            input_A = torch.cat([U_sel_a, X_rep_, Z_direct, eps_A, u_aug_a], dim=-1)
+            input_A = torch.cat([U_sel_a, X_A_, Z_direct, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
@@ -865,7 +878,7 @@ class SCMPrior(Prior):
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
 
-            input_y = torch.cat([U_sel_y, X_rep_, W_direct, eps_Y, u_aug_y], dim=-1)
+            input_y = torch.cat([U_sel_y, X_Y_, W_direct, eps_Y, u_aug_y], dim=-1)
 
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],

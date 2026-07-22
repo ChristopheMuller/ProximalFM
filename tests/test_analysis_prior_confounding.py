@@ -14,6 +14,7 @@ from analysis_prior.analyses.confounding import (
     ConfoundingDimAnalysis,
     _conversion_constants,
     _share_beta,
+    k_pmf,
     representative_widths,
 )
 from analysis_prior.config import PriorSpec
@@ -88,6 +89,58 @@ def test_share_beta_falls_back_when_pinned_non_beta():
 
 
 # --------------------------------------------------------------------------
+# k_pmf: exact induced pmf of the U-derived column count
+# --------------------------------------------------------------------------
+
+
+def test_k_pmf_sums_to_one():
+    k, p = k_pmf(1.2, 2.8, n=12)
+    assert p.sum() == pytest.approx(1.0, abs=1e-9)
+    assert k[0] == 2  # floor
+    assert k[-1] == 36  # cap: k = 3n at n=12
+
+
+def test_k_pmf_floor_matches_closed_form():
+    a, b, n = 1.2, 2.8, 10
+    k, p = k_pmf(a, b, n)
+    thr = 2.5 / (n + 2.5)
+    assert k[0] == 2
+    assert p[0] == pytest.approx(stats.beta(a, b).cdf(thr))
+
+
+def test_k_pmf_cap_matches_closed_form():
+    a, b, n = 1.2, 2.8, 10
+    k, p = k_pmf(a, b, n)
+    thr = (3 * n - 0.5) / (n + 3 * n - 0.5)
+    assert k[-1] == 3 * n
+    assert p[-1] == pytest.approx(1.0 - stats.beta(a, b).cdf(thr))
+
+
+def test_k_pmf_matches_monte_carlo():
+    # Cross-check the closed form against direct sampling through the actual
+    # generator function, so the analysis can never quietly drift from what
+    # SCMPrior.confounding_input_dim does.
+    a, b, n = 1.2, 2.8, 12
+    k_vals, probs = k_pmf(a, b, n)
+
+    rng = np.random.default_rng(0)
+    s_draws = stats.beta(a, b).rvs(200_000, random_state=rng)
+    k_draws = np.array([SCMPrior.confounding_input_dim(s, n) for s in s_draws])
+
+    empirical = {int(k): (k_draws == k).mean() for k in k_vals}
+    for k, p in zip(k_vals, probs):
+        assert empirical[int(k)] == pytest.approx(p, abs=5e-3)
+
+
+def test_k_pmf_degenerate_when_cap_collapses_onto_floor():
+    # A tiny n can push k_max = round(3n) below/at the floor; the pmf must
+    # still be a valid (single-point) distribution rather than an empty range.
+    k, p = k_pmf(1.2, 2.8, n=1, floor=5)
+    assert k.tolist() == [5]
+    assert p.tolist() == [1.0]
+
+
+# --------------------------------------------------------------------------
 # compute() scalars
 # --------------------------------------------------------------------------
 
@@ -103,6 +156,26 @@ def test_compute_scalars(tiny_cache):
     assert results.mean_share == pytest.approx(1.2 / (1.2 + 2.8))
     assert (results.floor, results.cap) == (2, 0.75)
     assert results.n_values == [4, 12, 21]
+    # canonical_n is the middle representative width, the one the figure uses.
+    assert results.canonical_n == 12
+
+
+def test_compute_pmf_matches_k_pmf_and_per_n(tiny_cache):
+    results = ConfoundingDimAnalysis().compute(tiny_cache)
+    expected_k, expected_p = k_pmf(
+        results.beta_a,
+        results.beta_b,
+        results.canonical_n,
+        floor=results.floor,
+        cap=results.cap,
+    )
+    np.testing.assert_array_equal(results.pmf_k, expected_k)
+    np.testing.assert_allclose(results.pmf_p, expected_p)
+    # The pmf's floor mass must agree with the per-n floor_atom already
+    # reported for canonical_n -- same quantity, computed two ways.
+    assert results.pmf_p[0] == pytest.approx(
+        results.per_n[results.canonical_n]["floor_atom"]
+    )
 
 
 def test_compute_floor_atom_matches_analytic(tiny_cache):
@@ -140,3 +213,8 @@ def test_run_summary_consistent(tiny_cache, tmp_path):
         float(stats.beta(1.2, 2.8).sf(0.75))
     )
     assert set(summary["floor_atom_by_n"]) == set(summary["n_values"])
+    assert summary["canonical_n"] == 12
+    assert summary["pmf_floor_prob"] == pytest.approx(summary["floor_atom_by_n"][12])
+    assert summary["pmf_cap_prob"] == pytest.approx(
+        float(stats.beta(1.2, 2.8).sf(0.75)), abs=1e-3
+    )

@@ -795,6 +795,23 @@ def _full_direct_edges():
     }
 
 
+def _full_covariate_edges():
+    """Pin every covariate keep probability to 1 so all mechanisms see the full
+    X block and the expected input widths are deterministic. Covariate edge
+    subsampling is on by default, so any width assertion must pin these."""
+    return {
+        f"covariate_share_of_X_in_{k}": _pinned_share(1.0) for k in ("W", "Z", "A", "Y")
+    }
+
+
+def _pinned_covariate_edges(value):
+    """Pin every covariate keep probability to ``value``."""
+    return {
+        f"covariate_share_of_X_in_{k}": _pinned_share(value)
+        for k in ("W", "Z", "A", "Y")
+    }
+
+
 def test_confounding_dim_control_subsample_regime():
     # s = 0.01 -> k = max(2, round(0.01/0.99 * 11)) = 2 < dim_U = 5: both
     # mechanisms see 2 subsampled U columns and no augmentation, so
@@ -807,6 +824,7 @@ def test_confounding_dim_control_subsample_regime():
             "confounding_share_of_U_in_Y": _pinned_share(0.01),
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             **_full_direct_edges(),
+            **_full_covariate_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -827,6 +845,7 @@ def test_confounding_dim_control_augment_regime():
             "confounding_share_of_U_in_Y": _pinned_share(0.7),
             "confounding_share_of_U_in_A": _pinned_share(0.7),
             **_full_direct_edges(),
+            **_full_covariate_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -842,7 +861,9 @@ def test_confounding_dim_control_off_feeds_raw_U():
     torch.manual_seed(0)
     np.random.seed(0)
     fixed_hp = {**DEFAULT_FIXED_HP, "confounding_dim_control": False}
-    prior = _make_pinned_dims_prior(fixed_hp, _full_direct_edges())
+    prior = _make_pinned_dims_prior(
+        fixed_hp, {**_full_direct_edges(), **_full_covariate_edges()}
+    )
     with _capture_mechanism_widths() as records:
         prior.get_batch()
     a_widths = {w for w, n_out in records if n_out == 1}
@@ -869,6 +890,7 @@ def test_proxy_edge_subsampling_pure_proxy_regime():
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
             "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
+            **_full_covariate_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -895,6 +917,7 @@ def test_proxy_edge_subsampling_flag_off_feeds_full_proxies():
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
             "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
+            **_full_covariate_edges(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -902,3 +925,136 @@ def test_proxy_edge_subsampling_flag_off_feeds_full_proxies():
     a_widths = {w for w, n_out in records if n_out == 1}
     y_widths = {w for w, n_out in records if n_out == 2}
     assert a_widths == {13} and y_widths == {13}
+
+
+# ---------------------------------------------------------------------------
+# Covariate direct-edge subsampling (optional X -> W, X -> Z, X -> A, X -> Y)
+# ---------------------------------------------------------------------------
+
+
+def _make_distinct_dims_prior(fixed_hp, sampled_hp):
+    """A prior with every block dimension distinct, so each mechanism's MLP can
+    be told apart by its ``num_outputs``: f_U=3, f_W=4, f_Z=6, f_A=1, f_y=2.
+    Lets tests read the X-edge width of f_W / f_Z, not just f_A / f_y."""
+    from proximalfm.prior._prior_config import DEFAULT_SAMPLED_HP
+
+    return SCMPrior(
+        batch_size=2,
+        batch_size_per_gp=1,
+        min_dim_U=3,
+        max_dim_U=3,
+        min_dim_W=4,
+        max_dim_W=4,
+        min_dim_Z=6,
+        max_dim_Z=6,
+        min_dim_X=5,
+        max_dim_X=5,
+        min_seq_len=200,
+        max_seq_len=201,
+        prior_type="mlp_scm",
+        mcmc_cate=2,
+        fixed_hp=fixed_hp,
+        sampled_hp={**DEFAULT_SAMPLED_HP, **sampled_hp},
+        n_jobs=1,
+    )
+
+
+def test_covariate_edge_subsampling_pure_regime():
+    # Every covariate keep probability 0: no X column enters any peripheral
+    # mechanism. With proxies full and the U share pinned low, the competing
+    # width for f_A / f_Y is |X*|(0) + proxy(5) + 1 = 6, so k = 2 and
+    # in_dim = 2 + 0 + 5 + 1 = 8.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_pinned_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            **_full_direct_edges(),
+            **_pinned_covariate_edges(0.0),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        out = prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {8} and y_widths == {8}
+    # X itself is still generated and delivered at full width: subsampling only
+    # prunes the direct edges into the mechanisms, not the covariate block.
+    d_X = out[12]
+    assert (d_X > 0).all()
+
+
+def test_covariate_edge_subsampling_flag_off_feeds_full_X():
+    # Flag off: every mechanism sees the full X block regardless of the share
+    # HPs -- in_dim = U(2) + X(5) + W(5) + 1 = 13.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    fixed_hp = {**DEFAULT_FIXED_HP, "covariate_edge_subsampling": False}
+    prior = _make_pinned_dims_prior(
+        fixed_hp,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            **_full_direct_edges(),
+            **_pinned_covariate_edges(0.0),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    a_widths = {w for w, n_out in records if n_out == 1}
+    y_widths = {w for w, n_out in records if n_out == 2}
+    assert a_widths == {13} and y_widths == {13}
+
+
+def test_covariate_edge_subsampling_is_independent_per_mechanism():
+    # Keep X fully for W but drop it entirely for Z: the two proxy mechanisms
+    # must wire X independently. With distinct dims, f_W (num_outputs=4) and
+    # f_Z (num_outputs=6) are identifiable.
+    #   f_W in_dim = U(3) + |X_W|(5) + eps_W(4) = 12
+    #   f_Z in_dim = U(3) + |X_Z|(0) + eps_Z(6) = 9
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_distinct_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            # Low U share -> subsample regime -> no f_aug to collide on n_out.
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+            "covariate_share_of_X_in_W": _pinned_share(1.0),
+            "covariate_share_of_X_in_Z": _pinned_share(0.0),
+            "covariate_share_of_X_in_A": _pinned_share(1.0),
+            "covariate_share_of_X_in_Y": _pinned_share(1.0),
+        },
+    )
+    with _capture_mechanism_widths() as records:
+        prior.get_batch()
+    w_widths = {w for w, n_out in records if n_out == 4}
+    z_widths = {w for w, n_out in records if n_out == 6}
+    assert w_widths == {12}  # X kept
+    assert z_widths == {9}  # X dropped
+
+
+def test_covariate_edge_subsampling_mean_kept_fraction():
+    # The realised kept fraction of X should track the Beta(2, 1.2) mean 0.625.
+    # Measured on f_W's X contribution: in_dim(f_W) = U(3) + |X_W| + eps_W(4),
+    # so |X_W| = in_dim - 7, over X of width 5.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    prior = _make_distinct_dims_prior(
+        DEFAULT_FIXED_HP,
+        {
+            "confounding_share_of_U_in_Y": _pinned_share(0.01),
+            "confounding_share_of_U_in_A": _pinned_share(0.01),
+        },
+    )
+    x_widths = []
+    for _ in range(40):
+        with _capture_mechanism_widths() as records:
+            prior.get_batch()
+        x_widths += [w - 7 for w, n_out in records if n_out == 4]
+    frac = np.array(x_widths) / 5.0
+    # 40 batches x 2 datasets = 80 draws; wide tolerance for the small sample.
+    assert 0.0 <= frac.min() and frac.max() <= 1.0
+    assert frac.mean() == pytest.approx(0.625, abs=0.12)
