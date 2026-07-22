@@ -777,7 +777,7 @@ class SCMPrior(Prior):
                 block_profile(params["dim_U"], u_meta) if enforce_cat else None
             )
 
-            input_W = torch.cat([U_mc_, X_W_, eps_W * 5], dim=-1)
+            input_W = torch.cat([U_mc_, X_W_, eps_W], dim=-1)
 
             f_W = prior_cls(
                 in_dim=input_W.shape[-1],
@@ -791,7 +791,7 @@ class SCMPrior(Prior):
             )
             W_mc_ = safe_normalize(W_mc)
 
-            input_Z = torch.cat([U_mc_, X_Z_, eps_Z * 5], dim=-1)
+            input_Z = torch.cat([U_mc_, X_Z_, eps_Z], dim=-1)
 
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
