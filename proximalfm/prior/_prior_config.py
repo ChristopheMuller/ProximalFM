@@ -117,22 +117,22 @@ DEFAULT_SAMPLED_HP = {
     },
     "covariate_share_of_X_in_W": {
         "distribution": "beta",
-        "a": 3.0,
-        "b": 1.5,
+        "a": 1.0,
+        "b": 1.0,
     },
     "covariate_share_of_X_in_Z": {
         "distribution": "beta",
-        "a": 3.0,
-        "b": 1.5,
+        "a": 1.0,
+        "b": 1.0,
     },
     "covariate_share_of_X_in_A": {
         "distribution": "beta",
-        "a": 3.0,
-        "b": 1.5,
+        "a": 1.0,
+        "b": 1.0,
     },
     "covariate_share_of_X_in_Y": {
         "distribution": "beta",
-        "a": 3.0,
-        "b": 1.5,
+        "a": 1.0,
+        "b": 1.0,
     },
 }
