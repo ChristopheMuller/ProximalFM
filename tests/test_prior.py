@@ -812,10 +812,20 @@ def _pinned_covariate_edges(value):
     }
 
 
+def _pinned_noise_shares(value=0.01):
+    """Pin every eps noise share to ``value``. At the default 0.01 each eps
+    block collapses to its floor (1 column; dim_U columns for eps_U), keeping
+    the expected mechanism input widths deterministic and minimal."""
+    return {
+        f"noise_share_of_input_in_{k}": _pinned_share(value)
+        for k in ("U", "W", "Z", "A", "Y")
+    }
+
+
 def test_confounding_dim_control_subsample_regime():
-    # s = 0.01 -> k = max(2, round(0.01/0.99 * 11)) = 2 < dim_U = 5: both
+    # s = 0.01 -> k = max(2, round(0.01/0.99 * 10)) = 2 < dim_U = 5: both
     # mechanisms see 2 subsampled U columns and no augmentation, so
-    # in_dim = k + dim_X + dim_{W/Z} + 1 = 13.
+    # in_dim = k + dim_X + dim_{W/Z} + eps(1) = 13.
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_pinned_dims_prior(
@@ -825,6 +835,7 @@ def test_confounding_dim_control_subsample_regime():
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             **_full_direct_edges(),
             **_full_covariate_edges(),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -835,8 +846,8 @@ def test_confounding_dim_control_subsample_regime():
 
 
 def test_confounding_dim_control_augment_regime():
-    # s = 0.7 -> k = round(0.7/0.3 * 11) = 26 > dim_U = 5: full U plus 21
-    # augmented columns, so in_dim = k + dim_X + dim_{W/Z} + 1 = 37.
+    # s = 0.7 -> k = round(0.7/0.3 * 10) = 23 > dim_U = 5: full U plus 18
+    # augmented columns, so in_dim = k + dim_X + dim_{W/Z} + eps(1) = 34.
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_pinned_dims_prior(
@@ -846,23 +857,29 @@ def test_confounding_dim_control_augment_regime():
             "confounding_share_of_U_in_A": _pinned_share(0.7),
             **_full_direct_edges(),
             **_full_covariate_edges(),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
         prior.get_batch()
     a_widths = {w for w, n_out in records if n_out == 1}
     y_widths = {w for w, n_out in records if n_out == 2}
-    assert a_widths == {37} and y_widths == {37}
+    assert a_widths == {34} and y_widths == {34}
 
 
 def test_confounding_dim_control_off_feeds_raw_U():
     # Flag off: raw full U, no subsampling, no augmentation --
-    # in_dim = dim_U + dim_X + dim_{W/Z} + 1 = 16.
+    # in_dim = dim_U + dim_X + dim_{W/Z} + eps(1) = 16.
     torch.manual_seed(0)
     np.random.seed(0)
     fixed_hp = {**DEFAULT_FIXED_HP, "confounding_dim_control": False}
     prior = _make_pinned_dims_prior(
-        fixed_hp, {**_full_direct_edges(), **_full_covariate_edges()}
+        fixed_hp,
+        {
+            **_full_direct_edges(),
+            **_full_covariate_edges(),
+            **_pinned_noise_shares(),
+        },
     )
     with _capture_mechanism_widths() as records:
         prior.get_batch()
@@ -879,8 +896,8 @@ def test_confounding_dim_control_off_feeds_raw_U():
 def test_proxy_edge_subsampling_pure_proxy_regime():
     # Keep probability 0: no W column enters f_Y and no Z column enters f_A
     # (the classical negative-control setting). With the U share pinned at
-    # 0.01, the competing width is d_X + 0 + 1 = 6, so k = 2 and
-    # in_dim = k + d_X + 0 + 1 = 8 for both mechanisms.
+    # 0.01, the competing width is d_X + 0 = 5, so k = 2 and
+    # in_dim = k + d_X + 0 + eps(1) = 8 for both mechanisms.
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_pinned_dims_prior(
@@ -891,6 +908,7 @@ def test_proxy_edge_subsampling_pure_proxy_regime():
             "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
             "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
             **_full_covariate_edges(),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -918,6 +936,7 @@ def test_proxy_edge_subsampling_flag_off_feeds_full_proxies():
             "direct_edge_share_of_W_in_Y": _pinned_share(0.0),
             "direct_edge_share_of_Z_in_A": _pinned_share(0.0),
             **_full_covariate_edges(),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -962,8 +981,8 @@ def _make_distinct_dims_prior(fixed_hp, sampled_hp):
 def test_covariate_edge_subsampling_pure_regime():
     # Every covariate keep probability 0: no X column enters any peripheral
     # mechanism. With proxies full and the U share pinned low, the competing
-    # width for f_A / f_Y is |X*|(0) + proxy(5) + 1 = 6, so k = 2 and
-    # in_dim = 2 + 0 + 5 + 1 = 8.
+    # width for f_A / f_Y is |X*|(0) + proxy(5) = 5, so k = 2 and
+    # in_dim = 2 + 0 + 5 + eps(1) = 8.
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_pinned_dims_prior(
@@ -973,6 +992,7 @@ def test_covariate_edge_subsampling_pure_regime():
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             **_full_direct_edges(),
             **_pinned_covariate_edges(0.0),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -988,7 +1008,7 @@ def test_covariate_edge_subsampling_pure_regime():
 
 def test_covariate_edge_subsampling_flag_off_feeds_full_X():
     # Flag off: every mechanism sees the full X block regardless of the share
-    # HPs -- in_dim = U(2) + X(5) + W(5) + 1 = 13.
+    # HPs -- in_dim = U(2) + X(5) + W(5) + eps(1) = 13.
     torch.manual_seed(0)
     np.random.seed(0)
     fixed_hp = {**DEFAULT_FIXED_HP, "covariate_edge_subsampling": False}
@@ -999,6 +1019,7 @@ def test_covariate_edge_subsampling_flag_off_feeds_full_X():
             "confounding_share_of_U_in_A": _pinned_share(0.01),
             **_full_direct_edges(),
             **_pinned_covariate_edges(0.0),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
@@ -1012,8 +1033,8 @@ def test_covariate_edge_subsampling_is_independent_per_mechanism():
     # Keep X fully for W but drop it entirely for Z: the two proxy mechanisms
     # must wire X independently. With distinct dims, f_W (num_outputs=4) and
     # f_Z (num_outputs=6) are identifiable.
-    #   f_W in_dim = U(3) + |X_W|(5) + eps_W(4) = 12
-    #   f_Z in_dim = U(3) + |X_Z|(0) + eps_Z(6) = 9
+    #   f_W in_dim = U(3) + |X_W|(5) + eps_W(1) = 9
+    #   f_Z in_dim = U(3) + |X_Z|(0) + eps_Z(1) = 4
     torch.manual_seed(0)
     np.random.seed(0)
     prior = _make_distinct_dims_prior(
@@ -1026,22 +1047,24 @@ def test_covariate_edge_subsampling_is_independent_per_mechanism():
             "covariate_share_of_X_in_Z": _pinned_share(0.0),
             "covariate_share_of_X_in_A": _pinned_share(1.0),
             "covariate_share_of_X_in_Y": _pinned_share(1.0),
+            **_pinned_noise_shares(),
         },
     )
     with _capture_mechanism_widths() as records:
         prior.get_batch()
     w_widths = {w for w, n_out in records if n_out == 4}
     z_widths = {w for w, n_out in records if n_out == 6}
-    assert w_widths == {12}  # X kept
-    assert z_widths == {9}  # X dropped
+    assert w_widths == {9}  # X kept
+    assert z_widths == {4}  # X dropped
 
 
 def test_covariate_edge_subsampling_mean_kept_fraction():
     # The realised kept fraction of X should track the configured
     # covariate_share_of_X_in_W Beta mean, read live so this can't drift out
     # of sync with _prior_config.py.
-    # Measured on f_W's X contribution: in_dim(f_W) = U(3) + |X_W| + eps_W(4),
-    # so |X_W| = in_dim - 7, over X of width 5.
+    # Measured on f_W's X contribution: with the noise shares pinned to the
+    # floor, in_dim(f_W) = U(3) + |X_W| + eps_W(1), so |X_W| = in_dim - 4,
+    # over X of width 5.
     beta_cfg = DEFAULT_SAMPLED_HP["covariate_share_of_X_in_W"]
     expected_mean = beta_cfg["a"] / (beta_cfg["a"] + beta_cfg["b"])
     torch.manual_seed(0)
@@ -1051,14 +1074,97 @@ def test_covariate_edge_subsampling_mean_kept_fraction():
         {
             "confounding_share_of_U_in_Y": _pinned_share(0.01),
             "confounding_share_of_U_in_A": _pinned_share(0.01),
+            **_pinned_noise_shares(),
         },
     )
     x_widths = []
     for _ in range(40):
         with _capture_mechanism_widths() as records:
             prior.get_batch()
-        x_widths += [w - 7 for w, n_out in records if n_out == 4]
+        x_widths += [w - 4 for w, n_out in records if n_out == 4]
     frac = np.array(x_widths) / 5.0
     # 40 batches x 2 datasets = 80 draws; wide tolerance for the small sample.
     assert 0.0 <= frac.min() and frac.max() <= 1.0
     assert frac.mean() == pytest.approx(expected_mean, abs=0.12)
+
+
+# ---------------------------------------------------------------------------
+# Exogenous-noise (eps) width control
+# ---------------------------------------------------------------------------
+
+
+def test_noise_share_widens_mechanism_inputs():
+    # With dims pinned at 5, low confounding share and full edges, f_Y's
+    # signal width is U_sel(2) + X(5) + W(5) = 12. A tiny noise share hits the
+    # 1-column floor (in_dim 13); s = 0.5 gives eps_Y = round(1 * 12) = 12
+    # (in_dim 24).
+    torch.manual_seed(0)
+    np.random.seed(0)
+    widths = {}
+    for share in (0.01, 0.5):
+        prior = _make_pinned_dims_prior(
+            DEFAULT_FIXED_HP,
+            {
+                "confounding_share_of_U_in_Y": _pinned_share(0.01),
+                "confounding_share_of_U_in_A": _pinned_share(0.01),
+                **_full_direct_edges(),
+                **_full_covariate_edges(),
+                **_pinned_noise_shares(),
+                "noise_share_of_input_in_Y": _pinned_share(share),
+            },
+        )
+        with _capture_mechanism_widths() as records:
+            prior.get_batch()
+        widths[share] = {w for w, n_out in records if n_out == 2}
+    assert widths[0.01] == {13}
+    assert widths[0.5] == {24}
+
+
+def test_eps_U_width_floors_at_dim_U():
+    # f_U's in_dim is dim_X + eps_U. With distinct dims (dim_U=3, dim_X=5),
+    # a tiny share would give a single eps column, but eps_U is floored at
+    # dim_U so U keeps dim_U genuinely exogenous dimensions: in_dim = 5+3 = 8.
+    # A large share overrides the floor: s = 0.7 on n_signal = dim_X = 5 gives
+    # k = round(0.7/0.3 * 5) = 12, so in_dim = 17.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    widths = {}
+    for share in (0.01, 0.7):
+        prior = _make_distinct_dims_prior(
+            DEFAULT_FIXED_HP,
+            {
+                "confounding_share_of_U_in_Y": _pinned_share(0.01),
+                "confounding_share_of_U_in_A": _pinned_share(0.01),
+                **_pinned_noise_shares(),
+                "noise_share_of_input_in_U": _pinned_share(share),
+            },
+        )
+        with _capture_mechanism_widths() as records:
+            prior.get_batch()
+        widths[share] = {w for w, n_out in records if n_out == 3}
+    assert widths[0.01] == {8}
+    assert widths[0.7] == {17}
+
+
+def test_mechanisms_receive_no_layer_noise():
+    # Within-layer noise is disabled everywhere: every mechanism the generator
+    # builds (including f_W / f_Z / f_Y and the U augmentation network) must
+    # end up with noise_std == 0. All exogenous randomness enters as eps
+    # input columns instead.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    stds = []
+    real = _dataset_mod.MLPSCM
+
+    class SpyMLPSCM(real):
+        def __init__(self, in_dim, num_outputs, **kwargs):
+            super().__init__(in_dim=in_dim, num_outputs=num_outputs, **kwargs)
+            stds.append(self.noise_std)
+
+    _dataset_mod.MLPSCM = SpyMLPSCM
+    try:
+        prior = _make_pinned_dims_prior(DEFAULT_FIXED_HP, {})
+        prior.get_batch()
+    finally:
+        _dataset_mod.MLPSCM = real
+    assert stds and all(s == 0.0 for s in stds)

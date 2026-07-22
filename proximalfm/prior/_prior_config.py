@@ -61,22 +61,11 @@ DEFAULT_SAMPLED_HP = {
         "round": False,
         "lower_bound": 0.0,
     },
-    "noise_std": {
-        "distribution": "meta_trunc_norm_log_scaled",
-        "max_mean": 0.3,
-        "min_mean": 0.0001,
-        "round": False,
-        "lower_bound": 0.0,
-    },
     "sampling": {
         "distribution": "meta_choice",
         "choice_values": ["normal", "mixed", "uniform"],
     },
     "pre_sample_cause_stats": {
-        "distribution": "meta_choice",
-        "choice_values": [True, False],
-    },
-    "pre_sample_noise_std": {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
@@ -134,5 +123,30 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "beta",
         "a": 1.0,
         "b": 1.0,
+    },
+    "noise_share_of_input_in_U": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_W": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_Z": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_A": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_Y": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
     },
 }

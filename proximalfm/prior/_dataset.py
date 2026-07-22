@@ -34,6 +34,11 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
+# - Exogenous-Noise Model: All randomness enters each mechanism as explicit eps
+#   input columns whose count is proportional to the mechanism's signal input
+#   width (sampled 'noise_share_of_input_in_*' converted via
+#   confounding_input_dim). Within-layer GaussianNoise ('noise_std') is disabled
+#   for every mechanism, so mechanisms are deterministic given their inputs.
 ####
 
 
@@ -607,11 +612,26 @@ class SCMPrior(Prior):
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
 
+        # The eps blocks widen each mechanism's input by up to
+        # share / (1 - share) times its signal width (share clamped at 0.75 by
+        # confounding_input_dim, i.e. worst case 4x). Use the largest sampled
+        # share as a coarse over-estimate; exact widths depend on binomial
+        # subsampling draws not known at cap time.
+        max_noise_share = max(
+            min(float(params.get(f"noise_share_of_input_in_{k}", 0.3)), 0.75)
+            for k in ("U", "W", "Z", "A", "Y")
+        )
+        noise_mult = 1.0 + max_noise_share / (1.0 - max_noise_share)
+
         per_row = (
             num_layers * hidden_dim
             + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
-            + 3 * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
+            + math.ceil(
+                noise_mult
+                * 3
+                * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
+            )
             + 4 * params["dim_X"]
             + 8
         )
@@ -695,7 +715,7 @@ class SCMPrior(Prior):
             f_X = prior_cls(
                 in_dim=eps_X.shape[-1],
                 num_outputs=params["dim_X"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             X = f_X(eps_X)
@@ -734,36 +754,34 @@ class SCMPrior(Prior):
             else:
                 X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
 
-            eps_sampler = XSampler(
-                seq_len=T * K,
-                num_features=params["dim_U"] + params["dim_W"] + params["dim_Z"] + 2,
-                pre_stats=params.get("pre_sample_cause_stats", False),
-                sampling=params.get("sampling", "mixed"),
-                device=self.device,
-            )
-            eps = eps_sampler.sample()
+            # All exogenous randomness enters the mechanisms as explicit eps
+            # input columns (within-layer noise is disabled). Each eps block's
+            # width targets a sampled share of the mechanism's total input,
+            # computed relative to its non-noise ("signal") columns, so the
+            # effective noise level does not shrink as the signal width grows.
+            def sample_eps(key: str, n_signal: int, floor: int = 1) -> Tensor:
+                share = float(params.get(f"noise_share_of_input_in_{key}", 0.3))
+                k = self.confounding_input_dim(share, n_signal, floor=floor)
+                return XSampler(
+                    seq_len=T * K,
+                    num_features=k,
+                    pre_stats=params.get("pre_sample_cause_stats", False),
+                    sampling=params.get("sampling", "mixed"),
+                    device=self.device,
+                ).sample()
 
-            start = 0
-            eps_U = eps[:, start : start + params["dim_U"]]
-            start += params["dim_U"]
-
-            eps_W = eps[:, start : start + params["dim_W"]]
-            start += params["dim_W"]
-
-            eps_Z = eps[:, start : start + params["dim_Z"]]
-            start += params["dim_Z"]
-
-            eps_A = eps[:, start : start + 1]
-            start += 1
-
-            eps_Y = eps[:, start : start + 1]
+            # eps_U is floored at dim_U so U keeps dim_U genuinely exogenous
+            # dimensions regardless of the sampled share; otherwise U would be
+            # rank-deficient given X and the completeness heuristic
+            # dim_W, dim_Z >= dim_U would lose its meaning.
+            eps_U = sample_eps("U", params["dim_X"], floor=params["dim_U"])
 
             input_U = torch.cat([X_rep_, eps_U], dim=-1)
 
             f_U = prior_cls(
                 in_dim=input_U.shape[-1],
                 num_outputs=params["dim_U"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             U_mc = f_U(input_U)
@@ -777,6 +795,7 @@ class SCMPrior(Prior):
                 block_profile(params["dim_U"], u_meta) if enforce_cat else None
             )
 
+            eps_W = sample_eps("W", params["dim_U"] + X_W_.shape[-1])
             input_W = torch.cat([U_mc_, X_W_, eps_W], dim=-1)
 
             f_W = prior_cls(
@@ -791,6 +810,7 @@ class SCMPrior(Prior):
             )
             W_mc_ = safe_normalize(W_mc)
 
+            eps_Z = sample_eps("Z", params["dim_U"] + X_Z_.shape[-1])
             input_Z = torch.cat([U_mc_, X_Z_, eps_Z], dim=-1)
 
             f_Z = prior_cls(
@@ -825,13 +845,17 @@ class SCMPrior(Prior):
                 Z_direct = Z_mc_
 
             if params.get("confounding_dim_control", True):
+                # Shares are defined relative to the non-noise (signal) input
+                # width: confounding widths first, then the eps widths below
+                # are computed from the resulting full signal width. This
+                # avoids a circular dependency between the two share knobs.
                 k_Y = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_Y", 0.3),
-                    X_Y_.shape[-1] + W_direct.shape[-1] + 1,
+                    X_Y_.shape[-1] + W_direct.shape[-1],
                 )
                 k_A = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_A", 0.3),
-                    X_A_.shape[-1] + Z_direct.shape[-1] + 1,
+                    X_A_.shape[-1] + Z_direct.shape[-1],
                 )
                 perm = tuple(torch.randperm(params["dim_U"]).tolist())
                 idx_y, idx_a, aug_dim_y, aug_dim_a = self.split_confounding_inputs(
@@ -860,13 +884,20 @@ class SCMPrior(Prior):
                 u_aug_y = U_mc_[:, :0]
                 u_aug_a = U_mc_[:, :0]
 
+            eps_A = sample_eps(
+                "A",
+                U_sel_a.shape[-1]
+                + X_A_.shape[-1]
+                + Z_direct.shape[-1]
+                + u_aug_a.shape[-1],
+            )
             input_A = torch.cat([U_sel_a, X_A_, Z_direct, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
                 num_outputs=1,
                 u_skip=0,
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             A_logits = f_A(input_A).squeeze(-1)
@@ -878,8 +909,21 @@ class SCMPrior(Prior):
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
 
+            eps_Y = sample_eps(
+                "Y",
+                U_sel_y.shape[-1]
+                + X_Y_.shape[-1]
+                + W_direct.shape[-1]
+                + u_aug_y.shape[-1],
+            )
             input_y = torch.cat([U_sel_y, X_Y_, W_direct, eps_Y, u_aug_y], dim=-1)
 
+            # MU0/MU1 below are Monte Carlo means over the K replicates of each
+            # row. Their validity requires the observed rows and the replicates
+            # to share the *same* forward pass per mechanism: MLPSCM.forward
+            # draws a fresh output-column permutation per call, so splitting
+            # generation into separate passes would silently change the
+            # mechanism between the targets and the observed data.
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],
                 num_outputs=2,
@@ -1047,6 +1091,11 @@ class SCMPrior(Prior):
         the default 0.75, a memory cap on the augmentation network) and the
         result floored at ``floor`` so every mechanism sees at least that many
         U-derived columns.
+
+        The same share -> width conversion also sizes the exogenous-noise
+        (eps) input blocks in ``generate_dataset`` (via the sampled
+        ``noise_share_of_input_in_*`` hyperparameters), with ``n_other`` set
+        to the mechanism's non-noise signal width.
         """
         s = min(float(share), max_share)
         return max(floor, round(s / (1.0 - s) * n_other))
