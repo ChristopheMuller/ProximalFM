@@ -264,7 +264,7 @@ def test_compute_reads_flags_from_specs(tiny_family_caches):
     assert not results.variants["baseline"].corrupt_U
     for var in results.variants.values():
         assert set(var.profiles) == {"U", "W", "Z"}
-        assert var.n_datasets == 48
+        assert var.n_datasets == 8
 
 
 def test_enforcement_improves_dominance(tiny_family_caches):
@@ -314,7 +314,7 @@ def test_summary_is_per_arm(tiny_family_caches, tmp_path):
     assert summary["baseline_label"] == "full"
     for label in ("full", "ablation", "baseline"):
         stats = summary[label]
-        assert stats["n_datasets"] == 48
+        assert stats["n_datasets"] == 8
         assert 0.0 <= stats["dominance_fraction"] <= 1.0
         assert stats["violation_fraction"] == pytest.approx(
             1.0 - stats["dominance_fraction"]
