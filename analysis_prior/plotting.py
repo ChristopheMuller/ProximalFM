@@ -57,6 +57,7 @@ def save_table(
     wrap_columns: List[str] = None,
     small: bool = False,
     centering: bool = True,
+    here: bool = False,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
@@ -85,6 +86,9 @@ def save_table(
     ``wrap_columns`` for tables with many columns of running text.
 
     ``centering`` inserts ``\\centering`` right after ``\\begin{table}``.
+
+    ``here`` tags the float ``\\begin{table}[h]``, hinting LaTeX to place it
+    approximately where it occurs in the source rather than floating it.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -121,6 +125,8 @@ def save_table(
         latex = latex.replace(f"\\begin{{{env}}}", f"\\small\n\\begin{{{env}}}")
     if centering:
         latex = latex.replace("\\begin{table}", "\\begin{table}\n\\centering", 1)
+    if here:
+        latex = latex.replace("\\begin{table}", "\\begin{table}[h]", 1)
 
     tex_path = outdir / f"{name}.tex"
     tex_path.write_text(latex)
