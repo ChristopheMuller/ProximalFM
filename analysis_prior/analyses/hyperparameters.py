@@ -40,7 +40,7 @@ from .base import Analysis, AnalysisArtifacts, register
 #: dropped from the table.
 SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
     (
-        "Mechanism shape",
+        "Mechanism",
         [
             "num_layers",
             "hidden_dim",
@@ -51,7 +51,7 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "Exogenous noise",
+        "Noise",
         [
             "sampling",
             "pre_sample_cause_stats",
@@ -63,7 +63,7 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
         ],
     ),
     (
-        "Causal knobs",
+        "Causal",
         [
             "propensity_shift",
             "propensity_scale",
@@ -80,10 +80,6 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
     ),
 ]
 
-#: Fixed hyperparameters, grouped and ordered. TreeSCM-only knobs (mixture
-#: weights + tree-specific parameters, see :class:`proximalfm.prior._dataset`)
-#: are dropped from the table entirely by :func:`build_fixed_table`, not just
-#: left ungrouped, since this paper's spec never exercises the tree-SCM branch.
 FIXED_GROUPS: List[Tuple[str, List[str]]] = [
     ("Feature corruption", ["cat_prob", "max_categories", "corrupt_U"]),
     ("Positivity", ["propensity_epsilon"]),
