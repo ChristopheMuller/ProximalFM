@@ -163,6 +163,44 @@ generating a second, unrelated batch of complete datasets just for Fig A8.
 
 ---
 
+## Reproducing the appendix: full command list
+
+Everything below regenerates every table/figure currently wired into `B_prior.tex` (see the
+per-artifact sections above for what each command produces and where it lands). Run from the repo
+root, in order:
+
+```
+# B.2 Hyperparameters — tab:prior_fixed_hp, tab:prior_sampled_hp
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis hyperparameters
+
+# B.2.1 Prior Dimensions + B.3 Postprocessing — fig:prior_dim_marginals, tab:prior_dim_sampling,
+# fig:prior_dimension_joint_heatmaps, tab:prior_completeness_survival
+PYTHONPATH=. uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison
+
+# B.3 Categorical completeness — fig:prior_category_count_marginals,
+# fig:prior_proxy_stats_by_u_cardinality, fig:prior_proxy_composition_vs_u_demand,
+# tab:prior_categorical_completeness_survival
+PYTHONPATH=. uv run python -m analysis_prior.main --family cat_ablation --analysis categorical_completeness
+```
+
+Add `--force` to any of the three to regenerate the cache instead of reusing it, and `--n-jobs -1`
+to parallelise generation across all cores.
+
+**Before building the LaTeX**, copy/symlink the dimension-ablation PDFs into the appendix figures
+tree (`figures_app/prior/` doesn't exist yet — Track A item 1 in
+[`docs/prior_appendix_plan.md`](../docs/prior_appendix_plan.md)):
+
+```
+results/dim_ablation/dimension_comparison/dimension_marginals.pdf
+results/dim_ablation/dimension_comparison/dimension_joint_heatmaps_comparison.pdf
+```
+
+The `cat_ablation` and `hyperparameters` outputs already land under paths the tex expects, so no
+extra copying is needed for those.
+
+Everything in "Planned, not yet implemented" above has no CLI command yet — those modules don't
+exist in `analyses/__init__.py`'s registry.
+
 ## Discovery commands
 
 ```

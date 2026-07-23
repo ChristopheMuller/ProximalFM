@@ -268,12 +268,18 @@ def test_compute_reads_flags_from_specs(tiny_family_caches):
 
 
 def test_enforcement_improves_dominance(tiny_family_caches):
+    # Enforcement (full) must dominate each unenforced arm, but ablation vs.
+    # baseline has no fixed order: both let proxies categorize independently
+    # of U (num2cat applies cat_col_prob to every dataset, not just eligible
+    # ones), so which one wins is a function of the sampled dims/probabilities,
+    # not of corrupt_U.
     results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
     full = results.variants["full"].survival["overall_fraction"]
     ablation = results.variants["ablation"].survival["overall_fraction"]
     baseline = results.variants["baseline"].survival["overall_fraction"]
     assert full == 1.0
-    assert full > ablation > baseline
+    assert full > ablation
+    assert full > baseline
 
 
 def test_run_writes_survival_table(tiny_family_caches, tmp_path):
