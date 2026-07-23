@@ -612,23 +612,39 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
         if not shown:
             return []
 
-        frames = []
+        # Lay the arms out side by side rather than stacked: each variant becomes
+        # a group of three columns (datasets/dominating/fraction) sharing the
+        # single ``|cats(U)|`` key column. The arms are generated over the same
+        # dataset specs, so their ``n_cat_U`` supports coincide in practice; the
+        # outer merge aligns them on the shared key regardless and falls back to a
+        # zero count for any value an arm happens not to reach.
+        stat_names = {
+            "n_datasets": "datasets",
+            "n_hold": "dominating",
+            "fraction_hold": "fraction",
+        }
+        merged = None
         for label, var in shown.items():
-            frame = var.survival["by_n_cat_U"].copy()
-            frame.insert(0, "variant", label)
-            frames.append(frame)
-        table = pd.concat(frames, ignore_index=True)
+            frame = var.survival["by_n_cat_U"][["n_cat_U", *stat_names]].copy()
+            frame.columns = ["n_cat_U", *(f"{label}::{s}" for s in stat_names.values())]
+            merged = (
+                frame
+                if merged is None
+                else merged.merge(frame, on="n_cat_U", how="outer")
+            )
+        merged = merged.sort_values("n_cat_U").reset_index(drop=True)
+        merged["n_cat_U"] = merged["n_cat_U"].astype(int)
+        for label in shown:
+            for stat in ("datasets", "dominating"):
+                col = f"{label}::{stat}"
+                merged[col] = merged[col].fillna(0).astype(int)
 
-        if table["variant"].nunique() == 1:
-            table = table.drop(columns="variant")
-        table = table.rename(
-            columns={
-                "n_cat_U": "$|\\mathrm{cats}(U)|$",
-                "n_datasets": "datasets",
-                "n_hold": "dominating",
-                "fraction_hold": "fraction",
-            }
-        )
+        # A two-level column header: the shared key under an empty group, then one
+        # ``\multicolumn`` spanner per variant over its three stat columns.
+        columns = [("", "$|\\mathrm{cats}(U)|$")]
+        columns += [tuple(col.split("::")) for col in merged.columns[1:]]
+        merged.columns = pd.MultiIndex.from_tuples(columns)
+        table = merged
 
         return save_table(
             table,
@@ -647,4 +663,8 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
             label="tab:prior_categorical_completeness_survival",
             escape=False,
             centering=True,
+            # Rule off the shared key column from each variant's 3-column group;
+            # ``|r`` spanners keep the rules unbroken through the group header.
+            column_format="r" + "|rrr" * len(shown),
+            multicolumn_format="|r",
         )

@@ -59,6 +59,8 @@ def save_table(
     centering: bool = True,
     here: bool = False,
     group_column: str = None,
+    column_format: str = None,
+    multicolumn_format: str = None,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
@@ -101,6 +103,13 @@ def save_table(
     that actually need it (e.g. the wrapped ones), which for a table with many
     rows is often the difference between fitting on one page and not. The
     column stays in the CSV; only the LaTeX body is affected.
+
+    ``column_format`` overrides the auto-generated LaTeX column spec (e.g.
+    ``"r|rrr|rrr"`` to rule off column groups). It is mutually exclusive with
+    ``wrap_columns``, which builds its own spec. ``multicolumn_format`` sets the
+    alignment of the ``\\multicolumn`` group spanners a MultiIndex-columned
+    frame emits; pass e.g. ``"|r"`` so a ``|`` in ``column_format`` runs
+    continuously through the spanner row instead of breaking at it.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -116,8 +125,9 @@ def save_table(
         groups = df[group_column]
         body_df = df.drop(columns=[group_column])
 
-    column_format = None
     if wrap_columns:
+        if column_format is not None:
+            raise ValueError("pass either wrap_columns or column_format, not both")
         unknown = set(wrap_columns) - set(body_df.columns)
         if unknown:
             raise ValueError(f"wrap_columns not in frame: {sorted(unknown)}")
@@ -126,6 +136,9 @@ def save_table(
             for col in body_df.columns
         )
 
+    extra = (
+        {} if multicolumn_format is None else {"multicolumn_format": multicolumn_format}
+    )
     latex = body_df.to_latex(
         index=False,
         escape=escape,
@@ -133,6 +146,7 @@ def save_table(
         label=label,
         float_format="%.3f",
         column_format=column_format,
+        **extra,
     )
     if wrap_columns:
         # to_latex always emits `tabular`; swap in `tabularx` for the same
