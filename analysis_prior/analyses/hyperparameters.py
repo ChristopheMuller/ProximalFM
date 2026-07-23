@@ -78,10 +78,11 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
             "covariate_share_of_X_in_Y",
         ],
     ),
+    ("Feature corruption", ["cat_col_prob"]),
 ]
 
 FIXED_GROUPS: List[Tuple[str, List[str]]] = [
-    ("Feature corruption", ["cat_prob", "max_categories", "corrupt_U"]),
+    ("Feature corruption", ["max_categories", "corrupt_U", "proxy_cat_cover_prob"]),
     ("Positivity", ["propensity_epsilon"]),
     ("Monte Carlo", ["prior_mc_mem_budget"]),
     (
@@ -135,12 +136,12 @@ NOTES: Dict[str, str] = {
     "covariate_share_of_X_in_Z": "per-column keep probability of the direct $X \\to Z$ edge",
     "covariate_share_of_X_in_A": "per-column keep probability of the direct $X \\to A$ edge",
     "covariate_share_of_X_in_Y": "per-column keep probability of the direct $X \\to Y$ edge",
+    "cat_col_prob": "per-column categorisation probability",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
     "tree_model": "tree SCM family",
     "tree_depth_lambda": "tree-depth exponential rate",
     "tree_n_estimators_lambda": "tree-count exponential rate",
-    "cat_prob": "per-column categorisation probability",
     "max_categories": "cap on categories per column",
     "corrupt_U": "categorise $U$ as well as the proxies",
     "enforce_categorical_completeness": "accept/reject on each proxy dominating $U$'s category profile",

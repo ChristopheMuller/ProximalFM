@@ -133,12 +133,12 @@ def test_outlier_removing_preserves_nans_and_does_not_crash():
 # ---------------------------------------------------------------------------
 
 
-def test_num2cat_identity_when_cat_prob_zero():
+def test_num2cat_identity_when_cat_col_prob_zero():
     torch.manual_seed(0)
     X = torch.randn(64, 5)
     original = X.clone()
 
-    out, meta = num2cat(X, {"cat_prob": 0.0})
+    out, meta = num2cat(X, {"cat_col_prob": 0.0})
 
     # No column is touched, the tensor is returned as-is, and metadata is empty.
     torch.testing.assert_close(out, original)
@@ -155,7 +155,7 @@ def test_num2cat_respects_max_categories():
     # invariant holds for every column across several forced-conversion runs.
     for _ in range(20):
         X = torch.randn(T, H)
-        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        out, meta = num2cat(X, {"cat_col_prob": 1.0, "max_categories": max_categories})
         assert out.shape == (T, H)
         for col in range(H):
             n_unique = out[:, col].unique().numel()
@@ -170,9 +170,11 @@ def test_num2cat_metadata_matches_converted_columns():
     max_categories = 6
 
     # Metadata must list exactly the categorised columns, with the right counts.
+    # A mid probability keeps a mix of categorical and continuous columns so
+    # both branches below are exercised.
     for _ in range(30):
         X = torch.randn(T, H)
-        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        out, meta = num2cat(X, {"cat_col_prob": 0.5, "max_categories": max_categories})
         for col in range(H):
             n_unique = out[:, col].unique().numel()
             if col in meta:
@@ -190,12 +192,12 @@ def test_num2cat_actually_converts_some_columns():
     T, H = 200, 5
     max_categories = 4
 
-    # Over many forced-eligible calls, at least one column must be discretized
+    # Under forced categorisation, at least one column must be discretized
     # (i.e. collapse from T distinct continuous values to <= max_categories).
     converted = False
     for _ in range(30):
         X = torch.randn(T, H)
-        out, meta = num2cat(X, {"cat_prob": 1.0, "max_categories": max_categories})
+        out, meta = num2cat(X, {"cat_col_prob": 1.0, "max_categories": max_categories})
         if meta:
             converted = True
             for col in meta:
@@ -296,11 +298,11 @@ def test_process_features_preserves_shape_no_padding():
     torch.manual_seed(0)
     X = torch.randn(128, 3)
 
-    out, meta = process_features(X, {"cat_prob": 0.0})
+    out, meta = process_features(X, {"cat_col_prob": 0.0})
 
     # No padding, permutation, or feature-count change.
     assert out.shape == X.shape
-    # cat_prob=0 -> everything stays continuous, no categorisation metadata.
+    # cat_col_prob=0 -> everything stays continuous, no categorisation metadata.
     assert meta == {}
     assert block_profile(out.shape[1], meta) == BlockProfile(
         continuous=3, categorical=()
@@ -311,8 +313,8 @@ def test_process_features_standardizes_continuous_input():
     torch.manual_seed(0)
     X = torch.randn(500, 4) * 7.0 + 3.0
 
-    # cat_prob=0 -> pipeline is outlier_removing + standard_scaling only.
-    out, _ = process_features(X, {"cat_prob": 0.0})
+    # cat_col_prob=0 -> pipeline is outlier_removing + standard_scaling only.
+    out, _ = process_features(X, {"cat_col_prob": 0.0})
 
     mean = torch.nanmean(out, dim=0)
     std = torch_nanstd(out, dim=0, ddof=1)
@@ -324,7 +326,7 @@ def test_process_features_finite_with_categorization():
     torch.manual_seed(0)
     X = torch.randn(256, 5)
 
-    out, meta = process_features(X, {"cat_prob": 1.0, "max_categories": 5})
+    out, meta = process_features(X, {"cat_col_prob": 1.0, "max_categories": 5})
 
     assert out.shape == X.shape
     assert torch.isfinite(out).all()
@@ -358,7 +360,7 @@ def test_num2cat_enforced_profile_dominates_requirement():
                 X = torch.randn(T, H)
                 _, meta = num2cat(
                     X,
-                    {"cat_prob": 1.0, "max_categories": max_categories},
+                    {"cat_col_prob": 1.0, "max_categories": max_categories},
                     require_profile=req,
                 )
                 prof = block_profile(H, meta)
@@ -372,7 +374,7 @@ def test_process_features_enforced_profile_dominates_and_finite():
     for _ in range(20):
         X = torch.randn(256, 7)
         out, meta = process_features(
-            X, {"cat_prob": 0.5, "max_categories": 10}, require_profile=req
+            X, {"cat_col_prob": 0.5, "max_categories": 10}, require_profile=req
         )
         assert out.shape == (256, 7)
         assert torch.isfinite(out).all()
@@ -386,7 +388,7 @@ def test_num2cat_enforced_all_continuous_requirement_keeps_enough_continuous():
     for _ in range(30):
         X = torch.randn(200, 6)
         _, meta = num2cat(
-            X, {"cat_prob": 1.0, "max_categories": 5}, require_profile=req
+            X, {"cat_col_prob": 1.0, "max_categories": 5}, require_profile=req
         )
         prof = block_profile(6, meta)
         assert prof.continuous >= 4
@@ -399,7 +401,7 @@ def test_num2cat_enforced_raises_when_infeasible():
     req = BlockProfile(continuous=2, categorical=(3, 2))
     X = torch.randn(100, 3)
     with pytest.raises(ValueError):
-        num2cat(X, {"cat_prob": 1.0, "max_categories": 5}, require_profile=req)
+        num2cat(X, {"cat_col_prob": 1.0, "max_categories": 5}, require_profile=req)
 
 
 def test_num2cat_enforced_continuous_coverage_can_avoid_categorical():
@@ -412,14 +414,14 @@ def test_num2cat_enforced_continuous_coverage_can_avoid_categorical():
         X = torch.randn(200, 5)
         _, meta = num2cat(
             X,
-            {"cat_prob": 0.0, "max_categories": 8, "proxy_cat_cover_prob": 0.0},
+            {"cat_col_prob": 0.0, "max_categories": 8, "proxy_cat_cover_prob": 0.0},
             require_profile=req,
         )
         prof = block_profile(5, meta)
         assert dominates(prof, req)  # still complete, via wildcards
         if len(prof.categorical) == 0:
             saw_fully_continuous = True
-    # With cat_prob=0 and cover_prob=0, no column is ever categorised.
+    # With cat_col_prob=0 and cover_prob=0, no column is ever categorised.
     assert saw_fully_continuous
 
 
@@ -432,7 +434,7 @@ def test_num2cat_enforced_full_categorical_coverage_mirrors_u():
         X = torch.randn(200, 6)
         _, meta = num2cat(
             X,
-            {"cat_prob": 0.0, "max_categories": 10, "proxy_cat_cover_prob": 1.0},
+            {"cat_col_prob": 0.0, "max_categories": 10, "proxy_cat_cover_prob": 1.0},
             require_profile=req,
         )
         prof = block_profile(6, meta)
@@ -450,7 +452,7 @@ def test_num2cat_enforced_dominates_across_cover_probs():
             _, meta = num2cat(
                 X,
                 {
-                    "cat_prob": 0.5,
+                    "cat_col_prob": 0.5,
                     "max_categories": 8,
                     "proxy_cat_cover_prob": cover,
                 },

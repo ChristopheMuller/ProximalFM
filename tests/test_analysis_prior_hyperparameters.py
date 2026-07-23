@@ -140,11 +140,14 @@ def test_group_label_printed_once_per_group():
 def test_overrides_flow_into_the_tables():
     spec = PriorSpec(
         name="ablation",
-        fixed_hp_overrides={"dim_U_distribution": "uniform", "cat_prob": 0.0},
+        fixed_hp_overrides={
+            "dim_U_distribution": "uniform",
+            "proxy_cat_cover_prob": 0.0,
+        },
     )
     fixed = build_fixed_table(spec).set_index("hyperparameter")
     assert fixed.loc[_tt("dim_U_distribution"), "value"] == "\\texttt{uniform}"
-    assert fixed.loc[_tt("cat_prob"), "value"] == "$0$"
+    assert fixed.loc[_tt("proxy_cat_cover_prob"), "value"] == "$0$"
 
 
 def test_unlisted_hp_lands_in_an_other_group():

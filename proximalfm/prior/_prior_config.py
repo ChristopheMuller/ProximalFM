@@ -8,7 +8,6 @@ DEFAULT_FIXED_HP = {
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
-    "cat_prob": 0.40,
     "max_categories": 50,
     "corrupt_U": True,
     "enforce_categorical_completeness": True,
@@ -69,6 +68,12 @@ DEFAULT_SAMPLED_HP = {
     "pre_sample_cause_stats": {
         "distribution": "meta_choice",
         "choice_values": [True, False],
+    },
+    # CATEGORIZATION
+    "cat_col_prob": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 3.0,
     },
     # PROPENSITY SHIFT AND SCALE
     "propensity_shift": {

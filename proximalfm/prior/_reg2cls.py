@@ -335,10 +335,11 @@ def num2cat(
 
     Two modes:
 
-    * **Unconstrained** (``require_profile is None``): with probability
-      ``hp["cat_prob"]`` the tensor becomes eligible; each column is then
-      independently discretized (with a shared per-call probability) into a
-      random number of categories via :class:`MulticlassAssigner`.
+    * **Unconstrained** (``require_profile is None``): each column is
+      independently discretized with probability ``hp["cat_col_prob"]`` (a
+      per-dataset value shared across columns and blocks) into a random number
+      of categories via :class:`MulticlassAssigner`. When it is low the block
+      stays fully numeric, so no separate eligibility gate is needed.
 
     * **Construct-by-design** (``require_profile`` given): categorise ``X`` so
       its resulting profile is guaranteed to :func:`dominates` ``require_profile``
@@ -359,9 +360,9 @@ def num2cat(
         Feature tensor of shape ``(T, H)``.
 
     hp : dict
-        Hyperparameters. Uses ``cat_prob`` (default 0.2) as the probability the
-        tensor is eligible, and ``max_categories`` (default 10) as the upper
-        bound on categories per column.
+        Hyperparameters. Uses ``cat_col_prob`` (default 0.25) as the per-column
+        categorisation probability, and ``max_categories`` (default 10) as the
+        upper bound on categories per column.
 
     require_profile : BlockProfile, optional
         When given, the profile (typically ``U``'s) that the categorisation of
@@ -379,13 +380,12 @@ def num2cat(
         return X, _num2cat_enforced(X, hp, require_profile, max_categories)
 
     meta: dict[int, int] = {}
-    if random.random() < hp.get("cat_prob", 0.2):
-        col_prob = random.random()  # Probability for converting a specific column
-        for col in range(X.shape[1]):
-            if random.random() < col_prob:
-                num_cats = _sample_num_cats(max_categories)
-                _categorize_column(X, col, num_cats)
-                meta[col] = num_cats
+    col_prob = hp.get("cat_col_prob", 0.25)  # per-column categorisation probability
+    for col in range(X.shape[1]):
+        if random.random() < col_prob:
+            num_cats = _sample_num_cats(max_categories)
+            _categorize_column(X, col, num_cats)
+            meta[col] = num_cats
     return X, meta
 
 
@@ -443,14 +443,12 @@ def _num2cat_enforced(
     # Extra optional categorisation on the leftover columns, as in the
     # unconstrained mode. Only adds capacity; the reserved/wildcard continuous
     # columns above are untouched, so the profile still dominates.
-    extra = cols[c_u + k :]
-    if extra and random.random() < hp.get("cat_prob", 0.2):
-        col_prob = random.random()
-        for col in extra:
-            if random.random() < col_prob:
-                num_cats = _sample_num_cats(max_categories)
-                _categorize_column(X, col, num_cats)
-                meta[col] = num_cats
+    col_prob = hp.get("cat_col_prob", 0.25)
+    for col in cols[c_u + k :]:
+        if random.random() < col_prob:
+            num_cats = _sample_num_cats(max_categories)
+            _categorize_column(X, col, num_cats)
+            meta[col] = num_cats
 
     return meta
 

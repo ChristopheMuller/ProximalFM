@@ -443,7 +443,7 @@ def test_sparse2dense():
 # ---------------------------------------------------------------------------
 
 
-def _make_prior(fixed_hp, max_dim=8, batch_size=24):
+def _make_prior(fixed_hp, max_dim=8, batch_size=24, sampled_hp=DEFAULT_SAMPLED_HP):
     """A prior with moderately high dims, where post-filter completeness
     violations occur often enough to exercise the enforcement path."""
     return SCMPrior(
@@ -462,6 +462,7 @@ def _make_prior(fixed_hp, max_dim=8, batch_size=24):
         prior_type="mlp_scm",
         mcmc_cate=2,
         fixed_hp=fixed_hp,
+        sampled_hp=sampled_hp,
         n_jobs=1,
     )
 
@@ -571,10 +572,15 @@ def test_enforce_categorical_completeness_holds():
         **DEFAULT_FIXED_HP,
         "enforce_categorical_completeness": True,
         "max_categories": max_categories,
-        "cat_prob": 0.8,  # exercise the categorical path often
         "completeness_max_attempts": 200,  # keep give-ups (which may violate) rare
     }
-    prior = _make_prior(fixed_hp, max_dim=8, batch_size=24)
+    # Pin the per-column categorisation probability high to exercise the
+    # categorical path often (it is a sampled HP, so override it there).
+    sampled_hp = {
+        **DEFAULT_SAMPLED_HP,
+        "cat_col_prob": {"distribution": "uniform", "min": 0.8, "max": 0.8},
+    }
+    prior = _make_prior(fixed_hp, max_dim=8, batch_size=24, sampled_hp=sampled_hp)
     with _capture_accepted_profiles(prior) as profiles:
         out = prior.get_batch()
     d_U, d_W, d_Z = out[11], out[13], out[14]

@@ -19,7 +19,7 @@ def test_to_dict_from_dict_round_trip():
         name="rt",
         n_datasets=3,
         seq_len=50,
-        fixed_hp_overrides={"cat_prob": 0.0},
+        fixed_hp_overrides={"proxy_cat_cover_prob": 0.0},
         sampled_hp_overrides={"propensity_shift": pinned(1.5)},
     )
     assert PriorSpec.from_dict(spec.to_dict()) == spec
@@ -47,8 +47,8 @@ def test_digest_is_stable_across_calls():
 
 
 def test_digest_is_insensitive_to_override_key_order():
-    a = PriorSpec(fixed_hp_overrides={"cat_prob": 0.0, "corrupt_U": True})
-    b = PriorSpec(fixed_hp_overrides={"corrupt_U": True, "cat_prob": 0.0})
+    a = PriorSpec(fixed_hp_overrides={"proxy_cat_cover_prob": 0.0, "corrupt_U": True})
+    b = PriorSpec(fixed_hp_overrides={"corrupt_U": True, "proxy_cat_cover_prob": 0.0})
     assert a.digest() == b.digest()
 
 
@@ -62,7 +62,7 @@ def test_digest_is_insensitive_to_override_key_order():
         {"prior_type": "tree_scm"},
         {"mcmc_cate": 7},
         {"seed": 1},
-        {"fixed_hp_overrides": {"cat_prob": 0.0}},
+        {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
     ],
 )
@@ -127,12 +127,12 @@ def test_non_serialisable_overrides_rejected():
 
 def test_resolved_hp_merges_over_defaults():
     spec = PriorSpec(
-        fixed_hp_overrides={"cat_prob": 0.99},
+        fixed_hp_overrides={"proxy_cat_cover_prob": 0.99},
         sampled_hp_overrides={"propensity_shift": pinned(2.0)},
     )
     fixed, sampled = spec.resolved_hp()
 
-    assert fixed["cat_prob"] == 0.99
+    assert fixed["proxy_cat_cover_prob"] == 0.99
     # Untouched defaults must still be present.
     assert fixed["propensity_epsilon"] == DEFAULT_FIXED_HP["propensity_epsilon"]
     assert sampled["propensity_shift"] == pinned(2.0)
@@ -142,12 +142,12 @@ def test_resolved_hp_merges_over_defaults():
 def test_resolved_hp_does_not_mutate_module_defaults():
     # resolved_hp returns deep copies; mutating the result must not leak into the
     # config shared with training.
-    original = DEFAULT_FIXED_HP["cat_prob"]
+    original = DEFAULT_FIXED_HP["proxy_cat_cover_prob"]
     fixed, sampled = PriorSpec().resolved_hp()
-    fixed["cat_prob"] = 123.0
+    fixed["proxy_cat_cover_prob"] = 123.0
     sampled["num_layers"]["max_mean"] = 999
 
-    assert DEFAULT_FIXED_HP["cat_prob"] == original
+    assert DEFAULT_FIXED_HP["proxy_cat_cover_prob"] == original
     assert DEFAULT_SAMPLED_HP["num_layers"]["max_mean"] != 999
 
 
@@ -190,7 +190,7 @@ def test_dataset_seed_stable_when_renamed():
         {"prior_type": "tree_scm"},
         {"mcmc_cate": 7},
         {"seed": 1},
-        {"fixed_hp_overrides": {"cat_prob": 0.0}},
+        {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
     ],
 )
@@ -244,7 +244,7 @@ def _family(**kwargs):
 
     defaults = dict(
         name="fam",
-        base=PriorSpec(name="base", fixed_hp_overrides={"cat_prob": 0.0}),
+        base=PriorSpec(name="base", fixed_hp_overrides={"proxy_cat_cover_prob": 0.0}),
         interventions={
             "identity": {},
             "uniform": {"fixed_hp_overrides": {"dim_U_distribution": "uniform"}},
@@ -274,12 +274,14 @@ def test_family_overrides_deep_merge_within_hp_dicts():
     variants = _family().resolve()
     merged = variants["uniform"].fixed_hp_overrides
     # The base's own override survives the intervention on a sibling key...
-    assert merged == {"cat_prob": 0.0, "dim_U_distribution": "uniform"}
+    assert merged == {"proxy_cat_cover_prob": 0.0, "dim_U_distribution": "uniform"}
 
 
 def test_family_intervention_wins_on_conflicting_keys():
-    fam = _family(interventions={"recat": {"fixed_hp_overrides": {"cat_prob": 0.7}}})
-    assert fam.resolve()["recat"].fixed_hp_overrides == {"cat_prob": 0.7}
+    fam = _family(
+        interventions={"recat": {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.7}}}
+    )
+    assert fam.resolve()["recat"].fixed_hp_overrides == {"proxy_cat_cover_prob": 0.7}
 
 
 def test_family_non_dict_fields_replace():
@@ -288,13 +290,13 @@ def test_family_non_dict_fields_replace():
     assert variant.seq_len == 64
     assert variant.mcmc_cate == 3
     # Untouched fields come from the base.
-    assert variant.fixed_hp_overrides == {"cat_prob": 0.0}
+    assert variant.fixed_hp_overrides == {"proxy_cat_cover_prob": 0.0}
 
 
 def test_family_resolve_does_not_mutate_base():
     fam = _family()
     fam.resolve()
-    assert fam.base.fixed_hp_overrides == {"cat_prob": 0.0}
+    assert fam.base.fixed_hp_overrides == {"proxy_cat_cover_prob": 0.0}
     assert fam.base.name == "base"
 
 

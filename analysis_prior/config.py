@@ -84,7 +84,7 @@ class PriorSpec:
 
     fixed_hp_overrides : dict
         Overrides merged over ``DEFAULT_FIXED_HP``. Used for ablations, e.g.
-        ``{"cat_prob": 0.0}`` to disable feature categorization.
+        ``{"confounding_dim_control": False}`` to disable U-input subsampling.
 
     sampled_hp_overrides : dict
         Overrides merged over ``DEFAULT_SAMPLED_HP``. Each value is a
@@ -309,10 +309,12 @@ PRESETS: Dict[str, PriorSpec] = {
         name="no_u_augment",
         fixed_hp_overrides={"confounding_dim_control": False},
     ),
-    # Ablation: no feature categorization (see appendix A.3).
+    # Ablation: no feature categorization (see appendix A.3). Pins the
+    # per-column categorisation probability to zero; proxy-completeness slots
+    # remain governed by proxy_cat_cover_prob, matching the prior behaviour.
     "no_categorization": PriorSpec(
         name="no_categorization",
-        fixed_hp_overrides={"cat_prob": 0.0},
+        sampled_hp_overrides={"cat_col_prob": pinned(0.0)},
     ),
 }
 
@@ -331,7 +333,7 @@ class SpecFamily:
     Merge semantics: within an intervention, the dict-valued fields
     ``fixed_hp_overrides`` and ``sampled_hp_overrides`` are **deep-merged** over
     the base's (so intervening on ``dim_U_distribution`` atop a base that pins
-    ``cat_prob`` keeps both); every other field **replaces** the base value.
+    ``max_categories`` keeps both); every other field **replaces** the base value.
     Consequence: an intervention cannot *remove* a base override, only add or
     change keys.
 
