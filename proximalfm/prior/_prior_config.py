@@ -70,6 +70,7 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
+    # PROPENSITY SHIFT AND SCALE
     "propensity_shift": {
         "distribution": "uniform",
         "min": -2.5,
@@ -82,9 +83,7 @@ DEFAULT_SAMPLED_HP = {
         "lower_bound": 0.1,
         "round": False,
     },
-    # Target share of f_Y / f_A input columns that are U-derived (Beta with
-    # mean 0.30; P(s > 0.5) = 0.18, P(s > 0.75) = 0.028). Converted to a column
-    # count by SCMPrior.confounding_input_dim.
+    # CONFOUNDING EDGE SHARES
     "confounding_share_of_U_in_Y": {
         "distribution": "beta",
         "a": 1.2,
@@ -95,6 +94,7 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.2,
         "b": 2.8,
     },
+    # PROXY EDGE SHARES
     "direct_edge_share_of_W_in_Y": {
         "distribution": "beta",
         "a": 1.0,
@@ -105,10 +105,11 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.0,
         "b": 1.0,
     },
+    # COV SHARE OF X IN U/W/Z/A/Y
     "covariate_share_of_X_in_U": {
         "distribution": "beta",
-        "a": 1.2,
-        "b": 2.0,
+        "a": 1.0,
+        "b": 1.0,
     },
     "covariate_share_of_X_in_W": {
         "distribution": "beta",
@@ -130,6 +131,7 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.0,
         "b": 1.0,
     },
+    # NOISE
     "noise_share_of_input_in_U": {
         "distribution": "beta",
         "a": 1.2,
