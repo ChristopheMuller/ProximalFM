@@ -58,6 +58,7 @@ def save_table(
     small: bool = False,
     centering: bool = True,
     here: bool = False,
+    group_column: str = None,
 ) -> List[Path]:
     """Save ``df`` as both a LaTeX table and a CSV under ``outdir``.
 
@@ -89,6 +90,17 @@ def save_table(
 
     ``here`` tags the float ``\\begin{table}[h]``, hinting LaTeX to place it
     approximately where it occurs in the source rather than floating it.
+
+    ``group_column`` names a column that carries a group label on the first
+    row of each block and ``""`` on every row after -- the sparsified pattern
+    ``_grouped_rows`` in :mod:`analysis_prior.analyses.hyperparameters`
+    already produces for the CSV. Rendered as an ordinary ``l`` column, that
+    label wastes a full column's width on text that appears only a handful of
+    times; pulling it out and turning each label into a bold, full-width
+    ``\\multicolumn`` header row instead gives that width back to the columns
+    that actually need it (e.g. the wrapped ones), which for a table with many
+    rows is often the difference between fitting on one page and not. The
+    column stays in the CSV; only the LaTeX body is affected.
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -96,17 +108,25 @@ def save_table(
     csv_path = outdir / f"{name}.csv"
     df.to_csv(csv_path, index=False)
 
+    body_df = df
+    groups = None
+    if group_column:
+        if group_column not in df.columns:
+            raise ValueError(f"group_column {group_column!r} not in frame")
+        groups = df[group_column]
+        body_df = df.drop(columns=[group_column])
+
     column_format = None
     if wrap_columns:
-        unknown = set(wrap_columns) - set(df.columns)
+        unknown = set(wrap_columns) - set(body_df.columns)
         if unknown:
             raise ValueError(f"wrap_columns not in frame: {sorted(unknown)}")
         column_format = "".join(
             ">{\\raggedright\\arraybackslash}X" if col in wrap_columns else "l"
-            for col in df.columns
+            for col in body_df.columns
         )
 
-    latex = df.to_latex(
+    latex = body_df.to_latex(
         index=False,
         escape=escape,
         caption=caption or None,
@@ -120,6 +140,8 @@ def save_table(
         # with X columns. `{\textwidth}` is tabularx's extra mandatory arg.
         latex = latex.replace("\\begin{tabular}", "\\begin{tabularx}{\\textwidth}")
         latex = latex.replace("\\end{tabular}", "\\end{tabularx}")
+    if groups is not None:
+        latex = _insert_group_headers(latex, groups, ncols=len(body_df.columns))
     if small:
         env = "tabularx" if wrap_columns else "tabular"
         latex = latex.replace(f"\\begin{{{env}}}", f"\\small\n\\begin{{{env}}}")
@@ -131,3 +153,36 @@ def save_table(
     tex_path = outdir / f"{name}.tex"
     tex_path.write_text(latex)
     return [tex_path, csv_path]
+
+
+def _insert_group_headers(latex: str, groups: pd.Series, ncols: int) -> str:
+    """Turn a sparsified group column into bold full-width header rows.
+
+    ``groups`` has one entry per data row: the group label on the first row
+    of a block, ``""`` on the rest. Splits the ``to_latex`` output on the
+    (single, pre-group-column) ``\\midrule``/``\\bottomrule`` markers to find
+    the data-row lines -- one line per row, in order, since ``to_latex`` never
+    wraps a row across lines -- and inserts a ``\\multicolumn`` header line
+    before each non-empty label, with a ``\\midrule`` separating it from the
+    previous block.
+    """
+    lines = latex.split("\n")
+    start = lines.index("\\midrule") + 1
+    end = lines.index("\\bottomrule")
+    body, rest = lines[start:end], lines[end:]
+
+    values = list(groups)
+    if len(body) != len(values):
+        raise ValueError("group_column length does not match table rows")
+
+    new_body: List[str] = []
+    for label, line in zip(values, body):
+        if label:
+            if new_body:
+                new_body.append("\\midrule")
+            new_body.append(
+                f"\\multicolumn{{{ncols}}}{{l}}{{\\textbf{{{label}}}}} \\\\"
+            )
+        new_body.append(line)
+
+    return "\n".join(lines[:start] + new_body + rest)

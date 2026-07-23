@@ -131,7 +131,7 @@ NOTES: Dict[str, str] = {
     "confounding_share_of_U_in_A": "target share of $f_A$ inputs drawn from $U$",
     "direct_edge_share_of_W_in_Y": "per-column keep probability of the direct $W \\to Y$ edge",
     "direct_edge_share_of_Z_in_A": "per-column keep probability of the direct $Z \\to A$ edge",
-    "covariate_share_of_X_in_U": "keep probability of the confounding $X \\to U$ edge (observed share of $U$)",
+    "covariate_share_of_X_in_U": "per-column keep probability of the direct $X \\to U$ edge",
     "covariate_share_of_X_in_W": "per-column keep probability of the direct $X \\to W$ edge",
     "covariate_share_of_X_in_Z": "per-column keep probability of the direct $X \\to Z$ edge",
     "covariate_share_of_X_in_A": "per-column keep probability of the direct $X \\to A$ edge",
@@ -361,6 +361,7 @@ class HyperparametersAnalysis(Analysis):
             wrap_columns=["hyperparameter", "sampling law", "description"],
             small=True,
             centering=True,
+            group_column="group",
         )
         tables += save_table(
             results.fixed,
@@ -376,6 +377,7 @@ class HyperparametersAnalysis(Analysis):
             wrap_columns=["hyperparameter", "description"],
             small=True,
             centering=True,
+            group_column="group",
         )
 
         summary = {
