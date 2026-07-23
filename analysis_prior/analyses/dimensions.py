@@ -369,7 +369,6 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
         figures = self._render_marginals(results, outdir)
         figures += self._render_joint_heatmaps(results, outdir)
         tables = self._render_sampling_table(results, outdir)
-        tables += self._render_survival_table(results, outdir)
 
         summary: Dict[str, Any] = {"baseline": results.baseline}
         for label, var in results.variants.items():
@@ -585,58 +584,4 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             centering=True,
             # Cells are intentional LaTeX ($d_U$, $p(d)\propto\dots$).
             escape=False,
-        )
-
-    def _render_survival_table(
-        self, results: DimensionComparisonResults, outdir: Path
-    ) -> list:
-        """Table 5: completeness-heuristic survival, from unenforced variants.
-
-        With enforcement on the constraint holds by construction (trivially
-        100\\%), so the informative measurement is what filtering does when the
-        accept/reject loop is switched off.
-        """
-        unenforced = {
-            label: var for label, var in results.variants.items() if not var.enforced
-        }
-        if not unenforced:
-            return []
-
-        frames = []
-        for label, var in unenforced.items():
-            frame = var.results.completeness["by_d_U"].copy()
-            frame.insert(0, "variant", label)
-            frames.append(frame)
-        table = pd.concat(frames, ignore_index=True)
-
-        # Paper-ready headers: math for d_U, no raw underscores (so escape can be
-        # off and $d_U$ typesets). Drop the redundant "variant" column when there
-        # is only one unenforced variant.
-        if table["variant"].nunique() == 1:
-            table = table.drop(columns="variant")
-        table = table.rename(
-            columns={
-                "variant": "variant",
-                "d_U": "$d_U$",
-                "n_datasets": "datasets",
-                "n_hold": "holding",
-                "fraction_hold": "fraction",
-            }
-        )
-
-        return save_table(
-            table,
-            outdir,
-            "completeness_survival_unenforced",
-            caption=(
-                "Survival of the completeness heuristic $\\min(d_W, d_Z) \\ge "
-                "d_U$ under constant-column filtering, measured with the "
-                "accept/reject enforcement switched off. Each row is the share "
-                "of datasets at that $d_U$ whose delivered proxies still satisfy "
-                "the constraint. With enforcement on (the default), survival is "
-                "100\\% by construction."
-            ),
-            label="tab:prior_completeness_survival",
-            escape=False,
-            centering=True,
         )

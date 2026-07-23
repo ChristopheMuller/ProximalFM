@@ -314,8 +314,6 @@ def test_comparison_run_writes_expected_artifacts(tiny_family_caches, tmp_path):
     assert "dimension_joint_heatmaps_comparison.pdf" in names
     assert "dimension_sampling.tex" in names
     assert "dimension_sampling.csv" in names
-    # The unenforced variant is present, so the survival table must exist.
-    assert "completeness_survival_unenforced.tex" in names
     for path in artifacts.figures + artifacts.tables:
         assert path.exists()
 
@@ -343,19 +341,3 @@ def test_comparison_summary_is_per_variant(tiny_family_caches, tmp_path):
     # Enforced variants cannot deliver violations or unconfounded datasets.
     assert summary["triangular"]["violation_fraction"] == 0.0
     assert summary["triangular"]["n_unconfounded"] == 0
-
-
-def test_comparison_skips_survival_table_without_unenforced_variant(
-    tiny_family_caches, tmp_path
-):
-    from analysis_prior.analyses.dimensions import DimensionComparisonAnalysis
-
-    enforced_only = {
-        label: cache
-        for label, cache in tiny_family_caches.items()
-        if label != "unenforced"
-    }
-    artifacts = DimensionComparisonAnalysis().run(enforced_only, tmp_path)
-    names = {p.name for p in artifacts.tables}
-    assert "completeness_survival_unenforced.tex" not in names
-    assert "dimension_sampling.tex" in names  # the rest still renders
