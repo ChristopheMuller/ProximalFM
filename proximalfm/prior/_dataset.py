@@ -1064,6 +1064,9 @@ class SCMPrior(Prior):
                             "params": _scalar_params(params),
                             "gamma_hetero": float(gamma_hetero),
                             "attempts": attempt,
+                            "A_logits": A_logits[obs_idx].detach().cpu(),
+                            "A_logit_mean": float(A_logits.mean()),
+                            "A_logit_std": float(A_logits.std()),
                             "mechanisms": {
                                 "A": mechanism_diagnostics(f_A, input_A, widths_A),
                                 "Y": mechanism_diagnostics(f_y, input_y, widths_Y),

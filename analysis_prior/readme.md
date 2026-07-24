@@ -69,8 +69,9 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Four analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
-`hyperparameters`, `categorical_completeness`. The subsections below match the *current*
+Eight analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
+`hyperparameters`, `categorical_completeness`, `mechanism_inputs`, `mechanism_outputs`,
+`treatment_walkthrough`, `prior_overview`. The subsections below match the *current*
 `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
@@ -98,6 +99,47 @@ works and no dataset cache is needed.
 | **Figure output** | `dimension_marginals.pdf` → `fig:prior_dim_marginals` |
 | **Table output** | `dimension_sampling.tex` → `tab:prior_dim_sampling` |
 | **Appendix location** | §B.2.2 "Dimensions & Dimension Heuristic" (`app:prior_dimensions`) |
+
+### B.2.3 Mechanism input composition — `fig:prior_mechanism_input_composition`, `tab:prior_mechanism_inputs`
+
+Off the prior's own statistics (no regression): for `f_A` and `f_Y`, each parent block's share of the
+mechanism input, measured two ways — *wiring* (column-count share, equal to the input-variance share
+since parent blocks are standardised before concatenation) and *first-layer* injected variance (exact
+from the realised weights) — plotted against the sampled knob steering each channel.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis mechanism_inputs` |
+| **Config group** | preset `general_ite` (reads the mechanism-diagnostics payload in `sampled_hp` / `mechanisms`) |
+| **Analysis module** | `analyses/mechanism_inputs.py` → `MechanismInputsAnalysis` (`name="mechanism_inputs"`) |
+| **Output dir** | `results/general_ite/mechanism_inputs/` |
+| **Figure output** | `mechanism_input_composition.pdf` → `fig:prior_mechanism_input_composition` |
+| **Table output** | `mechanism_input_composition_table.tex` → `tab:prior_mechanism_inputs` |
+| **Appendix location** | §B.2.3 "MLP Generation, Noise & Edge Sampling" (`app:prior_mechanisms`), "Delivered input composition" paragraph |
+
+Needs the per-dataset mechanism diagnostics (`sampled_hp`, `mechanisms`); a cache written before they
+existed must be regenerated once with `--force` (data is bit-identical, the diagnostics are simply
+recorded alongside).
+
+### B.2.3 Mechanism output dependence — `fig:prior_mechanism_output_dependence`, `tab:prior_mechanism_outputs`
+
+The output-side companion: what each mechanism's output *depends on*, via a cross-fitted TabICL
+regression on the delivered data. Leave-one-block-out ΔR² gives each parent block's unique
+contribution — `f_A` predicts `logit(π)` from `{U, X, Z}`, `f_Y` predicts `Y0` from `{U, X, W}`; the
+exogenous-noise channel, having no block to drop, is read as the unexplained share `1 − R²`. A
+per-dataset tqdm progress bar tracks the run.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --n-datasets 256 --analysis mechanism_outputs` |
+| **Config group** | preset `general_ite`. **Uses every dataset in the cache**, so the count is set by `--n-datasets` (the default 1024 ≈ 8 h of TabICL — cap it; `--n-datasets 256` is served as a prefix of the existing cache, no regeneration) |
+| **Analysis module** | `analyses/mechanism_outputs.py` → `MechanismOutputsAnalysis` (`name="mechanism_outputs"`) |
+| **Regression helper** | `analysis_prior/regression.py` — cross-fitted out-of-fold, model `linear`/`rf`/`tabicl` (attr `MechanismOutputsAnalysis.model`, default `tabicl`); predictions cached under `cache/regression/`, so re-renders and resumed runs are instant |
+| **Output dir** | `results/general_ite/mechanism_outputs/` |
+| **Figure output** | `mechanism_output_dependence.pdf` → `fig:prior_mechanism_output_dependence` |
+| **Table output** | `mechanism_output_dependence_table.tex` → `tab:prior_mechanism_outputs` |
+| **Fast demo** | `PYTHONPATH=. uv run python -m analysis_prior.examples.mechanism_outputs_small` (a few datasets, random forest, ~seconds; writes to `results/general_ite/mechanism_outputs_small/`, not the paper path; `--model tabicl --n 16` for a quick TabICL taste) |
+| **Appendix location** | §B.2.3 "MLP Generation, Noise & Edge Sampling" (`app:prior_mechanisms`), "Output dependence" paragraph |
 
 ### B.2.4 Post-process (numeric completeness) — `fig:prior_dimension_joint_heatmaps`
 
@@ -141,6 +183,62 @@ only plot the categorised-`U` arms (`full`, `ablation`) — `baseline` has a con
 construction and is dropped from those two views, though it still appears in the category-marginals
 figure and the survival table.
 
+### B.2.5 Treatment assignment walkthrough — `fig:prior_treatment_walkthrough`
+
+A single-SCM illustration of `sample_A`'s pipeline: raw `f_A` logit → standardise (`eq:A_normalise`)
+→ shift/scale (`eq:A_affine`) → sigmoid+clamp (`eq:A_sigmoid`/`eq:A_clamp`) → Bernoulli draw, tracking
+one highlighted unit (red) through all five stages. Pure function of the raw logits now retained in
+the cache (`record.a_logits`, plus the population `a_logit_mean`/`a_logit_std` that `sample_A`
+standardises by) and the per-dataset propensity knobs; it re-applies the exact transform, so the
+reconstructed `π` matches the stored `A_probs` to ~1e-7 (asserted in the test and reported as
+`reconstruction_residual` in `summary.json`). The illustrated dataset is auto-selected for a legible,
+symmetric clamp (balanced prevalence, moderate scale); its index/seed land in `summary.json`. Panel (d)
+draws the clamp at an enlarged `DISPLAY_EPSILON` (0.05) — the production `propensity_epsilon` (1e-3)
+sits flush against 0/1 and is invisible on a `[0,1]` axis; only the display bound is enlarged, and the
+`A_probs` validation still uses the true 1e-3.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis treatment_walkthrough` |
+| **Config group** | preset `general_ite` (`K=1`, so the observed slice is the whole population and the standardisation is exact) |
+| **Analysis module** | `analyses/treatment.py` → `TreatmentWalkthroughAnalysis` (`name="treatment_walkthrough"`) |
+| **Output dir** | `results/general_ite/treatment_walkthrough/` |
+| **Figure output** | `treatment_walkthrough.pdf` → `fig:prior_treatment_walkthrough` |
+| **Appendix location** | §B.2.5 "Treatment Assignment" (`app:prior_treatment`) |
+
+The raw logits are collected only when the cache carries mechanism diagnostics. A cache written before
+they existed (i.e. before `a_logits` was added) must be regenerated once with `--force` — the data is
+bit-identical, the logits are simply recorded alongside. The B.3.1 overlap audit (`app:prior_overlap`)
+will later add a second analysis (`treatment_overlap`) to this same `treatment.py` module.
+
+### B.2.x Visualize the prior — `fig:prior_feature_distributions`, `fig:prior_feature_pairs`, `fig:prior_feature_pairs_cross`
+
+Three galleries of the delivered data, all off the prior's own statistics (no training):
+
+- **`prior_feature_distributions`** — one column per block (`X, U, W, Z`, `π` for `A`, `Y0`/`Y1` for `Y`),
+  `k` rows, each the marginal of one feature column sampled from a random dataset (solid = continuous,
+  dashed = categorical; the `Y` column overlays both potential outcomes in two colours).
+- **`prior_feature_pairs`** — within-block dependence: one column per block, `k` rows, each a scatter of
+  two same-block features (`A`: `π` vs the draw; `Y`: `Y0` vs `Y1`).
+- **`prior_feature_pairs_cross`** — cross-block dependence: one column per chosen block pair
+  (`U`–`W`, `U`–`Z`, `W`–`Z`, `U`–`π`), `k` rows, each a scatter of one feature from each block.
+
+All three sample datasets with a fixed seed (`PriorOverviewAnalysis.seed`), so every figure is
+reproducible.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis prior_overview` |
+| **Config group** | preset `general_ite` (reuses the same cache as `mechanism_inputs` / `treatment_walkthrough`) |
+| **Analysis module** | `analyses/overview.py` → `PriorOverviewAnalysis` (`name="prior_overview"`) |
+| **Output dir** | `results/general_ite/prior_overview/` |
+| **Figure outputs** | `prior_feature_distributions.pdf` → `fig:prior_feature_distributions`; `prior_feature_pairs.pdf` → `fig:prior_feature_pairs`; `prior_feature_pairs_cross.pdf` → `fig:prior_feature_pairs_cross` |
+| **Appendix location** | §B.2.x "Visualize the prior" (`app:prior_visualize`) |
+
+Uses only the cached feature blocks and the `max_categories` field of `sampled_hp` (for the
+continuous/categorical split); no regression or mechanism-diagnostic payload, so any `general_ite` cache
+works without `--force`.
+
 ---
 
 ## Implemented but not currently referenced in the tex
@@ -167,10 +265,7 @@ is registered today). Listed here so the mapping is complete once they land.
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.2.3 mechanism inputs | `app:prior_mechanisms` | `mechanism_inputs` | `general_ite` | `fig:prior_mechanism_signal_share` | T1.1 |
-| B.2.5 treatment walkthrough | `app:prior_treatment` | `treatment_overlap` | `general_ite` (1 SCM) | `fig:prior_treatment_walkthrough` | T1.2 |
 | B.2.6 outcome / heterogeneity | `app:prior_outcome` | `heterogeneity` | K-sweep family (K>1) | `fig:prior_heterogeneity_spread`, `fig:prior_cate_vs_ite_K` | T1.3 |
-| B.2.x visualize the prior | `app:prior_visualize` | `prior_overview` | `general_ite` | `fig:prior_summary_metrics`, `fig:prior_feature_distributions`, `fig:prior_feature_pairs` | T1.4 |
 | B.3.1 Overlap | `app:prior_overlap` | `treatment_overlap` | `general_ite` | Fig audit(b) + overlap table | T2.1 |
 | B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
 | B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
@@ -184,7 +279,9 @@ is registered today). Listed here so the mapping is complete once they land.
 | B.4 downstream ablation | `app:prior_downstream` | *(needs training runs)* | — | `tab:prior_downstream_ablation` | T3.4 (deferred) |
 
 The regression-based audits (B.3.2/B.3.3/B.3.4) share a **cross-fitted regression helper** (plan
-T0.1) that does not exist yet — build it before those modules.
+T0.1), `analysis_prior/regression.py` — built for the B.2.3 `mechanism_outputs` analysis
+(fold-stable out-of-fold predictions, pluggable `linear`/`rf`/`tabicl` model, disk-cached
+predictions under `cache/regression/`). Reuse it for those modules.
 
 > **Removed module.** `analyses/confounding.py` (`confounding_dim`, added in `4801ef3`) was **deleted**
 > in `a77c467`. It has no replacement in the registry; the old analytic `eq:conf_dim` /
@@ -225,9 +322,37 @@ PYTHONPATH=. uv run python -m analysis_prior.main --family cat_ablation --analys
 # Needs the per-dataset mechanism diagnostics: a cache written before they
 # existed must be regenerated once with --force (same data, diagnostics added).
 PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis mechanism_inputs
+
+# B.2.3 Mechanism output dependence — fig:prior_mechanism_output_dependence,
+# tab:prior_mechanism_outputs.
+# Cross-fitted TabICL leave-one-block-out R2 on the delivered data (slow: a few
+# thousand in-context regressions the first time; predictions are cached under
+# cache/regression/ so re-renders are instant). Uses ALL datasets in the cache,
+# so pass --n-datasets to control the count: general_ite's default is 1024
+# (~8h of TabICL), so cap it. --n-datasets 256 is served as a prefix of the
+# existing 1024-dataset cache — no regeneration.
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --n-datasets 256 --analysis mechanism_outputs
+
+# ^ Fast demo of the same figure (a few datasets, random forest, ~seconds) for
+# development — writes to results/general_ite/mechanism_outputs_small/, not the
+# paper path. Pass --model tabicl --n 16 for a quick TabICL taste.
+PYTHONPATH=. uv run python -m analysis_prior.examples.mechanism_outputs_small
+
+# B.2.5 Treatment assignment walkthrough — fig:prior_treatment_walkthrough,
+# tab:prior_treatment_walkthrough.
+# Reuses the same general_ite cache as mechanism_inputs (both need the raw f_A
+# logits, added alongside the mechanism diagnostics — regenerate once with
+# --force if the cache predates them).
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis treatment_walkthrough
+
+# B.2.x Visualize the prior — fig:prior_feature_distributions,
+# fig:prior_feature_pairs, fig:prior_feature_pairs_cross.
+# Reuses the same general_ite cache; needs no diagnostics payload (only the
+# feature blocks and the max_categories field), so no --force is required.
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis prior_overview
 ```
 
-Add `--force` to any of the three to regenerate the cache instead of reusing it, and `--n-jobs -1`
+Add `--force` to any of these to regenerate the cache instead of reusing it, and `--n-jobs -1`
 to parallelise generation across all cores.
 
 The `hyperparameters`, `dim_ablation`, and `cat_ablation` outputs land under the paths the tex
