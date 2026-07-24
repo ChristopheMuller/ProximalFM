@@ -71,12 +71,23 @@ def test_block_color_unknown_raises_with_a_useful_message():
         design.block_color("Q")
 
 
+def _is_achromatic(color) -> bool:
+    # A matplotlib float-string grey ("0.45") is inherently colorblind-safe:
+    # it carries no hue, only lightness. Such values are allowed anywhere a
+    # hue is deliberately withheld (e.g. exogenous noise).
+    try:
+        float(color)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def test_palettes_are_colorblind_safe_okabe_ito():
-    # Everything categorical must come from the Okabe-Ito set.
+    # Everything categorical must be an Okabe-Ito hue or a deliberate grey.
     safe = set(design.OKABE_ITO.values())
-    assert set(design.BLOCK_COLORS.values()) <= safe
-    assert set(design.VARIANT_COLORS.values()) <= safe
-    assert set(design._VARIANT_CYCLE) <= safe
+    assert all(c in safe or _is_achromatic(c) for c in design.BLOCK_COLORS.values())
+    assert all(c in safe or _is_achromatic(c) for c in design.VARIANT_COLORS.values())
+    assert all(c in safe or _is_achromatic(c) for c in design._VARIANT_CYCLE)
 
 
 # --------------------------------------------------------------------------
