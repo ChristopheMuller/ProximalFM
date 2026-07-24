@@ -148,6 +148,16 @@ def output_frame(
     return pd.DataFrame(rows)
 
 
+def _robust_limits(values: np.ndarray, pad: float) -> tuple[float, float]:
+    """Percentile-based y-limits that always include 0, ignoring outliers."""
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return (-pad, pad)
+    lo = float(np.percentile(finite, 1))
+    hi = float(np.percentile(finite, 99))
+    return (min(lo, 0.0) - pad, hi + pad)
+
+
 @dataclass
 class MechanismOutputResults:
     """Per-(dataset, mechanism) leave-one-out ΔR² frame."""
@@ -241,16 +251,16 @@ class MechanismOutputsAnalysis(Analysis):
         # Two y-scales: the three ΔR² columns share one (comparable
         # magnitudes), the residual column keeps its own [0,1]-ish scale --
         # sharing across both would flatten the ΔR² trends against the larger
-        # residual range.
+        # residual range. Limits are robust (1st/99th percentile, not min/max):
+        # cross-fitted R² can still produce the odd extreme value, and one
+        # outlier must not blow up the axis. Points beyond the limits are simply
+        # off-view; the moving-average trend is unaffected.
         frame = results.frame
         delta_cols = [f"delta_r2_{c}" for c in ("U", "X", "proxy")]
         delta_vals = frame[delta_cols].to_numpy().ravel()
         pad = 0.03
-        delta_lim = (min(delta_vals.min(), 0.0) - pad, delta_vals.max() + pad)
-        resid_lim = (
-            min(frame["residual"].min(), 0.0) - pad,
-            frame["residual"].max() + pad,
-        )
+        delta_lim = _robust_limits(delta_vals, pad)
+        resid_lim = _robust_limits(frame["residual"].to_numpy(), pad)
 
         for row, mechanism in enumerate(("A", "Y")):
             data = results.per_mechanism(mechanism)

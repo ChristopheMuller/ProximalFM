@@ -9,6 +9,7 @@ import pytest
 
 from analysis_prior.regression import (
     cached_oof,
+    clip_to_train_range,
     fold_indices,
     leave_one_out_r2,
     oof_predictions,
@@ -69,6 +70,43 @@ def test_leave_one_out_ignores_a_pure_noise_block():
     )
     assert r2["full"] - r2["noise"] == pytest.approx(0.0, abs=0.02)
     assert r2["full"] - r2["signal"] > 0.5
+
+
+def test_clip_to_train_range_bounds_extrapolation():
+    y = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float64)
+    pred = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 1e8], dtype=np.float64)
+    clipped = clip_to_train_range(pred, y, n_splits=3, seed=0)
+    # Every clipped value sits within the global target range; the 1e8 blow-up
+    # is pulled back to at most max(y).
+    assert clipped.max() <= y.max() + 1e-9
+    assert clipped.min() >= y.min() - 1e-9
+
+
+def test_clipping_keeps_r2_finite_under_a_blowup(tmp_path, monkeypatch):
+    """A regressor that extrapolates to 1e8 must not yield an absurd R²."""
+    import analysis_prior.regression as reg
+
+    y = np.linspace(-3, 3, 60).astype(np.float32)
+    X = y.reshape(-1, 1)
+
+    def _blowup_factory(model, seed):
+        class _Blowup:
+            def fit(self, X, y):
+                self._max = float(np.max(y))
+
+            def predict(self, X):
+                out = X.ravel().astype(np.float64)
+                out[0] = 1e8  # one catastrophic extrapolation
+                return out
+
+        return lambda: _Blowup()
+
+    monkeypatch.setattr(reg, "_model_factory", _blowup_factory)
+    result = cached_oof("blowup", X, y, model="linear", n_splits=3, cache_dir=tmp_path)
+    # Without clipping this R² would be ~-1e15; clipped it stays sane.
+    assert result["r2"] > -5.0
+    assert np.isfinite(result["pred"]).all()
+    assert result["pred"].max() <= y.max() + 1e-6
 
 
 def test_cached_oof_round_trips_and_hits(tmp_path):

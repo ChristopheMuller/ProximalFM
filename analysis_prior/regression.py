@@ -109,6 +109,26 @@ def _cache_path(cache_dir: Path, key: str) -> Path:
     return Path(cache_dir) / f"{hashlib.sha256(key.encode()).hexdigest()[:24]}.npz"
 
 
+def clip_to_train_range(
+    pred: np.ndarray, y: np.ndarray, n_splits: int, seed: int
+) -> np.ndarray:
+    """Clip each fold's OOF predictions to that fold's train-target range.
+
+    A cross-fitted prediction far outside the training range is pure
+    extrapolation error; left unbounded, a single fold's blow-up (a regressor
+    predicting, say, 1e8 on one held-out row) dominates ``SS_res`` and drives
+    ``R²`` to absurd magnitudes. Clipping to ``[min, max]`` of the *training*
+    targets is a leakage-free guard -- the bound uses only training data -- that
+    keeps ``R²`` in a sensible range without altering well-behaved predictions.
+    Applied at scoring time, so it also rescues predictions already cached raw.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    clipped = np.asarray(pred, dtype=np.float64).copy()
+    for train, test in fold_indices(len(y), n_splits, seed):
+        clipped[test] = np.clip(clipped[test], y[train].min(), y[train].max())
+    return clipped
+
+
 def cached_oof(
     tag: str,
     X: np.ndarray,
@@ -123,26 +143,39 @@ def cached_oof(
     ``tag`` must identify the *data* (e.g. dataset cache key, record index,
     target name, predictor-set name); the regression parameters are appended
     here, so one tag can be evaluated under several models without collision.
-    Returns ``{"pred": ndarray, "r2": float}``.
+    Returns ``{"pred": ndarray, "r2": float}`` where ``pred`` is clipped to the
+    per-fold train range (see :func:`clip_to_train_range`) and ``r2`` is scored
+    on that clipped prediction. The **raw** prediction is what gets stored, so
+    clipping is a pure post-process: it applies to cache hits too, and the
+    stored file stays model-faithful for other consumers.
     """
     key = f"{tag}|model={model}|splits={n_splits}|seed={seed}"
     path = _cache_path(cache_dir, key)
 
+    raw = None
     if path.exists():
         payload = np.load(path, allow_pickle=False)
         if str(payload["key"]) == key:  # hash-collision guard
-            return {"pred": payload["pred"], "r2": float(payload["r2"])}
+            raw = payload["pred"]
 
-    pred = oof_predictions(X, y, model=model, n_splits=n_splits, seed=seed)
-    r2 = float(r2_score(y, pred))
+    if raw is None:
+        raw = oof_predictions(X, y, model=model, n_splits=n_splits, seed=seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # np.savez appends ".npz" unless the name already ends in it, so the
+        # temp name must too or the file lands one suffix over from the rename.
+        tmp = path.with_suffix(".tmp.npz")
+        # Store the raw prediction; r2 is recomputed (clipped) on every read, so
+        # the stored r2 is informational only.
+        np.savez(
+            tmp,
+            key=np.str_(key),
+            pred=raw,
+            r2=np.float64(r2_score(y, clip_to_train_range(raw, y, n_splits, seed))),
+        )
+        tmp.replace(path)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # np.savez appends ".npz" unless the name already ends in it, so the temp
-    # name must too or the file lands one suffix over from where we rename it.
-    tmp = path.with_suffix(".tmp.npz")
-    np.savez(tmp, key=np.str_(key), pred=pred, r2=np.float64(r2))
-    tmp.replace(path)
-    return {"pred": pred, "r2": r2}
+    clipped = clip_to_train_range(raw, y, n_splits, seed)
+    return {"pred": clipped, "r2": float(r2_score(y, clipped))}
 
 
 def leave_one_out_r2(
