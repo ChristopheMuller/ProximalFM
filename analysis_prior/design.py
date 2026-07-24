@@ -124,6 +124,7 @@ BLOCK_COLORS = {
     "Z": OKABE_ITO["orange"],  # treatment-inducing proxy
     "A": OKABE_ITO["purple"],  # treatment
     "Y": OKABE_ITO["sky_blue"],  # outcome
+    "eps": "0.45",  # exogenous noise -- deliberately achromatic
 }
 
 
@@ -150,6 +151,10 @@ ROLES: Dict[str, Dict] = {
     "reference": dict(color=OKABE_ITO["vermillion"], linestyle="--", lw=1.2),
     "oracle": dict(color="black", linestyle=":", lw=1.4),
     "naive": dict(color="0.5", linestyle="-.", lw=1.2),
+    # A smoothed summary (moving average / binned mean) of the scatter it
+    # overlays -- same data, not an external law, hence solid and dark rather
+    # than the dashed theory style.
+    "trend": dict(color="0.15", linestyle="-", lw=1.6),
 }
 
 #: Sequential colormap for counts/densities (heatmaps). Perceptually uniform and
@@ -290,6 +295,17 @@ def constraint_line(ax, lo: float, hi: float, label: str = None, **kwargs) -> No
 def theory_line(ax, x: Iterable, y: Iterable, label: str = "theory", **kwargs):
     """Overlay an analytic law on measured data. Styled as ``ROLES["theory"]``."""
     style = {**ROLES["theory"], **kwargs}
+    return ax.plot(list(x), list(y), label=label, **style)
+
+
+def trend_line(ax, x: Iterable, y: Iterable, label: str = None, **kwargs):
+    """Overlay a smoothed summary of the scatter itself (e.g. moving average).
+
+    Styled as ``ROLES["trend"]``: solid and dark, visually distinct from the
+    dashed ``theory`` overlay so a reader never mistakes a data summary for an
+    analytic law.
+    """
+    style = {**ROLES["trend"], **kwargs}
     return ax.plot(list(x), list(y), label=label, **style)
 
 

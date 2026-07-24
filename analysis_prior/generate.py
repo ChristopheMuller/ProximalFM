@@ -91,6 +91,20 @@ class PriorDatasetRecord:
     MU0, MU1 : ndarray, shape (T,)
         Monte Carlo estimates of E[Y(a) | X], averaged over ``mcmc_cate``
         replicates. ``MU1 - MU0`` is the CATE target.
+
+    sampled_hp : dict, optional
+        The scalar hyperparameters this dataset was actually generated with
+        (sampled shares, dims, seq_len, ...). ``None`` in caches written before
+        diagnostics existed; regenerating with ``--force`` reproduces the same
+        data (generation is unchanged) and fills these in.
+
+    mechanisms : dict, optional
+        Input-composition diagnostics for ``f_A`` and ``f_Y``: per parent
+        block, the input widths, first-layer injected variances and permutation
+        total effects (see ``proximalfm.prior._diagnostics``). Same caveat.
+
+    gamma_hetero : float, optional
+        The realised heterogeneity mix of the outcome remix. Same caveat.
     """
 
     index: int
@@ -106,6 +120,9 @@ class PriorDatasetRecord:
     Y1: np.ndarray
     MU0: np.ndarray
     MU1: np.ndarray
+    sampled_hp: Optional[Dict[str, Any]] = None
+    mechanisms: Optional[Dict[str, Any]] = None
+    gamma_hetero: Optional[float] = None
 
     @property
     def n_rows(self) -> int:
@@ -134,6 +151,8 @@ class PriorDatasetRecord:
     def to_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"index": self.index, "seed": self.seed}
         for name in _MATRIX_FIELDS + _VECTOR_FIELDS:
+            payload[name] = getattr(self, name)
+        for name in ("sampled_hp", "mechanisms", "gamma_hetero"):
             payload[name] = getattr(self, name)
         return payload
 
@@ -173,6 +192,12 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
     torch.manual_seed(seed)
 
     fixed_hp, sampled_hp = spec.resolved_hp()
+
+    # Mechanism diagnostics ride along with every generated dataset. The flag
+    # is set here, not in the spec's overrides, so it stays out of the cache
+    # key and the per-dataset seeds: collection runs under fork_rng after the
+    # accepting draw, so the generated data is bit-identical with or without it.
+    fixed_hp = {**fixed_hp, "collect_mechanism_diagnostics": True}
 
     dataset = PriorDataset(
         batch_size=1,
@@ -236,6 +261,13 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         )
     for name, tensor in zip(_VECTOR_FIELDS, (A, A_probs, Y_obs, Y0, Y1, MU0, MU1)):
         payload[name] = tensor[0].cpu().numpy().astype(np.float32)
+
+    # None for prior types without diagnostics support (e.g. tree_scm).
+    diagnostics = (dataset.last_diagnostics or [None])[0]
+    if diagnostics is not None:
+        payload["sampled_hp"] = diagnostics["params"]
+        payload["mechanisms"] = diagnostics["mechanisms"]
+        payload["gamma_hetero"] = diagnostics["gamma_hetero"]
 
     return PriorDatasetRecord.from_dict(payload)
 

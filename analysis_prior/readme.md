@@ -49,11 +49,31 @@ This is why `--family dim_ablation`'s `triangular` variant (the identity interve
 `--spec general_ite` resolve to the *same* cache file: they're generatively identical specs that
 only differ in name.
 
+### Presets and families (current)
+
+| preset | n | seq_len | K (`mcmc_cate`) | notes |
+|---|---|---|---|---|
+| `default` | 64 | 2048 | 100 | mirrors training runs |
+| `general_ite` | **1024** | 2048 | **1** | ITE-phase workhorse; base of `dim_ablation` and `cat_ablation` |
+| `smoke` | 4 | 100 | 8 | fast CI/dev |
+| `no_u_augment` | 64 | 2048 | 100 | ablation: `confounding_dim_control=False` (f_A/f_Y see raw full U) |
+| `no_categorization` | 64 | 2048 | 100 | ablation: `cat_col_prob` pinned to 0 |
+
+| family | base | interventions |
+|---|---|---|
+| `dim_ablation` | `general_ite` | `triangular` (identity), `uniform` (`dim_U_distribution=uniform`), `unenforced` (`enforce_completeness_heuristic=False`) |
+| `cat_ablation` | `general_ite` | `full` (identity), `ablation` (`enforce_categorical_completeness=False`), `baseline` (`corrupt_U=False`, `enforce_categorical_completeness=False`) |
+| `smoke_family` | `smoke` | `triangular`, `uniform` |
+
 ---
 
 ## Implemented and wired into the tex
 
-### B.2 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
+Four analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
+`hyperparameters`, `categorical_completeness`. The subsections below match the *current*
+`B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
+
+### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
 
 | | |
 |---|---|
@@ -62,9 +82,12 @@ only differ in name.
 | **Analysis module** | `analyses/hyperparameters.py` → `HyperparametersAnalysis` (`name="hyperparameters"`) |
 | **Output dir** | `results/general_ite/hyperparameters/` |
 | **Table outputs** | `sampled_hyperparameters.tex` → `tab:prior_sampled_hp`; `fixed_hyperparameters.tex` → `tab:prior_fixed_hp` |
-| **Appendix location** | §B.2 "Hyperparameters" (`app:prior_hyperparams`) |
+| **Appendix location** | §B.2.1 "Hyperparameters: Fixed vs Sampled" (`app:prior_hyperparams`) |
 
-### B.2.1 Prior Dimensions — `fig:prior_dim_marginals`, `tab:prior_dim_sampling`
+This analysis is spec-only (reads the resolved HP config, not generated data), so any `--spec`
+works and no dataset cache is needed.
+
+### B.2.2 Dimensions & Dimension Heuristic — `fig:prior_dim_marginals`, `tab:prior_dim_sampling`
 
 | | |
 |---|---|
@@ -74,26 +97,28 @@ only differ in name.
 | **Output dir** | `results/dim_ablation/dimension_comparison/` |
 | **Figure output** | `dimension_marginals.pdf` → `fig:prior_dim_marginals` |
 | **Table output** | `dimension_sampling.tex` → `tab:prior_dim_sampling` |
-| **Appendix location** | §B.2.1 "Prior Dimensions" (`app:prior_dimensions`) |
+| **Appendix location** | §B.2.2 "Dimensions & Dimension Heuristic" (`app:prior_dimensions`) |
 
-### B.3 Postprocessing — `fig:prior_dimension_joint_heatmaps`, `tab:prior_completeness_survival`
+### B.2.4 Post-process (numeric completeness) — `fig:prior_dimension_joint_heatmaps`
 
 | | |
 |---|---|
 | **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison` |
-| **Config group** | family `dim_ablation` (same run as above — one invocation produces both B.2.1 and B.3 artifacts) |
+| **Config group** | family `dim_ablation` (same run as B.2.2 — one invocation produces both) |
 | **Analysis module** | `analyses/dimensions.py` → `DimensionComparisonAnalysis` (`name="dimension_comparison"`) |
 | **Output dir** | `results/dim_ablation/dimension_comparison/` |
 | **Figure output** | `dimension_joint_heatmaps_comparison.pdf` → `fig:prior_dimension_joint_heatmaps` |
-| **Table output** | `completeness_survival_unenforced.tex` → `tab:prior_completeness_survival` |
-| **Appendix location** | §B.3 "Postprocessing" (`app:prior_postprocessing`) |
+| **Appendix location** | §B.2.4 "Post-Process" (`app:prior_postprocess`), "Numeric completeness" paragraph |
 
-**Note:** `figures_app/prior/` doesn't exist yet in the LaTeX tree — copy/symlink the two PDFs above
-from `results/dim_ablation/dimension_comparison/` before building (Track A item 1 in the plan).
+> **Removed:** the numeric survival table (`completeness_survival_unenforced.tex` →
+> `tab:prior_completeness_survival`) is **no longer rendered** — its rendering was deleted in
+> commit `9bcd8db`, and the tex no longer `\input`s it. Any `completeness_survival_unenforced.tex`
+> / `.csv` still sitting under `results/dim_ablation/dimension_comparison/` are stale leftovers and
+> can be deleted; a fresh run will not regenerate them.
 
-### B.3 Categorical completeness — `fig:prior_category_count_marginals`, `fig:prior_proxy_stats_by_u_cardinality`, `fig:prior_proxy_composition_vs_u_demand`, `tab:prior_categorical_completeness_survival`
+### B.2.4 Post-process (categorical completeness) — `fig:prior_category_count_marginals`, `fig:prior_proxy_stats_by_u_cardinality`, `fig:prior_proxy_composition_vs_u_demand`, `tab:prior_categorical_completeness_survival`
 
-Discrete analogue of the dimension heuristic above: a proxy block is *categorically complete* w.r.t.
+Discrete analogue of the dimension heuristic: a proxy block is *categorically complete* w.r.t.
 `U` when every column of `U` can be matched one-to-one to a proxy column that is at least as
 informative (continuous dominates any finite categorical; a categorical column dominates another only
 if its category count is `>=`). Since the categorisation metadata isn't persisted in the cache, each
@@ -109,7 +134,7 @@ unambiguous at the shipped cap.
 | **Output dir** | `results/cat_ablation/categorical_completeness/` |
 | **Figure outputs** | `category_count_marginals.pdf` → `fig:prior_category_count_marginals`; `proxy_stats_by_u_cardinality.pdf` → `fig:prior_proxy_stats_by_u_cardinality`; `proxy_composition_vs_u_demand.pdf` → `fig:prior_proxy_composition_vs_u_demand` |
 | **Table output** | `categorical_completeness_survival.tex` → `tab:prior_categorical_completeness_survival` |
-| **Appendix location** | §B.3 "Postprocessing" (`app:prior_postprocessing`), paragraphs "Categorical completeness" / "Enforcement tracks `U`'s categorical demand" / "Survival of categorical completeness" |
+| **Appendix location** | §B.2.4 "Post-Process" (`app:prior_postprocess`), paragraphs "Categorical completeness" / "Enforcement scales with `U`'s demand" / "Survival" |
 
 The composition and cardinality figures (`proxy_composition_vs_u_demand`, `proxy_stats_by_u_cardinality`)
 only plot the categorised-`U` arms (`full`, `ablation`) — `baseline` has a continuous `U` by
@@ -128,38 +153,51 @@ figure and the survival table.
 | **Config group** | preset `general_ite` (any single preset works — swap `--spec`) |
 | **Analysis module** | `analyses/dimensions.py` → `DimensionsAnalysis` (`name="dimensions"`) |
 | **Output dir** | `results/<spec-name>/dimensions/` |
-| **Outputs** | `dimension_histograms.*`, `dimension_joint_heatmaps.*` (marginal/joint dim plots for one spec, not a comparison across variants) |
-| **Appendix location** | none — superseded by the family comparison above |
+| **Outputs** | `dimension_histograms.*`, `dimension_joint_heatmaps.*` (single-spec marginal/joint dim plots), `completeness_heuristic.tex` (numeric-survival-by-`d_U` table) |
+| **Appendix location** | none — superseded by the `dimension_comparison` family run above |
 
 ---
 
-## Planned, not yet implemented (Track B–F of the appendix plan)
+## Planned, not yet implemented (Tracks 1–3 of the appendix plan)
 
-No CLI command exists yet — the modules below are named in `docs/prior_appendix_plan.md` §1/§5 as
-future `analyses/` additions, not currently in `analyses/__init__.py`'s registry
-(only `dimensions` and `hyperparameters` are registered today). Listed here so the mapping is
-complete once they land.
+No CLI command exists yet — the modules below are named in
+[`docs/prior_appendix_plan.md`](../docs/prior_appendix_plan.md) §3/§4 as future `analyses/`
+additions, not currently in `analyses/__init__.py`'s registry (the four listed above are all that
+is registered today). Listed here so the mapping is complete once they land.
 
-| Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact |
-|---|---|---|---|---|
-| B.4 assembly | `app:prior_audit` | `audit_summary` | `general_ite` (K=1) | Table 6 |
-| B.4.1 Overlap | `app:prior_overlap` | `overlap` | `general_ite` | Fig audit(b) |
-| B.4.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) |
-| B.4.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), Table 7 |
-| B.4.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) |
-| B.4.5 Ill-posedness | `app:prior_illposed` | `illposedness` | `general_ite` | Fig A4 |
-| B.4.6 Identification stress test | `app:prior_identification` | `identification` | `general_ite` | Fig A5 |
-| B.5.1 Input duplication | `app:prior_duplication` | `confounding_duplication` | new K=1 family off `no_u_augment` | Fig A7 |
-| B.5.2 Heterogeneity remix | `app:prior_heterogeneity` | `heterogeneity` | new K>1 preset | Fig A6 |
-| B.6 MC error | *(no label yet)* | `mc_error` | K-sweep family, K∈{1,5,25,100,200,5000} | Fig A8 |
-| B.6 memory budget | *(no label yet)* | `mem_budget` | `default` (T=2048) | Table 9 |
-| B.6 structural coverage | *(no label yet)* | *(hand-written, no module)* | — | Table 10 |
+| Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
+|---|---|---|---|---|---|
+| B.2.3 mechanism inputs | `app:prior_mechanisms` | `mechanism_inputs` | `general_ite` | `fig:prior_mechanism_signal_share` | T1.1 |
+| B.2.5 treatment walkthrough | `app:prior_treatment` | `treatment_overlap` | `general_ite` (1 SCM) | `fig:prior_treatment_walkthrough` | T1.2 |
+| B.2.6 outcome / heterogeneity | `app:prior_outcome` | `heterogeneity` | K-sweep family (K>1) | `fig:prior_heterogeneity_spread`, `fig:prior_cate_vs_ite_K` | T1.3 |
+| B.2.x visualize the prior | `app:prior_visualize` | `prior_overview` | `general_ite` | `fig:prior_summary_metrics`, `fig:prior_feature_distributions`, `fig:prior_feature_pairs` | T1.4 |
+| B.3.1 Overlap | `app:prior_overlap` | `treatment_overlap` | `general_ite` | Fig audit(b) + overlap table | T2.1 |
+| B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
+| B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
+| B.3.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) | T2.3 |
+| B.3.5 Ill-posedness | `app:prior_illposed` | `illposedness` | `general_ite` | `fig:prior_illposedness` | T2.5 |
+| B.3.6 Identification stress test | `app:prior_identification` | `identification` | `general_ite` | `fig:prior_identification` | T2.6 |
+| B.3 assembly | `app:prior_audit` | `audit_summary` | `general_ite` (K=1) | 4-panel audit fig, `tab:prior_audit_summary` | T2.7 |
+| B.5 MC error | `app:prior_extensions` | `mc_error` | K-sweep family, K∈{1,5,25,100,200,5000} | `fig:mc_error` | T3.1 |
+| B.5 structural coverage | `app:prior_extensions` | *(hand-written, no module)* | — | `tab:prior_structural_coverage` | T3.2 |
+| B.5 memory budget | `app:prior_extensions` | `mem_budget` | `default` (T=2048) | `tab:prior_mem_budget` | T3.3 |
+| B.4 downstream ablation | `app:prior_downstream` | *(needs training runs)* | — | `tab:prior_downstream_ablation` | T3.4 (deferred) |
+
+The regression-based audits (B.3.2/B.3.3/B.3.4) share a **cross-fitted regression helper** (plan
+T0.1) that does not exist yet — build it before those modules.
+
+> **Removed module.** `analyses/confounding.py` (`confounding_dim`, added in `4801ef3`) was **deleted**
+> in `a77c467`. It has no replacement in the registry; the old analytic `eq:conf_dim` /
+> `tab:prior_conf_dim` / `fig:prior_conf_dim` deliverables are dropped from the plan and re-scoped as
+> the empirical `mechanism_inputs` analysis (T1.1). Any `results/*/confounding_dim/` and
+> `results/*/input_sampler/` directories on disk are **orphans** (no module produces them) and can be
+> deleted.
 
 **Note on `general_ite` vs. final data.** All the `general_ite`-based commands above (K=1) are fine
-for drafting. For the final version there's no need to keep `mc_error`'s K-sweep on a *separate*
-high-K dataset from the rest of B.4/B.5 — the K-sweep family can reuse the same underlying SCMs as
-the other sections (base spec identical to `general_ite` apart from `mcmc_cate`), rather than
-generating a second, unrelated batch of complete datasets just for Fig A8.
+for drafting the ITE-phase (B.2/B.3) artifacts. For the CATE-phase artifacts that need `K>1`
+(`mc_error`, `heterogeneity`), reuse the same underlying SCMs as `general_ite` — a base spec
+identical apart from `mcmc_cate` — rather than generating a second, unrelated batch, so Fig A8 and
+the B.2.6 figures share the same datasets.
 
 ---
 
@@ -167,36 +205,35 @@ generating a second, unrelated batch of complete datasets just for Fig A8.
 
 Everything below regenerates every table/figure currently wired into `B_prior.tex` (see the
 per-artifact sections above for what each command produces and where it lands). Run from the repo
-root, in order:
+root:
 
 ```
-# B.2 Hyperparameters — tab:prior_fixed_hp, tab:prior_sampled_hp
+# B.2.1 Hyperparameters — tab:prior_fixed_hp, tab:prior_sampled_hp
 PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis hyperparameters
 
-# B.2.1 Prior Dimensions + B.3 Postprocessing — fig:prior_dim_marginals, tab:prior_dim_sampling,
-# fig:prior_dimension_joint_heatmaps, tab:prior_completeness_survival
+# B.2.2 Dimensions + B.2.4 numeric completeness — fig:prior_dim_marginals, tab:prior_dim_sampling,
+# fig:prior_dimension_joint_heatmaps
 PYTHONPATH=. uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison
 
-# B.3 Categorical completeness — fig:prior_category_count_marginals,
+# B.2.4 Categorical completeness — fig:prior_category_count_marginals,
 # fig:prior_proxy_stats_by_u_cardinality, fig:prior_proxy_composition_vs_u_demand,
 # tab:prior_categorical_completeness_survival
 PYTHONPATH=. uv run python -m analysis_prior.main --family cat_ablation --analysis categorical_completeness
+
+# B.2.3 Mechanism input composition — fig:prior_mechanism_input_composition,
+# tab:prior_mechanism_inputs.
+# Needs the per-dataset mechanism diagnostics: a cache written before they
+# existed must be regenerated once with --force (same data, diagnostics added).
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis mechanism_inputs
 ```
 
 Add `--force` to any of the three to regenerate the cache instead of reusing it, and `--n-jobs -1`
 to parallelise generation across all cores.
 
-**Before building the LaTeX**, copy/symlink the dimension-ablation PDFs into the appendix figures
-tree (`figures_app/prior/` doesn't exist yet — Track A item 1 in
-[`docs/prior_appendix_plan.md`](../docs/prior_appendix_plan.md)):
-
-```
-results/dim_ablation/dimension_comparison/dimension_marginals.pdf
-results/dim_ablation/dimension_comparison/dimension_joint_heatmaps_comparison.pdf
-```
-
-The `cat_ablation` and `hyperparameters` outputs already land under paths the tex expects, so no
-extra copying is needed for those.
+The `hyperparameters`, `dim_ablation`, and `cat_ablation` outputs land under the paths the tex
+`\input`s / `\includegraphics` from `assets/prior/`. If your build reads figures straight from
+`results/`, no copying is needed; otherwise copy/symlink the PDFs into the appendix figures tree
+before building LaTeX.
 
 Everything in "Planned, not yet implemented" above has no CLI command yet — those modules don't
 exist in `analyses/__init__.py`'s registry.

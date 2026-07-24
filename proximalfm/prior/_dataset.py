@@ -73,6 +73,8 @@ from ._mlp_scm import MLPSCM
 from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
+from ._diagnostics import mechanism_diagnostics
+
 from ._hp_sampling import HpSamplerList
 from ._reg2cls import (
     process_features,
@@ -92,6 +94,23 @@ warnings.filterwarnings(
 # Emit the Monte Carlo memory-budget warning at most once per process to avoid
 # flooding logs when many datasets get capped.
 _MC_BUDGET_WARNED = False
+
+
+def _scalar_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The JSON-friendly scalars of a params dict (sampled + fixed HPs, dims).
+
+    Drops tensors, classes and other rich objects; converts numpy scalars so
+    the result survives serialisation unchanged.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, (bool, str)):
+            out[key] = value
+        elif isinstance(value, (int, np.integer)):
+            out[key] = int(value)
+        elif isinstance(value, (float, np.floating)):
+            out[key] = float(value)
+    return out
 
 
 class Prior:
@@ -1018,6 +1037,38 @@ class SCMPrior(Prior):
             give_up = attempt >= int(params.get("completeness_max_attempts", 50))
 
             if basic_ok and (proximal_ok or give_up):
+                # Optional audit payload: how each parent block feeds f_A / f_Y.
+                # Collected only on the accepted attempt and under fork_rng, so
+                # enabling it leaves the generated data (and the RNG stream any
+                # later dataset sees) bit-identical to a run without it.
+                diagnostics = None
+                if params.get("collect_mechanism_diagnostics", False) and isinstance(
+                    f_A, MLPSCM
+                ):
+                    widths_A = {
+                        "U_sel": U_sel_a.shape[-1],
+                        "X": X_A_.shape[-1],
+                        "proxy": Z_direct.shape[-1],
+                        "eps": eps_A.shape[-1],
+                        "U_aug": u_aug_a.shape[-1],
+                    }
+                    widths_Y = {
+                        "U_sel": U_sel_y.shape[-1],
+                        "X": X_Y_.shape[-1],
+                        "proxy": W_direct.shape[-1],
+                        "eps": eps_Y.shape[-1],
+                        "U_aug": u_aug_y.shape[-1],
+                    }
+                    with torch.random.fork_rng(devices=[]):
+                        diagnostics = {
+                            "params": _scalar_params(params),
+                            "gamma_hetero": float(gamma_hetero),
+                            "attempts": attempt,
+                            "mechanisms": {
+                                "A": mechanism_diagnostics(f_A, input_A, widths_A),
+                                "Y": mechanism_diagnostics(f_y, input_y, widths_Y),
+                            },
+                        }
                 U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
@@ -1051,6 +1102,7 @@ class SCMPrior(Prior):
                     d_X,
                     d_W,
                     d_Z,
+                    diagnostics,
                 )
 
     def sample_A(
@@ -1317,7 +1369,13 @@ class SCMPrior(Prior):
             d_X_list,
             d_W_list,
             d_Z_list,
+            diagnostics_list,
         ) = zip(*results)
+
+        # Per-dataset mechanism diagnostics (None unless the fixed HP
+        # collect_mechanism_diagnostics is set). Exposed as an attribute rather
+        # than a return value to keep the batch tuple stable for training code.
+        self.last_diagnostics = list(diagnostics_list)
 
         # Combine Results
         if self.seq_len_per_gp:
@@ -1585,6 +1643,15 @@ class PriorDataset(IterableDataset):
         self.device = device
         self.prior_type = prior_type
         self.mcmc_cate = mcmc_cate
+
+    @property
+    def last_diagnostics(self):
+        """Per-dataset mechanism diagnostics of the most recent batch.
+
+        ``None`` entries unless ``collect_mechanism_diagnostics`` is set in
+        ``scm_fixed_hp``; ``None`` before any batch was generated.
+        """
+        return getattr(self.prior, "last_diagnostics", None)
 
     def get_batch(
         self, batch_size: Optional[int] = None
