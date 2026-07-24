@@ -105,6 +105,19 @@ class PriorDatasetRecord:
 
     gamma_hetero : float, optional
         The realised heterogeneity mix of the outcome remix. Same caveat.
+
+    a_logits : ndarray, shape (T,), optional
+        Raw ``f_A`` logits of the observed replicate, *before* the
+        standardise/shift-scale/sigmoid/clamp pipeline of ``sample_A`` -- the
+        input to the treatment-assignment walkthrough (``app:prior_treatment``).
+        Row-aligned with ``A``/``A_probs``. Same "regenerate with --force"
+        caveat as the diagnostics above.
+
+    a_logit_mean, a_logit_std : float, optional
+        Mean and (unbiased) std of the raw logits over the *full* ``T*K``
+        population, i.e. the constants ``sample_A`` standardises by. Stored so
+        the standardised logit is exactly reproducible from ``a_logits`` even
+        when ``K > 1`` (where the observed slice is not the whole population).
     """
 
     index: int
@@ -123,6 +136,9 @@ class PriorDatasetRecord:
     sampled_hp: Optional[Dict[str, Any]] = None
     mechanisms: Optional[Dict[str, Any]] = None
     gamma_hetero: Optional[float] = None
+    a_logits: Optional[np.ndarray] = None
+    a_logit_mean: Optional[float] = None
+    a_logit_std: Optional[float] = None
 
     @property
     def n_rows(self) -> int:
@@ -152,7 +168,14 @@ class PriorDatasetRecord:
         payload: Dict[str, Any] = {"index": self.index, "seed": self.seed}
         for name in _MATRIX_FIELDS + _VECTOR_FIELDS:
             payload[name] = getattr(self, name)
-        for name in ("sampled_hp", "mechanisms", "gamma_hetero"):
+        for name in (
+            "sampled_hp",
+            "mechanisms",
+            "gamma_hetero",
+            "a_logits",
+            "a_logit_mean",
+            "a_logit_std",
+        ):
             payload[name] = getattr(self, name)
         return payload
 
@@ -268,6 +291,9 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         payload["sampled_hp"] = diagnostics["params"]
         payload["mechanisms"] = diagnostics["mechanisms"]
         payload["gamma_hetero"] = diagnostics["gamma_hetero"]
+        payload["a_logits"] = diagnostics["A_logits"].numpy().astype(np.float32)
+        payload["a_logit_mean"] = diagnostics["A_logit_mean"]
+        payload["a_logit_std"] = diagnostics["A_logit_std"]
 
     return PriorDatasetRecord.from_dict(payload)
 
