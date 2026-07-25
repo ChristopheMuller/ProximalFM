@@ -403,12 +403,6 @@ def build_parser():
         default="qassmax-mlp-elementwise",
         help="Type of scalable softmax to use in the column embedding transformer",
     )
-    parser.add_argument(
-        "--freeze_col",
-        default=False,
-        type=str2bool,
-        help="Whether to freeze the column embedder",
-    )
 
     # Row Interaction Config
     parser.add_argument(
@@ -441,12 +435,6 @@ def build_parser():
         type=str2bool,
         help="If True, uses interleaved rotation for RoPE",
     )
-    parser.add_argument(
-        "--freeze_row",
-        default=False,
-        type=str2bool,
-        help="Whether to freeze the row interactor",
-    )
 
     # ICL Config
     parser.add_argument(
@@ -466,12 +454,6 @@ def build_parser():
         type=str,
         default="qassmax-mlp-elementwise",
         help="Type of scalable softmax to use in the in-context learning transformer",
-    )
-    parser.add_argument(
-        "--freeze_icl",
-        default=False,
-        type=str2bool,
-        help="Whether to freeze the ICL predictor",
     )
 
     ###########################################################################

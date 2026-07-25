@@ -8,6 +8,10 @@ runs/*
 eval_data/*
 results/*
 benchmarks/results/*
+
+# analysis_prior generated artifacts -- fully regenerable from a PriorSpec
+analysis_prior/cache/*
+analysis_prior/results/*
 wandb/*
 archive/*
 

@@ -1,0 +1,239 @@
+% -----------------------------------------------------------------------------
+% new_full_diagram.tex  --  one-pager sketch of the proximal prior pipeline.
+%
+% Deliverable T1.1 (fig:prior_pipeline) of docs/prior_appendix_plan.md.
+%
+% VISUAL GRAMMAR (kept consistent so the figure reads structurally):
+%   * SQUARE node      = a parameter  (sampled dimension + fixed MLP: [d_X,f_X] ...)
+%   * CIRCLE node      = a data / random variable  (X*,U*,W*,Z*, U^aug, A, (Y0,Y1))
+%   * ROUNDED BOX      = a process step  (Generate, post-processing, Sample A/Y,
+%                        aggregate, accept/reject, output)
+%   * dotted arrow     = a parameter configures a step   ([d_X,f_X] ..> Generate X)
+%   * solid arrow      = data flow (black generic; red into A; blue into Y)
+%   * dashed teal      = confounding duplication  (U* -> U^aug -> {A,Y})
+%   * orange dashed    = resample loop
+%
+% LAYOUT (top -> bottom): header -> parameter row -> generation row ->
+%   post-processing box (star circles + caption) -> {Sample A | f_aug | Sample Y}
+%   -> aggregate -> accept/reject -> output.
+%
+% X lives on T rows and is only *broadcast* across K, so the green T*K plate is
+% L-SHAPED: its top-left notch excludes the Generate-X box and X*; U,W,Z,A,Y and
+% the K-aggregate sit inside it.
+%
+% Code of record: proximalfm/prior/_dataset.py::SCMPrior.{get_batch,generate_dataset},
+%                 proximalfm/prior/_reg2cls.py (process_features / dominates),
+%                 proximalfm/prior/_prior_config.py (flag defaults).
+%
+% Bare tikzpicture fragment. Requires (all in docs/latex/preamble.tex):
+%   tikz + libraries positioning, arrows.meta, calc.
+% If it runs wider/taller than the text block, wrap the \input in
+%   \resizebox{\textwidth}{!}{...}  or place it on a dedicated figure page.
+%
+% NOTE: custom styles are prefixed "pp" to avoid clashing with built-in TikZ keys.
+% -----------------------------------------------------------------------------
+\begin{tikzpicture}[
+  line cap=round, line join=round,
+  font=\footnotesize,
+  % ---- process boxes (rounded rectangles) -----------------------------------
+  pphdr/.style={rounded corners=2.5pt, draw=black!45, fill=black!3,
+    line width=0.5pt, inner sep=5pt, align=center},
+  ppgen/.style={rounded corners=2.5pt, draw=black!55, fill=gray!4,
+    line width=0.5pt, inner sep=4pt, align=center},
+  ppabox/.style={rounded corners=2.5pt, draw=red!60!black, fill=red!4,
+    line width=0.6pt, inner sep=5pt, align=left, font=\scriptsize},
+  ppybox/.style={rounded corners=2.5pt, draw=blue!60!black, fill=blue!5,
+    line width=0.6pt, inner sep=5pt, align=left, font=\scriptsize},
+  ppagg/.style={rounded corners=2.5pt, draw=brown!65!black, fill=brown!8,
+    line width=0.6pt, inner sep=5pt, align=center, font=\scriptsize},
+  ppacc/.style={rounded corners=2.5pt, draw=orange!72!black, fill=orange!6,
+    line width=0.6pt, inner sep=5pt, align=center, font=\scriptsize},
+  ppout/.style={rounded corners=2.5pt, draw=black!55, fill=gray!4,
+    line width=0.6pt, inner sep=5pt, align=center},
+  % ---- parameters (squares) -------------------------------------------------
+  ppparam/.style={rectangle, draw=black!55, fill=yellow!12, line width=0.5pt,
+    inner sep=3.5pt, font=\scriptsize, minimum height=6mm},
+  % ---- data variables (circles) ---------------------------------------------
+  ppvar/.style={circle, draw=blue!65!black, fill=blue!6, line width=0.6pt,
+    inner sep=1pt, minimum size=8mm, font=\footnotesize},
+  ppvarA/.style={circle, draw=red!60!black, fill=red!6, line width=0.6pt,
+    inner sep=1pt, minimum size=8mm, font=\footnotesize},
+  ppvarU/.style={circle, draw=teal!55!black, fill=teal!9, line width=0.6pt,
+    inner sep=1pt, minimum size=9mm, font=\scriptsize},
+  ppvarY/.style={rounded corners=3pt, draw=blue!60!black, fill=blue!6,
+    line width=0.6pt, inner sep=2.5pt, font=\scriptsize},
+  % ---- containers -----------------------------------------------------------
+  ppplate/.style={rounded corners=6pt, draw=green!45!black, fill=green!5,
+    line width=0.7pt},
+  ppband/.style={rounded corners=4pt, draw=violet!60!black, fill=none,
+    line width=0.6pt, dash pattern=on 1.2pt off 1.6pt},
+  % ---- arrows ---------------------------------------------------------------
+  ppparr/.style={draw=black!55, line width=0.5pt, dash pattern=on 0.4pt off 1.6pt,
+    -{Latex[length=1.5mm,width=1.1mm]}},               % parameter -> step
+  ppflow/.style={draw=black!60, line width=0.6pt, -{Latex[length=1.7mm,width=1.2mm]}},
+  pparrA/.style={draw=red!55!black, line width=0.5pt, -{Latex[length=1.4mm,width=1mm]}},
+  pparrY/.style={draw=blue!55!black, line width=0.5pt, -{Latex[length=1.4mm,width=1mm]}},
+  ppdup/.style={draw=teal!55!black, line width=0.6pt, densely dashed,
+    -{Latex[length=1.5mm,width=1.1mm]}},
+  ppdep/.style={draw=black!40, line width=0.5pt, densely dotted,
+    -{Latex[length=1.3mm,width=0.9mm]}},               % gen-step data dependency
+  pploop/.style={draw=orange!75!black, line width=0.7pt, dashed,
+    dash pattern=on 2.4pt off 1.8pt, -{Latex[length=1.8mm,width=1.3mm]}},
+  % ---- a light note attached to a variable ----------------------------------
+  ppnote/.style={rounded corners=2.5pt, draw=teal!55!black, fill=teal!4,
+    line width=0.5pt, inner sep=4pt, align=left, font=\scriptsize},
+]
+
+% =============================================================================
+% Background: the K Monte-Carlo replicate plate (L-shaped; notch excludes the
+% X column, which is on T rows and only broadcast across K).
+% =============================================================================
+\draw[ppplate]
+  (0.30,8.20) -- (14.05,8.20) -- (14.05,22.45) -- (4.20,22.45)
+  -- (4.20,17.90) -- (0.30,17.90) -- cycle;
+\node[font=\scriptsize\itshape, color=green!40!black, rotate=-90, anchor=south]
+  at (14.35,15.0) {computed on the $T\times K$ Monte-Carlo replicate rows};
+
+% =============================================================================
+% 1. Header + the parameter squares that configure the generation steps.
+% =============================================================================
+\node[pphdr, text width=13.8cm] (hdr) at (7.20,25.85) {%
+  \textbf{1.\ Sample dimensions, MLP mechanisms \& noise roots}
+  \; {\scriptsize\itshape (once per dataset -- fixed across resamples)}\\[2pt]
+  dimensions $d_X,d_U,d_W,d_Z$ with $\min(d_W,d_Z)\!\ge\!d_U$;\quad
+  fixed MLPs $f_X,f_U,f_W,f_Z,f_A,f_Y,f_{\mathrm{aug}}$;\quad
+  noise $\varepsilon_X,\varepsilon_U,\varepsilon_W,\varepsilon_Z,\varepsilon_A,\varepsilon_Y$};
+
+\node[ppparam] (pX) at (2.30,24.05) {$d_X,\ f_X$};
+\node[ppparam] (pU) at (7.00,24.05) {$d_U,\ f_U$};
+\node[ppparam] (pW) at (10.60,24.05) {$d_W,\ f_W$};
+\node[ppparam] (pZ) at (12.40,24.05) {$d_Z,\ f_Z$};
+
+% the (dimension, mechanism) pairs are the outputs of step 1.
+\draw[ppparr] (hdr.south -| pX) -- (pX.north);
+\draw[ppparr] (hdr.south -| pU) -- (pU.north);
+\draw[ppparr] (hdr.south -| pW) -- (pW.north);
+\draw[ppparr] (hdr.south -| pZ) -- (pZ.north);
+
+% =============================================================================
+% 2. Generation row.
+% =============================================================================
+\node[ppgen, text width=2.6cm] (genX)  at (2.30,21.90) {%
+  \textbf{2.\ Generate }$X$\\[1pt] $X=f_X(\varepsilon_X)$\ (root)\\[1pt]
+  {\scriptsize\itshape on $T$ rows, then broadcast $\times K$}};
+\node[ppgen, text width=2.9cm] (genU)  at (7.00,21.90) {%
+  \textbf{3.\ Generate }$U$\\[1pt] $U=f_U(X,\varepsilon_U)$};
+\node[ppgen, text width=3.4cm] (genWZ) at (11.50,21.90) {%
+  \textbf{4.\ Generate }$W,Z$\\[1pt]
+  $W=f_W(U,X,5\varepsilon_W)$\\ $Z=f_Z(U,X,5\varepsilon_Z)$};
+
+% parameter -> step (dotted).
+\draw[ppparr] (pX.south) -- (genX.north);
+\draw[ppparr] (pU.south) -- (genU.north);
+\draw[ppparr] (pW.south) -- ([xshift=-9mm]genWZ.north);
+\draw[ppparr] (pZ.south) -- ([xshift= 9mm]genWZ.north);
+
+% =============================================================================
+% 3. Post-processing BOX: concise caption on TOP, star circles BELOW.
+%    Generation arrows terminate on the box's top border; the box maps its four
+%    inputs to the post-processed variables X*,U*,W*,Z*.
+%    Transparent fill so the plate notch (X* white / U*,W*,Z* green) shows through.
+% =============================================================================
+\draw[ppband] (0.55,18.20) rectangle (13.75,20.45);
+\node[rounded corners=2.5pt, fill=violet!6, draw=violet!45!black, line width=0.4pt,
+      inner sep=4pt, align=center, font=\scriptsize, text width=11.6cm,
+      text=violet!45!black] (pplab) at (7.15,19.75) {%
+  \textbf{5.\ Post-process:} categorise $\cdot$ remove outliers $\cdot$ standardise;
+  \ \ $W,Z$ categories \emph{dominate} $U$'s};
+
+\node[ppvar] (Xstar) at (2.30,18.65) {$X^{*}$};
+\node[ppvar] (Ustar) at (7.00,18.65) {$U^{*}$};
+\node[ppvar] (Wstar) at (10.60,18.65) {$W^{*}$};
+\node[ppvar] (Zstar) at (12.40,18.65) {$Z^{*}$};
+
+% generation -> post-process strip -> post-processed variable.
+\draw[ppflow] (genX.south)               -- (pplab.north -| genX.south);
+\draw[ppflow] (pplab.south -| Xstar)     -- (Xstar.north);
+\draw[ppflow] (genU.south)               -- (pplab.north -| genU.south);
+\draw[ppflow] (pplab.south -| Ustar)     -- (Ustar.north);
+\draw[ppflow] ([xshift=-9mm]genWZ.south) -- (pplab.north -| Wstar);
+\draw[ppflow] (pplab.south -| Wstar)     -- (Wstar.north);
+\draw[ppflow] ([xshift= 9mm]genWZ.south) -- (pplab.north -| Zstar);
+\draw[ppflow] (pplab.south -| Zstar)     -- (Zstar.north);
+
+% =============================================================================
+% 4. Mechanism steps: Sample A (left), Sample Y0,Y1 (right); U^aug in between.
+% =============================================================================
+% 6. U-augmentation (numbered box) -> U^aug -> fed into the A and Y mechanisms.
+\node[ppnote, text width=4.9cm] (auglab) at (7.00,16.55) {%
+  \textbf{6.\ $U$-augmentation.} $U^{\mathrm{aug}}=f_{\mathrm{aug}}(U^{*})$ --- a
+  non-linear expansion of $U$ that increases confounding, fed to $f_A$ and $f_Y$.};
+\node[ppvarU] (aug) at (7.00,15.05) {$U^{\mathrm{aug}}$};
+
+\node[ppabox, text width=4.25cm] (A) at (2.95,12.95) {%
+  \textbf{7.\ Sample treatment }$A$\\[2pt]
+  $\ell=f_A(X,U,Z,U^{\mathrm{aug}},\varepsilon_A)$\\[1pt]
+  $A\sim\mathrm{Bern}\!\big(\mathrm{clamp}_\epsilon\,\sigma(a\widetilde\ell+b)\big)$};
+\node[ppvarA] (Avar) at (2.95,10.95) {$A$};
+
+\node[ppybox, text width=4.65cm] (Y) at (11.15,12.95) {%
+  \textbf{8.\ Sample outcomes }$Y_0,Y_1$\\[2pt]
+  $(Y_0,Y_1)=f_Y(X,U,W,U^{\mathrm{aug}},\varepsilon_Y)$\\[1pt]
+  \emph{remix:}\ $\gamma$ (CATE variance), $\alpha$ (ATE)};
+\node[ppvarY] (Yvar) at (11.15,10.95) {$Y_0,\,Y_1$};
+
+% parent arrows: covariate X* and proxies Z* (->A), W* (->Y); confounder via U^aug.
+\draw[pparrA] (Xstar.south) to[out=-90,in=105] (A.north west);
+\draw[pparrA] (Zstar.south) to[out=-115,in=45] (A.north east);
+\draw[pparrY] (Xstar.south) to[out=-55,in=140] (Y.north west);
+\draw[pparrY] (Wstar.south) to[out=-90,in=75]  (Y.north east);
+
+% confounding via U-augmentation: U* -> box 6 -> U^aug -> {A,Y}.
+\draw[ppdup] (Ustar.south) -- (auglab.north)
+  node[midway,right,font=\scriptsize,inner sep=1.5pt]{$f_{\mathrm{aug}}$};
+\draw[ppdup] (auglab.south) -- (aug.north);
+\draw[ppdup] (aug.west) to[out=210,in=80]  (A.north);
+\draw[ppdup] (aug.east) to[out=-30,in=100] (Y.north);
+
+% step -> output variable.
+\draw[ppflow] (A.south) -- (Avar.north);
+\draw[ppflow] (Y.south) -- (Yvar.north);
+
+% =============================================================================
+% 5/6. Aggregate over K + observed-row draw (inside the plate, at the bottom).
+% =============================================================================
+\node[ppagg, text width=12.2cm] (agg) at (7.10,9.05) {%
+  \textbf{9.\ Aggregate over }$K$\textbf{ \& draw the observed row.}\quad
+  $\big(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\big)=\tfrac1K\sum_{k}\big(Y_{0,i,k},Y_{1,i,k}\big)$;\;
+  draw $k_i\!\sim\!\mathcal{U}\{1,\dots,K\}$, set $y_i=a_i\,y_{1}+(1{-}a_i)\,y_{0}$.};
+
+\draw[ppflow] (Avar.south) -- ([xshift=-2.0cm]agg.north);
+\draw[ppflow] (Yvar.south) -- ([xshift= 2.0cm]agg.north);
+
+% =============================================================================
+% 7. Accept / reject completeness gate (below the plate) + resample loop.
+% =============================================================================
+\node[ppacc, text width=13.0cm] (acc) at (7.10,7.45) {%
+  \textbf{10.\ Accept / reject.}\;
+  keep iff $\min(d_W,d_Z)\ge d_U>0$ \emph{and}
+  $\mathrm{dom}(W,U)\wedge\mathrm{dom}(Z,U)$ on the realised blocks;
+  else resample (give up after \texttt{completeness\_max\_attempts}).};
+
+\draw[ppflow] (agg.south) -- (acc.north);
+
+% resample loop: reject -> back to the generation row.
+\draw[pploop] (acc.west) -- ++(-0.25,0) |- (genX.west);
+\node[font=\scriptsize\color{orange!62!black}, rotate=90, anchor=south]
+  at (-0.02,15.0) {resample the mechanisms};
+
+% =============================================================================
+% 8. Output (full width, bottom).
+% =============================================================================
+\node[ppout, text width=13.0cm] (out) at (7.10,5.95) {%
+  \textbf{11.\ Output.}\;
+  context $\{X,\,U_k,\,W_k,\,Z_k,\,A_k\}$ with observed $Y_k(A_k)$;\quad
+  regression targets $\mu_0,\mu_1$ (the $K$-averaged potential outcomes from step 9).};
+
+\draw[ppflow] (acc.south) -- (out.north);
+
+\end{tikzpicture}

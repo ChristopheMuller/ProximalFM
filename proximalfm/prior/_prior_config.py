@@ -8,12 +8,19 @@ DEFAULT_FIXED_HP = {
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
-    # Feature corruption (process_features): applied to X, W, Z (and optionally U)
-    "cat_prob": 0.2,
-    "max_categories": float("inf"),
-    "corrupt_U": False,
+    "max_categories": 50,
+    "corrupt_U": True,
+    "enforce_categorical_completeness": True,
+    "proxy_cat_cover_prob": 0.5,
     "propensity_epsilon": 1e-3,
-    "prior_mc_mem_budget": 50_000_000,
+    "prior_mc_mem_budget": 100_000_000,
+    "enforce_completeness_heuristic": True,
+    "completeness_max_attempts": 50,
+    "dim_U_distribution": "triangular",
+    "confounding_dim_control": True,
+    "proxy_edge_subsampling": True,
+    "covariate_edge_subsampling": True,
+    "noise_std": 1e-3,
 }
 
 DEFAULT_SAMPLED_HP = {
@@ -54,13 +61,6 @@ DEFAULT_SAMPLED_HP = {
         "round": False,
         "lower_bound": 0.0,
     },
-    "noise_std": {
-        "distribution": "meta_trunc_norm_log_scaled",
-        "max_mean": 0.3,
-        "min_mean": 0.0001,
-        "round": False,
-        "lower_bound": 0.0,
-    },
     "sampling": {
         "distribution": "meta_choice",
         "choice_values": ["normal", "mixed", "uniform"],
@@ -69,26 +69,13 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
-    "pre_sample_noise_std": {
-        "distribution": "meta_choice",
-        "choice_values": [True, False],
+    # CATEGORIZATION
+    "cat_col_prob": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 3.0,
     },
-    "cate_strength": {
-        "distribution": "meta_trunc_norm_log_scaled",
-        "min_mean": 0.05,
-        "max_mean": 0.5,
-        "min_std": 0.05,
-        "max_std": 0.3,
-        "lower_bound": 0.01,
-        "round": False,
-    },
-    "ate_strength": {
-        "distribution": "meta_gamma",
-        "max_alpha": 2.5,
-        "max_scale": 1.0,
-        "lower_bound": 0.0,
-        "round": False,
-    },
+    # PROPENSITY SHIFT AND SCALE
     "propensity_shift": {
         "distribution": "uniform",
         "min": -2.5,
@@ -101,14 +88,78 @@ DEFAULT_SAMPLED_HP = {
         "lower_bound": 0.1,
         "round": False,
     },
-    "confounding_duplication_of_U_in_Y": {
+    # CONFOUNDING EDGE SHARES
+    "confounding_share_of_U_in_Y": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "confounding_share_of_U_in_A": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    # PROXY EDGE SHARES
+    "direct_edge_share_of_W_in_Y": {
         "distribution": "beta",
         "a": 1.0,
         "b": 1.0,
     },
-    "confounding_duplication_of_U_in_A": {
+    "direct_edge_share_of_Z_in_A": {
         "distribution": "beta",
         "a": 1.0,
         "b": 1.0,
+    },
+    # COV SHARE OF X IN U/W/Z/A/Y
+    "covariate_share_of_X_in_U": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "covariate_share_of_X_in_W": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "covariate_share_of_X_in_Z": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "covariate_share_of_X_in_A": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    "covariate_share_of_X_in_Y": {
+        "distribution": "beta",
+        "a": 1.0,
+        "b": 1.0,
+    },
+    # NOISE
+    "noise_share_of_input_in_U": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_W": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_Z": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_A": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
+    },
+    "noise_share_of_input_in_Y": {
+        "distribution": "beta",
+        "a": 1.2,
+        "b": 2.8,
     },
 }

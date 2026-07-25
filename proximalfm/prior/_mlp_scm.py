@@ -125,9 +125,11 @@ class MLPSCM(nn.Module):
         If `True` and `sampling="normal"`, the mean and standard deviation for
         each initial cause variable are pre-sampled. Passed to `XSampler`.
 
-    noise_std : float, default=0.01
+    noise_std : float, default=0.0
         The base standard deviation for the Gaussian noise added after each MLP
-        layer's linear transformation (except the first layer).
+        layer's linear transformation (except the first layer). Off by default:
+        the dataset generator provides all exogenous randomness as explicit
+        eps input columns, so mechanisms are deterministic given their input.
 
     pre_sample_noise_std : bool, default=False
         Controls how the standard deviation for the `GaussianNoise` layers is determined.
@@ -150,7 +152,7 @@ class MLPSCM(nn.Module):
         block_wise_dropout: bool = True,
         mlp_dropout_prob: float = 0.1,
         scale_init_std_by_dropout: bool = True,
-        noise_std: float = 0.01,
+        noise_std: float = 0.0,
         pre_sample_noise_std: bool = False,
         device: str = "cpu",
         **kwargs: Dict[str, Any],

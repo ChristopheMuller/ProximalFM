@@ -213,9 +213,10 @@ class TreeSCM(nn.Module):
         If `True` and `sampling="normal"`, the mean and standard deviation for
         each initial cause variable are pre-sampled. Passed to `XSampler`.
 
-    noise_std : float, default=0.01
+    noise_std : float, default=0.0
         The base standard deviation for the Gaussian noise added after each tree
-        layer's transformation.
+        layer's transformation. Off by default: the dataset generator provides
+        all exogenous randomness as explicit eps input columns.
 
     pre_sample_noise_std : bool, default=False
         Controls how the standard deviation for the `GaussianNoise` layers is determined.
@@ -239,7 +240,7 @@ class TreeSCM(nn.Module):
         tree_model: str = "xgboost",
         max_depth_lambda: float = 0.5,
         n_estimators_lambda: float = 0.5,
-        noise_std: float = 0.01,
+        noise_std: float = 0.0,
         pre_sample_noise_std: bool = False,
         device: str = "cpu",
         **kwargs: dict,

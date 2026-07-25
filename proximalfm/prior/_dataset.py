@@ -34,6 +34,14 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
+# - Exogenous-Noise Model: All meaningful randomness enters each mechanism as
+#   explicit eps input columns whose count is proportional to the mechanism's
+#   signal input width (sampled 'noise_share_of_input_in_*' converted via
+#   confounding_input_dim). Within-layer GaussianNoise ('noise_std') is kept at
+#   a tiny fixed dither (1e-3, see DEFAULT_FIXED_HP) purely so continuous
+#   columns realise distinct values under saturating/discretising activations;
+#   it is a tie-breaker for the distinct-count profile classification, not part
+#   of the noise model.
 ####
 
 
@@ -65,8 +73,15 @@ from ._mlp_scm import MLPSCM
 from ._tree_scm import TreeSCM
 from ._utils import XSampler
 
+from ._diagnostics import mechanism_diagnostics
+
 from ._hp_sampling import HpSamplerList
-from ._reg2cls import process_features
+from ._reg2cls import (
+    process_features,
+    block_profile,
+    observed_block_profile,
+    dominates,
+)
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -79,6 +94,23 @@ warnings.filterwarnings(
 # Emit the Monte Carlo memory-budget warning at most once per process to avoid
 # flooding logs when many datasets get capped.
 _MC_BUDGET_WARNED = False
+
+
+def _scalar_params(params: Dict[str, Any]) -> Dict[str, Any]:
+    """The JSON-friendly scalars of a params dict (sampled + fixed HPs, dims).
+
+    Drops tensors, classes and other rich objects; converts numpy scalars so
+    the result survives serialisation unchanged.
+    """
+    out: Dict[str, Any] = {}
+    for key, value in params.items():
+        if isinstance(value, (bool, str)):
+            out[key] = value
+        elif isinstance(value, (int, np.integer)):
+            out[key] = int(value)
+        elif isinstance(value, (float, np.floating)):
+            out[key] = float(value)
+    return out
 
 
 class Prior:
@@ -602,14 +634,27 @@ class SCMPrior(Prior):
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
 
-        # Per-row width of the concurrently live (T * K)-row tensors: the widest
-        # MLP-SCM pool plus the proxy/confounder blocks kept in raw + normalized
-        # form, plus the X replication and eps draws. A small constant covers the
-        # scalar A / y columns. This is an estimate, deliberately on the high side.
+        # The eps blocks widen each mechanism's input by up to
+        # share / (1 - share) times its signal width (share clamped at 0.75 by
+        # confounding_input_dim, i.e. worst case 4x). Use the largest sampled
+        # share as a coarse over-estimate; exact widths depend on binomial
+        # subsampling draws not known at cap time.
+        max_noise_share = max(
+            min(float(params.get(f"noise_share_of_input_in_{k}", 0.3)), 0.75)
+            for k in ("U", "W", "Z", "A", "Y")
+        )
+        noise_mult = 1.0 + max_noise_share / (1.0 - max_noise_share)
+
         per_row = (
             num_layers * hidden_dim
             + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
+            + math.ceil(
+                noise_mult
+                * 3
+                * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
+            )
+            + 5 * params["dim_X"]
             + 8
         )
 
@@ -675,7 +720,11 @@ class SCMPrior(Prior):
         # Memory safeguard
         K = self._cap_mc_samples(K, T, params)
 
+        # Counts resamples triggered by the completeness check below.
+        attempt = 0
+
         while True:
+            attempt += 1
             eps_X_sampler = XSampler(
                 seq_len=T,
                 num_features=params["dim_X"],
@@ -688,12 +737,20 @@ class SCMPrior(Prior):
             f_X = prior_cls(
                 in_dim=eps_X.shape[-1],
                 num_outputs=params["dim_X"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             X = f_X(eps_X)
-            X = process_features(X, params)
+            X, _ = process_features(X, params)
             X_ = safe_normalize(X)
+
+            categorize_U = params.get("corrupt_U", False)
+            enforce_cat = params.get("enforce_categorical_completeness", False)
+            if enforce_cat and not categorize_U:
+                raise ValueError(
+                    "enforce_categorical_completeness=True requires corrupt_U=True: "
+                    "categorical completeness is defined relative to a categorised U."
+                )
 
             X_rep_ = (
                 X_[:, None, :]
@@ -701,107 +758,160 @@ class SCMPrior(Prior):
                 .reshape(T * K, params["dim_X"])
             )
 
-            eps_sampler = XSampler(
-                seq_len=T * K,
-                num_features=params["dim_U"] + params["dim_W"] + params["dim_Z"] + 2,
-                pre_stats=params.get("pre_sample_cause_stats", False),
-                sampling=params.get("sampling", "mixed"),
-                device=self.device,
-            )
-            eps = eps_sampler.sample()
+            if params.get("covariate_edge_subsampling", True):
 
-            start = 0
-            eps_U = eps[:, start : start + params["dim_U"]]
-            start += params["dim_U"]
+                def _cov_subsample(key: str) -> Tensor:
+                    p = float(params.get(f"covariate_share_of_X_in_{key}", 0.5))
+                    m = int(
+                        torch.distributions.binomial.Binomial(
+                            total_count=params["dim_X"], probs=p
+                        ).sample()
+                    )
+                    return X_rep_[:, torch.randperm(params["dim_X"])[:m]]
 
-            eps_W = eps[:, start : start + params["dim_W"]]
-            start += params["dim_W"]
+                X_U_ = _cov_subsample("U")
+                X_W_ = _cov_subsample("W")
+                X_Z_ = _cov_subsample("Z")
+                X_A_ = _cov_subsample("A")
+                X_Y_ = _cov_subsample("Y")
+            else:
+                X_U_ = X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
 
-            eps_Z = eps[:, start : start + params["dim_Z"]]
-            start += params["dim_Z"]
+            def sample_eps(key: str, n_signal: int, floor: int = 1) -> Tensor:
+                share = float(params.get(f"noise_share_of_input_in_{key}", 0.3))
+                k = self.confounding_input_dim(share, n_signal, floor=floor)
+                return XSampler(
+                    seq_len=T * K,
+                    num_features=k,
+                    pre_stats=params.get("pre_sample_cause_stats", False),
+                    sampling=params.get("sampling", "mixed"),
+                    device=self.device,
+                ).sample()
 
-            eps_A = eps[:, start : start + 1]
-            start += 1
+            eps_U = sample_eps("U", X_U_.shape[-1], floor=params["dim_U"])
 
-            eps_Y = eps[:, start : start + 1]
-
-            input_U = torch.cat([X_rep_, eps_U], dim=-1)
+            input_U = torch.cat([X_U_, eps_U], dim=-1)
 
             f_U = prior_cls(
                 in_dim=input_U.shape[-1],
                 num_outputs=params["dim_U"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             U_mc = f_U(input_U)
-            if params.get("corrupt_U", False):
-                U_mc = process_features(U_mc, params)
+            u_meta: dict[int, int] = {}
+            if categorize_U:
+                U_mc, u_meta = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
 
-            input_W = torch.cat([U_mc_, X_rep_, eps_W * 5], dim=-1)
+            # Proxies must dominate U's pre-filter profile when enforcing.
+            require_profile = (
+                block_profile(params["dim_U"], u_meta) if enforce_cat else None
+            )
+
+            eps_W = sample_eps("W", params["dim_U"] + X_W_.shape[-1])
+            input_W = torch.cat([U_mc_, X_W_, eps_W], dim=-1)
 
             f_W = prior_cls(
                 in_dim=input_W.shape[-1],
                 num_outputs=params["dim_W"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             W_mc = f_W(input_W)
-            W_mc = process_features(W_mc, params)
+            W_mc, w_meta = process_features(
+                W_mc, params, require_profile=require_profile
+            )
             W_mc_ = safe_normalize(W_mc)
 
-            input_Z = torch.cat([U_mc_, X_rep_, eps_Z * 5], dim=-1)
+            eps_Z = sample_eps("Z", params["dim_U"] + X_Z_.shape[-1])
+            input_Z = torch.cat([U_mc_, X_Z_, eps_Z], dim=-1)
 
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
                 num_outputs=params["dim_Z"],
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             Z_mc = f_Z(input_Z)
-            Z_mc = process_features(Z_mc, params)
+            Z_mc, z_meta = process_features(
+                Z_mc, params, require_profile=require_profile
+            )
             Z_mc_ = safe_normalize(Z_mc)
 
-            p_dim_u_augment_Y = params.get("confounding_duplication_of_U_in_Y", 0.5)
-            p_dim_u_augment_A = params.get("confounding_duplication_of_U_in_A", 0.5)
-
-            dim_u_augment_Y = (
-                torch.distributions.binomial.Binomial(
-                    total_count=params["dim_U"] + params["dim_X"] + params["dim_W"],
-                    probs=p_dim_u_augment_Y,
+            if params.get("proxy_edge_subsampling", True):
+                m_W = int(
+                    torch.distributions.binomial.Binomial(
+                        total_count=params["dim_W"],
+                        probs=float(params.get("direct_edge_share_of_W_in_Y", 1.0)),
+                    ).sample()
                 )
-                .sample()
-                .long()
-            )
-            dim_u_augment_A = (
-                torch.distributions.binomial.Binomial(
-                    total_count=params["dim_U"] + params["dim_X"] + params["dim_Z"],
-                    probs=p_dim_u_augment_A,
+                m_Z = int(
+                    torch.distributions.binomial.Binomial(
+                        total_count=params["dim_Z"],
+                        probs=float(params.get("direct_edge_share_of_Z_in_A", 1.0)),
+                    ).sample()
                 )
-                .sample()
-                .long()
+                W_direct = W_mc_[:, torch.randperm(params["dim_W"])[:m_W]]
+                Z_direct = Z_mc_[:, torch.randperm(params["dim_Z"])[:m_Z]]
+            else:
+                W_direct = W_mc_
+                Z_direct = Z_mc_
+
+            if params.get("confounding_dim_control", True):
+                # Shares are defined relative to the non-noise (signal) input
+                # width: confounding widths first, then the eps widths below
+                # are computed from the resulting full signal width. This
+                # avoids a circular dependency between the two share knobs.
+                k_Y = self.confounding_input_dim(
+                    params.get("confounding_share_of_U_in_Y", 0.3),
+                    X_Y_.shape[-1] + W_direct.shape[-1],
+                )
+                k_A = self.confounding_input_dim(
+                    params.get("confounding_share_of_U_in_A", 0.3),
+                    X_A_.shape[-1] + Z_direct.shape[-1],
+                )
+                perm = tuple(torch.randperm(params["dim_U"]).tolist())
+                idx_y, idx_a, aug_dim_y, aug_dim_a = self.split_confounding_inputs(
+                    k_Y, k_A, params["dim_U"], perm
+                )
+                U_sel_y = U_mc_[:, idx_y]
+                U_sel_a = U_mc_[:, idx_a]
+
+                aug_out_dim = max(aug_dim_y, aug_dim_a)
+                if aug_out_dim > 0:
+                    f_u_augment = prior_cls(
+                        in_dim=U_mc_.shape[-1],
+                        num_outputs=aug_out_dim,
+                        num_layers=3,
+                        hidden_dim=max(10, aug_out_dim),
+                    ).to(self.device)
+                    u_aug = f_u_augment(U_mc_)
+                else:
+                    u_aug = U_mc_[:, :0]
+
+                u_aug_y = u_aug[:, :aug_dim_y]
+                u_aug_a = u_aug[:, :aug_dim_a]
+            else:
+                U_sel_y = U_mc_
+                U_sel_a = U_mc_
+                u_aug_y = U_mc_[:, :0]
+                u_aug_a = U_mc_[:, :0]
+
+            eps_A = sample_eps(
+                "A",
+                U_sel_a.shape[-1]
+                + X_A_.shape[-1]
+                + Z_direct.shape[-1]
+                + u_aug_a.shape[-1],
             )
-
-            f_u_augment_out_dim = torch.max(dim_u_augment_Y, dim_u_augment_A)
-            f_u_augment = prior_cls(
-                in_dim=U_mc_.shape[-1],
-                num_outputs=int(f_u_augment_out_dim),
-                num_layers=3,
-                hidden_dim=max(10, int(f_u_augment_out_dim)),
-            ).to(self.device)
-
-            u_aug = f_u_augment(U_mc_)
-
-            u_aug_y = u_aug[:, :dim_u_augment_Y]
-            u_aug_a = u_aug[:, :dim_u_augment_A]
-
-            input_A = torch.cat([U_mc_, X_rep_, Z_mc_, eps_A, u_aug_a], dim=-1)
+            input_A = torch.cat([U_sel_a, X_A_, Z_direct, eps_A, u_aug_a], dim=-1)
 
             f_A = prior_cls(
                 in_dim=input_A.shape[-1],
                 num_outputs=1,
                 u_skip=0,
-                **{**params, "noise_std": 0.0} if "noise_std" in params else params,
+                **params,
             ).to(self.device)
 
             A_logits = f_A(input_A).squeeze(-1)
@@ -813,8 +923,21 @@ class SCMPrior(Prior):
                 epsilon=params.get("propensity_epsilon", 1e-3),
             )
 
-            input_y = torch.cat([U_mc_, X_rep_, W_mc_, eps_Y, u_aug_y], dim=-1)
+            eps_Y = sample_eps(
+                "Y",
+                U_sel_y.shape[-1]
+                + X_Y_.shape[-1]
+                + W_direct.shape[-1]
+                + u_aug_y.shape[-1],
+            )
+            input_y = torch.cat([U_sel_y, X_Y_, W_direct, eps_Y, u_aug_y], dim=-1)
 
+            # MU0/MU1 below are Monte Carlo means over the K replicates of each
+            # row. Their validity requires the observed rows and the replicates
+            # to share the *same* forward pass per mechanism: MLPSCM.forward
+            # draws a fresh output-column permutation per call, so splitting
+            # generation into separate passes would silently change the
+            # mechanism between the targets and the observed data.
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],
                 num_outputs=2,
@@ -856,6 +979,14 @@ class SCMPrior(Prior):
 
             y = torch.where(A == 1, y1, y0)
 
+            # Categorical-completeness profiles are computed on the realised
+            # (observed, pre-padding) blocks so they reflect exactly what
+            # survives the constant-column filtering below.
+            if enforce_cat:
+                u_profile = observed_block_profile(U, u_meta)
+                w_profile = observed_block_profile(W, w_meta)
+                z_profile = observed_block_profile(Z, z_meta)
+
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
             U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1 = (
                 U.unsqueeze(0),
@@ -880,7 +1011,67 @@ class SCMPrior(Prior):
             X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
-            if (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all():
+
+            # Basic validity: every observed block needs at least one active
+            # (non-constant) column, else the dataset is unusable.
+            basic_ok = (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+
+            # Proximal validity: the completeness heuristic must survive column
+            # filtering. dim_W, dim_Z >= dim_U holds at sampling time, but the
+            # filtering above acts on each block independently, so a proxy can
+            # drop below d_U afterwards. Reject and resample those. Requiring
+            # d_U > 0 also rejects the rare unconfounded draws where U collapsed
+            # to constants.
+            if params.get("enforce_completeness_heuristic", True):
+                proximal_ok = bool(
+                    (d_U > 0).all() and (torch.minimum(d_W, d_Z) >= d_U).all()
+                )
+            else:
+                proximal_ok = True
+
+            if enforce_cat:
+                proximal_ok = proximal_ok and (
+                    dominates(w_profile, u_profile) and dominates(z_profile, u_profile)
+                )
+
+            give_up = attempt >= int(params.get("completeness_max_attempts", 50))
+
+            if basic_ok and (proximal_ok or give_up):
+                # Optional audit payload: how each parent block feeds f_A / f_Y.
+                # Collected only on the accepted attempt and under fork_rng, so
+                # enabling it leaves the generated data (and the RNG stream any
+                # later dataset sees) bit-identical to a run without it.
+                diagnostics = None
+                if params.get("collect_mechanism_diagnostics", False) and isinstance(
+                    f_A, MLPSCM
+                ):
+                    widths_A = {
+                        "U_sel": U_sel_a.shape[-1],
+                        "X": X_A_.shape[-1],
+                        "proxy": Z_direct.shape[-1],
+                        "eps": eps_A.shape[-1],
+                        "U_aug": u_aug_a.shape[-1],
+                    }
+                    widths_Y = {
+                        "U_sel": U_sel_y.shape[-1],
+                        "X": X_Y_.shape[-1],
+                        "proxy": W_direct.shape[-1],
+                        "eps": eps_Y.shape[-1],
+                        "U_aug": u_aug_y.shape[-1],
+                    }
+                    with torch.random.fork_rng(devices=[]):
+                        diagnostics = {
+                            "params": _scalar_params(params),
+                            "gamma_hetero": float(gamma_hetero),
+                            "attempts": attempt,
+                            "A_logits": A_logits[obs_idx].detach().cpu(),
+                            "A_logit_mean": float(A_logits.mean()),
+                            "A_logit_std": float(A_logits.std()),
+                            "mechanisms": {
+                                "A": mechanism_diagnostics(f_A, input_A, widths_A),
+                                "Y": mechanism_diagnostics(f_y, input_y, widths_Y),
+                            },
+                        }
                 U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
@@ -914,6 +1105,7 @@ class SCMPrior(Prior):
                     d_X,
                     d_W,
                     d_Z,
+                    diagnostics,
                 )
 
     def sample_A(
@@ -929,6 +1121,88 @@ class SCMPrior(Prior):
         probs = torch.sigmoid(logits)
         probs = torch.clamp(probs, min=epsilon, max=1.0 - epsilon)
         return torch.bernoulli(probs).long(), probs
+
+    @staticmethod
+    def confounding_input_dim(
+        share: float, n_other: int, floor: int = 2, max_share: float = 0.75
+    ) -> int:
+        """Number of U-derived input columns targeting a given input ``share``.
+
+        The confounding strength of ``U`` in a random MLP mechanism scales with
+        the fraction of the mechanism's input width that is U-derived. Given a
+        target ``share`` s and the width ``n_other`` of the competing (non-U)
+        inputs, the count k solving k / (k + n_other) = s is
+        ``k = s / (1 - s) * n_other``. ``dim_U`` is deliberately absent: the
+        knob controls U's *total* effective input width (subsampling U below
+        ``dim_U``, augmenting above it), decoupling confounding strength from
+        the confounder's dimension.
+
+        ``share`` is clamped to ``max_share`` (bounding k at 3 * n_other for
+        the default 0.75, a memory cap on the augmentation network) and the
+        result floored at ``floor`` so every mechanism sees at least that many
+        U-derived columns.
+
+        The same share -> width conversion also sizes the exogenous-noise
+        (eps) input blocks in ``generate_dataset`` (via the sampled
+        ``noise_share_of_input_in_*`` hyperparameters), with ``n_other`` set
+        to the mechanism's non-noise signal width.
+        """
+        s = min(float(share), max_share)
+        return max(floor, round(s / (1.0 - s) * n_other))
+
+    @staticmethod
+    def split_confounding_inputs(
+        k_y: int, k_a: int, dim_U: int, perm: Tuple[int, ...]
+    ) -> Tuple[Tuple[int, ...], Tuple[int, ...], int, int]:
+        """Split per-side U-input budgets into raw-U columns and aug widths.
+
+        Each side (Y, A) consumes the first ``min(k, dim_U)`` columns of the
+        shared permutation ``perm`` of U's columns, plus ``max(0, k - dim_U)``
+        columns of the shared augmentation network's output. Taking prefixes of
+        the *same* permutation (and the same aug output) makes the two sides'
+        U-derived inputs nested: the smaller side's columns are all shared with
+        the larger side, and only the difference is side-exclusive -- so the
+        common confounding channel has width ``min(k_y, k_a)`` by construction.
+
+        Returns ``(idx_y, idx_a, aug_y, aug_a)``: the raw-U column indices per
+        side and the number of augmentation columns per side.
+        """
+        idx_y = tuple(perm[: min(k_y, dim_U)])
+        idx_a = tuple(perm[: min(k_a, dim_U)])
+        return idx_y, idx_a, max(0, k_y - dim_U), max(0, k_a - dim_U)
+
+    @staticmethod
+    def triangular_dim_pmf(lo: int, hi: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Linearly-decreasing integer pmf on ``[lo, hi]``: ``p(d) ∝ (hi+1-d)``.
+
+        Skews the sampled dimension toward smaller values. Paired with the
+        conditional-uniform proxy sampling (``dim_W ~ U{dim_U..max}``), a
+        triangular ``dim_U`` makes the induced ``dim_W``/``dim_Z`` marginals a
+        gentle linear ramp rather than piling up at ``max_dim``. In particular,
+        for ``lo=1`` the proxy marginal is exactly ``p(w) = w / sum(1..hi)``.
+
+        Returns ``(values, probs)`` with ``probs`` summing to 1.
+        """
+        vals = np.arange(lo, hi + 1)
+        weights = (hi + 1 - vals).astype(float)
+        return vals, weights / weights.sum()
+
+    @classmethod
+    def sample_dim(cls, lo: int, hi: int, distribution: str) -> int:
+        """Sample an integer dimension in ``[lo, hi]``.
+
+        ``"uniform"`` draws flat over the range (the original behaviour);
+        ``"triangular"`` uses :meth:`triangular_dim_pmf` (Option B).
+        """
+        if distribution == "uniform":
+            return int(np.random.randint(lo, hi + 1))
+        if distribution == "triangular":
+            vals, probs = cls.triangular_dim_pmf(lo, hi)
+            return int(np.random.choice(vals, p=probs))
+        raise ValueError(
+            f"Unknown dim distribution {distribution!r} "
+            "(expected 'uniform' or 'triangular')"
+        )
 
     @torch.no_grad()
     def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
@@ -1022,8 +1296,15 @@ class SCMPrior(Prior):
                     k: v() if callable(v) else v for k, v in group_sampled_hp.items()
                 }
 
-                # 1. Sample Latent Confounder Dimension
-                dim_U = np.random.randint(self.min_dim_U, self.max_dim_U + 1)
+                # 1. Sample Latent Confounder Dimension. A triangular pmf
+                # (Option B) skews d_U small so the conditional-uniform proxies
+                # below get a gentle linear marginal instead of piling up at
+                # max_dim; "uniform" restores the original flat d_U for A/B.
+                dim_U = self.sample_dim(
+                    self.min_dim_U,
+                    self.max_dim_U,
+                    self.fixed_hp.get("dim_U_distribution", "triangular"),
+                )
 
                 # 2. Enforce Completeness: dim(W) >= dim(U) and dim(Z) >= dim(U)
                 # We use max() to ensure the lower bound satisfies both the user's config and the DAG requirement
@@ -1091,7 +1372,13 @@ class SCMPrior(Prior):
             d_X_list,
             d_W_list,
             d_Z_list,
+            diagnostics_list,
         ) = zip(*results)
+
+        # Per-dataset mechanism diagnostics (None unless the fixed HP
+        # collect_mechanism_diagnostics is set). Exposed as an attribute rather
+        # than a return value to keep the batch tuple stable for training code.
+        self.last_diagnostics = list(diagnostics_list)
 
         # Combine Results
         if self.seq_len_per_gp:
@@ -1359,6 +1646,15 @@ class PriorDataset(IterableDataset):
         self.device = device
         self.prior_type = prior_type
         self.mcmc_cate = mcmc_cate
+
+    @property
+    def last_diagnostics(self):
+        """Per-dataset mechanism diagnostics of the most recent batch.
+
+        ``None`` entries unless ``collect_mechanism_diagnostics`` is set in
+        ``scm_fixed_hp``; ``None`` before any batch was generated.
+        """
+        return getattr(self.prior, "last_diagnostics", None)
 
     def get_batch(
         self, batch_size: Optional[int] = None

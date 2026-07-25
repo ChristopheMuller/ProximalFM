@@ -40,12 +40,12 @@ and the cross-covariance term is **never identified from data** — no unit ever
 
 Each dataset of $T$ units (`seq_len`) is produced by `SCMPrior.generate_dataset` ([`_dataset.py`](proximalfm/prior/_dataset.py)). Once per dataset, we sample the causal mechanisms $f_X, f_U, f_W, f_Z, f_A, f_Y$ — each an independently initialized random network — together with the variable dimensions $d_U, d_X, d_W, d_Z$; mechanisms and dimensions are shared across the $K$ Monte-Carlo replicates below, so all replicates of a unit come from the *same* SCM. Then:
 
-1. **Covariates (root).** $X = f_X(\epsilon_X) \in \mathbb{R}^{T \times d_X}$, where the exogenous noise base distribution is itself sampled per dataset (`sampling` ∈ {`normal`, `uniform`, `mixed`}). Columns are randomly discretized with probability `cat_prob = 0.2` (`process_features`), mimicking categorical tabular data. Each row is then replicated $K$ times (`mcmc_cate`, default **200**; auto-capped by `prior_mc_mem_budget` to bound memory).
+1. **Covariates (root).** $X = f_X(\epsilon_X) \in \mathbb{R}^{T \times d_X}$, where the exogenous noise base distribution is itself sampled per dataset (`sampling` ∈ {`normal`, `uniform`, `mixed`}). Columns are randomly discretized with a per-dataset probability `cat_col_prob ~ Beta(1, 3)` (mean 0.25, `process_features`), mimicking categorical tabular data. Each row is then replicated $K$ times (`mcmc_cate`, default **200**; auto-capped by `prior_mc_mem_budget` to bound memory).
 2. **Latent confounder.** $U = f_U(X, \epsilon_U)$ — generated and stored, but *hidden from the model*.
-3. **Proxies.** $W = f_W(U, X, \epsilon_W)$ and $Z = f_Z(U, X, \epsilon_Z)$, with amplified exogenous noise (`eps * 5` in code) so proxies are informative about $U$ without being deterministic images of $(U, X)$.
-4. **Confounding amplification.** Extra nonlinear transformations of $U$ (`f_u_augment`) are appended to the parents of $A$ and $Y$; how many is drawn per dataset via `confounding_duplication_of_U_in_A` / `_in_Y` $\sim \mathrm{Beta}(1,1)$ — a per-dataset dial for confounding strength.
-5. **Treatment.** Logits $\ell_A = f_A(U, X, Z, \epsilon_A)$ are standardized, rescaled by `propensity_scale` (log-scaled range ≈ 0.5–3.0), shifted by `propensity_shift` $\sim \mathcal{U}(-2.5, 2.5)$ (treatment imbalance), squashed through a sigmoid, and clamped to $[\epsilon, 1-\epsilon]$ with `propensity_epsilon = 1e-3`; then $A \sim \mathrm{Bernoulli}$.
-6. **Potential outcomes.** $\bigl(Y(0), Y(1)\bigr) = f_Y(U, X, W, \epsilon_Y)$ in a **single joint two-headed forward pass** — $A$ is never an input of $f_Y$. A per-dataset coefficient $\gamma \sim \mathcal{U}(0,1)$ then interpolates each pair between the raw heterogeneous heads and a constant-shift pair $(y_0,\, y_0 + \mathrm{ATE})$, sweeping effect heterogeneity from strong to near-homogeneous. Only $f_Y$ carries the sampled label noise `noise_std` (≈ 1e-4–0.3); all upstream mechanisms receive their stochasticity through the explicit $\epsilon$ inputs, drawn freshly for every unit and every replicate.
+3. **Proxies.** $W = f_W(U, X_W^*, \epsilon_W)$ and $Z = f_Z(U, X_Z^*, \epsilon_Z)$, so proxies are informative about $U$ without being deterministic images of $(U, X)$. ($X_\cdot^*$ is a per-mechanism covariate subsample; see step 4.)
+4. **Mechanism wiring.** Three independent per-dataset knobs set which columns feed each downstream mechanism. **(a) Confounding-dim control:** $A$ and $Y$ each see a targeted number $k$ of $U$-derived input columns: a subsample of $U$'s columns when $k < d_U$, or full $U$ plus extra nonlinear transformations (`f_u_augment`) when $k > d_U$. The target *share* is drawn per dataset via `confounding_share_of_U_in_A` / `_in_Y` $\sim \mathrm{Beta}(1.2, 2.8)$ (mean 0.30, capped at 0.75) — a dial for confounding strength decoupled from $d_U$. **(b) Proxy edges:** the direct edges $W \to Y$, $Z \to A$ are per-column optional, only random subsets $W^* \subseteq W$, $Z^* \subseteq Z$ entering $f_Y$ / $f_A$ (`direct_edge_share_of_W_in_Y` / `_Z_in_A` $\sim \mathrm{Beta}(1,1)$), spanning pure-proxy (negative-control) through fully mediating. **(c) Covariate edges:** the edges $X \to \{U, W, Z, A, Y\}$ are per-column optional, an independent subset $X_\cdot^*$ entering each mechanism. The direct edges into $W, Z, A, Y$ use `covariate_share_of_X_in_{W,Z,A,Y}` $\sim \mathrm{Beta}(1,1)$; the confounding edge $X \to U$ uses `covariate_share_of_X_in_U` $\sim \mathrm{Beta}(1.2, 2)$ (mean 0.375), which controls how much of $U$ is a function of observed covariates — i.e. the split between confounding removable by $X$-adjustment and genuinely unobserved confounding the proxies must handle. Excluding a covariate from $U$ *and* from a mechanism's direct edge is what makes it a genuine instrument, prognostic-only, or noise column (otherwise it would reach everything through $U$). None of these touch the DAG or identification (relevance and completeness live on $U \to W$ / $U \to Z$); they only widen the function prior.
+5. **Treatment.** Logits $\ell_A = f_A(U, X_A^*, Z^*, \epsilon_A)$ are standardized, rescaled by `propensity_scale` (log-scaled range ≈ 0.5–3.0), shifted by `propensity_shift` $\sim \mathcal{U}(-2.5, 2.5)$ (treatment imbalance), squashed through a sigmoid, and clamped to $[\epsilon, 1-\epsilon]$ with `propensity_epsilon = 1e-3`; then $A \sim \mathrm{Bernoulli}$.
+6. **Potential outcomes.** $\bigl(Y(0), Y(1)\bigr) = f_Y(U, X_Y^*, W^*, \epsilon_Y)$ in a **single joint two-headed forward pass** — $A$ is never an input of $f_Y$. A per-dataset coefficient $\gamma \sim \mathcal{U}(0,1)$ then interpolates each pair between the raw heterogeneous heads and a constant-shift pair $(y_0,\, y_0 + \mathrm{ATE})$, sweeping effect heterogeneity from strong to near-homogeneous. All meaningful stochasticity enters through the explicit $\epsilon$ inputs, drawn freshly for every unit and every replicate; within-layer noise is pinned to a tiny fixed dither (`noise_std = 1e-3`, three orders below the unit-scale signals) whose only role is to keep genuinely continuous columns at ~$T \cdot K$ distinct values under saturating/discretizing activations, so the distinct-count profile classification (categorical-completeness enforcement and audits) cannot misread them as categorical. Each $\epsilon$ block's width targets a sampled share of its mechanism's input (`noise_share_of_input_in_{U,W,Z,A,Y}` $\sim \mathrm{Beta}(1.2, 2.8)$, mean 0.30, capped at 0.75), so the effective noise level does not shrink as the signal width grows; $\epsilon_U$ is additionally floored at $d_U$ columns so $U$ keeps $d_U$ genuinely exogenous dimensions.
 7. **Labels and observation.** Averaging over replicates yields the Monte-Carlo conditional expected potential outcomes; one replicate $k_i \sim \mathrm{Unif}\{1,\dots,K\}$ per unit is retained as the observed row (see *Batch data* below). Constant feature columns are filtered, dimensions padded to their maxima, and degenerate draws rejected and resampled.
 
 **Note on the edge flip ($X \to U$).** The identification-natural graph has $U \to X$; generation reverses it so that $X$ is an ancestral root. This is immaterial for identification — the proximal conditions constrain only conditional independencies given $(X, U)$, unaffected by this edge's orientation — while making the conditional-on-$X$ Monte-Carlo scheme possible: fix $X = x$, replicate, forward-sample, and obtain exact i.i.d. draws from $P(\cdot \mid X = x)$.
@@ -87,11 +87,14 @@ One draw per dataset (or per group of datasets sharing an SCM family); ranges fr
 | `mlp_activations` | random diverse set, mixable across layers | nonlinearity of mechanisms |
 | `block_wise_dropout`, `mlp_dropout_prob` | choice / scaled Beta | sparsity of the mechanism graph |
 | `init_std` | log-scaled, ≈ 0.01–10 | weight scale (function roughness) |
-| `noise_std` | log-scaled, ≈ 1e-4–0.3 | outcome label noise (applied in $f_Y$ only) |
+| `noise_share_of_input_in_{U,W,Z,A,Y}` | $\mathrm{Beta}(1.2, 2.8)$, mean 0.30 | target exogenous-noise share of each mechanism's input ($\epsilon$ width) |
 | `sampling` | `normal` / `uniform` / `mixed` | exogenous noise base distributions |
 | `propensity_shift`, `propensity_scale` | $\mathcal{U}(-2.5, 2.5)$; log-scaled ≈ 0.5–3 | treatment imbalance and propensity sharpness |
-| `confounding_duplication_of_U_in_A` / `_in_Y` | $\mathrm{Beta}(1,1)$ | confounding strength |
-| `cat_prob` | fixed 0.2 | fraction of discretized (categorical-like) columns |
+| `confounding_share_of_U_in_A` / `_in_Y` | $\mathrm{Beta}(1.2, 2.8)$, mean 0.30 | target $U$ input share (confounding strength) |
+| `direct_edge_share_of_W_in_Y` / `_Z_in_A` | $\mathrm{Beta}(1,1)$ | per-column keep probability of the direct $W \to Y$ / $Z \to A$ edges |
+| `covariate_share_of_X_in_U` | $\mathrm{Beta}(1.2, 2)$, mean 0.375 | keep probability of the confounding $X \to U$ edge (observed share of $U$) |
+| `covariate_share_of_X_in_{W,Z,A,Y}` | $\mathrm{Beta}(1,1)$ | per-column keep probability of the direct $X \to \{W,Z,A,Y\}$ edges |
+| `cat_col_prob` | $\mathrm{Beta}(1, 3)$, mean 0.25 | per-column probability a feature is discretized (categorical-like); shared across blocks per dataset |
 | $d_U, d_X, d_W, d_Z$ | uniform in `--min_dim_*`/`--max_dim_*` (with $d_W, d_Z \ge d_U$) | variable dimensions |
 | `seq_len`, `train_size` | `--min/max_seq_len`, `--min/max_train_size` | episode length and context/query split |
 
@@ -101,32 +104,64 @@ All of these are exposed as CLI flags of the trainer (`proximalfm/train/_train_c
 
 ---
 
-## Architecture
+## The Model: Architecture, Loss & Inference
 
-ProximalFM is built on top of the **TabICLv2** foundation model architecture (Qu et al., 2026), refactored strictly for continuous regression and proximal causal learning. The execution pipeline is divided into three sequential transformer stages:
+ProximalFM is a PFN-style transformer $q_\theta$ that maps an observational dataset directly to a predictive distribution over causal effects. Given a context set $\mathcal{D}_N = \{(x_i, w_i, z_i, a_i, y_i)\}_{i=1}^N$ and query covariates $x^\star$, a single forward pass outputs predictive distributions over the conditional expected potential outcomes $\mu_0(x^\star)$ and $\mu_1(x^\star)$, from which the proximal CATE estimate $\hat{Q}(x^\star) = \hat\mu_1(x^\star) - \hat\mu_0(x^\star)$ is derived. Because the model is trained on datasets drawn from the proximal prior above, its output approximates the **posterior predictive distribution** of the CEPOs under that prior: the Bayesian inference that would classically require dataset-specific posterior computation is amortized once, at pre-training time. The backbone follows **TabICLv2** (Qu et al., 2026); the proximal-specific pieces are (i) **structural role embeddings** distinguishing the feature groups $X/Z/W/A$, (ii) a **treatment-aware target encoder** for the observed outcomes, and (iii) **two distributional (histogram) output heads** trained with a Gaussian histogram loss plus a mean-CATE regularizer. Implementation: [`proximalfm/_model/proximalfm.py`](proximalfm/_model/proximalfm.py), stages in [`embedding.py`](proximalfm/_model/embedding.py), [`interaction.py`](proximalfm/_model/interaction.py), [`learning.py`](proximalfm/_model/learning.py).
+
+<details>
+<summary><b>Full details — backbone stages, role embeddings, output heads & loss, inference</b></summary>
+
+### Backbone: three sequential transformer stages
+
+Refactored from TabICLv2 strictly for continuous regression and proximal causal learning:
 
 ```
 [Input Tables: X, Z, W, A] 
            │
            ▼
-┌──────────────────────────────────────┐
-│ 1. Column-Wise Embedding (ColEmbed)  │ ──► Sets causal role tokens & sorts valid features
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 1. ColEmbedding              │ ──► Sets causal role tokens & sorts valid features
+└──────────────────────────────┘
            │
            ▼
-┌──────────────────────────────────────┐
-│ 2. Row-Wise Interaction (RowInteract)│ ──► Aggregates feature tokens into single row-vectors via CLS
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 2. RowInteraction            │ ──► Aggregates feature tokens into single row-vectors via CLS
+└──────────────────────────────┘
            │
            ▼
-┌──────────────────────────────────────┐
-│ 3. In-Context Learning (ICLPredict)  │ ──► Bakes y_train context; outputs outcome/CATE statistics
-└──────────────────────────────────────┘
+┌──────────────────────────────┐
+│ 3. ICLearning                │ ──► Bakes y_train context; outputs distributional heads
+└──────────────────────────────┘
 ```
 
-* **Causal Role Embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment Proxy } Z$, $2=\text{Outcome Proxy } W$, $3=\text{Treatment } A$) before processing.
-* **Validity Packing:** Features are processed using a padding-aware stable sorting strategy (`torch.gather`). Valid feature embeddings are packed at the front of the sequence, gracefully handling datasets with varying numbers of proxies.
-* **Target-Aware In-Context Learning:** During the embedding stage, the observed training targets ($Y_{train}$) are standard-scaled and encoded cleanly based on the assigned treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
+Query rows attend only to context rows (asymmetric masking), and no positional encoding is used across rows, preserving permutation invariance of the context set.
+
+### The input interface: where the causal structure enters
+
+The proximal estimand conditions on $X$ alone, while the proxies $W$ and $Z$ play distinct, non-exchangeable roles in identification — so the model must be told which feature group is which:
+
+* **Structural role embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment Proxy } Z$, $2=\text{Outcome Proxy } W$, $3=\text{Treatment } A$) before processing.
+* **Treatment-aware target encoder:** The observed context targets ($Y_{train}$) are standard-scaled and encoded by two distinct projections selected by the treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
+
+### Output heads & training loss
+
+The model has **two output heads**, predicting distributions over $\mu_0(x^\star)$ and $\mu_1(x^\star)$. Crucially, the training targets are the Monte-Carlo CEPO approximations `MU0`/`MU1` from the prior (see above), **not single ITE draws**: the model is trained on CATE-level quantities in which unit-level variation due to $U$, the proxies, and outcome noise has already been integrated out.
+
+Each head approximates its predictive distribution with a **quantized histogram**: the target space is standardized from the context outcomes and discretized into $B$ bins spanning $[-5, 5]$ standard deviations; the network projects each query token into $B$ logits per head, softmaxed into a distribution $q^{(a)}_\theta(\cdot \mid x^\star, \mathcal{D}_N)$. At each gradient update, a Gaussian with small width $\sigma$ is placed at the target $\widehat{\mu}_a(x_i)$ and integrated over the bins, and the heads minimize the **histogram loss** (cross-entropy against these Gaussian quantized probabilities):
+
+$$\texttt{HL}\bigl[\widehat{\mu}_a(x_i) \,\Vert\, q^{(a)}_\theta\bigr] = -\sum_{b=1}^{B} \mathcal{N}\bigl(\widehat{\mu}_a(x_i), \sigma^2\bigr)[b] \cdot \log q^{(a)}_\theta[b],$$
+
+averaged over both treatment arms and all query points. A **mean-CATE regularizer** additionally penalizes the squared error of the implied effect — the difference of the head means — against the Monte-Carlo CATE target:
+
+$$\mathcal{L} = \mathcal{L}_{\mathrm{HL}} + \lambda_{\mathrm{mean}} \cdot \frac{1}{n_q}\sum_i \Bigl( \bigl(\hat\mu^\theta_1(x_i) - \hat\mu^\theta_0(x_i)\bigr) - \bigl(\widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)\bigr) \Bigr)^2.$$
+
+The histogram term stabilizes distributional learning and carries the model's uncertainty representation; the mean term directly aligns the point prediction with the estimand $Q(x)$. In code: `--loss_type` selects the objective (`bins_po`, `hl`, `cate_decomposition`), and the smoothing width follows a schedule (`--hl_start_sigma`, `--hl_warmup_sigma_steps`, `--hl_linear_decay_steps`); see [`proximalfm/train/_train_config.py`](proximalfm/train/_train_config.py).
+
+### Inference
+
+The CATE point estimate is the difference of the head means, $\hat{Q}_\theta(x^\star) = \hat\mu^\theta_1(x^\star, \mathcal{D}_N) - \hat\mu^\theta_0(x^\star, \mathcal{D}_N)$. Beyond the point estimate, a predictive distribution over the CATE itself can be obtained by convolving the two head distributions (difference of independent draws from $q^{(1)}_\theta$ and $q^{(0)}_\theta$) — note this treats the two posteriors as independent given the context, which likely makes the resulting intervals conservative. Point, distributional, and interval outputs are exposed through the `predict` API (`target="cate"`, `output_type="mean"`, …); see the Usage section below and [`proximalfm/_model/inference.py`](proximalfm/_model/inference.py).
+
+</details>
 
 
 ---

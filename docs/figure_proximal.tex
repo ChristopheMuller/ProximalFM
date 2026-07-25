@@ -1,0 +1,45 @@
+\begin{tikzpicture}[
+line cap=round,
+line join=round,
+% -----------------------------------------------------------------------------
+% Refined Color Palette (shared with figure_prior.tex / figure_model.tex)
+% -----------------------------------------------------------------------------
+observed color/.style={draw=cyan!50!blue!80!black, fill=cyan!5, line width=0.8pt},
+outcome color/.style={draw=blue!80!black, fill=blue!4, line width=0.8pt},
+latent color/.style={draw=red!70!black, fill=red!3, line width=0.8pt, dashed, dash pattern=on 2.5pt off 1.8pt},
+% -----------------------------------------------------------------------------
+% Style Definitions
+% -----------------------------------------------------------------------------
+main node/.style={circle, minimum size=8mm, inner sep=1pt, font=\large\itshape, text=black!90},
+observed/.style={main node, observed color},
+outcome/.style={main node, outcome color},
+latent/.style={main node, latent color},
+edge/.style={draw=black!75, line width=0.6pt, -{Latex[length=1.8mm,width=1.3mm]}},
+latent edge/.style={edge, draw=red!70!black, dashed, dash pattern=on 2.5pt off 1.8pt}
+]
+    % Define the coordinates for each node to match the visual layout
+    \node[latent]   (U) at (0, 2) {$U$};
+    \node[observed] (Z) at (-2, 0) {$Z$};
+    \node[observed] (X) at (0, 0) {$X$};
+    \node[observed] (W) at (2, 0) {$W$};
+    \node[observed] (A) at (-1.5, -2) {$A$};
+    \node[outcome]  (Y) at (1.5, -2) {$Y$};
+
+    % Edges originating from U
+    \draw[latent edge] (U) -- (Z);
+    \draw[latent edge] (U) -- (X);
+    \draw[latent edge] (U) -- (W);
+    \draw[latent edge] (U) -- (A);
+    \draw[latent edge] (U) -- (Y);
+
+    % Edges originating from X
+    \draw[edge] (X) -- (Z);
+    \draw[edge] (X) -- (W);
+    \draw[edge] (X) -- (A);
+    \draw[edge] (X) -- (Y);
+
+    % Remaining edges
+    \draw[edge] (Z) -- (A);
+    \draw[edge] (W) -- (Y);
+    \draw[edge] (A) -- (Y);
+\end{tikzpicture}

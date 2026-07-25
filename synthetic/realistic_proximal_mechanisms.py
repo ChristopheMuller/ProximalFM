@@ -100,6 +100,8 @@ class RealisticGeneratorConfig:
     min_dim_Z: int = 1
     max_dim_Z: int = 8
 
+    dim_U_distribution: str = "triangular"
+
     # Strict positivity floor: propensities mapped to [overlap_eps, 1 - overlap_eps].
     overlap_eps: float = 0.02
 
@@ -1034,14 +1036,46 @@ class RealisticProximalGenerator:
         if not (0.0 < c.overlap_eps < 0.5):
             raise ValueError("overlap_eps must be in (0, 0.5)")
 
+    def _triangular_randint(self, low: int, high: int) -> int:
+        """Sample an int in ``[low, high]`` with pmf ``p(d) ∝ (high + 1 - d)``.
+
+        Mirrors ``SCMPrior.triangular_dim_pmf`` in ``proximalfm/prior/_dataset.py``:
+        the linearly-decreasing weights skew the drawn dimension toward small
+        values so that, paired with the conditional-uniform proxy sampling, the
+        induced dim_W/dim_Z marginals become a gentle linear ramp rather than
+        piling up at ``max_dim``. Uses this generator's own seeded RNG.
+        """
+        if high < low:
+            high = low
+        vals = torch.arange(low, high + 1)
+        weights = (high + 1 - vals).to(self.dtype)
+        idx = int(torch.multinomial(weights, 1, generator=self.rng).item())
+        return int(vals[idx].item())
+
+    def _sample_dim(self, low: int, high: int, distribution: str) -> int:
+        """Sample a dimension in ``[low, high]`` under the chosen distribution.
+
+        ``"uniform"`` draws flat over the range; ``"triangular"`` uses
+        :meth:`_triangular_randint` (mirrors ``SCMPrior.sample_dim``).
+        """
+        if distribution == "uniform":
+            return self._randint(low, high)
+        if distribution == "triangular":
+            return self._triangular_randint(low, high)
+        raise ValueError(
+            f"Unknown dim distribution {distribution!r} "
+            "(expected 'uniform' or 'triangular')"
+        )
+
     def _sample_dims(
         self, force_d_U: Optional[int] = None
     ) -> Tuple[int, int, int, int]:
         c = self.cfg
+        # dim_U: triangular pmf (skews small) by default, matching the SCM prior.
         d_U = (
             int(force_d_U)
             if force_d_U is not None
-            else self._randint(c.min_dim_U, c.max_dim_U)
+            else self._sample_dim(c.min_dim_U, c.max_dim_U, c.dim_U_distribution)
         )
         d_X = self._randint(c.min_dim_X, c.max_dim_X)
         min_W = max(c.min_dim_W, d_U)
