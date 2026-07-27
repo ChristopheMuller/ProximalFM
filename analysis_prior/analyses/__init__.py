@@ -21,6 +21,7 @@ from . import dimensions  # noqa: E402,F401
 from . import hyperparameters  # noqa: E402,F401
 from . import mechanism_inputs  # noqa: E402,F401
 from . import mechanism_outputs  # noqa: E402,F401
+from . import outcome  # noqa: E402,F401
 from . import overview  # noqa: E402,F401
 from . import treatment  # noqa: E402,F401
 

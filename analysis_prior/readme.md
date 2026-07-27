@@ -69,9 +69,9 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Eight analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
+Nine analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
 `hyperparameters`, `categorical_completeness`, `mechanism_inputs`, `mechanism_outputs`,
-`treatment_walkthrough`, `prior_overview`. The subsections below match the *current*
+`treatment_walkthrough`, `heterogeneity`, `prior_overview`. The subsections below match the *current*
 `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
@@ -211,6 +211,51 @@ they existed (i.e. before `a_logits` was added) must be regenerated once with `-
 bit-identical, the logits are simply recorded alongside. The B.3.1 overlap audit (`app:prior_overlap`)
 will later add a second analysis (`treatment_overlap`) to this same `treatment.py` module.
 
+### B.2.6 Heterogeneity dial — `fig:prior_heterogeneity_spread`
+
+> **Rendered but not yet `\input` into `B_prior.tex`.** The figure exists; the `\cm` at
+> `app:prior_outcome` also asks for `fig:prior_cate_vs_ite_K` (still planned, see below), so the
+> marker stays until both land.
+
+Does the remix dial `gamma` control the spread of the delivered effect? Substituting `eq:remix`
+collapses the per-row weights to `tau = Y1 - Y0 = gamma * tau_raw + (1 - gamma) * tau_bar` — the
+per-row `alpha` cancels — so `sd(tau) = gamma * sd(tau_raw)` exactly.
+
+**`gamma` cannot be pinned from a `PriorSpec`**: it is drawn inside the generator
+(`torch.rand(1)` in `_dataset.py`), not from the sampled-HP config, so there is no way to hold an
+SCM fixed and turn the dial. It *is* recorded per dataset (`record.gamma_hetero`) and drawn
+uniformly, so one cache is already a sweep — the analysis reads the delivered `gamma` and asks
+whether dispersion tracks it **across** the prior. Two consequences worth knowing before reading
+the figure:
+
+- the ATE-preservation half of the claim is **not** testable this way (the ATE varies by orders of
+  magnitude across SCMs, swamping any `gamma` effect) — only the spread claim is;
+- `Y` is not standardised by `Corrupt`, so every statistic is a ratio. Dispersion is
+  `sd(tau)/sd([Y0;Y1])`; `summary.json` reports `spearman_gamma_vs_scale` (0.04 on `general_ite`)
+  as the check that this denominator is `gamma`-neutral and the panel-(c) overlay compares like
+  with like.
+
+Three panels: **(a)** two effect densities on a shared outcome-scaled axis, one gathered
+(`gamma ≈ 0.1`) and one spread (`gamma ≈ 0.9`) — the pair is chosen for *matched* SCM dispersion
+`c = dispersion/gamma`, so the contrast is about `gamma` rather than SCM luck; **(b)**
+`corr(Y0, Y1)` vs `gamma`, whose `gamma → 0` endpoint is pinned at exactly 1 by the algebra
+(`Y1 = Y0 + tau_bar`) and needs no scale reference; **(c)** dispersion violins per `gamma` bin
+against the proportionality `gamma * median(c)`.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis heterogeneity` |
+| **Config group** | preset `general_ite` (reuses the same cache as `mechanism_inputs` / `treatment_walkthrough` / `prior_overview`) |
+| **Analysis module** | `analyses/outcome.py` → `HeterogeneitySpreadAnalysis` (`name="heterogeneity"`) |
+| **Output dir** | `results/general_ite/heterogeneity/` |
+| **Figure output** | `heterogeneity_spread.pdf` → `fig:prior_heterogeneity_spread` |
+| **Appendix location** | §B.2.6 "Potential Outcomes, Heterogeneity Remix & CATE Targets" (`app:prior_outcome`) |
+
+Statistics use the ITE `Y1 - Y0` of the realised replicate, which satisfies the collapse above at
+any `K`. At `K = 1` the Monte Carlo CATE target `MU1 - MU0` **is** that same quantity, so on a
+`general_ite` cache the panels read equally as a CATE view. Needs only `gamma_hetero` from the
+diagnostics payload (a cache predating it must be regenerated once with `--force`), no regression.
+
 ### B.2.x Visualize the prior — `fig:prior_feature_distributions`, `fig:prior_feature_pairs`, `fig:prior_feature_pairs_cross`
 
 Three galleries of the delivered data, all off the prior's own statistics (no training):
@@ -265,7 +310,7 @@ is registered today). Listed here so the mapping is complete once they land.
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.2.6 outcome / heterogeneity | `app:prior_outcome` | `heterogeneity` | K-sweep family (K>1) | `fig:prior_heterogeneity_spread`, `fig:prior_cate_vs_ite_K` | T1.3 |
+| B.2.6 CATE vs ITE | `app:prior_outcome` | *(new, alongside `heterogeneity` in `outcome.py`)* | one spec with `K>1` | `fig:prior_cate_vs_ite_K` | T1.3 |
 | B.3.1 Overlap | `app:prior_overlap` | `treatment_overlap` | `general_ite` | Fig audit(b) + overlap table | T2.1 |
 | B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
 | B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
@@ -291,10 +336,19 @@ predictions under `cache/regression/`). Reuse it for those modules.
 > deleted.
 
 **Note on `general_ite` vs. final data.** All the `general_ite`-based commands above (K=1) are fine
-for drafting the ITE-phase (B.2/B.3) artifacts. For the CATE-phase artifacts that need `K>1`
-(`mc_error`, `heterogeneity`), reuse the same underlying SCMs as `general_ite` — a base spec
-identical apart from `mcmc_cate` — rather than generating a second, unrelated batch, so Fig A8 and
-the B.2.6 figures share the same datasets.
+for drafting the ITE-phase (B.2/B.3) artifacts, and `heterogeneity` needs nothing more (the
+`gamma` collapse is `K`-independent). Only the Monte Carlo artifacts (`mc_error`,
+`fig:prior_cate_vs_ite_K`) need `K>1`.
+
+> **A `K` sweep across specs does not hold the SCM fixed.** Changing `mcmc_cate` resizes the
+> `T*K` tensors the generator draws, which shifts the RNG stream, so the mechanism weights differ
+> between arms — per-dataset error curves across `K` specs would be comparing different SCMs.
+> A single `K>1` cache avoids this entirely: it stores both the retained replicate
+> (`Y1 - Y0`, variance `Var(Q) + E[sigma^2]`) and the `K`-average (`MU1 - MU0`, variance
+> `Var(Q) + E[sigma^2]/K`), two equations that solve per dataset for the CATE signal and the
+> within-`x` replicate noise — hence the whole signal-share curve `1/(1 + NSR/K)` with no gold
+> standard and no matched SCMs. The MC analysis wants many datasets, not long ones, so a shorter
+> `seq_len` at `K=100` is much cheaper than reusing `general_ite`'s `seq_len=2048`.
 
 ---
 
@@ -344,6 +398,12 @@ PYTHONPATH=. uv run python -m analysis_prior.examples.mechanism_outputs_small
 # logits, added alongside the mechanism diagnostics — regenerate once with
 # --force if the cache predates them).
 PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis treatment_walkthrough
+
+# B.2.6 Heterogeneity dial — fig:prior_heterogeneity_spread.
+# Reads the delivered gamma (record.gamma_hetero) off the same general_ite
+# cache; gamma cannot be pinned from a spec, so the sweep is the prior's own
+# uniform draw. K=1 is fine — the gamma collapse is K-independent.
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis heterogeneity
 
 # B.2.x Visualize the prior — fig:prior_feature_distributions,
 # fig:prior_feature_pairs, fig:prior_feature_pairs_cross.
