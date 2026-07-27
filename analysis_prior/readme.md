@@ -158,7 +158,7 @@ per-dataset tqdm progress bar tracks the run.
 > / `.csv` still sitting under `results/dim_ablation/dimension_comparison/` are stale leftovers and
 > can be deleted; a fresh run will not regenerate them.
 
-### B.2.4 Post-process (categorical completeness) — `fig:prior_category_count_marginals`, `fig:prior_proxy_stats_by_u_cardinality`, `fig:prior_proxy_composition_vs_u_demand`, `tab:prior_categorical_completeness_survival`
+### B.2.4 Post-process (categorical completeness) — `fig:prior_category_count_marginals`, `fig:prior_proxy_enforcement_vs_u_demand`, `tab:prior_categorical_completeness_survival`
 
 Discrete analogue of the dimension heuristic: a proxy block is *categorically complete* w.r.t.
 `U` when every column of `U` can be matched one-to-one to a proxy column that is at least as
@@ -174,13 +174,17 @@ unambiguous at the shipped cap.
 | **Config group** | family `cat_ablation` (base preset `general_ite`, variants `full` / `ablation` / `baseline` — enforcement and `U`-categorisation toggled via `enforce_categorical_completeness` / `corrupt_U`) |
 | **Analysis module** | `analyses/categorical.py` → `CategoricalCompletenessAnalysis` (`name="categorical_completeness"`) |
 | **Output dir** | `results/cat_ablation/categorical_completeness/` |
-| **Figure outputs** | `category_count_marginals.pdf` → `fig:prior_category_count_marginals`; `proxy_stats_by_u_cardinality.pdf` → `fig:prior_proxy_stats_by_u_cardinality`; `proxy_composition_vs_u_demand.pdf` → `fig:prior_proxy_composition_vs_u_demand` |
+| **Figure outputs** | `category_count_marginals.pdf` → `fig:prior_category_count_marginals`; `proxy_enforcement_vs_u_demand.pdf` → `fig:prior_proxy_enforcement_vs_u_demand` |
 | **Table output** | `categorical_completeness_survival.tex` → `tab:prior_categorical_completeness_survival` |
 | **Appendix location** | §B.2.4 "Post-Process" (`app:prior_postprocess`), paragraphs "Categorical completeness" / "Enforcement scales with `U`'s demand" / "Survival" |
 
-The composition and cardinality figures (`proxy_composition_vs_u_demand`, `proxy_stats_by_u_cardinality`)
-only plot the categorised-`U` arms (`full`, `ablation`) — `baseline` has a continuous `U` by
-construction and is dropped from those two views, though it still appears in the category-marginals
+`proxy_enforcement_vs_u_demand` is a single three-panel figure: (a, b) condition on one `U` column's
+own cardinality (proxy continuous fraction, proxy mean category count), (c) conditions at the dataset
+level on `|cats(U)|` (proxy categorical fraction). It replaces the former standalone
+`proxy_stats_by_u_cardinality` (panels a, b) and `proxy_composition_vs_u_demand` (panel c) — any
+leftovers of those two under `results/cat_ablation/categorical_completeness/` are stale and will not
+regenerate. All three panels plot only the categorised-`U` arms (`full`, `ablation`) — `baseline` has
+a continuous `U` by construction and is dropped, though it still appears in the category-marginals
 figure and the survival table.
 
 ### B.2.5 Treatment assignment walkthrough — `fig:prior_treatment_walkthrough`

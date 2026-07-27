@@ -302,13 +302,16 @@ def test_run_writes_category_figures(tiny_family_caches, tmp_path):
     names = {p.name for p in artifacts.figures}
     for stem in (
         "category_count_marginals",
-        "proxy_composition_vs_u_demand",
-        "proxy_stats_by_u_cardinality",
+        "proxy_enforcement_vs_u_demand",
     ):
         assert f"{stem}.pdf" in names
         assert f"{stem}.png" in names
     # The joint-count heatmap was removed; make sure it does not come back.
     assert "category_profile_joint_heatmaps.pdf" not in names
+    # The per-U-column and per-dataset views were merged into the single
+    # three-panel `proxy_enforcement_vs_u_demand`; the split figures are gone.
+    assert "proxy_stats_by_u_cardinality.pdf" not in names
+    assert "proxy_composition_vs_u_demand.pdf" not in names
     for path in artifacts.figures:
         assert path.exists()
 
