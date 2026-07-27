@@ -389,8 +389,8 @@ class McTargetsAnalysis(Analysis):
             "mc_signal_share",
             caption=(
                 "Share of the Monte Carlo CATE target's variance that is real "
-                "CATE signal, $S(K)=\\mathrm{Var}_x(Q)/\\mathrm{Var}(\\hat "
-                "Q_K)=1/(1+\\mathrm{NSR}/K)$, across the prior. The "
+                "CATE signal, $S(K)=\\mathrm{Var}(Q(X))/\\mathrm{Var}(\\hat "
+                "Q_K(X))=1/(1+\\mathrm{NSR}/K)$, across the prior. The "
                 "noise-to-signal ratio $\\mathrm{NSR}$ is measured once per "
                 "dataset from the replicate structure; $S(K)$ then follows "
                 "analytically, being the variance of a sample mean."

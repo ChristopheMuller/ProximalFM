@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Parallel workers for generation (-1 = all cores).",
     )
+    parser.add_argument(
+        "--progress-bar",
+        action="store_true",
+        help="Show a live progress bar while generating datasets.",
+    )
 
     parser.add_argument(
         "--list-analyses", action="store_true", help="List analyses and exit."
@@ -229,7 +234,11 @@ def _run_single(args: argparse.Namespace, analysis_names: List[str]) -> int:
 
     spec = build_spec(args)
     cache = load_or_generate(
-        spec, cache_dir=args.cache_dir, force=args.force, n_jobs=args.n_jobs
+        spec,
+        cache_dir=args.cache_dir,
+        force=args.force,
+        n_jobs=args.n_jobs,
+        progress_bar=args.progress_bar,
     )
 
     # Results are grouped by the spec's *name*: caches are content-addressed
@@ -257,7 +266,11 @@ def _run_family(args: argparse.Namespace, analysis_names: List[str]) -> int:
 
     caches = {
         label: load_or_generate(
-            spec, cache_dir=args.cache_dir, force=args.force, n_jobs=args.n_jobs
+            spec,
+            cache_dir=args.cache_dir,
+            force=args.force,
+            n_jobs=args.n_jobs,
+            progress_bar=args.progress_bar,
         )
         for label, spec in variants.items()
     }

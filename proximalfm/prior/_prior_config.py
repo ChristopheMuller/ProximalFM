@@ -13,7 +13,7 @@ DEFAULT_FIXED_HP = {
     "enforce_categorical_completeness": True,
     "proxy_cat_cover_prob": 0.5,
     "propensity_epsilon": 1e-3,
-    "prior_mc_mem_budget": 100_000_000,
+    "prior_mc_mem_budget": 500_000_000,
     "enforce_completeness_heuristic": True,
     "completeness_max_attempts": 50,
     "dim_U_distribution": "triangular",

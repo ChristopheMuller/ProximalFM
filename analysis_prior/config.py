@@ -290,8 +290,8 @@ PRESETS: Dict[str, PriorSpec] = {
     ),
     "mc_targets": PriorSpec(
         name="mc_targets",
-        n_datasets=128,
-        seq_len=256,
+        n_datasets=100,
+        seq_len=2048,
         mcmc_cate=100,
         min_dim_U=1,
         max_dim_U=10,

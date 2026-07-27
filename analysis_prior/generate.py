@@ -29,6 +29,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import joblib
 import numpy as np
 import torch
+from tqdm.auto import tqdm
 
 from proximalfm.prior import PriorDataset
 
@@ -302,6 +303,7 @@ def generate(
     spec: PriorSpec,
     n_jobs: int = 1,
     progress: bool = True,
+    progress_bar: bool = False,
     indices: Optional[Iterable[int]] = None,
 ) -> PriorCache:
     """Draw datasets for ``spec``.
@@ -321,6 +323,11 @@ def generate(
         Print a line before starting. Generation of a large spec is slow enough
         that silence is confusing.
 
+    progress_bar : bool, default=False
+        Show a live ``tqdm`` progress bar over datasets as they complete, on
+        top of the one-line ``progress`` announcement. Off by default so
+        non-interactive runs (CI, logs piped to a file) stay clean.
+
     indices : iterable of int, optional
         Which dataset indices to draw. Defaults to ``range(spec.n_datasets)``.
         Used by :func:`load_or_generate` to fill only the gap when extending an
@@ -333,11 +340,21 @@ def generate(
             f"(T={spec.seq_len}, K={spec.mcmc_cate}, n_jobs={n_jobs})"
         )
 
+    desc = f"cache {spec.cache_key}"
     if n_jobs == 1:
-        records = [_generate_one(spec, i) for i in indices]
+        records = [
+            _generate_one(spec, i)
+            for i in tqdm(indices, desc=desc, disable=not progress_bar)
+        ]
     else:
-        records = joblib.Parallel(n_jobs=n_jobs, backend="loky")(
+        # return_as="generator" preserves submission order (like the default
+        # "list") but yields each result as it completes, so the bar advances
+        # per-dataset instead of jumping to 100% once every worker returns.
+        results = joblib.Parallel(n_jobs=n_jobs, backend="loky", return_as="generator")(
             joblib.delayed(_generate_one)(spec, i) for i in indices
+        )
+        records = list(
+            tqdm(results, total=len(indices), desc=desc, disable=not progress_bar)
         )
 
     return PriorCache(spec=spec, records=list(records))
@@ -434,6 +451,7 @@ def load_or_generate(
     force: bool = False,
     n_jobs: int = 1,
     progress: bool = True,
+    progress_bar: bool = False,
 ) -> PriorCache:
     """Return exactly ``spec.n_datasets`` datasets, using the cache where possible.
 
@@ -472,7 +490,11 @@ def load_or_generate(
     if existing and progress:
         print(f"Extending cache {spec.cache_key} from {len(existing)} to {n} datasets")
     fresh = generate(
-        spec, n_jobs=n_jobs, progress=progress, indices=range(len(existing), n)
+        spec,
+        n_jobs=n_jobs,
+        progress=progress,
+        progress_bar=progress_bar,
+        indices=range(len(existing), n),
     )
 
     cache = PriorCache(spec=spec, records=existing + list(fresh.records))
