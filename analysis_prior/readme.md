@@ -54,6 +54,7 @@ only differ in name.
 | preset | n | seq_len | K (`mcmc_cate`) | notes |
 |---|---|---|---|---|
 | `default` | 64 | 2048 | 100 | mirrors training runs |
+| `mc_targets` | 128 | 256 | **100** | B.2.6 Monte Carlo targets; the only `K>1` preset in use. Cheap on purpose — precision comes from paired within-row contrasts, so raise `seq_len` (not `n_datasets`) to tighten the variance self-check |
 | `general_ite` | **1024** | 2048 | **1** | ITE-phase workhorse; base of `dim_ablation` and `cat_ablation` |
 | `smoke` | 4 | 100 | 8 | fast CI/dev |
 | `no_u_augment` | 64 | 2048 | 100 | ablation: `confounding_dim_control=False` (f_A/f_Y see raw full U) |
@@ -69,9 +70,9 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Nine analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
+Ten analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
 `hyperparameters`, `categorical_completeness`, `mechanism_inputs`, `mechanism_outputs`,
-`treatment_walkthrough`, `heterogeneity`, `prior_overview`. The subsections below match the *current*
+`treatment_walkthrough`, `heterogeneity`, `mc_targets`, `prior_overview`. The subsections below match the *current*
 `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
@@ -260,6 +261,62 @@ any `K`. At `K = 1` the Monte Carlo CATE target `MU1 - MU0` **is** that same qua
 `general_ite` cache the panels read equally as a CATE view. Needs only `gamma_hetero` from the
 diagnostics payload (a cache predating it must be regenerated once with `--force`), no regression.
 
+### B.2.6 Monte Carlo CATE targets — `fig:prior_cate_vs_ite`, `tab:prior_mc_signal_share`
+
+> **Rendered but not yet `\input` into `B_prior.tex`.** Together with
+> `fig:prior_heterogeneity_spread` above, this closes the `\cm` at `app:prior_outcome`.
+> Note the label is `fig:prior_cate_vs_ite`, not the planned `..._K`: there is no measured `K`
+> sweep in it (see below).
+
+How much of the training target is real? The target `Q_hat_K = MU1 - MU0` is unbiased at every
+`K`, so a small `K` costs variance, not bias. Writing `sigma^2(x) = Var(tau|x)` for the
+within-unit replicate variance and `Var_x(Q)` for the between-unit CATE variation,
+
+```
+Var_rows(Q_hat_K) = Var_x(Q) + E[sigma^2]/K      →      S(K) = 1/(1 + NSR/K)
+```
+
+with `NSR = E[sigma^2]/Var_x(Q)`. `S(K)` is the fraction of the target's variance that is signal —
+equivalently its R² against the true CATE.
+
+**The one trick that makes this free.** The retained replicate is one of the `K` that went into
+`MU`, so the mean of the *other* `K-1` is recoverable exactly and is statistically **independent**
+of the retained one: `Q_loo = (K*Q_hat_K - ITE)/(K-1)`. That gives two independent measurements of
+the same `Q(x)` — parallel-forms reliability — hence two subtraction-free estimators:
+`Var_x(Q) = Cov(ITE, Q_loo)` and `E[sigma^2] = mean[(ITE - Q_loo)^2]*(K-1)/K`. Neither differences
+near-equal variances, which is why a short `seq_len` works: precision comes from `T` paired
+contrasts.
+
+**Measured vs extrapolated.** Only `NSR` is measured, once per dataset. `S(K)` then follows
+analytically (it is the variance of a sample mean, exact under the i.i.d. replicate structure the
+generator guarantees) — it is **not** a measured sweep, and cannot be: the cache pins measured
+anchors only at `K=1`, `K-1` and `K`, and intermediate `K` would need the per-replicate matrix.
+That is why `S(K)` is reported as a *table* rather than drawn as a band of curves. `gamma` cancels
+from `NSR` (both variances carry `gamma^2`), so no faceting is needed; datasets with
+`gamma < 0.05` are dropped only because both variances then vanish numerically.
+
+Two panels: **(a)** one dataset's `K=1` target against the held-out `Q_loo`, with the identity and
+the fitted regression. The informative feature is the **slope**, not the diagonal cloud — a
+"CATE target" that were merely the ITE plus noise would regress with slope 1, whereas replicate
+averaging shrinks it to `Var(Q)/Var(ITE) = S(1)`; the gap between the two lines is what the Monte
+Carlo integration removed. **(b)** signal share across the prior at `K=1` vs the production `K`.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec mc_targets --analysis mc_targets --n-jobs -1` |
+| **Config group** | preset `mc_targets` (`n=128`, `seq_len=256`, **`K=100`** — the only preset with `K>1`; deliberately cheap, raise `n_datasets` to append to the same cache) |
+| **Analysis module** | `analyses/mc_targets.py` → `McTargetsAnalysis` (`name="mc_targets"`) |
+| **Output dir** | `results/mc_targets/mc_targets/` |
+| **Figure output** | `cate_vs_ite.pdf` → `fig:prior_cate_vs_ite` |
+| **Table output** | `mc_signal_share.tex` → `tab:prior_mc_signal_share` |
+| **Appendix location** | §B.2.6 "Potential Outcomes, Heterogeneity Remix & CATE Targets" (`app:prior_outcome`) |
+
+Rejects a `K=1` cache outright (there is no replicate structure to measure). `summary.json` reports
+two implied identities as `*_residual`; they are not equally informative — `var_ite_residual` is
+near-algebraic given how the estimators are built, while `var_cate_residual` is the real check, and
+is floored by the sampling error of a variance over `T` rows (`~sqrt(2/T)`, so ~9% at
+`seq_len=256`). **That floor is the reason to raise `seq_len`**, not the number of datasets.
+
 ### B.2.x Visualize the prior — `fig:prior_feature_distributions`, `fig:prior_feature_pairs`, `fig:prior_feature_pairs_cross`
 
 Three galleries of the delivered data, all off the prior's own statistics (no training):
@@ -314,7 +371,6 @@ is registered today). Listed here so the mapping is complete once they land.
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.2.6 CATE vs ITE | `app:prior_outcome` | *(new, alongside `heterogeneity` in `outcome.py`)* | one spec with `K>1` | `fig:prior_cate_vs_ite_K` | T1.3 |
 | B.3.1 Overlap | `app:prior_overlap` | `treatment_overlap` | `general_ite` | Fig audit(b) + overlap table | T2.1 |
 | B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
 | B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
@@ -408,6 +464,13 @@ PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis 
 # cache; gamma cannot be pinned from a spec, so the sweep is the prior's own
 # uniform draw. K=1 is fine — the gamma collapse is K-independent.
 PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis heterogeneity
+
+# B.2.6 Monte Carlo CATE targets — fig:prior_cate_vs_ite,
+# tab:prior_mc_signal_share.
+# The only command needing a K>1 cache (preset mc_targets, K=100), which it
+# generates on first run. Everything is arithmetic on MU0/MU1 and the retained
+# replicate -- no per-replicate matrix, no regression.
+PYTHONPATH=. uv run python -m analysis_prior.main --spec mc_targets --analysis mc_targets --n-jobs -1
 
 # B.2.x Visualize the prior — fig:prior_feature_distributions,
 # fig:prior_feature_pairs, fig:prior_feature_pairs_cross.
