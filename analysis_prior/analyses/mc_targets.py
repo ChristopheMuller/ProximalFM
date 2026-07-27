@@ -51,8 +51,8 @@ equally informative: expanding the two estimators shows the first reduces to
 regardless of whether the replicate model is right. The **second** is the real
 check -- nothing forces ``Var_rows(Q_hat_K)`` to land on the predicted
 ``Var_x(Q) + E[sigma^2]/K``. Its residual is floored by the sampling error of a
-variance over ``T`` rows (``~sqrt(2/T)``, so ~9% at ``T=256``), which is the
-argument for raising ``seq_len`` if the check needs to be tighter.
+variance over ``T`` rows (``~sqrt(2/T)``, so ~3% at the shipped ``T=2048``),
+which is the argument for raising ``seq_len`` if the check needs to be tighter.
 
 What is measured and what is extrapolated
 -----------------------------------------
@@ -83,14 +83,29 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from ..design import ROLES, apply_style, block_color, figsize_grid, trend_line
+from ..design import (
+    ROLES,
+    apply_style,
+    block_color,
+    figsize_grid,
+    trend_line,
+    variant_styles,
+)
 from ..generate import PriorCache, PriorDatasetRecord
 from ..plotting import plt, save_figure, save_table
 from .base import Analysis, AnalysisArtifacts, register
 
 #: ``K`` values the signal-share table reports. Spans the production range
 #: (training runs use 100-200) down to the K=1 regime the MC targets replaced.
-K_GRID: Tuple[int, ...] = (1, 5, 25, 100, 200)
+K_GRID: Tuple[int, ...] = (1, 5, 10, 25, 50, 100, 200, 500)
+
+#: ``K`` values the signal-share histogram overlays. Deliberately independent
+#: of the cache's own ``mcmc_cate``: ``S(K)`` follows analytically from the
+#: measured ``NSR``, so any ``K`` can be displayed off any ``K>1`` cache --
+#: edit this tuple to re-target the panel at a different production setting
+#: without regenerating anything. Kept a subset of :data:`K_GRID` so every
+#: plotted value is also quotable from ``summary.json`` and the table.
+SHARE_PANEL_K: Tuple[int, ...] = (1, 10, 100)
 
 #: Datasets with a smaller heterogeneity dial are dropped: at ``gamma -> 0``
 #: the effect is constant, so signal *and* noise both vanish and ``NSR`` is a
@@ -331,32 +346,32 @@ class McTargetsAnalysis(Analysis):
 
     @staticmethod
     def _share_panel(ax, results: McTargetResults) -> None:
-        """Signal share across the prior, at K=1 against the production K.
+        """Signal share across the prior at each ``K`` of :data:`SHARE_PANEL_K`.
 
         Bounded in [0, 1] and directly readable as "this fraction of the
-        training target is real"; the gap between the two histograms is what
-        the Monte Carlo averaging buys.
+        training target is real"; the gap between the curves is what the Monte
+        Carlo averaging buys, and the gap between the two largest ``K`` is the
+        marginal return on doubling generation compute.
         """
         usable = results.usable
+        nsr = usable["nsr"].to_numpy()
         bins = np.linspace(0.0, 1.0, 41)
-        # The cache's own K need not be one of K_GRID, so recompute rather than
-        # look up a precomputed column.
-        series = (
-            (r"$K=1$", usable["S_1"], block_color("Z")),
-            (
-                rf"$K={results.k}$",
-                pd.Series(signal_share(usable["nsr"].to_numpy(), results.k)),
-                block_color("W"),
-            ),
-        )
-        for label, values, color in series:
+        # Ordered ramp, not the block palette: K is a sweep with a natural
+        # order, which a sequential colormap shows and a categorical one hides.
+        styles = variant_styles([str(k) for k in SHARE_PANEL_K], ordered=True)
+        for k_value, key in zip(SHARE_PANEL_K, styles):
+            values = pd.Series(signal_share(nsr, k_value)).dropna()
+            color = styles[key]["color"]
+            # Outline plus light fill: three filled histograms alone would mud
+            # together where the larger K overlap near 1.
+            ax.hist(values, bins=bins, color=color, alpha=0.25, edgecolor="none")
             ax.hist(
-                values.dropna(),
+                values,
                 bins=bins,
+                histtype="step",
+                lw=1.3,
                 color=color,
-                alpha=0.55,
-                edgecolor="none",
-                label=label,
+                label=rf"$K={k_value}$",
             )
         ax.set_title("(b) signal share")
         ax.set_xlabel(r"$\mathrm{Var}(Q)\,/\,\mathrm{Var}(\hat Q_K)$")

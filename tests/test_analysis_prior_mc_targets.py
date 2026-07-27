@@ -13,6 +13,7 @@ import pytest
 from analysis_prior import generate as gen
 from analysis_prior.analyses.mc_targets import (
     K_GRID,
+    SHARE_PANEL_K,
     McTargetsAnalysis,
     leave_one_out_cate,
     signal_share,
@@ -150,6 +151,13 @@ def test_signal_share_is_monotone_in_k():
     assert signal_share(2.0, 1) == pytest.approx(1 / 3)
 
 
+def test_panel_k_values_are_quotable_from_the_table():
+    """Every K drawn in panel (b) must also be reported in the table and
+    summary, so a number read off the figure can be cited in the text."""
+    assert set(SHARE_PANEL_K) <= set(K_GRID)
+    assert SHARE_PANEL_K == tuple(sorted(SHARE_PANEL_K))
+
+
 # --------------------------------------------------------------------------
 # Degenerate cases
 # --------------------------------------------------------------------------
@@ -231,7 +239,6 @@ def test_analysis_runs_on_a_real_cache(tiny_cache, tmp_path):
 
 
 def test_mc_targets_preset_carries_replicates():
-    spec = PRESETS["mc_targets"]
-    assert spec.mcmc_cate >= 2
-    assert spec.seq_len == 256
-    assert spec.n_datasets == 128
+    """The one property the analysis actually requires. Size is a budget knob
+    the author is expected to scale, so it is deliberately not asserted."""
+    assert PRESETS["mc_targets"].mcmc_cate >= 2

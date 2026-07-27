@@ -54,7 +54,7 @@ only differ in name.
 | preset | n | seq_len | K (`mcmc_cate`) | notes |
 |---|---|---|---|---|
 | `default` | 64 | 2048 | 100 | mirrors training runs |
-| `mc_targets` | 128 | 256 | **100** | B.2.6 Monte Carlo targets; the only `K>1` preset in use. Cheap on purpose — precision comes from paired within-row contrasts, so raise `seq_len` (not `n_datasets`) to tighten the variance self-check |
+| `mc_targets` | 100 | 2048 | **100** | B.2.6 Monte Carlo targets; the only `K>1` preset in use. Precision comes from `T` paired within-row contrasts, so `seq_len` (not `n_datasets`) is the knob that tightens the variance self-check |
 | `general_ite` | **1024** | 2048 | **1** | ITE-phase workhorse; base of `dim_ablation` and `cat_ablation` |
 | `smoke` | 4 | 100 | 8 | fast CI/dev |
 | `no_u_augment` | 64 | 2048 | 100 | ablation: `confounding_dim_control=False` (f_A/f_Y see raw full U) |
@@ -299,12 +299,20 @@ Two panels: **(a)** one dataset's `K=1` target against the held-out `Q_loo`, wit
 the fitted regression. The informative feature is the **slope**, not the diagonal cloud — a
 "CATE target" that were merely the ITE plus noise would regress with slope 1, whereas replicate
 averaging shrinks it to `Var(Q)/Var(ITE) = S(1)`; the gap between the two lines is what the Monte
-Carlo integration removed. **(b)** signal share across the prior at `K=1` vs the production `K`.
+Carlo integration removed. **(b)** signal share across the prior at each `K` in `SHARE_PANEL_K`
+(currently `1, 10, 100`), on a sequential ramp; the mass sweeps from the left edge to the right as
+`K` grows.
+
+`SHARE_PANEL_K` is deliberately **independent of the cache's own `mcmc_cate`**: `S(K)` follows
+analytically from the measured `NSR`, so any `K` can be displayed off any `K>1` cache. Retargeting
+the panel at a different production setting is a one-line edit, no regeneration. Keep it a subset of
+`K_GRID` so every plotted value stays quotable from the table and `summary.json` — a test enforces
+that.
 
 | | |
 |---|---|
 | **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec mc_targets --analysis mc_targets --n-jobs -1` |
-| **Config group** | preset `mc_targets` (`n=128`, `seq_len=256`, **`K=100`** — the only preset with `K>1`; deliberately cheap, raise `n_datasets` to append to the same cache) |
+| **Config group** | preset `mc_targets` (`n=100`, `seq_len=2048`, **`K=100`** — the only preset with `K>1`; raising `n_datasets` appends to the same cache, changing `seq_len` or `mcmc_cate` starts a new one) |
 | **Analysis module** | `analyses/mc_targets.py` → `McTargetsAnalysis` (`name="mc_targets"`) |
 | **Output dir** | `results/mc_targets/mc_targets/` |
 | **Figure output** | `cate_vs_ite.pdf` → `fig:prior_cate_vs_ite` |
@@ -314,8 +322,9 @@ Carlo integration removed. **(b)** signal share across the prior at `K=1` vs the
 Rejects a `K=1` cache outright (there is no replicate structure to measure). `summary.json` reports
 two implied identities as `*_residual`; they are not equally informative — `var_ite_residual` is
 near-algebraic given how the estimators are built, while `var_cate_residual` is the real check, and
-is floored by the sampling error of a variance over `T` rows (`~sqrt(2/T)`, so ~9% at
-`seq_len=256`). **That floor is the reason to raise `seq_len`**, not the number of datasets.
+is floored by the sampling error of a variance over `T` rows (`~sqrt(2/T)`, so ~3% at the current
+`seq_len=2048`, against a delivered median of 5%). **That floor is the reason to raise `seq_len`**,
+not the number of datasets.
 
 ### B.2.x Visualize the prior — `fig:prior_feature_distributions`, `fig:prior_feature_pairs`, `fig:prior_feature_pairs_cross`
 
