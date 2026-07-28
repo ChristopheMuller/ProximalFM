@@ -66,6 +66,72 @@ def test_get_data_load_without_any_source_raises(tmp_path):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# get_data: single-CSV loading (source: csv)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _csv_cfg(csv_path):
+    return {
+        "data": {
+            "source": "csv",
+            "csv_path": str(csv_path),
+            "columns": {
+                "X": ["red"],
+                "W": ["pol_1"],
+                "Z": ["led_2_uv"],
+                "A": "led_3_uv",
+                "Y": "ir_3",
+                "U": ["green"],
+                "Y0": "Y0",
+                "Y1": "Y1",
+            },
+            "shuffle": False,
+        },
+        "run": {"seed": 0},
+    }
+
+
+def _make_chamber_csv(tmp_path, T=20):
+    import numpy as np
+    import pandas as pd
+
+    df = pd.DataFrame(
+        {
+            "green": np.arange(T, dtype=np.float64),
+            "red": np.arange(T, dtype=np.float64) * 2,
+            "pol_1": np.arange(T, dtype=np.float64) * 3,
+            "led_2_uv": np.arange(T, dtype=np.float64) * 5,
+            "led_3_uv": np.tile([0.0, 2047.0], T // 2),
+            "ir_3": np.arange(T, dtype=np.float64) - 7,
+            "Y0": np.arange(T, dtype=np.float64) + 100,
+            "Y1": np.arange(T, dtype=np.float64) + 200,
+        }
+    )
+    path = tmp_path / "chamber.csv"
+    df.to_csv(path)
+    return path
+
+
+def test_get_data_builds_from_csv_and_caches(tmp_path):
+    from benchmarks.bench_data_csv import load_benchmark_from_csv
+
+    csv_path = _make_chamber_csv(tmp_path)
+    output_dir = tmp_path / "exp"
+    cfg = _csv_cfg(csv_path)
+
+    data = bench_run.get_data(cfg, output_dir)
+    expected = load_benchmark_from_csv(csv_path, cfg["data"]["columns"], shuffle=False)
+    assert_dicts_equal(data, expected)
+
+    cached = torch.load(output_dir / "data.pt", weights_only=False)
+    assert_dicts_equal(cached, data)
+
+    # Later runs reuse the cache even if the CSV disappears.
+    csv_path.unlink()
+    assert_dicts_equal(bench_run.get_data(cfg, output_dir), data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # _generate_data uses the shared builder (schema identical to the load path)
 # ─────────────────────────────────────────────────────────────────────────────
 

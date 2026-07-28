@@ -53,6 +53,7 @@ from rich.rule import Rule
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.bench_data import build_benchmark_dict, load_benchmark_from_val_dir
+from benchmarks.bench_data_csv import load_benchmark_from_csv
 from benchmarks.bench_methods import build_method
 from benchmarks.bench_metrics import (
     compute_all_metrics,
@@ -196,14 +197,35 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
          standardized dict from the raw val-format directory (``batch_*.pt``,
          as written by synthetic/build_proximal_datasets.py) and cache it as
          ``data.pt`` in the run's output dir (bench_plots.py reads it there).
-      2. Otherwise fall back to an existing ``data.pt`` in the output dir.
+      2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
+         standardized dict from a single real-world CSV (e.g. a Causal
+         Chambers export) via ``data.csv_path`` + ``data.columns``, a
+         column-name to variable-block mapping. Always yields ``N_BATCH=1``.
+      3. Otherwise fall back to an existing ``data.pt`` in the output dir.
     """
     data_path = output_dir / "data.pt"
-    source = cfg["data"].get("source", "generate")
-    val_dir = cfg["data"].get("val_dir")
+    data_cfg = cfg["data"]
+    source = data_cfg.get("source", "generate")
+    val_dir = data_cfg.get("val_dir")
 
     if source == "generate" and (force_regen or not data_path.exists()):
-        return _generate_data(cfg["data"], cfg["run"], output_dir)
+        return _generate_data(data_cfg, cfg["run"], output_dir)
+
+    if source == "csv" and (force_regen or not data_path.exists()):
+        csv_path = data_cfg["csv_path"]
+        console.print(f"    Building benchmark data from CSV [cyan]{csv_path}[/]…")
+        data = load_benchmark_from_csv(
+            csv_path,
+            data_cfg["columns"],
+            prop_train=data_cfg.get("prop_train", 0.75),
+            shuffle=data_cfg.get("shuffle", True),
+            seed=cfg["run"].get("seed", 42),
+            normalize_treatment=data_cfg.get("normalize_treatment", True),
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(data, data_path)
+        console.print(f"    [green]✓[/] Saved (Normalized) → {data_path}")
+        return data
 
     if val_dir and (force_regen or not data_path.exists()):
         console.print(f"    Building benchmark data from val dir [cyan]{val_dir}[/]…")
@@ -219,8 +241,9 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 
     raise FileNotFoundError(
         f"Data file not found at {data_path}. "
-        "Set data.source: generate, or point data.val_dir at a directory of "
-        "batch_*.pt files in bench_config.yaml."
+        "Set data.source: generate, point data.val_dir at a directory of "
+        "batch_*.pt files, or set data.source: csv with data.csv_path + "
+        "data.columns in bench_config.yaml."
     )
 
 
