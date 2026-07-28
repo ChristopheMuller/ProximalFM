@@ -15,6 +15,9 @@ import pytest
 
 from analysis_prior import generate as gen
 from analysis_prior.analyses.treatment import (
+    OVERLAP_BAND,
+    QUANTILE_GRID,
+    OverlapAnalysis,
     TreatmentWalkthroughAnalysis,
     reconstruct_pipeline,
     select_dataset,
@@ -130,3 +133,54 @@ def test_analysis_end_to_end(tiny_cache, tmp_path):
     assert (tmp_path / "summary.json").exists()
     assert artifacts.summary["reconstruction_residual"] < 1e-5
     assert artifacts.summary["tracked_A"] in (0, 1)
+
+
+# --------------------------------------------------------------------------
+# Overlap audit (B.3.1)
+# --------------------------------------------------------------------------
+
+
+def test_overlap_statistics_are_consistent_with_the_cache(tiny_cache):
+    results = OverlapAnalysis().compute(tiny_cache)
+    n = len(tiny_cache)
+    T = tiny_cache[0].A_probs.size
+
+    assert results.pooled_margin.shape == (n * T,)
+    # A margin is min(pi, 1-pi): bounded by the clamp below and 1/2 above. The
+    # slack is float32 storage -- 1 - eps round-trips as 0.99900001.
+    assert (results.pooled_margin >= results.epsilon - 1e-5).all()
+    assert (results.pooled_margin <= 0.5 + 1e-9).all()
+
+    assert results.quantile_curves.shape == (n, QUANTILE_GRID.size)
+    # A quantile function is non-decreasing, and its ends are the extremes.
+    assert (np.diff(results.quantile_curves, axis=1) >= -1e-9).all()
+    for i, record in enumerate(tiny_cache):
+        assert results.quantile_curves[i, 0] == pytest.approx(record.A_probs.min())
+        assert results.quantile_curves[i, -1] == pytest.approx(record.A_probs.max())
+        assert results.prevalence[i] == pytest.approx(record.A.mean())
+
+    for share in (results.poor_fraction, results.clamp_fraction):
+        assert share.shape == (n,)
+        assert ((share >= 0.0) & (share <= 1.0)).all()
+
+
+def test_overlap_poor_fraction_matches_a_direct_count(tiny_cache):
+    """The headline statistic, recomputed the obvious way."""
+    results = OverlapAnalysis().compute(tiny_cache)
+    lo, hi = OVERLAP_BAND
+    for i, record in enumerate(tiny_cache):
+        pi = record.A_probs
+        expected = np.mean((pi < lo) | (pi > hi))
+        assert results.poor_fraction[i] == pytest.approx(expected)
+
+
+def test_overlap_analysis_end_to_end(tiny_cache, tmp_path):
+    artifacts = OverlapAnalysis().run(tiny_cache, tmp_path)
+
+    for path in artifacts.figures:
+        assert path.exists() and path.stat().st_size > 0
+    assert "overlap.pdf" in {p.name for p in artifacts.figures}
+    assert (tmp_path / "summary.json").exists()
+    assert artifacts.summary["n_datasets"] == len(tiny_cache)
+    assert 0.0 <= artifacts.summary["share_datasets_materially_poor"] <= 1.0
+    assert artifacts.summary["propensity_epsilon"] == pytest.approx(1e-3)

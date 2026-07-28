@@ -70,10 +70,10 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Ten analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
+Eleven analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
 `hyperparameters`, `categorical_completeness`, `mechanism_inputs`, `mechanism_outputs`,
-`treatment_walkthrough`, `heterogeneity`, `mc_targets`, `prior_overview`. The subsections below match the *current*
-`B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
+`treatment_walkthrough`, `treatment_overlap`, `heterogeneity`, `mc_targets`, `prior_overview`. The
+subsections below match the *current* `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
 
@@ -213,8 +213,9 @@ sits flush against 0/1 and is invisible on a `[0,1]` axis; only the display boun
 
 The raw logits are collected only when the cache carries mechanism diagnostics. A cache written before
 they existed (i.e. before `a_logits` was added) must be regenerated once with `--force` — the data is
-bit-identical, the logits are simply recorded alongside. The B.3.1 overlap audit (`app:prior_overlap`)
-will later add a second analysis (`treatment_overlap`) to this same `treatment.py` module.
+bit-identical, the logits are simply recorded alongside. The B.3.1 overlap audit (`app:prior_overlap`,
+`treatment_overlap`) lives in this same `treatment.py` module — same subject, different scale — and
+needs no logits.
 
 ### B.2.6 Heterogeneity dial — `fig:prior_heterogeneity_spread`
 
@@ -354,6 +355,49 @@ Uses only the cached feature blocks and the `max_categories` field of `sampled_h
 continuous/categorical split); no regression or mechanism-diagnostic payload, so any `general_ite` cache
 works without `--force`.
 
+### B.3.1 Overlap audit — `fig:prior_overlap`
+
+> **Rendered but not yet `\input` into `B_prior.tex`.** The figure exists; §B.3.1 has no prose yet.
+
+Audits `as:positivity`. The key point is that **no regression is needed**: the cached `A_probs` *is*
+the ground-truth `P(A=1 | X, U)` the assumption is stated over, so the audit is a pure summary of
+cached values. Fitting a propensity model on `(X, U)` would only re-estimate the same quantity with
+error; the genuinely different object — the *observable* propensity `P(A=1 | X, W, Z)`, which
+marginalises `U` away and therefore looks better-behaved — is deliberately left to the confounding
+ladder (T2.2), not measured here.
+
+Positivity also cannot fail: `sample_A` clamps `π ∈ [ε, 1-ε]` with `ε = 1e-3`, so every dataset
+satisfies it by fiat. The figure therefore reports **severity of practical overlap**, not pass/fail.
+
+Two panels:
+
+- **(a) pooled overlap margin** — histogram of `min(π, 1-π)` over every row of every dataset, on a
+  log axis (the mass that matters piles against `ε`, and a linear axis hides it entirely). Folding
+  the two tails into one statistic makes "distance to a degenerate assignment" a single axis. Bars
+  are per-bin *shares of all rows* on a log grid, so bin width grows to the right — read the panel
+  for where mass sits, not as a density.
+- **(b) per-dataset quantile curves** — each dataset's quantile function of `π`, summarised across
+  datasets as a median curve with 25–75% and 10–90% bands. Panel (a) pools rows and so cannot tell
+  "every dataset is mildly bad" from "a few are degenerate"; the band width is exactly that
+  distinction. Reference lines at `π = 0.05, 0.95`.
+
+`summary.json` carries the numbers for the prose: pooled and per-dataset shares outside
+`[0.05, 0.95]`, the share of datasets that are *materially* poor (>10% of rows outside), the
+clamp-boundary fraction (how much work "positivity by fiat" is doing), and median prevalence.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis treatment_overlap` |
+| **Config group** | preset `general_ite` (same cache as `treatment_walkthrough`; no `--force`) |
+| **Analysis module** | `analyses/treatment.py` → `OverlapAnalysis` (`name="treatment_overlap"`) |
+| **Output dir** | `results/general_ite/treatment_overlap/` |
+| **Figure output** | `overlap.pdf` → `fig:prior_overlap` |
+| **Appendix location** | §B.3.1 "Overlap" (`app:prior_overlap`) |
+
+Reads only `A_probs`, `A` and `sampled_hp` — no mechanism-diagnostic payload, so any `general_ite`
+cache works. The plan's overlap **table** (T2.1) is not built yet; the statistics it needs are
+already in `summary.json`.
+
 ---
 
 ## Implemented but not currently referenced in the tex
@@ -375,12 +419,10 @@ works without `--force`.
 
 No CLI command exists yet — the modules below are named in
 [`docs/prior_appendix_plan.md`](../docs/prior_appendix_plan.md) §3/§4 as future `analyses/`
-additions, not currently in `analyses/__init__.py`'s registry (the four listed above are all that
-is registered today). Listed here so the mapping is complete once they land.
+additions, not currently in `analyses/__init__.py`'s registry. Listed here so the mapping is complete once they land.
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.3.1 Overlap | `app:prior_overlap` | `treatment_overlap` | `general_ite` | Fig audit(b) + overlap table | T2.1 |
 | B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
 | B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
 | B.3.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) | T2.3 |
@@ -486,6 +528,11 @@ PYTHONPATH=. uv run python -m analysis_prior.main --spec mc_targets --analysis m
 # Reuses the same general_ite cache; needs no diagnostics payload (only the
 # feature blocks and the max_categories field), so no --force is required.
 PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis prior_overview
+
+# B.3.1 Overlap audit — fig:prior_overlap.
+# Pure summary of the cached A_probs (the true P(A=1|X,U)) — no regression, no
+# diagnostics payload, seconds on the same general_ite cache.
+PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis treatment_overlap
 ```
 
 Add `--force` to any of these to regenerate the cache instead of reusing it, and `--n-jobs -1`
