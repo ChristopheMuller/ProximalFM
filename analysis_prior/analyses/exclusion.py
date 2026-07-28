@@ -420,22 +420,17 @@ class ExclusionAnalysis(Analysis):
             "Y": r"(a) $Z$ excluded from $f_Y$: $\Delta R^2_Z$",
             "A": r"(b) $W$ excluded from $f_A$: $\Delta R^2_W$",
         }
-        # One robust y-scale for both panels (they are meant to be compared),
-        # set from the 0.5/99.5 percentiles so a single extreme control value
-        # cannot flatten the near-zero point clouds that carry the result.
+
         values = results.frame["delta_r2"].to_numpy()
         finite = values[np.isfinite(values)]
         lo, hi = np.percentile(finite, [0.5, 99.5])
         pad = 0.05 * max(hi - lo, 1e-3)
 
-        # Colour normalisation is shared across both panels, so a hue means the
-        # same confounding strength in each. Capped at the 95th percentile: the
-        # U-dependence has a long right tail, and normalising to the max would
-        # collapse the bulk of the datasets into the bottom of the ramp.
         dependence = np.concatenate(
             [results.paired(side)["u_dependence"].to_numpy() for side in CHECKS]
         )
-        norm = Normalize(vmin=0.0, vmax=float(np.percentile(dependence, 95)))
+        vmax = max(float(np.percentile(dependence, 95)), 1e-3)
+        norm = Normalize(vmin=0.0, vmax=vmax)
 
         for ax, side in zip(axes, CHECKS):
             self._strip_panel(ax, results, side, norm)
@@ -453,41 +448,23 @@ class ExclusionAnalysis(Analysis):
             ax=axes,
             fraction=0.04,
             pad=0.02,
-            extend="max",
+            extend="both",
         )
         bar.set_label(r"confounding: $\Delta R^2$ of $U$", fontsize=FONT_SIZE_PT - 1)
         return save_figure(fig, outdir, "exclusion")
 
     @staticmethod
     def _strip_panel(ax, results: ExclusionResults, side: str, norm) -> None:
-        # Two encodings, two questions. The median tick keeps the condition's
-        # colour -- the honest check in the target block's colour (what is being
-        # predicted), the positive control in U's vermillion, because removing U
-        # is what opens the path it exposes. The *points* instead carry the
-        # confounding strength of their dataset, which is what explains the
-        # control's shape: its long tail is not a scattering of arbitrary
-        # datasets but the strongly-confounded ones, while the check stays on
-        # zero regardless of colour.
         colours = {"with_U": block_color(side), "without_U": block_color("U")}
         labels = {
             "with_U": "conditioning\non $U$",
             "without_U": "control:\n$U$ dropped",
         }
 
-        # Weakly-confounded points first, so the strongly-confounded ones -- the
-        # ones the reader is looking for -- are never buried under them.
         paired = results.paired(side).sort_values("u_dependence")
         dependence = paired["u_dependence"].to_numpy()
         columns = {"with_U": "check", "without_U": "control"}
 
-        # Horizontal position inside a column is the dataset's *rank* by
-        # confounding strength, not random jitter. Jitter spends the only spare
-        # dimension these strips have on nothing; the rank spends it on the one
-        # variable that explains the control's shape, so the control column fans
-        # visibly upward to the right while the check column stays flat -- the
-        # association is legible from the point cloud itself, with colour as a
-        # redundant cue for the absolute scale. Rank rather than the raw value
-        # keeps the points spread evenly instead of piled at the left.
         offsets = np.argsort(np.argsort(dependence)) / max(len(dependence) - 1, 1)
         offsets = SPREAD * (offsets - 0.5)
 
@@ -505,10 +482,7 @@ class ExclusionAnalysis(Analysis):
                 norm=norm,
                 zorder=3,
             )
-            # A median tick is the only summary drawn on top of the points --
-            # cheap enough not to compete visually, and it doesn't make the IQR
-            # box's implicit claim about spread, which the point cloud already
-            # shows directly.
+
             median = float(np.median(values))
             ax.plot(
                 [position - 0.32, position + 0.32],
