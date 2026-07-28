@@ -190,7 +190,7 @@ def test_analysis_end_to_end(tmp_path):
     # Every (clause, condition) appears both pooled and on the top tercile.
     table = pd.read_csv(next(p for p in artifacts.tables if p.suffix == ".csv"))
     assert len(table) == 8
-    assert set(table["datasets"]) == {"all", "strongly confounded (top third)"}
+    assert set(table["datasets"]) == {"all", "top confounded"}
 
 
 def test_paired_recovers_the_u_dependence(tmp_path):

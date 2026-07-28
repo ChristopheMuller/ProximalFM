@@ -70,10 +70,10 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Thirteen analyses are registered today (`analyses/__init__.py`): `dimensions`,
+Fourteen analyses are registered today (`analyses/__init__.py`): `dimensions`,
 `dimension_comparison`, `hyperparameters`, `categorical_completeness`, `mechanism_inputs`,
 `mechanism_outputs`, `treatment_walkthrough`, `treatment_overlap`, `heterogeneity`, `mc_targets`,
-`prior_overview`, `exclusion`, `confounding_strength`. The
+`prior_overview`, `exclusion`, `confounding_strength`, `proxy_relevance`. The
 subsections below match the *current* `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
@@ -628,6 +628,89 @@ settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`); set
 instantly off `cache/regression/`. The T-learner cache is keyed separately from `cached_oof`'s, so
 it never collides with the exclusion/relevance entries.
 
+### B.3.4 Proxy relevance — `fig:prior_relevance`, `tab:prior_relevance`
+
+Audits `as:completeness` — the assumption the generator only enforces through a **counting**
+surrogate. `_reg2cls.py`'s `dominates` generalises `min(d_W,d_Z) ≥ d_U` (every `U` column matched by
+a distinct, at-least-as-informative proxy column) and `proximal_ok` enforces it at generation time,
+so in the shipped prior the heuristic passes for **100%** of datasets. The audit therefore never asks
+"does the heuristic hold" — it asks the question the heuristic structurally cannot: *does holding it
+buy functional recoverability of `U`?*
+
+Per `U` column `u_j`, per proxy `P ∈ {W,Z}`, via `regression.leave_one_out_r2` over `{X, P}`:
+
+```
+ΔR²_P(u_j) = R²(u_j | X, P) − R²(u_j | X)
+```
+
+Incremental **over `X`** on purpose: `X` is a parent of `U` (`eq:uwz`), so a proxy that merely
+re-encoded the covariates would be useless for identification however high its raw `R²`. Aggregated
+per dataset two ways: the unweighted **mean** over `U`'s columns (the plan's choice; flags that every
+`U` column is treated as equally important) and the **minimum** — completeness is a statement about
+all of `U`, and one unrecoverable direction is enough to break it. The two numbers tell very
+different stories (see the headline), so both are in the table.
+
+**The figure is one y-axis read three ways** (`sharey`), with `W`/`Z` as the only colour-carrying
+distinction (their standard block colours — no third variable competes for the channel):
+
+- **(a)** box per proxy × aggregation (mean, weakest column), whiskers at 10/90. Answers "how much do
+  they add" — and puts the mean-vs-weakest gap in the figure, not just the table.
+- **(b)** median `ΔR²` + IQR band vs the proxy's **own** dimension slack `d_P − d_U`, integer bins,
+  everything `≥ 7` merged (the tail is 52/34/20 datasets at slack 7/8/9, and an unmerged median over
+  twenty datasets drew a dramatic jump that was three draws wide).
+- **(c)** same idiom vs `noise_share_of_input_in_P`, in `N_NOISE_BINS=6` quantile bins.
+
+**Slack is axis-matched, never `min(d_W,d_Z) − d_U`.** The joint `min` is the heuristic's own
+statistic but a poor explanatory variable for a single proxy: `d_W` and `d_Z` are drawn independently
+and **disagree in 83% of datasets**, so it attributes one proxy's relevance to the other's width.
+Measured, own-slack `ρ` beats min-slack `ρ` on every row of the table (e.g. 0.215 vs 0.126 for `W`'s
+mean), and both are tabulated for the contrast.
+
+**Panel (b)'s axis conflates two claims**, which is why the table breaks `ρ` out against `d_P` and
+`d_U` separately — and the breakdown is a result: for the **mean** aggregation the association is all
+`d_P` (0.185/0.191) and `d_U` is flat (−0.011/−0.047), while for the **weakest** column it is all
+`d_U` (−0.243/−0.328) and `d_P` is flat (0.040/0.033). Spare width helps the average column; a wider
+`U` is what hurts the worst one.
+
+**Panel (c) plots the sampled knob, not delivered composition.** `record.mechanisms` carries realised
+input composition for `f_A`/`f_Y` only, so there is no measured noise share for `f_W`/`f_Z` — and the
+exclusion audit established knobs associate ~3× more weakly than delivered quantities, so read (c) as
+attenuated. `_knobs` also derives `u_share_expected = d_U(1−s)/(d_U + p·d_X)` — both dilution knobs
+(noise share `s`, covariate share `p`) in one number — reported in `summary.json`, where it is the
+strongest driver in the module (ρ ≈ 0.35/0.37 vs −0.22 for noise alone). It is an *expectation*: the
+covariate subsample is an unrecorded Binomial draw and `confounding_input_dim` rounds and floors.
+A delivered version would mean extending the generator's diagnostics payload to `f_W`/`f_Z` plus one
+`--force` regeneration.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis proxy_relevance` |
+| **Config group** | preset `general_ite` (same cache as the other B.3 audits; no `--force`) |
+| **Analysis module** | `analyses/proxy_relevance.py` → `ProxyRelevanceAnalysis` (`name="proxy_relevance"`) |
+| **Output dir** | `results/general_ite/proxy_relevance/` |
+| **Outputs** | `proxy_relevance.pdf` → `fig:prior_relevance`; `proxy_relevance_table.tex` → `tab:prior_relevance` |
+| **Appendix location** | §B.3.4 "Proxy Relevance" (`app:prior_relevance`) |
+
+**Headline (n=400 of the `general_ite` cache, `rf`, `max_rows=1024` — rerun at the full 1024 before
+quoting in the paper).** Median `ΔR²` 0.291 (`W`) / 0.295 (`Z`) with 93–94% of datasets positive, so
+the proxies are genuinely informative about `U` on the typical draw; the counting heuristic passes
+everywhere, yet **21% (`W`) / 24% (`Z`)** of datasets sit below the 0.1 weak line — that share *is*
+the rate at which the cheap check and functional recoverability disagree. The sharper number is the
+weakest-column one: median `ΔR²` drops to 0.055 / 0.049 and **59% / 58%** of datasets have at least
+one `U` direction under 0.1 (and ~22–25% have one that is not even positive). Since completeness is a
+statement about *all* of `U`, the honest summary is "informative on average, with a weak direction in
+the majority of draws". Both knob panels move in the right direction: slack 0 → 7+ lifts the median
+from ~0.22 to ~0.39/0.44, and the top noise quintile drops it to ~0.14, essentially onto the weak
+line.
+
+Reads only the feature blocks — no mechanism-diagnostic payload, so any `general_ite` cache works.
+Datasets with `d_U = 0` are skipped (nothing to recover) and counted in `summary.json`. Regression
+settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`); set
+`analysis.model = "tabicl"` for the robustness pass. Cost scales with `d_U`, not just with the
+dataset count — five predictor sets (`X`, `X+W`, `W`, `X+Z`, `Z`) per `U` column, ~3.7 s/dataset with
+`rf` (≈1 h for the full 1024 cache), then re-renders instantly off `cache/regression/`. The `X`-only
+fit is shared between the two proxies by tag, so it is fitted once per `U` column.
+
 ---
 
 ## Implemented but not currently referenced in the tex
@@ -653,7 +736,6 @@ additions, not currently in `analyses/__init__.py`'s registry. Listed here so th
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.3.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) | T2.3 |
 | B.3.5 Ill-posedness | `app:prior_illposed` | `illposedness` | `general_ite` | `fig:prior_illposedness` | T2.5 |
 | B.3.6 Identification stress test | `app:prior_identification` | `identification` | `general_ite` | `fig:prior_identification` | T2.6 |
 | B.3 assembly | `app:prior_audit` | `audit_summary` | `general_ite` (K=1) | 4-panel audit fig, `tab:prior_audit_summary` | T2.7 |
