@@ -519,7 +519,7 @@ class ExclusionAnalysis(Analysis):
         }
         condition_label = {
             "with_U": "conditions on $U$",
-            "without_U": "positive control ($U$ dropped)",
+            "without_U": "positive control",
         }
         rows = []
         for side in CHECKS:
@@ -528,7 +528,7 @@ class ExclusionAnalysis(Analysis):
             for condition, column in (("with_U", "check"), ("without_U", "control")):
                 for subset, values in (
                     ("all", results.series(side, condition)),
-                    ("strongly confounded (top third)", top[column].to_numpy()),
+                    ("top confounded", top[column].to_numpy()),
                 ):
                     rows.append(
                         {
@@ -549,20 +549,13 @@ class ExclusionAnalysis(Analysis):
             outdir,
             "exclusion_table",
             caption=(
-                "Exclusion-restriction audit. For each clause of "
-                "\\Cref{as:proxy_exclusion}, the cross-fitted incremental "
-                "$\\Delta R^2$ of the excluded block -- $R^2$ with the block "
-                "minus $R^2$ without it, over the stated conditioning set. "
-                "Targets: $Y_{\\mathrm{obs}}$ for the $Y$ clause, "
-                "$\\mathrm{logit}(\\pi)$ for the $A$ clause. The positive "
-                "control drops $U$, the only path linking the excluded block to "
-                "the target, and so measures the power of the same test to "
-                "detect a leak that is really there. Because that power is only "
-                "as large as the confounding in a given draw, each read is "
-                "reported both over all datasets and over the third with the "
-                "largest unique $U$-dependence of the target -- the subset on "
-                "which the control is entitled to fire, and hence the subset "
-                "that tests the exclusion claim."
+                "Exclusion-restriction audit (\\Cref{as:proxy_exclusion}): "
+                "cross-fitted incremental $\\Delta R^2$ of the excluded block "
+                "over the stated conditioning set, for the check (conditions "
+                "on $U$) and the positive control ($U$ dropped). "
+                "\\emph{Top confounded} is the third of datasets with the "
+                "largest $u\\_dependence$ ($R^2$ with $U$ minus $R^2$ without "
+                "it), the subset where the control is entitled to fire."
             ),
             label="tab:prior_exclusion",
             group_column="clause",
