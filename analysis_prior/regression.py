@@ -21,11 +21,16 @@ Models: ``"linear"`` (fast, for tests), ``"rf"`` (neutral baseline),
 ``"tabicl"`` (in-context foundation model; a single shared instance, since
 construction loads a checkpoint -- ``fit`` only stores the context, so reuse
 across folds and datasets is safe).
+
+Beyond ``R^2``, :func:`t_learner_mu` provides the one thing an ``R^2`` cannot:
+an actual *counterfactual* prediction, which is what the confounding-strength
+ladder (B.3.3) adjusts with.
 """
 
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Tuple
 
@@ -163,7 +168,11 @@ def cached_oof(
         path.parent.mkdir(parents=True, exist_ok=True)
         # np.savez appends ".npz" unless the name already ends in it, so the
         # temp name must too or the file lands one suffix over from the rename.
-        tmp = path.with_suffix(".tmp.npz")
+        # The pid keeps it unique per writer: two processes computing the same
+        # entry (running two audits at once is normal -- they deliberately share
+        # predictor sets) would otherwise write the *same* temp file and race,
+        # one of them then failing its rename on a file the other already moved.
+        tmp = path.with_suffix(f".tmp{os.getpid()}.npz")
         # Store the raw prediction; r2 is recomputed (clipped) on every read, so
         # the stored r2 is informational only.
         np.savez(
@@ -213,3 +222,122 @@ def leave_one_out_r2(
         rest = [n for n in names if n != name]
         out[name] = r2_of(rest, "+".join(rest))
     return out
+
+
+# ---------------------------------------------------------------------------
+# T-learner counterfactual predictions
+# ---------------------------------------------------------------------------
+
+
+def t_learner_mu(
+    X: np.ndarray,
+    A: np.ndarray,
+    Y: np.ndarray,
+    model: str = "tabicl",
+    n_splits: int = 3,
+    seed: int = 0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Cross-fitted T-learner CEPOs ``(mu0_hat, mu1_hat)``, one per row.
+
+    One regression per arm: the arm-``a`` model is fitted on ``{X, Y}`` of the
+    rows with ``A == a`` and used to fill ``mu_a`` for *every* row. The two
+    halves of that vector are produced differently on purpose:
+
+    - **Opposite-arm rows** (``A != a``) are a genuine counterfactual: they were
+      never in the arm-``a`` training set, so a single fit on the whole arm
+      predicts them out-of-sample already.
+    - **Same-arm rows** (``A == a``) are their own training data, so they are
+      predicted *out of fold* (k-fold within that arm only). Without this the
+      factual half would carry an in-sample-inflated fit and the two halves of
+      ``mu_a`` would not be comparable -- which would bias
+      ``mean(mu1 - mu0)`` by an amount that depends on the treated fraction.
+
+    Predictions are clipped to the range of the targets that trained them (see
+    :func:`clip_to_train_range` for why), so ``ATE_hat = mean(mu1 - mu0)`` cannot
+    be driven by a single extrapolation blow-up.
+
+    An arm with no rows yields ``NaN`` for that arm; an arm too small to split
+    falls back to its own mean. Both are degenerate-overlap cases, and returning
+    ``NaN``/constant is more honest than a fit on a handful of rows.
+    """
+    X = np.asarray(X, dtype=np.float32)
+    A = np.asarray(A).ravel()
+    Y = np.asarray(Y, dtype=np.float32).ravel()
+    if X.ndim != 2 or len(X) != len(Y) or len(A) != len(Y):
+        raise ValueError(f"X {X.shape}, A {A.shape}, Y {Y.shape} are inconsistent")
+
+    mu = []
+    for arm in (0, 1):
+        own = np.flatnonzero(A == arm)
+        other = np.flatnonzero(A != arm)
+        out = np.full(len(Y), np.nan, dtype=np.float64)
+        if own.size == 0:
+            mu.append(out)
+            continue
+
+        y_own = Y[own]
+        if own.size < 2 * n_splits or X.shape[1] == 0:
+            # Too few rows to cross-fit (or nothing to fit on): the best
+            # available answer for both halves is the arm mean.
+            out[:] = float(y_own.mean())
+            mu.append(out)
+            continue
+
+        pred_own = oof_predictions(
+            X[own], y_own, model=model, n_splits=n_splits, seed=seed
+        )
+        out[own] = clip_to_train_range(pred_own, y_own, n_splits, seed)
+
+        if other.size:
+            estimator = _model_factory(model, seed)()
+            estimator.fit(X[own], y_own)
+            out[other] = np.clip(
+                np.asarray(estimator.predict(X[other]), dtype=np.float64),
+                y_own.min(),
+                y_own.max(),
+            )
+        mu.append(out)
+    return mu[0], mu[1]
+
+
+def cached_t_learner(
+    tag: str,
+    X: np.ndarray,
+    A: np.ndarray,
+    Y: np.ndarray,
+    model: str = "tabicl",
+    n_splits: int = 3,
+    seed: int = 0,
+    cache_dir: Path = DEFAULT_REGRESSION_CACHE_DIR,
+) -> Dict[str, np.ndarray]:
+    """:func:`t_learner_mu` with the on-disk cache of :func:`cached_oof`.
+
+    ``tag`` must identify the data *and* the predictor set (e.g. dataset cache
+    key, record index, ``predictors=X+U``); the regression parameters are
+    appended here. Both arms live in one entry -- they are always computed
+    together and always read together, so splitting them would double the file
+    count for no reuse. Returns ``{"mu0", "mu1", "ate"}``.
+    """
+    key = f"tlearner|{tag}|model={model}|splits={n_splits}|seed={seed}"
+    path = _cache_path(cache_dir, key)
+
+    mu0 = mu1 = None
+    if path.exists():
+        payload = np.load(path, allow_pickle=False)
+        if str(payload["key"]) == key:  # hash-collision guard
+            mu0, mu1 = payload["mu0"], payload["mu1"]
+
+    if mu0 is None:
+        mu0, mu1 = t_learner_mu(X, A, Y, model=model, n_splits=n_splits, seed=seed)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # np.savez appends ".npz" unless the name already ends in it, so the
+        # temp name must too or the file lands one suffix over from the rename.
+        # The pid keeps it unique per writer: two processes computing the same
+        # entry (running two audits at once is normal -- they deliberately share
+        # predictor sets) would otherwise write the *same* temp file and race,
+        # one of them then failing its rename on a file the other already moved.
+        tmp = path.with_suffix(f".tmp{os.getpid()}.npz")
+        np.savez(tmp, key=np.str_(key), mu0=mu0, mu1=mu1)
+        tmp.replace(path)
+
+    return {"mu0": mu0, "mu1": mu1, "ate": float(np.nanmean(mu1 - mu0))}
