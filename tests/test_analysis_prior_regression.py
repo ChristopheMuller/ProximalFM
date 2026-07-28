@@ -9,10 +9,12 @@ import pytest
 
 from analysis_prior.regression import (
     cached_oof,
+    cached_t_learner,
     clip_to_train_range,
     fold_indices,
     leave_one_out_r2,
     oof_predictions,
+    t_learner_mu,
 )
 
 
@@ -124,6 +126,109 @@ def test_cached_oof_round_trips_and_hits(tmp_path):
     np.testing.assert_array_equal(first["pred"], second["pred"])
     assert first["r2"] == second["r2"]
     assert len(list(tmp_path.glob("*.npz"))) == 1
+
+
+def _confounded(n=600, seed=0, effect=2.0):
+    """(X, A, Y, true ATE) where X fully explains both assignment and outcome.
+
+    Adjusting on X therefore identifies the effect, so a correct T-learner must
+    recover ``effect`` even though the naive contrast is badly biased.
+    """
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, 2))
+    A = (rng.uniform(size=n) < 1.0 / (1.0 + np.exp(-2.0 * X[:, 0]))).astype(float)
+    y0 = 1.5 * X[:, 0] + X[:, 1] + rng.normal(scale=0.1, size=n)
+    Y = y0 + effect * A
+    return X, A, Y, effect
+
+
+def test_t_learner_predicts_every_row_in_both_arms():
+    X, A, Y, _ = _confounded()
+    mu0, mu1 = t_learner_mu(X, A, Y, model="linear", n_splits=3)
+    assert mu0.shape == mu1.shape == Y.shape
+    assert np.isfinite(mu0).all() and np.isfinite(mu1).all()
+
+
+def test_t_learner_recovers_the_effect_the_naive_contrast_misses():
+    X, A, Y, effect = _confounded()
+    mu0, mu1 = t_learner_mu(X, A, Y, model="linear", n_splits=3)
+    # Tolerance, not exactness: predictions are clipped to the training arm's
+    # target range, which under this fixture's deliberately skewed assignment
+    # truncates a few extrapolated counterfactuals and leaves a ~2% residual.
+    # That conservatism is the price of the blow-up guard, and it is an order of
+    # magnitude below the confounding bias the audit has to resolve.
+    assert float(np.mean(mu1 - mu0)) == pytest.approx(effect, abs=0.1)
+    # The confounded contrast X was there to remove.
+    naive = Y[A == 1].mean() - Y[A == 0].mean()
+    assert abs(naive - effect) > 0.5
+
+
+def test_same_arm_rows_are_predicted_out_of_fold():
+    """The factual half must not be fitted in-sample: a memorising regressor
+    gets its own arm's rows wrong, while the counterfactual half is unaffected."""
+
+    class _Memoriser:
+        def fit(self, X, y):
+            self._seen = {tuple(row): value for row, value in zip(X, y)}
+
+        def predict(self, X):
+            return np.array([self._seen.get(tuple(row), 0.0) for row in X])
+
+    import analysis_prior.regression as reg
+
+    n = 60
+    X = np.arange(n, dtype=float).reshape(-1, 1)
+    A = (np.arange(n) % 2).astype(float)
+    Y = np.arange(n, dtype=float) + 100.0
+
+    original = reg._model_factory
+    try:
+        reg._model_factory = lambda model, seed: _Memoriser
+        mu0, _ = t_learner_mu(X, A, Y, model="linear", n_splits=3)
+    finally:
+        reg._model_factory = original
+
+    control = A == 0
+    # Held-out rows are unseen by the memoriser, so its prediction is the
+    # clipped 0.0 -> the arm's minimum, never the row's own Y.
+    assert not np.allclose(mu0[control], Y[control])
+
+
+def test_t_learner_falls_back_to_the_arm_mean_when_an_arm_is_tiny():
+    n = 40
+    X = np.random.default_rng(0).normal(size=(n, 2))
+    Y = np.arange(n, dtype=float)
+    A = np.zeros(n)
+    A[:3] = 1.0  # too few treated rows to cross-fit
+    mu0, mu1 = t_learner_mu(X, A, Y, model="linear", n_splits=3)
+    assert np.allclose(mu1, Y[A == 1].mean())
+
+
+def test_t_learner_returns_nan_for_an_empty_arm():
+    X = np.random.default_rng(0).normal(size=(30, 2))
+    Y = np.arange(30, dtype=float)
+    mu0, mu1 = t_learner_mu(X, np.zeros(30), Y, model="linear", n_splits=3)
+    assert np.isnan(mu1).all()
+    assert np.isfinite(mu0).all()
+
+
+def test_cached_t_learner_round_trips_and_hits(tmp_path):
+    X, A, Y, _ = _confounded(n=200)
+    first = cached_t_learner("tag", X, A, Y, model="linear", cache_dir=tmp_path)
+    assert len(list(tmp_path.glob("*.npz"))) == 1
+
+    second = cached_t_learner("tag", X, A, Y, model="linear", cache_dir=tmp_path)
+    np.testing.assert_array_equal(first["mu0"], second["mu0"])
+    assert first["ate"] == second["ate"]
+    assert len(list(tmp_path.glob("*.npz"))) == 1
+
+
+def test_t_learner_cache_does_not_collide_with_oof(tmp_path):
+    """Same tag, different helper: the entries must be distinct."""
+    X, A, Y, _ = _confounded(n=200)
+    cached_oof("same", X, Y, model="linear", cache_dir=tmp_path)
+    cached_t_learner("same", X, A, Y, model="linear", cache_dir=tmp_path)
+    assert len(list(tmp_path.glob("*.npz"))) == 2
 
 
 def test_cache_key_distinguishes_model_and_tag(tmp_path):

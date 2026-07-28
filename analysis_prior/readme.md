@@ -70,9 +70,10 @@ only differ in name.
 
 ## Implemented and wired into the tex
 
-Eleven analyses are registered today (`analyses/__init__.py`): `dimensions`, `dimension_comparison`,
-`hyperparameters`, `categorical_completeness`, `mechanism_inputs`, `mechanism_outputs`,
-`treatment_walkthrough`, `treatment_overlap`, `heterogeneity`, `mc_targets`, `prior_overview`. The
+Thirteen analyses are registered today (`analyses/__init__.py`): `dimensions`,
+`dimension_comparison`, `hyperparameters`, `categorical_completeness`, `mechanism_inputs`,
+`mechanism_outputs`, `treatment_walkthrough`, `treatment_overlap`, `heterogeneity`, `mc_targets`,
+`prior_overview`, `exclusion`, `confounding_strength`. The
 subsections below match the *current* `B_prior.tex` numbering (B.2 = "Generative Model, Step-by-Step").
 
 ### B.2.1 Hyperparameters — `tab:prior_fixed_hp`, `tab:prior_sampled_hp`
@@ -398,6 +399,235 @@ Reads only `A_probs`, `A` and `sampled_hp` — no mechanism-diagnostic payload, 
 cache works. The plan's overlap **table** (T2.1) is not built yet; the statistics it needs are
 already in `summary.json`.
 
+### B.3.2 Exclusion restrictions — `fig:prior_exclusion`, `tab:prior_exclusion`
+
+Audits `as:proxy_exclusion` (`Y ⟂ Z | (A,X,U)` and `W ⟂ (A,Z) | (X,U)`), which holds **by
+construction** — `_dataset.py` never wires `Z` into `f_W`/`f_Y` nor `W` into `f_Z`/`f_A`. The audit
+therefore has two halves, and the second is what makes the first mean anything:
+
+- **The check** — cross-fitted incremental `ΔR²` of the excluded block. Y-side: predict `Y_obs` from
+  `{A, X, U, Z}`, report `R²(all) − R²(all \ Z)`. A-side: predict `logit(A_probs)` (the
+  `mechanism_outputs` convention) from `{X, U, W}`, report the drop for `W`. Both expected `≈ 0`.
+- **The positive control** — the same two checks with `U` removed (`{A,X,Z}`; `{X,W}`). `U` is the
+  only path linking `Z` to `Y` and `W` to `A`, so the control must light up: it measures whether the
+  test *could* have caught a leak.
+
+Two design points worth knowing before changing the module. `Z` is deliberately **not** in the
+A-side conditioning set: the clause conditions on `(X,U)` only, and `Z` is itself a proxy of `U`, so
+leaving it in lets it absorb the confounder and blunts the control (measured: the A-side control
+median collapses from clearly-positive to ~0.008 with `Z` present). Datasets with `d_U = 0` are
+skipped — with no confounder the control has no path to open — and counted in `summary.json`.
+
+**The control's power is only as large as the confounding**, and that turns out to matter: over half
+the datasets route almost no `U` into the target (`confounding_share_of_U_in_*` is `Beta(1.2,2.8)`),
+so the *pooled* control median is small (0.004 Y-side, 0.011 A-side at n=200) and reads as "no
+power" if left unconditioned. The figure therefore has a second column, and the summary/table a
+second subset:
+
+- **`u_dependence`** — the unique contribution of `U` to the target, `R²(with U) − R²(without U)`,
+  i.e. the difference of the two conditions' *full*-set fits. Free: both terms are already computed.
+- **Top tercile by `u_dependence`** — the datasets where the control is entitled to fire. There the
+  control median rises to 0.031 (Y) / 0.060 (A) with ~58–60% above threshold, while the check stays
+  at −0.006 / −0.004 with 0% / 3% above threshold. Spearman(`u_dependence`, control) ≈ 0.38 / 0.43.
+
+**The four fits form a 2×2 lattice, and the figure reads two perpendicular edges of it.** Y-side
+(A-side is the same with `{X,U,W}` and `W` for `Z`):
+
+| | includes `Z` | drops `Z` |
+|---|---|---|
+| **includes `U`** | ① `R²(Y \| A,X,U,Z)` | ② `R²(Y \| A,X,U)` |
+| **drops `U`** | ③ `R²(Y \| A,X,Z)` | ④ `R²(Y \| A,X)` |
+
+check = ① − ②, control = ③ − ④ (both: *drop the proxy* → the **y-axis**); `u_dependence` = ① − ③
+(*drop `U`* → the **colour** and the point ordering). Control and `u_dependence` share ③ with
+opposite signs, so that shared term biases their correlation *downward* — the association the figure
+shows is not an artifact of reusing fits.
+
+Figure: two panels, one per clause, each a pair of columns ("conditioning on `U`" vs "control: `U`
+dropped") with per-dataset points, a median tick and a `ΔR² = 0` reference. Both scales name their
+dropped block — y-axis "`ΔR²` of the excluded proxy", colorbar "confounding: `ΔR²` of `U`" — since
+two unlabelled "incremental `R²`" axes are indistinguishable. **Two encodings, deliberately
+different.** The median tick carries the condition's colour — target-block colour for the check
+(`Y` sky blue, `A` purple), `U`'s vermillion for the control. The *points* carry `u_dependence`:
+colour (viridis, shared linear normalisation by raw value across panels) **and**
+horizontal position, which is the dataset's *rank* by confounding strength rather than random jitter
+(`SPREAD` sets the width). Jitter would spend the column's only spare dimension on nothing; the rank
+spends it on the variable that explains the control's shape, so the control column visibly fans
+upward to the right while the check column stays flat — the association is readable from the point
+cloud, with colour as a redundant cue for the absolute scale.
+
+Three things were tried and dropped at the author's request, each self-contained enough not to be
+redone. A second column of scatter panels (`ΔR²` vs `u_dependence`, with a moving-average trend) —
+the rank layout inside the same column carries the same read in half the space, and the trend
+survives numerically in the table and `summary.json`. The violin body that used to sit under the
+points — its KDE shape competes with the points' own x-axis (confounding rank), which the violin
+knows nothing about, so the two no longer agreed on what the x-axis meant; briefly replaced by a
+plain IQR box, then that too was cut (barely visible at this scale, and the point cloud already shows
+spread directly) down to just the median tick. And two in-panel text annotations — the median-value
+label (redundant with the tick) and the per-column detectable-leak share against `LEAK_THRESHOLD`
+(redundant with the table, and its 0.02 cutoff is a judgment call — roughly the 95th percentile of
+the check column's own null distribution, not a derived quantity — that doesn't need to be visible on
+every render).
+
+Do **not** switch the colour/ordering to the `confounding_share_of_U_in_*` knob. Tested twice — at
+n=200 and again at the full n=1024, on the suspicion the first result was small-sample noise. It was
+not: bootstrapped Spearman against the control's `ΔR²` is **0.120** [0.052, 0.188] (Y) and **0.124**
+[0.053, 0.195] (A) for the knob, versus **0.391** [0.322, 0.454] and **0.401** [0.339, 0.458] for the
+measured `u_dependence` — non-overlapping CIs, a real but ~3× weaker association that more data will
+not improve. On the figure's own visual claim (share of top-decile control points landing in the
+right half of the ordering, 0.50 = no information): **0.86/0.86** measured vs **0.61/0.65** knob. The
+knob is an input-*width* share; the delivered dependence also rides on `d_U`, the MLP draw, the noise
+share and how much of `U` the proxies already absorb.
+
+The knob did surface one real defect: it *rendered* better only because `Beta(1.2,2.8)` spreads
+evenly over [0,1] while the measured dependence is heavy-tailed, so on a linear ramp ~70% of datasets
+land in the darkest fifth (vs 26% for the knob) and the colour channel is mostly wasted. A
+decile-spaced ramp (`BoundaryNorm` over percentiles) was tried to spend the ramp evenly, then dropped
+at the author's request: the value of the raw `ΔR²` matters more than the visual balance, even
+though most datasets end up in the darker bands. The ramp (`BoundaryNorm`, `N_COLOUR_BINS`) is
+linear over the raw value, capped at the 99.5th percentile so one near-fully-confounded draw does not
+compress the whole scale into a single band; the colourbar ticks the raw edges directly.
+
+Table: median / 90th-percentile `ΔR²` and the share above `LEAK_THRESHOLD` (0.02), for each
+(clause, condition) × (all datasets, top tercile).
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis exclusion` |
+| **Config group** | preset `general_ite` (same cache as the other B.3 audits; no `--force`) |
+| **Analysis module** | `analyses/exclusion.py` → `ExclusionAnalysis` (`name="exclusion"`) |
+| **Output dir** | `results/general_ite/exclusion/` |
+| **Outputs** | `exclusion.pdf` → `fig:prior_exclusion`; `exclusion_table.tex` → `tab:prior_exclusion` |
+| **Appendix location** | §B.3.2 "Exclusion Restrictions" (`app:prior_exclusion`) |
+
+Regression settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`) — set
+`analysis.model = "tabicl"` for the robustness pass. Runs ~1.5 s/dataset with `rf` on the full 1024
+rows (≈25 min for the whole `general_ite` cache), then re-renders instantly off `cache/regression/`.
+Predictor sets are tagged so they are shared with the other leave-one-out audits (T2.3) wherever the
+block combination coincides.
+
+### B.3.3 Confounding strength — `fig:prior_confounding`, `tab:prior_confounding`
+
+> **`\input` into `B_prior.tex`.** A concise paragraph plus both figures (`fig:prior_confounding`,
+> `fig:prior_confounding_share`) and the table are now in §B.3.3. Asset sync (copying the rendered
+> `.pdf`/`.tex` into `docs/latex/assets/prior/`) is still a separate, un-run step for this doc.
+
+Audits `as:latent_ignorability`, and with it the empirical premise the paper rests on: that the
+synthetic confounding is *real* (an estimator adjusting only on measured covariates is biased) and
+that conditioning on the true `U` restores unbiasedness. A four-rung ladder, every rung scored
+against the same exact ground truth `mean(MU1 − MU0)`:
+
+| rung | adjustment | what it is |
+|---|---|---|
+| `naive` | none | `mean(Y\|A=1) − mean(Y\|A=0)` |
+| `backdoor_X` | `X` | the correct adjustment set *if* there were no latent confounder |
+| `backdoor_XWZ` | `(X, W, Z)` | the DAG-blind move: every measured column in the adjustment set |
+| `oracle_XU` | `(X, U)` | **identification** oracle — the minimal set `as:latent_ignorability` names |
+| `oracle_XUW` | `(X, U, W)` | **efficiency** oracle — adds `W`, a genuine parent of `f_Y` |
+
+**Why two oracles.** `W` is redundant for identification (conditioning on `U` already blocks the
+backdoor path) but it is *not* redundant for estimation: `_dataset.py:854` feeds `W_direct` — a
+per-dataset column subsample of `W` — straight into `f_Y`, so an oracle that omits it is running a
+**misspecified outcome model** and its residual error overstates the floor. The `XU`→`XUW` gap is
+therefore a pure regression-quality quantity, which matters because the oracle rung *is* how the
+figure's floor is read. Adding `W` cannot open a path: it is pre-treatment (`f_W` never sees `A`) and
+its only parents, `U` and `X`, are both already conditioned on.
+
+`Z` is in neither oracle. It is a parent of `f_A` only and excluded from `f_Y` by construction
+(`as:proxy_exclusion`), so in an outcome-regression estimator it can add noise but no signal — and an
+instrument-like variable in an adjustment set is the textbook bias-amplification risk. Throwing in
+everything measured is rung 3's job, not the oracle's.
+
+Errors are `|ATE_rung − ATE_true| / sd(Y_obs)` — normalised because outcome scales are arbitrary
+per SCM, the same reasoning `fig:prior_heterogeneity_spread` uses. **With `K=1` the ground truth is
+exact for the rows in hand**: `MU0/MU1` *are* the realised potential outcomes, so `mean(MU1 − MU0)`
+is the in-sample ATE and no rung is measured against a noisy target. The oracle rung's error is
+therefore pure regression estimation error, which is exactly why it belongs in the ladder — it is the
+floor the other rungs should be read against.
+
+Every rung but `naive` goes through `regression.t_learner_mu` (T2.0). Its one subtlety: the
+opposite-arm rows are a genuine counterfactual and are predicted from a single fit on the whole arm,
+while the *same*-arm rows are predicted out-of-fold within that arm. Without that split the factual
+half would carry an in-sample-inflated fit, biasing `mean(mu1 − mu0)` by an amount that depends on
+the treated fraction.
+
+**Second figure: error vs. delivered confounding share.** `confounding_share_of_U_in_{A,Y}` is a
+*sampled* HP (`Beta(1.2, 2.8)`), so it cannot be swept while holding the SCM fixed — pinning it
+changes `generative_digest()` and hence every dataset seed, the same trap documented for the
+`mcmc_cate` sweep (T3.1) and `seq_len` (T2.6). It does not need to be: 1024 draws *are* the sweep,
+and the realised share is recorded per dataset. Datasets are binned on the **delivered** `U` share
+(first-layer injected variance, reusing `mechanism_inputs.mechanism_frame` so B.2.3 and this audit
+report the same number — not the target share), on a 5×5 quantile grid of `(s_Y, s_A)`.
+
+The grid is 2-D on purpose: confounding bias needs `U` in **both** mechanisms, so a marginal view in
+either share alone averages away the interaction. Panel (b) bins the *oracle* rung on the same grid
+and **shares the colour scale** — that is the whole point of the pair. An oracle error that grows
+with confounding strength would be finite-sample regression difficulty, not a failure of
+`as:latent_ignorability`.
+
+Datasets with `d_U = 0` are **kept** (unlike in the exclusion audit, where they made the positive
+control vacuous): here they are the unconfounded end of the very axis being measured.
+
+| | |
+|---|---|
+| **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis confounding_strength` |
+| **Config group** | preset `general_ite` (same cache as the other B.3 audits; no `--force`) |
+| **Analysis module** | `analyses/confounding.py` → `ConfoundingStrengthAnalysis` (`name="confounding_strength"`) |
+| **Output dir** | `results/general_ite/confounding_strength/` |
+| **Outputs** | `confounding_ladder.pdf` → `fig:prior_confounding`; `confounding_vs_share.pdf`; `confounding_table.tex` → `tab:prior_confounding` |
+| **Appendix location** | §B.3.3 "Confounding Strength" (`app:prior_confounding`) |
+
+**Headline (n=1024, full `general_ite` cache, `rf`).** Median normalised error: naive 0.041,
+backdoor-`X` 0.038, backdoor-`(X,W,Z)` 0.030, oracle-`(X,U)` 0.028, oracle-`(X,U,W)` **0.025** — at
+the median the ladder is nearly flat, and adjusting on `X` alone is marginally *worse* than not
+adjusting (estimation variance without removing the `U` path). Backdoor-`X` is 1.34× the `(X,U)`
+oracle and 1.47× the `(X,U,W)` one; adding `W` tightens the floor by 1.10×.
+
+The result is in the tail, not the median: p90 error 0.195 / 0.163 / 0.121 / 0.104 / 0.105, share
+materially biased (>10% of `sd(Y)`) **24.1% / 21.1% / 14.8% / 10.8% / 10.7%**. So ~1 dataset in 4 is
+genuinely confounded and either oracle roughly halves that rate — a real effect, but a **minority
+regime**, not the typical draw. Read this as *coverage*, not "the proxies are decorative": the median
+prior draw is only mildly confounded because `Beta(1.2, 2.8)` sits low.
+
+**Conditioning on the delivered share is a much weaker signal than it first looked** (an earlier,
+smaller-sample pass over-read it — see git history if curious). At the full n=1024, Spearman of
+`share_min` vs. backdoor-`X` error is **0.047** (was 0.11 at n=250); the quartile contrast is 0.033
+(bottom) → 0.039 (top), and the grid's top-right cell (both shares in their top tercile, n=109) is
+0.045 against an oracle floor of 0.028 — a real but modest ~1.6× gap, not the ~2× the smaller sample
+suggested. The oracle control's own quartile move (0.030 → 0.024, Spearman −0.035) is if anything
+backwards, i.e. noise, which is the right scale to judge the backdoor-`X` movement against. Bottom
+line: the grid shows the interaction is directionally present but small relative to cell-to-cell
+noise at this n; don't oversell the conditioning story.
+
+**Why the grid's columns (`share_Y`) look flatter than its rows (`share_A`) — a normalisation
+artifact, not a missing effect.** `sd(Y_obs)` is computed from the very outcome whose `U`-composition
+`share_Y` describes, so the two are mechanically entangled (Spearman `sd_y` vs `share_Y` = 0.056, vs.
+`sd_y` vs `share_A` = 0.041). Concretely: the *unnormalised* naive/backdoor bias correlates with
+`share_Y` (Spearman 0.069 / 0.072) at least as strongly as with `share_A` (0.059 / 0.062) — if
+anything a bit more. Dividing by `sd_y` — necessary for cross-SCM comparability, the same reasoning
+`fig:prior_heterogeneity_spread` uses — then partially cancels the `share_Y` signal specifically (an
+SCM where `U` dominates `f_Y` tends to have a larger `sd_y` too, shrinking the ratio), dropping its
+normalised correlation to 0.032 / 0.042, while `share_A`'s survives mostly intact (0.053 / 0.057).
+Both `raw_error` and the plotted `abs_error` are kept in `confounding_frame`'s output, and the
+`spearman_*_vs_{raw,abs}_error_*` / `spearman_sd_y_vs_share_*` keys are in `summary.json` as the
+evidence trail.
+
+**`W`'s benefit as an oracle addition is not uniform across the confounding-strength grid.** Pooled,
+`(X,U,W)` beats `(X,U)` (0.025 vs. 0.028 median); but in the grid's top-right (high-confounding) cell
+the two are essentially tied (0.0283 vs. 0.0280, n=109 each) rather than `(X,U,W)` extending its lead.
+`W` is a proxy of `U`, which drives assignment, so where `U` dominates it can cost cross-arm overlap
+in predictor space about as fast as it sharpens the outcome model — the pooled advantage comes from
+elsewhere on the grid, not from the hard-confounding corner. Worth a finer bin count or a direct
+per-cell `(X,U)` vs `(X,U,W)` comparison before leaning on this in the prose; at 3×3/n=1024 it reads
+as "no clear winner in the hard cell," not a reversal.
+
+Needs the **mechanism-diagnostics payload** (`record.mechanisms`) for the share grid — a cache
+predating it must be regenerated once with `--force` (same data, diagnostics added). Regression
+settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`); set
+`analysis.model = "tabicl"` for the robustness pass. ~1.4 s/dataset with `rf`, then re-renders
+instantly off `cache/regression/`. The T-learner cache is keyed separately from `cached_oof`'s, so
+it never collides with the exclusion/relevance entries.
+
 ---
 
 ## Implemented but not currently referenced in the tex
@@ -423,8 +653,6 @@ additions, not currently in `analyses/__init__.py`'s registry. Listed here so th
 
 | Appendix § | Label | Planned module (`name=`) | Planned config group | Target artifact | Plan track |
 |---|---|---|---|---|---|
-| B.3.2 Exclusion | `app:prior_exclusion` | `exclusion` | `general_ite` | Fig audit(a) | T2.4 |
-| B.3.3 Confounding strength | `app:prior_confounding` | `confounding_strength` | `general_ite` | Fig audit(c), `tab:prior_confounding` | T2.2 |
 | B.3.4 Proxy relevance | `app:prior_relevance` | `proxy_relevance` | `general_ite` | Fig audit(d) | T2.3 |
 | B.3.5 Ill-posedness | `app:prior_illposed` | `illposedness` | `general_ite` | `fig:prior_illposedness` | T2.5 |
 | B.3.6 Identification stress test | `app:prior_identification` | `identification` | `general_ite` | `fig:prior_identification` | T2.6 |
