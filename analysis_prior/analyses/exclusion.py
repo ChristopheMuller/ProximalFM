@@ -88,7 +88,6 @@ from tqdm import tqdm
 from ..design import (
     COUNT_CMAP,
     FONT_SIZE_PT,
-    ROLES,
     apply_style,
     block_color,
     figsize_grid,
@@ -492,7 +491,12 @@ class ExclusionAnalysis(Analysis):
                 zorder=4,
             )
 
-        ax.axhline(0.0, **ROLES["reference"])
+        # Grey rather than ROLES["reference"]'s vermillion dashed: that colour
+        # is also the control's median-tick colour (block_color("U")), so the
+        # zero line would visually compete with the one summary that most
+        # needs to stand off it. A quiet grey keeps the zero line legible as a
+        # boundary without drawing the eye away from the median ticks.
+        ax.axhline(0.0, color="0.6", linestyle="--", lw=0.8, zorder=1)
         ax.set_xticks([0, 1])
         ax.set_xticklabels([labels[c] for c in CONDITIONS])
         ax.set_xlim(-0.6, 1.6)
