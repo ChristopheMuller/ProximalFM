@@ -390,28 +390,40 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
     def _render_marginals(
         self, results: DimensionComparisonResults, outdir: Path
     ) -> list:
-        """Grouped empirical bars per variant + one analytic overlay per scheme."""
+        """Grouped empirical bars per variant + one analytic overlay per scheme.
+
+        Only variants that enforce the completeness heuristic are shown: the
+        figure is about the *sampling laws* and their analytic overlays, and an
+        unenforced variant shares its law with its enforced counterpart, so it
+        adds a third bar per group without a third curve to compare it to. Its
+        effect belongs to the joint heatmaps instead. If a family has no
+        enforced variant we fall back to plotting all of them.
+        """
+        variants = {
+            label: var for label, var in results.variants.items() if var.enforced
+        } or dict(results.variants)
+
         fig, axes = plt.subplots(
             1,
             3,
             figsize=figsize_grid(ncols=3, panel_aspect=0.95, extra_height_in=0.5),
             sharey=True,
         )
-        n = len(results.variants)
-        styles = variant_styles(results.variants)
+        n = len(variants)
+        styles = variant_styles(variants)
         offsets = grouped_bar_offsets(n)
         width = 0.8 / n
 
         for ax, key in zip(axes, ("d_U", "d_W", "d_Z")):
             support_vals: set = set()
-            for var in results.variants.values():
+            for var in variants.values():
                 support_vals |= set(np.unique(getattr(var.results, key)).tolist())
                 support_vals |= set(var.theory[key])
             support = sorted(support_vals)
             positions = {v: i for i, v in enumerate(support)}
             x = np.arange(len(support))
 
-            for offset, (label, var) in zip(offsets, results.variants.items()):
+            for offset, (label, var) in zip(offsets, variants.items()):
                 observed = getattr(var.results, key)
                 counts = np.zeros(len(support))
                 for value, count in zip(*np.unique(observed, return_counts=True)):
@@ -430,7 +442,7 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             # so delivered bars may sit slightly below it after filtering).
             # Solid/dotted separates the laws where two are shown at once.
             seen = {}
-            for var in results.variants.values():
+            for var in variants.values():
                 pmf = var.theory[key]
                 signature = (var.scheme, tuple(sorted(pmf.items())))
                 if signature in seen:
