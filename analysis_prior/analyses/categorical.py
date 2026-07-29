@@ -13,9 +13,22 @@ This audit measures that on the data the model actually sees. Because the
 categorisation metadata is not persisted in the cache, each block's profile is
 **reconstructed from realised values**: a column with at most ``max_categories``
 distinct values is categorical (with that many categories), otherwise continuous.
-At the shipped cap this is unambiguous -- a continuous column has ~``T`` distinct
-values, far above the cap. This mirrors ``observed_block_profile`` in the prior,
-but reads from the cached arrays rather than the live tensors.
+This requires ``T > max_categories`` to mean anything: on a short enough dataset
+every column would look categorical.
+
+This is *not* quite the rule ``observed_block_profile`` applies in the prior,
+and the difference is why this audit reports a small nonzero violation rate on
+the enforced arm. That function reads a column's type off the categorisation
+metadata -- a column it did not discretise is continuous, hence an unbounded
+wildcard in :func:`dominates` -- whereas here every column is typed from its
+realised values. The two disagree on a never-discretised column that
+nonetheless lands on a small lattice, which happens when a mechanism reads its
+output close to an affine function of one of ``U``'s categorised columns
+(~0.3% of never-discretised columns; ~3% of datasets carry one). Such a column
+is a wildcard to the enforcement check and a low-cardinality categorical column
+here, so a dataset with little profile slack can pass enforcement and still
+fail this audit. The realised-value rule is the honest one for delivered data,
+so it is what we report; see the "Survival" discussion in appendix B.2.4.
 """
 
 from __future__ import annotations
