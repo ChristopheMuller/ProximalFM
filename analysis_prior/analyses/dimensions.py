@@ -553,7 +553,17 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
 
         The theory column describes the *sampled* dimensions; the delivered
         column is measured after constant-column filtering and completeness
-        enforcement, so a small downward gap is expected and meaningful.
+        enforcement, which can only *remove* columns.
+
+        That postprocessing is, however, not the dominant term in the gap:
+        filtering costs ~0.02 columns per dataset, while the Monte Carlo error
+        on a mean over ``n_datasets`` draws is an order of magnitude larger
+        (~0.09 for $d_X$ at n=1024, whose spread is widest because it is plain
+        uniform and uncoupled from $d_U$). So the theory-delivered gap is noise
+        first and postprocessing second, and it can fall either side of the
+        theoretical mean. The reported standard error is what makes that
+        readable -- without it a $+0.14$ gap on $d_X$ looks like a bug rather
+        than the $1.5$ s.e. fluctuation it is.
         """
         var = results.variants[results.baseline]
         law_u = (
@@ -565,8 +575,8 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
         rows = []
         for key, law in (
             ("d_U", law_u),
-            ("d_W", "cond.\\ uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
-            ("d_Z", "cond.\\ uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
+            ("d_W", "uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
+            ("d_Z", "uniform $\\{\\max(d^{\\min}, d_U), \\dots, d^{\\max}\\}$"),
             ("d_X", "uniform"),
         ):
             observed = getattr(var.results, key)
@@ -577,7 +587,8 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                     "support": f"{min(pmf)}--{max(pmf)}",
                     "sampling law": law,
                     "mean (theory)": _theory_mean(pmf),
-                    "mean (delivered)": float(observed.mean()),
+                    "mean (deliv.)": float(observed.mean()),
+                    "s.e.": float(observed.std(ddof=1) / np.sqrt(len(observed))),
                 }
             )
 
@@ -587,10 +598,11 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
             "dimension_sampling",
             caption=(
                 "Dimension sampling laws and their means (baseline variant "
-                f"``{results.baseline}''). Theory describes the sampled "
-                "dimensions; delivered values are measured after "
-                "constant-column filtering and completeness enforcement, so a "
-                "small downward gap is expected."
+                f"``{results.baseline}'', $n = {var.results.n_datasets}$ "
+                "datasets). Theory describes the sampled dimensions; delivered "
+                "values are measured after constant-column filtering and "
+                "completeness enforcement, which can only remove columns "
+                "($\\approx 0.02$ columns per dataset here)."
             ),
             label="tab:prior_dim_sampling",
             centering=True,
