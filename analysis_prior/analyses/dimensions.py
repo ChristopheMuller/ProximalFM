@@ -601,8 +601,7 @@ class DimensionComparisonAnalysis(ComparisonAnalysis):
                 f"``{results.baseline}'', $n = {var.results.n_datasets}$ "
                 "datasets). Theory describes the sampled dimensions; delivered "
                 "values are measured after constant-column filtering and "
-                "completeness enforcement, which can only remove columns "
-                "($\\approx 0.02$ columns per dataset here)."
+                "completeness enforcement, which can only remove columns."
             ),
             label="tab:prior_dim_sampling",
             centering=True,
