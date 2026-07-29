@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Tuple
 
@@ -70,6 +71,7 @@ def _model_factory(model: str, seed: int) -> Callable:
     raise ValueError(f"Unknown model {model!r}. Choices: 'linear', 'rf', 'tabicl'.")
 
 
+@lru_cache(maxsize=64)
 def fold_indices(
     n_rows: int, n_splits: int, seed: int
 ) -> List[Tuple[np.ndarray, np.ndarray]]:
@@ -77,6 +79,13 @@ def fold_indices(
 
     Every predictor set evaluated on the same ``(n_rows, n_splits, seed)``
     sees the identical split, which is what makes ΔR² contrasts fold-stable.
+
+    Memoised: an audit calls this once per scored regression (tens of thousands
+    of times over a full run) with only a handful of distinct argument triples,
+    and rebuilding the ``KFold`` permutation each time was ~15% of the wall
+    clock on a fully cached re-render. The returned arrays are shared between
+    callers, so **treat them as read-only** -- every caller here only indexes
+    with them.
     """
     splitter = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
     return [(train, test) for train, test in splitter.split(np.empty((n_rows, 1)))]

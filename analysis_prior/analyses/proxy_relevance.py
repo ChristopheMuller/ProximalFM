@@ -97,6 +97,7 @@ from scipy.stats import spearmanr
 from tqdm import tqdm
 
 from ..design import FONT_SIZE_PT, apply_style, block_color, figsize_grid
+from ..frame_cache import DEFAULT_FRAME_CACHE_DIR, cached_frame
 from ..generate import PriorCache, PriorDatasetRecord
 from ..plotting import plt, save_figure, save_table
 from ..regression import DEFAULT_REGRESSION_CACHE_DIR, leave_one_out_r2
@@ -354,6 +355,10 @@ class ProxyRelevanceAnalysis(Analysis):
     seed = 0
     max_rows = 1024
     regression_cache_dir = DEFAULT_REGRESSION_CACHE_DIR
+    #: Where the assembled frame is cached, so a re-render costs one file read
+    #: rather than ~5 regression-cache reads per ``U`` column. Set to ``None``
+    #: to bypass the layer entirely.
+    frame_cache_dir = DEFAULT_FRAME_CACHE_DIR
 
     def compute(self, cache: PriorCache) -> RelevanceResults:
         records = list(cache)
@@ -365,15 +370,39 @@ class ProxyRelevanceAnalysis(Analysis):
                 f"predictor sets with TabICL -- slow on first run (predictions "
                 f"are then cached). Lower --n-datasets for a quicker pass."
             )
-        frame = relevance_frame(
-            records,
-            cache_key=cache.spec.cache_key,
-            model=self.model,
-            n_splits=self.n_splits,
-            seed=self.seed,
-            max_rows=self.max_rows,
-            regression_cache_dir=self.regression_cache_dir,
-        )
+
+        def build(indices=None) -> pd.DataFrame:
+            wanted = records if indices is None else [by_index[i] for i in indices]
+            return relevance_frame(
+                wanted,
+                cache_key=cache.spec.cache_key,
+                model=self.model,
+                n_splits=self.n_splits,
+                seed=self.seed,
+                max_rows=self.max_rows,
+                regression_cache_dir=self.regression_cache_dir,
+            )
+
+        if self.frame_cache_dir is None:
+            frame = build()
+        else:
+            by_index = {r.index: r for r in records}
+            # Only the datasets that produce rows: ``relevance_frame`` skips
+            # ``d_U = 0``, and an index with no rows would look permanently
+            # missing to the frame cache and be rebuilt on every call.
+            frame = cached_frame(
+                tag=(
+                    f"proxy_relevance|{cache.spec.cache_key}|model={self.model}"
+                    f"|splits={self.n_splits}|seed={self.seed}|rows={self.max_rows}"
+                ),
+                indices=[r.index for r in records if np.asarray(r.U).shape[1] > 0],
+                build=build,
+                # Editing any of these invalidates the cached frames; the
+                # regression cache underneath is unaffected and still serves the
+                # fits, so a rebuild is bookkeeping, not refitting.
+                depends_on=(relevance_frame, _knobs, _slack),
+                cache_dir=self.frame_cache_dir,
+            )
         return RelevanceResults(
             frame=frame, model=self.model, n_skipped_no_u=int(n_skipped)
         )
@@ -635,14 +664,16 @@ class ProxyRelevanceAnalysis(Analysis):
 
     def _render_table(self, results: RelevanceResults, outdir: Path) -> List[Path]:
         """Per proxy x aggregation: the level, the weak share, and Spearman
-        against every candidate driver -- including the two halves slack
-        conflates and the joint ``min`` slack the figure deliberately avoids."""
+        against every candidate driver, including the two halves slack
+        conflates. The joint ``min`` slack the figure deliberately avoids is
+        reported in ``summary.json`` for that contrast, but left out of the
+        table -- it is not a driver the figure or the prose argues for, and a
+        column arguing against itself is not worth the width."""
         slack_min = results.slack_min()
         driver_labels = {
             "dim_proxy": "$d_P$",
             "dim_U": "$d_U$",
             "slack": "$d_P - d_U$",
-            "slack_min": r"$\min(d_W,d_Z) - d_U$",
             "noise_share": "noise",
         }
         rows = []
@@ -671,12 +702,12 @@ class ProxyRelevanceAnalysis(Analysis):
                 "incremental $\\Delta R^2 = R^2(u_j \\mid X, P) - R^2(u_j \\mid X)$ "
                 "of each proxy $P$ for the latent columns, aggregated over $U$ "
                 "by the mean or by the weakest column. The counting heuristic "
-                "(\\Cref{sec:prior_categorical}) passes for every dataset, so "
+                "(\\Cref{app:prior_postprocess}) passes for every dataset, so "
                 "the \\emph{share} column is the rate at which it and functional "
                 "recoverability disagree. $\\rho$ is Spearman's correlation with "
-                "each candidate driver: the proxy's own width, $d_U$, the slack "
-                "that conflates the two, the heuristic's joint slack, and the "
-                "sampled noise share of the $f_P$ input."
+                "each candidate driver: the proxy's own width $d_P$, $d_U$, the "
+                "slack $d_P - d_U$ that conflates the two, and the sampled noise "
+                "share of the $f_P$ input."
             ),
             label="tab:prior_relevance",
             group_column="proxy",

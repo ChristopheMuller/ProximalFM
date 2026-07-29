@@ -219,6 +219,7 @@ def test_analysis_end_to_end(tmp_path):
     analysis.n_splits = 3
     analysis.max_rows = None
     analysis.regression_cache_dir = tmp_path / "reg"
+    analysis.frame_cache_dir = tmp_path / "frames"
 
     artifacts = analysis.run(cache, tmp_path / "out")
     for path in artifacts.figures + artifacts.tables:

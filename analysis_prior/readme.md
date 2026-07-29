@@ -136,7 +136,7 @@ per-dataset tqdm progress bar tracks the run.
 | **Command** | `PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --n-datasets 256 --analysis mechanism_outputs` |
 | **Config group** | preset `general_ite`. **Uses every dataset in the cache**, so the count is set by `--n-datasets` (the default 1024 ≈ 8 h of TabICL — cap it; `--n-datasets 256` is served as a prefix of the existing cache, no regeneration) |
 | **Analysis module** | `analyses/mechanism_outputs.py` → `MechanismOutputsAnalysis` (`name="mechanism_outputs"`) |
-| **Regression helper** | `analysis_prior/regression.py` — cross-fitted out-of-fold, model `linear`/`rf`/`tabicl` (attr `MechanismOutputsAnalysis.model`, default `tabicl`); predictions cached under `cache/regression/`, so re-renders and resumed runs are instant |
+| **Regression helper** | `analysis_prior/regression.py` — cross-fitted out-of-fold, model `linear`/`rf`/`tabicl` (attr `MechanismOutputsAnalysis.model`, default `tabicl`); predictions cached under `cache/regression/`, so re-renders and resumed runs never refit (they still pay ~one file read + rescore per entry — see the `cache/frames/` layer under B.3.4 for the rest) |
 | **Output dir** | `results/general_ite/mechanism_outputs/` |
 | **Figure output** | `mechanism_output_dependence.pdf` → `fig:prior_mechanism_output_dependence` |
 | **Table output** | `mechanism_output_dependence_table.tex` → `tab:prior_mechanism_outputs` |
@@ -502,7 +502,7 @@ Table: median / 90th-percentile `ΔR²` and the share above `LEAK_THRESHOLD` (0.
 
 Regression settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`) — set
 `analysis.model = "tabicl"` for the robustness pass. Runs ~1.5 s/dataset with `rf` on the full 1024
-rows (≈25 min for the whole `general_ite` cache), then re-renders instantly off `cache/regression/`.
+rows (≈25 min for the whole `general_ite` cache); re-renders then refit nothing, reading `cache/regression/` instead (fast, though not free — cf. the `cache/frames/` layer under B.3.4).
 Predictor sets are tagged so they are shared with the other leave-one-out audits (T2.3) wherever the
 block combination coincides.
 
@@ -624,8 +624,8 @@ as "no clear winner in the hard cell," not a reversal.
 Needs the **mechanism-diagnostics payload** (`record.mechanisms`) for the share grid — a cache
 predating it must be regenerated once with `--force` (same data, diagnostics added). Regression
 settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`); set
-`analysis.model = "tabicl"` for the robustness pass. ~1.4 s/dataset with `rf`, then re-renders
-instantly off `cache/regression/`. The T-learner cache is keyed separately from `cached_oof`'s, so
+`analysis.model = "tabicl"` for the robustness pass. ~1.4 s/dataset with `rf`; re-renders then refit
+nothing, reading `cache/regression/` instead (fast, though not free — cf. `cache/frames/` under B.3.4). The T-learner cache is keyed separately from `cached_oof`'s, so
 it never collides with the exclusion/relevance entries.
 
 ### B.3.4 Proxy relevance — `fig:prior_relevance`, `tab:prior_relevance`
@@ -706,10 +706,25 @@ line.
 Reads only the feature blocks — no mechanism-diagnostic payload, so any `general_ite` cache works.
 Datasets with `d_U = 0` are skipped (nothing to recover) and counted in `summary.json`. Regression
 settings are class attributes (`model="rf"`, `n_splits=3`, `max_rows=1024`); set
-`analysis.model = "tabicl"` for the robustness pass. Cost scales with `d_U`, not just with the
-dataset count — five predictor sets (`X`, `X+W`, `W`, `X+Z`, `Z`) per `U` column, ~3.7 s/dataset with
-`rf` (≈1 h for the full 1024 cache), then re-renders instantly off `cache/regression/`. The `X`-only
-fit is shared between the two proxies by tag, so it is fitted once per `U` column.
+`analysis.model = "tabicl"` for the robustness pass. The `X`-only fit is shared between the two
+proxies by tag, so it is fitted once per `U` column.
+
+**Cost, and the two cache layers.** Work scales with `d_U`, not just with the dataset count: five
+predictor sets (`X`, `X+W`, `W`, `X+Z`, `Z`) per `U` column, so ~3.7 s/dataset cold with `rf`, ≈1 h
+for the full 1024 cache. After that:
+
+- `cache/regression/` serves the fits, so nothing is *refitted* — but re-assembling the frame still
+  costs one file read plus one rescoring per entry, i.e. **~15 ms/dataset** (≈15 s for 1024). That is
+  not "instant", which earlier versions of this doc wrongly claimed.
+- `cache/frames/` (see [`frame_cache.py`](frame_cache.py)) caches the *assembled* frame, so a
+  re-render is **one file read, ~3 ms total** regardless of `n`. Coverage is per dataset index like
+  the dataset cache — a subset is a prefix read, growing `600 → 1024` builds only the 424 new ones.
+  Invalidation is automatic: the key folds in a hash of `relevance_frame`/`_knobs`/`_slack`'s source,
+  so editing a measurement rebuilds without anyone bumping a version. Bypass with
+  `analysis.frame_cache_dir = None`.
+
+`regression.fold_indices` is `lru_cache`d, which alone halved the regression-cache-hit path
+(28 → 15 ms/dataset); every audit that scores cross-fitted `R²` benefits.
 
 ---
 
@@ -802,7 +817,7 @@ PYTHONPATH=. uv run python -m analysis_prior.main --spec general_ite --analysis 
 # tab:prior_mechanism_outputs.
 # Cross-fitted TabICL leave-one-block-out R2 on the delivered data (slow: a few
 # thousand in-context regressions the first time; predictions are cached under
-# cache/regression/ so re-renders are instant). Uses ALL datasets in the cache,
+# cache/regression/ so re-renders never refit). Uses ALL datasets in the cache,
 # so pass --n-datasets to control the count: general_ite's default is 1024
 # (~8h of TabICL), so cap it. --n-datasets 256 is served as a prefix of the
 # existing 1024-dataset cache — no regeneration.
