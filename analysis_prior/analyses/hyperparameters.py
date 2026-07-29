@@ -1,16 +1,23 @@
 """Hyperparameter tables for the prior (appendix B.2).
 
-Two paper tables, both derived from a single :class:`PriorSpec` with no data
+Three paper tables, all derived from a single :class:`PriorSpec` with no data
 generation required:
 
+- **structural** parameters: the :class:`PriorSpec` fields themselves (block
+  dimension ranges, ``seq_len``, ``mcmc_cate``, ``prior_type``). These live on
+  the spec rather than in the hyperparameter dicts only because the training
+  CLI passes them separately, but they are the most load-bearing knobs in the
+  prior -- $d^{\\max}$ is what makes the dimension laws of B.2.2 concrete -- so
+  the appendix would not be self-contained without them.
 - **sampled** hyperparameters (``DEFAULT_SAMPLED_HP`` + the spec's overrides):
   drawn once per dataset from a meta-distribution. Table columns describe the
   sampling law, grouped by role (mechanism shape / exogenous noise / causal
   knobs).
 - **fixed** hyperparameters (``DEFAULT_FIXED_HP`` + overrides): constants shared
-  by every dataset, including the three flags introduced for the appendix
-  (``enforce_completeness_heuristic``, ``completeness_max_attempts``,
-  ``dim_U_distribution``).
+  by every dataset.
+
+Not everything in ``DEFAULT_FIXED_HP`` reaches the paper: see
+:data:`REMOVED_FIXED_HP` for what is dropped and why.
 
 The table builders are pure functions of a spec, so they can be tested on any
 spec without touching a cache; the :class:`Analysis` wrapper only supplies
@@ -82,29 +89,56 @@ SAMPLED_GROUPS: List[Tuple[str, List[str]]] = [
 ]
 
 FIXED_GROUPS: List[Tuple[str, List[str]]] = [
+    ("Mechanism", ["noise_std"]),
     ("Feature corruption", ["max_categories", "corrupt_U", "proxy_cat_cover_prob"]),
     ("Positivity", ["propensity_epsilon"]),
-    ("Monte Carlo", ["prior_mc_mem_budget"]),
-    (
-        "Completeness \\& dims",
-        [
-            "enforce_completeness_heuristic",
-            "completeness_max_attempts",
-            "dim_U_distribution",
-        ],
-    ),
+    ("Completeness", ["completeness_max_attempts"]),
 ]
 
-#: Fixed hyperparameters tied to the TreeSCM mechanism family (see
-#: :class:`proximalfm.prior._dataset.SCMPrior`). Excluded from
+#: Fixed hyperparameters kept out of the paper table entirely. Dropped in
 #: :func:`build_fixed_table` rather than merely left out of ``FIXED_GROUPS``,
-#: so they don't resurface as an "Other" group.
-TREE_SCM_FIXED_HP = {
+#: so they don't resurface as an "Other" group. Three reasons to be here:
+#:
+#: - **Dead branch.** The tree-SCM knobs (``mix_probs``, ``tree_*``): this
+#:   paper's prior is ``mlp_scm`` throughout, so they configure code that never
+#:   runs (see :class:`proximalfm.prior._dataset.SCMPrior`).
+#: - **Always-on switches.** ``enforce_*``, ``*_subsampling``,
+#:   ``confounding_dim_control``, ``dim_U_distribution``: booleans (or a single
+#:   named law) whose shipped value *is* the behaviour the appendix prose
+#:   describes at length. A row reading ``True`` next to "accept/reject on
+#:   $\\min(d_W,d_Z)\\ge d_U$" adds nothing to the prose and misleadingly
+#:   advertises a degree of freedom the prior does not exercise. Where the
+#:   value does change what a reader sees, it still shows up -- via
+#:   :func:`build_structural_table`, whose dimension laws are written out of
+#:   ``dim_U_distribution`` and ``enforce_completeness_heuristic``.
+#: - **No statistical content.** ``prior_mc_mem_budget`` caps chunk size on the
+#:   MC-CATE pass; it cannot change the distribution being sampled.
+REMOVED_FIXED_HP = {
+    # dead branch: tree SCM
     "mix_probs",
     "tree_model",
     "tree_depth_lambda",
     "tree_n_estimators_lambda",
+    # always-on switches, described in prose instead
+    "enforce_categorical_completeness",
+    "enforce_completeness_heuristic",
+    "confounding_dim_control",
+    "proxy_edge_subsampling",
+    "covariate_edge_subsampling",
+    "dim_U_distribution",
+    # implementation-only
+    "prior_mc_mem_budget",
 }
+
+#: Structural parameters, grouped and ordered for the table. Unlike the two
+#: hyperparameter dicts these are :class:`PriorSpec` *fields*, so the keys here
+#: are the display names built by :func:`build_structural_table`, not config
+#: keys resolved from a dict.
+STRUCTURAL_GROUPS: List[Tuple[str, List[str]]] = [
+    ("Block dimensions", ["dim_X", "dim_U", "dim_W", "dim_Z"]),
+    ("Dimension bounds", ["max_dim_X", "max_dim_U", "max_dim_W", "max_dim_Z"]),
+    ("Dataset", ["seq_len", "mcmc_cate", "prior_type"]),
+]
 
 #: One-line gloss per hyperparameter. Kept deliberately terse (fits a table
 #: cell) and free of LaTeX specials so it can be printed without escaping.
@@ -137,6 +171,18 @@ NOTES: Dict[str, str] = {
     "covariate_share_of_X_in_A": "per-column keep probability of the direct $X \\to A$ edge",
     "covariate_share_of_X_in_Y": "per-column keep probability of the direct $X \\to Y$ edge",
     "cat_col_prob": "per-column categorisation probability",
+    # structural (PriorSpec fields, not config keys)
+    "dim_X": "observed baseline covariate dimension",
+    "dim_U": "latent confounder dimension",
+    "dim_W": "outcome-inducing proxy dimension",
+    "dim_Z": "treatment-inducing proxy dimension",
+    "max_dim_X": "covariate-dimension ceiling",
+    "max_dim_U": "confounder-dimension ceiling ($d^{\\max}$ of \\Cref{app:prior_dimensions})",
+    "max_dim_W": "outcome-proxy dimension ceiling",
+    "max_dim_Z": "treatment-proxy dimension ceiling",
+    "seq_len": "rows per dataset",
+    "mcmc_cate": "MC replicates $K$ per row behind the $\\mu_0/\\mu_1$ targets",
+    "prior_type": "mechanism family",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
     "tree_model": "tree SCM family",
@@ -295,6 +341,87 @@ def _grouped_rows(
     )
 
 
+def _ttm(name: str) -> str:
+    r"""``\texttt`` for a config key used *inside* a math cell.
+
+    Unlike :func:`_tt` this omits the ``\allowbreak`` hints: these names sit
+    inside a ``$\{\dots\}$`` support where a line break would split the set
+    notation, and they are short enough not to need one.
+    """
+    return "\\texttt{" + name.replace("_", "\\_") + "}"
+
+
+def _int_range(lo: int, hi: str) -> str:
+    """LaTeX for the support ``{lo, ..., hi}``.
+
+    ``hi`` is a pre-rendered upper bound -- for the structural table it is the
+    *name* of the bound (``max_dim_X``) rather than its value, which is listed
+    on its own row, so the law and the number it depends on stay visibly tied.
+    """
+    return f"\\{{{_num(lo)}, \\dots, {hi}\\}}"
+
+
+def _proxy_law(lo: int, hi: str, clamped: bool) -> str:
+    """Sampling law of a proxy dimension, given the completeness clamp.
+
+    With the heuristic on, the generator raises the lower bound to $d_U$, so the
+    law is conditional on the confounder dimension rather than plain uniform.
+    """
+    if not clamped:
+        return f"$\\mathrm{{Unif}}{_int_range(lo, hi)}$"
+    bound = "d_U" if lo <= 1 else f"\\max({_num(lo)}, d_U)"
+    return f"$\\mathrm{{Unif}}\\{{{bound}, \\dots, {hi}\\}}$"
+
+
+def build_structural_table(spec: PriorSpec) -> pd.DataFrame:
+    """Table of the *structural* parameters of ``spec``.
+
+    These are :class:`PriorSpec` fields rather than entries of the two
+    hyperparameter dicts, so the rows are built explicitly. Two of them read
+    the resolved fixed HP: ``dim_U_distribution`` and
+    ``enforce_completeness_heuristic`` decide which sampling law the dimension
+    rows report, which is how those (otherwise dropped, see
+    :data:`REMOVED_FIXED_HP`) flags still reach the reader.
+
+    ``name``, ``n_datasets`` and ``seed`` are omitted: they say how many draws
+    an audit asked for and under which seed, not what the prior is.
+
+    The dimension laws are written in terms of the ``max_dim_*`` bounds, which
+    get a row of their own: the ceiling is the quantity the rest of the appendix
+    argues about (it is the $d^{\\max}$ of the marginal derivations), so it
+    should be readable as a number without being buried inside four separate
+    supports. The ``min_dim_*`` bounds stay inlined in the laws, where they are
+    already visible.
+    """
+    fixed, _ = spec.resolved_hp()
+
+    up_U, up_W = _ttm("max_dim_U"), _ttm("max_dim_W")
+    up_Z, up_X = _ttm("max_dim_Z"), _ttm("max_dim_X")
+
+    dU_law = (
+        f"triangular on ${_int_range(spec.min_dim_U, up_U)}$"
+        if fixed.get("dim_U_distribution") == "triangular"
+        else f"$\\mathrm{{Unif}}{_int_range(spec.min_dim_U, up_U)}$"
+    )
+    clamped = bool(fixed.get("enforce_completeness_heuristic"))
+
+    values = {
+        "dim_X": f"$\\mathrm{{Unif}}{_int_range(spec.min_dim_X, up_X)}$",
+        "dim_U": dU_law,
+        "dim_W": _proxy_law(spec.min_dim_W, up_W, clamped),
+        "dim_Z": _proxy_law(spec.min_dim_Z, up_Z, clamped),
+        "max_dim_X": f"${_num(spec.max_dim_X)}$",
+        "max_dim_U": f"${_num(spec.max_dim_U)}$",
+        "max_dim_W": f"${_num(spec.max_dim_W)}$",
+        "max_dim_Z": f"${_num(spec.max_dim_Z)}$",
+        "seq_len": f"${_num(spec.seq_len)}$",
+        "mcmc_cate": f"${_num(spec.mcmc_cate)}$",
+        "prior_type": _tt(spec.prior_type),
+    }
+    # Values are pre-rendered, so the describer is the identity.
+    return _grouped_rows(values, STRUCTURAL_GROUPS, lambda v: v, "value")
+
+
 def build_sampled_table(spec: PriorSpec) -> pd.DataFrame:
     """Table of the per-dataset *sampled* hyperparameters for ``spec``."""
     _, sampled = spec.resolved_hp()
@@ -304,13 +431,13 @@ def build_sampled_table(spec: PriorSpec) -> pd.DataFrame:
 def build_fixed_table(spec: PriorSpec) -> pd.DataFrame:
     """Table of the *fixed* hyperparameters for ``spec``.
 
-    TreeSCM-only knobs (:data:`TREE_SCM_FIXED_HP`) are dropped unconditionally:
-    this paper's spec never exercises the tree-SCM branch, so they'd otherwise
-    show up as noise (an "Other" group, since they're absent from
-    ``FIXED_GROUPS``).
+    Keys in :data:`REMOVED_FIXED_HP` are dropped unconditionally, so what
+    survives is the set of constants a reader could not recover from the
+    appendix prose: numeric values that pin down a behaviour described only
+    qualitatively there.
     """
     fixed, _ = spec.resolved_hp()
-    fixed = {k: v for k, v in fixed.items() if k not in TREE_SCM_FIXED_HP}
+    fixed = {k: v for k, v in fixed.items() if k not in REMOVED_FIXED_HP}
     return _grouped_rows(fixed, FIXED_GROUPS, format_fixed, "value")
 
 
@@ -321,8 +448,9 @@ def build_fixed_table(spec: PriorSpec) -> pd.DataFrame:
 
 @dataclass
 class HyperparameterTables:
-    """The two hyperparameter tables plus the spec name they describe."""
+    """The three parameter tables plus the spec name they describe."""
 
+    structural: pd.DataFrame
     sampled: pd.DataFrame
     fixed: pd.DataFrame
     spec_name: str
@@ -331,13 +459,14 @@ class HyperparameterTables:
 @register
 class HyperparametersAnalysis(Analysis):
     name = "hyperparameters"
-    description = "Sampled and fixed prior hyperparameters as paper tables."
+    description = "Structural, sampled and fixed prior parameters as paper tables."
 
     def compute(self, cache: PriorCache) -> HyperparameterTables:
         # Only the spec is needed: hyperparameters are a property of the
         # configuration, not of any realised dataset.
         spec = cache.spec
         return HyperparameterTables(
+            structural=build_structural_table(spec),
             sampled=build_sampled_table(spec),
             fixed=build_fixed_table(spec),
             spec_name=spec.name,
@@ -347,6 +476,27 @@ class HyperparametersAnalysis(Analysis):
         outdir = Path(outdir)
 
         tables = save_table(
+            results.structural,
+            outdir,
+            "structural_hyperparameters",
+            caption=(
+                "Structural parameters of the prior: the block dimensions and "
+                "the dataset shape. Each dimension is drawn per dataset from "
+                "the law shown, stated in terms of the ceilings listed below "
+                "it. The proxy dimensions are drawn conditionally on $d_U$ so "
+                "that the completeness heuristic of "
+                "\\Cref{app:prior_procedure} holds by construction; the "
+                "resulting marginals are derived in "
+                "\\Cref{app:prior_dimensions}."
+            ),
+            label="tab:prior_structural_hp",
+            escape=False,
+            wrap_columns=["hyperparameter", "value", "description"],
+            small=True,
+            centering=True,
+            group_column="group",
+        )
+        tables += save_table(
             results.sampled,
             outdir,
             "sampled_hyperparameters",
@@ -369,8 +519,10 @@ class HyperparametersAnalysis(Analysis):
             "fixed_hyperparameters",
             caption=(
                 "Fixed hyperparameters of the prior, held constant across every "
-                "dataset. The last group collects the flags introduced for this "
-                "appendix (completeness enforcement and the $d_U$ sampling law)."
+                "dataset. Listed are the constants that pin down behaviour the "
+                "surrounding text describes only qualitatively; switches whose "
+                "shipped value is that behaviour itself are stated in the text "
+                "instead."
             ),
             label="tab:prior_fixed_hp",
             escape=False,
@@ -382,6 +534,7 @@ class HyperparametersAnalysis(Analysis):
 
         summary = {
             "spec_name": results.spec_name,
+            "n_structural": int(len(results.structural)),
             "n_sampled_hp": int(len(results.sampled)),
             "n_fixed_hp": int(len(results.fixed)),
         }
