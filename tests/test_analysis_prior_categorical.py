@@ -215,7 +215,7 @@ def test_proxy_stats_by_u_feature_rejects_mismatched_lengths():
 
 @pytest.fixture(scope="module")
 def tiny_family_caches():
-    """full / ablation / baseline, mirroring the shipped cat_ablation family."""
+    """default / no_enforcement, mirroring the shipped cat_ablation family."""
     base = PriorSpec(
         name="cattest",
         n_datasets=8,
@@ -235,15 +235,9 @@ def tiny_family_caches():
         name="cat_family",
         base=base,
         interventions={
-            "full": {},
-            "ablation": {
+            "default": {},
+            "no_enforcement": {
                 "fixed_hp_overrides": {"enforce_categorical_completeness": False}
-            },
-            "baseline": {
-                "fixed_hp_overrides": {
-                    "corrupt_U": False,
-                    "enforce_categorical_completeness": False,
-                }
             },
         },
     )
@@ -256,30 +250,25 @@ def tiny_family_caches():
 def test_compute_reads_flags_from_specs(tiny_family_caches):
     results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
 
-    assert list(results.variants) == ["full", "ablation", "baseline"]
-    assert results.baseline == "full"
-    assert results.variants["full"].corrupt_U and results.variants["full"].enforced
-    assert results.variants["ablation"].corrupt_U
-    assert not results.variants["ablation"].enforced
-    assert not results.variants["baseline"].corrupt_U
+    assert list(results.variants) == ["default", "no_enforcement"]
+    assert results.baseline == "default"
+    assert (
+        results.variants["default"].corrupt_U and results.variants["default"].enforced
+    )
+    assert results.variants["no_enforcement"].corrupt_U
+    assert not results.variants["no_enforcement"].enforced
     for var in results.variants.values():
         assert set(var.profiles) == {"U", "W", "Z"}
         assert var.n_datasets == 8
 
 
 def test_enforcement_improves_dominance(tiny_family_caches):
-    # Enforcement (full) must dominate each unenforced arm, but ablation vs.
-    # baseline has no fixed order: both let proxies categorize independently
-    # of U (num2cat applies cat_col_prob to every dataset, not just eligible
-    # ones), so which one wins is a function of the sampled dims/probabilities,
-    # not of corrupt_U.
+    # Enforcement (default) must dominate the unenforced arm.
     results = CategoricalCompletenessAnalysis().compute(tiny_family_caches)
-    full = results.variants["full"].survival["overall_fraction"]
-    ablation = results.variants["ablation"].survival["overall_fraction"]
-    baseline = results.variants["baseline"].survival["overall_fraction"]
-    assert full == 1.0
-    assert full > ablation
-    assert full > baseline
+    default = results.variants["default"].survival["overall_fraction"]
+    no_enforcement = results.variants["no_enforcement"].survival["overall_fraction"]
+    assert default == 1.0
+    assert default > no_enforcement
 
 
 def test_run_writes_survival_table(tiny_family_caches, tmp_path):
@@ -320,12 +309,12 @@ def test_summary_is_per_arm(tiny_family_caches, tmp_path):
     summary = (
         CategoricalCompletenessAnalysis().run(tiny_family_caches, tmp_path).summary
     )
-    assert summary["baseline_label"] == "full"
-    for label in ("full", "ablation", "baseline"):
+    assert summary["baseline_label"] == "default"
+    for label in ("default", "no_enforcement"):
         stats = summary[label]
         assert stats["n_datasets"] == 8
         assert 0.0 <= stats["dominance_fraction"] <= 1.0
         assert stats["violation_fraction"] == pytest.approx(
             1.0 - stats["dominance_fraction"]
         )
-    assert summary["full"]["dominance_fraction"] == 1.0
+    assert summary["default"]["dominance_fraction"] == 1.0

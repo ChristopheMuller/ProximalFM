@@ -440,24 +440,15 @@ FAMILIES: Dict[str, SpecFamily] = {
         interventions={
             "triangular": {},
             "uniform": {"fixed_hp_overrides": {"dim_U_distribution": "uniform"}},
-            "unenforced": {
-                "fixed_hp_overrides": {"enforce_completeness_heuristic": False}
-            },
         },
     ),
     "cat_ablation": SpecFamily(
         name="cat_ablation",
         base=PRESETS["general_ite"],
         interventions={
-            "full": {},
-            "ablation": {
+            "default": {},
+            "no_enforcement": {
                 "fixed_hp_overrides": {"enforce_categorical_completeness": False}
-            },
-            "baseline": {
-                "fixed_hp_overrides": {
-                    "corrupt_U": False,
-                    "enforce_categorical_completeness": False,
-                }
             },
         },
     ),

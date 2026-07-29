@@ -360,8 +360,8 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
         figures += self._render_enforcement_vs_u_demand(results, outdir)
         tables = self._render_survival_table(results, outdir)
 
-        # Key is "baseline_label" (not "baseline") because an arm is itself named
-        # "baseline"; a bare "baseline" key would collide with its per-arm entry.
+        # Key is "baseline_label" (not "baseline") to avoid ever colliding with
+        # an arm that happens to be named "baseline".
         summary: Dict[str, Any] = {"baseline_label": results.baseline}
         for label, var in results.variants.items():
             summary[label] = {
@@ -473,8 +473,8 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
 
         One figure, three panels, all pooling ``W`` and ``Z`` (both proxies, built
         the same way) and all restricted to the categorised-``U`` arms
-        (``corrupt_U``): the views condition on categorical demand, which is
-        ~always zero for the continuous-``U`` ``baseline`` arm.
+        (``corrupt_U``): the views condition on categorical demand, which would be
+        ~always zero for an arm whose ``U`` is never categorised.
 
         Panels 1--2 condition on a *single* ``U`` column's own category count
         (``2, ..., 9``, coarser tail bins, or ``num`` if continuous) and read off a
@@ -483,8 +483,8 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
         continuous, then the mean category count of the proxy's categorical
         columns. Panel 3 moves to the *dataset* level, plotting the mean fraction
         of categorical proxy columns against ``|cats(U)|``; under enforcement it
-        rises toward ``proxy_cat_cover_prob`` while the unconstrained ``ablation``
-        stays flat.
+        rises toward ``proxy_cat_cover_prob`` while the unconstrained
+        ``no_enforcement`` arm stays flat.
 
         Caveat for panels 1--2: proxy stats are block-level, so they condition on
         "the dataset contains a ``U`` column of this kind", not on a matched
@@ -584,11 +584,11 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
     ) -> list:
         """Survival of categorical completeness, by number of categorical U columns.
 
-        The informative contrast is ``full`` (enforced -> ~100% by construction)
-        vs ``ablation`` (proxies unconstrained -> the pre-enforcement violation
-        rate). ``baseline`` has a continuous ``U`` (no categorical columns), so it
-        contributes only the ``n_cat_U = 0`` row and is dropped to keep the table
-        about what categorisation + enforcement buy.
+        The informative contrast is ``default`` (enforced -> ~100% by
+        construction) vs ``no_enforcement`` (proxies unconstrained -> the
+        pre-enforcement violation rate). Arms whose ``U`` is never categorised
+        would contribute only the ``n_cat_U = 0`` row, so they are dropped to
+        keep the table about what categorisation + enforcement buy.
         """
         shown = {
             label: var
@@ -626,9 +626,16 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
                 merged[col] = merged[col].fillna(0).astype(int)
 
         # A two-level column header: the shared key under an empty group, then one
-        # ``\multicolumn`` spanner per variant over its three stat columns.
+        # ``\multicolumn`` spanner per variant over its three stat columns. The
+        # table is written with ``escape=False`` (for the math in the key
+        # column), so a variant label with an underscore (e.g.
+        # ``no_enforcement``) needs manual escaping here or it breaks the build.
+        def _split_header(col: str) -> tuple:
+            arm, stat = col.split("::")
+            return (arm.replace("_", "\\_"), stat)
+
         columns = [("", "$|\\mathrm{cats}(U)|$")]
-        columns += [tuple(col.split("::")) for col in merged.columns[1:]]
+        columns += [_split_header(col) for col in merged.columns[1:]]
         merged.columns = pd.MultiIndex.from_tuples(columns)
         table = merged
 
@@ -642,9 +649,9 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
                 "delivered proxies both dominate $U$'s categorical profile "
                 "($\\texttt{dominates}(W, U)$ and $\\texttt{dominates}(Z, U)$), "
                 "measured on realised values after constant-column filtering. "
-                "The \\emph{ablation} arm (proxies unconstrained) gives the "
-                "pre-enforcement violation rate; \\emph{full} (the default) holds "
-                "by construction."
+                "The \\emph{no\\_enforcement} arm (proxies unconstrained) gives "
+                "the pre-enforcement violation rate; \\emph{default} holds by "
+                "construction."
             ),
             label="tab:prior_categorical_completeness_survival",
             escape=False,

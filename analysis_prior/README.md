@@ -38,10 +38,7 @@ its key folds in a source hash, so editing a measurement invalidates automatical
 Presets: `general_ite` (n=1024, `seq_len=2048`, **K=1**) is the workhorse and the base of both
 families; `mc_targets` (n=100, **K=100**) is the only `K>1` preset; `default` mirrors training runs;
 `smoke` is for dev; `no_u_augment` / `no_categorization` are ablations. Families: `dim_ablation`
-(`triangular` / `uniform` / `unenforced`) and `cat_ablation` (`full` / `ablation` / `baseline`), both
-on `general_ite`. Note that `dim_ablation`'s `unenforced` arm only reaches the joint heatmaps:
-`dimension_marginals.pdf` drops variants with completeness enforcement off, since they share their
-sampling law (and hence their analytic overlay) with the enforced arm.
+(`triangular` / `uniform`) and `cat_ablation` (`default` / `no_enforcement`), both on `general_ite`.
 
 ## Artifacts
 
