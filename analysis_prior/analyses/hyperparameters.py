@@ -126,6 +126,7 @@ REMOVED_FIXED_HP = {
     "proxy_edge_subsampling",
     "covariate_edge_subsampling",
     "dim_U_distribution",
+    "corrupt_U",
     # implementation-only
     "prior_mc_mem_budget",
 }
