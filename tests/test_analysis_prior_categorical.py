@@ -283,6 +283,10 @@ def test_run_writes_survival_table(tiny_family_caches, tmp_path):
     tex = (tmp_path / "categorical_completeness_survival.tex").read_text()
     assert "\\label{tab:prior_categorical_completeness_survival}" in tex
     assert "\\caption" in tex
+    # A variant label with an underscore must be escaped in the column header,
+    # or the table breaks the LaTeX build.
+    assert "no\\_enforcement" in tex
+    assert "no_enforcement}" not in tex
 
 
 def test_run_writes_category_figures(tiny_family_caches, tmp_path):
