@@ -12,10 +12,12 @@ import pytest
 from analysis_prior.analyses.hyperparameters import (
     FIXED_GROUPS,
     NOTES,
+    REMOVED_FIXED_HP,
     SAMPLED_GROUPS,
-    TREE_SCM_FIXED_HP,
+    STRUCTURAL_GROUPS,
     build_fixed_table,
     build_sampled_table,
+    build_structural_table,
     describe_sampled,
     format_fixed,
 )
@@ -123,11 +125,23 @@ def test_sampled_table_covers_every_default_sampled_hp():
     assert listed == set(DEFAULT_SAMPLED_HP)
 
 
-def test_fixed_table_covers_every_default_fixed_hp_except_tree_scm():
+def test_fixed_table_covers_every_default_fixed_hp_except_removed():
     table = build_fixed_table(PriorSpec(name="default"))
     listed = {_bare_key(cell) for cell in table["hyperparameter"]}
-    assert listed == set(DEFAULT_FIXED_HP) - TREE_SCM_FIXED_HP
-    assert listed.isdisjoint(TREE_SCM_FIXED_HP)
+    assert listed == set(DEFAULT_FIXED_HP) - REMOVED_FIXED_HP
+    assert listed.isdisjoint(REMOVED_FIXED_HP)
+
+
+def test_removed_fixed_hp_are_all_real_config_keys():
+    # A typo here would silently fail to drop the key it meant to.
+    assert REMOVED_FIXED_HP <= set(DEFAULT_FIXED_HP)
+
+
+def test_fixed_table_has_no_other_group():
+    # Every surviving key must have an explicit home in FIXED_GROUPS; an
+    # "Other" group means the grouping has drifted from the config.
+    table = build_fixed_table(PriorSpec(name="default"))
+    assert "Other" not in table["group"].tolist()
 
 
 def test_group_label_printed_once_per_group():
@@ -140,14 +154,98 @@ def test_group_label_printed_once_per_group():
 def test_overrides_flow_into_the_tables():
     spec = PriorSpec(
         name="ablation",
-        fixed_hp_overrides={
-            "dim_U_distribution": "uniform",
-            "proxy_cat_cover_prob": 0.0,
-        },
+        fixed_hp_overrides={"max_categories": 7, "proxy_cat_cover_prob": 0.0},
     )
     fixed = build_fixed_table(spec).set_index("hyperparameter")
-    assert fixed.loc[_tt("dim_U_distribution"), "value"] == "\\texttt{uniform}"
+    assert fixed.loc[_tt("max_categories"), "value"] == "$7$"
     assert fixed.loc[_tt("proxy_cat_cover_prob"), "value"] == "$0$"
+
+
+# --------------------------------------------------------------------------
+# Structural table
+# --------------------------------------------------------------------------
+
+
+def _bound(name: str) -> str:
+    """The in-math rendering of a ``max_dim_*`` name (no \\allowbreak)."""
+    return "\\texttt{" + name.replace("_", "\\_") + "}"
+
+
+def test_structural_table_reports_spec_fields():
+    spec = PriorSpec(name="s", seq_len=2048, mcmc_cate=100, max_dim_X=10)
+    table = build_structural_table(spec).set_index("hyperparameter")
+    assert table.loc[_tt("seq_len"), "value"] == "$2048$"
+    assert table.loc[_tt("mcmc_cate"), "value"] == "$100$"
+    assert table.loc[_tt("prior_type"), "value"] == "\\texttt{mlp\\_\\allowbreak scm}"
+
+
+def test_structural_laws_name_their_ceiling_and_the_ceiling_has_a_row():
+    # The law references the bound by name; the number lives on its own row.
+    spec = PriorSpec(name="s", max_dim_X=7)
+    table = build_structural_table(spec).set_index("hyperparameter")
+    assert (
+        table.loc[_tt("dim_X"), "value"]
+        == "$\\mathrm{Unif}\\{1, \\dots, " + _bound("max_dim_X") + "\\}$"
+    )
+    assert table.loc[_tt("max_dim_X"), "value"] == "$7$"
+
+
+def test_structural_bound_rows_track_the_spec():
+    spec = PriorSpec(name="s", max_dim_U=3, max_dim_W=4, max_dim_Z=5, max_dim_X=6)
+    table = build_structural_table(spec).set_index("hyperparameter")
+    assert table.loc[_tt("max_dim_U"), "value"] == "$3$"
+    assert table.loc[_tt("max_dim_W"), "value"] == "$4$"
+    assert table.loc[_tt("max_dim_Z"), "value"] == "$5$"
+    assert table.loc[_tt("max_dim_X"), "value"] == "$6$"
+
+
+def test_structural_table_writes_the_dim_U_law_from_the_fixed_flag():
+    triangular = build_structural_table(PriorSpec(name="a")).set_index("hyperparameter")
+    assert "triangular" in triangular.loc[_tt("dim_U"), "value"]
+
+    uniform = build_structural_table(
+        PriorSpec(name="b", fixed_hp_overrides={"dim_U_distribution": "uniform"})
+    ).set_index("hyperparameter")
+    assert (
+        uniform.loc[_tt("dim_U"), "value"]
+        == "$\\mathrm{Unif}\\{1, \\dots, " + _bound("max_dim_U") + "\\}$"
+    )
+
+
+def test_structural_table_clamps_proxy_dims_to_dU_only_when_enforced():
+    clamped = build_structural_table(PriorSpec(name="a")).set_index("hyperparameter")
+    assert (
+        clamped.loc[_tt("dim_W"), "value"]
+        == "$\\mathrm{Unif}\\{d_U, \\dots, " + _bound("max_dim_W") + "\\}$"
+    )
+
+    free = build_structural_table(
+        PriorSpec(
+            name="b", fixed_hp_overrides={"enforce_completeness_heuristic": False}
+        )
+    ).set_index("hyperparameter")
+    assert (
+        free.loc[_tt("dim_Z"), "value"]
+        == "$\\mathrm{Unif}\\{1, \\dots, " + _bound("max_dim_Z") + "\\}$"
+    )
+
+
+def test_structural_table_uses_max_when_the_min_dim_binds():
+    spec = PriorSpec(name="s", min_dim_W=2, max_dim_W=5)
+    table = build_structural_table(spec).set_index("hyperparameter")
+    assert (
+        table.loc[_tt("dim_W"), "value"]
+        == "$\\mathrm{Unif}\\{\\max(2, d_U), \\dots, " + _bound("max_dim_W") + "\\}$"
+    )
+
+
+def test_structural_table_groups_and_omits_bookkeeping_fields():
+    table = build_structural_table(PriorSpec(name="s", n_datasets=17, seed=3))
+    keys = {_bare_key(cell) for cell in table["hyperparameter"]}
+    assert keys == {k for _, group in STRUCTURAL_GROUPS for k in group}
+    assert keys.isdisjoint({"name", "n_datasets", "seed"})
+    non_empty = [g for g in table["group"] if g]
+    assert non_empty == [name for name, _ in STRUCTURAL_GROUPS]
 
 
 def test_unlisted_hp_lands_in_an_other_group():
@@ -175,4 +273,4 @@ def test_tables_are_not_empty_and_have_expected_columns():
     ]
     assert list(fixed.columns) == ["group", "hyperparameter", "value", "description"]
     assert len(sampled) == len(DEFAULT_SAMPLED_HP)
-    assert len(fixed) == len(DEFAULT_FIXED_HP) - len(TREE_SCM_FIXED_HP)
+    assert len(fixed) == len(DEFAULT_FIXED_HP) - len(REMOVED_FIXED_HP)

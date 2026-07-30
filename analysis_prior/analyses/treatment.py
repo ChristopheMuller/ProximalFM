@@ -1,4 +1,10 @@
-"""Treatment-assignment walkthrough: one SCM's logits from ``f_A`` to ``A``.
+"""Treatment assignment: the ``f_A`` pipeline (B.2.5) and the overlap audit (B.3.1).
+
+Two analyses share this module because they share a subject -- the propensity
+``pi`` -- at two different scales. :class:`TreatmentWalkthroughAnalysis` shows
+*how one dataset's* ``pi`` is built (``fig:prior_treatment_walkthrough``);
+:class:`OverlapAnalysis` asks what the resulting ``pi`` looks like *across the
+whole prior* (``fig:prior_overlap``).
 
 Covers appendix B.2.5 (``fig:prior_treatment_walkthrough``). ``sample_A`` turns
 a raw ``f_A`` logit into a treatment draw through a fixed five-step pipeline
@@ -35,7 +41,9 @@ from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-from ..design import apply_style, block_color, figsize_grid
+from matplotlib.patches import Patch
+
+from ..design import FONT_SIZE_PT, ROLES, apply_style, block_color, figsize_grid
 from ..generate import PriorCache, PriorDatasetRecord
 from ..plotting import plt, save_figure
 from .base import Analysis, AnalysisArtifacts, register
@@ -319,3 +327,234 @@ class TreatmentWalkthroughAnalysis(Analysis):
         ax.set_xlabel(r"$A\sim\mathrm{Bern}(\pi)$")
         ax.set_ylabel("fraction")
         ax.grid(axis="x")
+
+
+# ---------------------------------------------------------------------------
+# B.3.1 -- overlap audit
+# ---------------------------------------------------------------------------
+
+#: Conventional practical-overlap band. Positivity holds *structurally* for
+#: every dataset (the clamp puts pi in [eps, 1-eps] by fiat), so a pass/fail
+#: check would be vacuous; this band is the threshold for *practical* overlap,
+#: below which a downstream estimator has little to work with.
+OVERLAP_BAND = (0.05, 0.95)
+
+#: Quantile grid for the per-dataset propensity curves of panel (b). 201 points
+#: resolves the tails (where the interesting mass is) without making the
+#: cross-dataset percentile arrays large.
+QUANTILE_GRID = np.linspace(0.0, 1.0, 201)
+
+#: Cross-dataset bands drawn around the median curve, as (lo, hi) percentile
+#: pairs from widest to narrowest. Drawn in that order so the narrow (darker)
+#: band paints over the wide one.
+BANDS = ((10, 90), (25, 75))
+
+#: Number of log-spaced bins for the pooled min(pi, 1-pi) histogram.
+N_POOLED_BINS = 60
+
+#: Slack when testing whether a propensity sits *on* a clamp bound. The cache
+#: stores ``A_probs`` as float32, so the clamp's exact value does not survive the
+#: round trip bit-for-bit; comfortably above float32 resolution at 1e-3, and far
+#: below any spacing that would catch an unclamped row.
+CLAMP_TOL = 1e-6
+
+
+@dataclass
+class OverlapResults:
+    """Overlap statistics, pooled over rows and summarised per dataset.
+
+    Attributes
+    ----------
+    pooled_margin : ndarray, shape (n_datasets * T,)
+        ``min(pi, 1 - pi)`` for every row of every dataset -- the distance from
+        each unit's propensity to the nearest degenerate assignment. Folding the
+        two tails into one statistic makes "how close to no-overlap" a single
+        axis, which is the quantity positivity is actually about.
+
+    quantile_curves : ndarray, shape (n_datasets, len(QUANTILE_GRID))
+        Per-dataset quantile function of ``pi``. Row ``i`` column ``j`` is the
+        ``QUANTILE_GRID[j]``-quantile of dataset ``i``'s propensities.
+
+    poor_fraction, clamp_fraction, prevalence : ndarray, shape (n_datasets,)
+        Per dataset: share of rows outside :data:`OVERLAP_BAND`; share of rows
+        sitting *on* the clamp bounds (positivity held by fiat rather than by
+        the mechanism); and the realised treated fraction ``mean(A)``.
+
+    epsilon : float
+        The production clamp, ``propensity_epsilon``.
+    """
+
+    pooled_margin: np.ndarray
+    quantile_curves: np.ndarray
+    poor_fraction: np.ndarray
+    clamp_fraction: np.ndarray
+    prevalence: np.ndarray
+    epsilon: float
+
+
+@register
+class OverlapAnalysis(Analysis):
+    name = "treatment_overlap"
+    description = (
+        "Overlap audit (B.3.1): distribution of the true propensity pi across "
+        "the prior, pooled over rows and as per-dataset quantile bands."
+    )
+
+    def compute(self, cache: PriorCache) -> OverlapResults:
+        """Read ``A_probs`` straight off the cache -- no regression needed.
+
+        ``A_probs`` *is* the ground-truth ``P(A=1 | X, U)`` that ``as:positivity``
+        is stated over, so the audit is a pure summary of cached values; fitting
+        a propensity model on ``(X, U)`` would only re-estimate it with error.
+        """
+        margins: List[np.ndarray] = []
+        curves: List[np.ndarray] = []
+        poor: List[float] = []
+        clamped: List[float] = []
+        prevalence: List[float] = []
+        epsilon = 1e-3
+
+        lo_band, hi_band = OVERLAP_BAND
+        for record in cache.records:
+            pi = np.asarray(record.A_probs, dtype=np.float64)
+            if record.sampled_hp is not None:
+                epsilon = float(record.sampled_hp.get("propensity_epsilon", epsilon))
+
+            margins.append(np.minimum(pi, 1.0 - pi))
+            curves.append(np.quantile(pi, QUANTILE_GRID))
+            poor.append(float(np.mean((pi < lo_band) | (pi > hi_band))))
+            # The clamp is a hard clip, so a clamped row's propensity is exactly
+            # the bound; the tolerance only absorbs the cache's float32 storage
+            # (1 - eps round-trips to 0.99900001, not 0.999).
+            on_bound = (pi <= epsilon + CLAMP_TOL) | (pi >= 1.0 - epsilon - CLAMP_TOL)
+            clamped.append(float(np.mean(on_bound)))
+            prevalence.append(float(np.mean(record.A)))
+
+        return OverlapResults(
+            pooled_margin=np.concatenate(margins),
+            quantile_curves=np.stack(curves),
+            poor_fraction=np.asarray(poor),
+            clamp_fraction=np.asarray(clamped),
+            prevalence=np.asarray(prevalence),
+            epsilon=epsilon,
+        )
+
+    def render(self, results: OverlapResults, outdir: Path) -> AnalysisArtifacts:
+        outdir = Path(outdir)
+        apply_style()
+
+        fig, axes = plt.subplots(
+            1, 2, figsize=figsize_grid(ncols=2, nrows=1, panel_aspect=0.85)
+        )
+        self._pooled_panel(axes[0], results)
+        self._quantile_band_panel(axes[1], results)
+        figures = save_figure(fig, outdir, "overlap")
+
+        lo_band, _ = OVERLAP_BAND
+        summary: Dict[str, Any] = {
+            "n_datasets": int(results.quantile_curves.shape[0]),
+            "propensity_epsilon": results.epsilon,
+            "overlap_band": list(OVERLAP_BAND),
+            # Pooled over rows: what the prior serves on average.
+            "pooled_fraction_outside_band": float(
+                np.mean(results.pooled_margin < lo_band)
+            ),
+            "pooled_margin_p01": float(np.quantile(results.pooled_margin, 0.01)),
+            "pooled_margin_median": float(np.median(results.pooled_margin)),
+            # Per dataset: how concentrated the poor overlap is.
+            "median_dataset_fraction_outside_band": float(
+                np.median(results.poor_fraction)
+            ),
+            "share_datasets_any_mass_outside_band": float(
+                np.mean(results.poor_fraction > 0.0)
+            ),
+            "share_datasets_materially_poor": float(
+                np.mean(results.poor_fraction > 0.1)
+            ),
+            # How much work the clamp -- i.e. positivity by fiat -- is doing.
+            "median_dataset_clamp_fraction": float(np.median(results.clamp_fraction)),
+            "share_datasets_any_clamped": float(np.mean(results.clamp_fraction > 0.0)),
+            "median_prevalence": float(np.median(results.prevalence)),
+        }
+        return AnalysisArtifacts(summary=summary, figures=figures, tables=[])
+
+    @staticmethod
+    def _pooled_panel(ax, results: OverlapResults) -> None:
+        """(a) Pooled histogram of ``min(pi, 1-pi)`` over every row of every
+        dataset, on a log axis: the production clamp sits at ``eps = 1e-3`` and
+        the mass that matters piles up against it, which a linear axis hides
+        entirely. Heights are the share of *all* rows, so the panel reads as the
+        marginal law of overlap under the prior.
+
+        Caveat worth stating in the caption: bars are per-bin shares on a *log*
+        grid, so bin width grows to the right and part of the rightward rise is
+        that widening rather than extra mass. The panel is meant to be read for
+        where mass sits (the pile-up on the clamp) rather than as a density.
+        """
+        margin = results.pooled_margin
+        lo = results.epsilon
+        bins = np.logspace(np.log10(lo * 0.9), np.log10(0.5), N_POOLED_BINS)
+        ax.hist(
+            np.clip(margin, bins[0], bins[-1]),
+            bins=bins,
+            weights=np.full(margin.shape, 1.0 / margin.size),
+            color=block_color("A"),
+            edgecolor="none",
+        )
+        ax.axvline(lo, color="0.35", linestyle=":", lw=1.0)
+        ax.axvline(OVERLAP_BAND[0], **ROLES["reference"])
+        ax.annotate(
+            r"clamp $\varepsilon$",
+            xy=(lo, 1.0),
+            xycoords=("data", "axes fraction"),
+            xytext=(2, -2),
+            textcoords="offset points",
+            va="top",
+            ha="left",
+            fontsize=FONT_SIZE_PT - 2,
+            color="0.35",
+        )
+        ax.set_xscale("log")
+        ax.set_xlim(bins[0], 0.5)
+        ax.set_xlabel(r"$\min(\pi,\,1-\pi)$")
+        ax.set_ylabel("share of rows")
+        ax.set_title("(a) pooled overlap margin")
+
+    @staticmethod
+    def _quantile_band_panel(ax, results: OverlapResults) -> None:
+        """(b) Per-dataset quantile function of ``pi``, summarised across
+        datasets: median curve with 25-75 and 10-90 percentile bands. Panel (a)
+        pools rows and so cannot distinguish "every dataset is mildly bad" from
+        "a few datasets are degenerate"; the width of these bands is exactly that
+        distinction.
+        """
+        curves = results.quantile_curves
+        colour = block_color("A")
+        for (lo_pct, hi_pct), alpha in zip(BANDS, (0.18, 0.34)):
+            lo, hi = np.percentile(curves, [lo_pct, hi_pct], axis=0)
+            ax.fill_between(
+                QUANTILE_GRID, lo, hi, color=colour, alpha=alpha, linewidth=0
+            )
+        ax.plot(QUANTILE_GRID, np.median(curves, axis=0), color=colour, lw=1.6)
+
+        for bound in OVERLAP_BAND:
+            ax.axhline(bound, **ROLES["reference"])
+
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_xlabel("row quantile")
+        ax.set_ylabel(r"propensity $\pi$")
+        ax.set_title("(b) per-dataset quantile curves")
+
+        handles = [
+            plt.Line2D([], [], color=colour, lw=1.6, label="median dataset"),
+            Patch(facecolor=colour, alpha=0.34, label="25–75%"),
+            Patch(facecolor=colour, alpha=0.18, label="10–90%"),
+            plt.Line2D([], [], label=r"$\pi=0.05,\,0.95$", **ROLES["reference"]),
+        ]
+        ax.legend(
+            handles=handles,
+            loc="upper left",
+            fontsize=FONT_SIZE_PT - 2,
+            framealpha=0.92,
+        )

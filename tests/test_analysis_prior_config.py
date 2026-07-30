@@ -339,9 +339,8 @@ def test_families_registry_is_self_consistent():
     assert "dim_ablation" in FAMILIES
     for key, family in FAMILIES.items():
         assert family.name == key, f"family {key!r} registered under another name"
-    # The dim ablation carries the three variants the appendix compares.
+    # The dim ablation carries the two variants the appendix compares.
     assert list(FAMILIES["dim_ablation"].interventions) == [
         "triangular",
         "uniform",
-        "unenforced",
     ]

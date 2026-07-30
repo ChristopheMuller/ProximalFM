@@ -1,25 +1,42 @@
 % -----------------------------------------------------------------------------
-% new_full_diagram.tex  --  one-pager sketch of the proximal prior pipeline.
+% prior_diagram_full.tex  --  one-pager sketch of the proximal prior pipeline.
 %
 % Deliverable T1.1 (fig:prior_pipeline) of docs/prior_appendix_plan.md.
 %
 % VISUAL GRAMMAR (kept consistent so the figure reads structurally):
-%   * SQUARE node      = a parameter  (sampled dimension + fixed MLP: [d_X,f_X] ...)
-%   * CIRCLE node      = a data / random variable  (X*,U*,W*,Z*, U^aug, A, (Y0,Y1))
+%   * SQUARE node      = a parameter  (sampled dimension + fixed MLP + noise root)
+%   * CIRCLE node      = a data / random variable  (Xt,Ut,Wt,Zt, U^[A]/U^[Y], A, (Y0,Y1))
 %   * ROUNDED BOX      = a process step  (Generate, post-processing, Sample A/Y,
 %                        aggregate, accept/reject, output)
-%   * dotted arrow     = a parameter configures a step   ([d_X,f_X] ..> Generate X)
-%   * solid arrow      = data flow (black generic; red into A; blue into Y)
-%   * dashed teal      = confounding duplication  (U* -> U^aug -> {A,Y})
-%   * orange dashed    = resample loop
+%   * dotted grey      = a parameter configures a step
+%   * dotted coloured  = a post-processed block feeds a later generation step
+%                        (Xt -> f_U,f_W,f_Z in X's colour; Ut -> f_W,f_Z in U's)
+%   * solid arrow      = data flow, in the colour of the block it carries
+%   * dashed vermilion = confounding control  (Ut -> U^aug -> U^[A], U^[Y])
+%
+% COLOUR = MEANING. The palette is the Okabe--Ito colourblind-safe set and is the
+%   *same registry* as analysis_prior/design.py::BLOCK_COLORS, so a block keeps
+%   one colour across this figure and every appendix plot:
+%     X blue - U vermilion - W green - Z orange - A purple - Y sky blue.
+%   Anything that is not a structural block (header, post-processing, aggregate,
+%   accept/reject, output, the T*K plate) is deliberately ACHROMATIC, so the
+%   causal spine is the only thing carrying hue. Keep it that way: introducing a
+%   new hue for a process step would make the reader hunt for a variable that
+%   does not exist.
+%
+% NOTATION: post-processed blocks are written with a tilde, matching the appendix
+%   convention where Corrupt(.) + standardisation gives \tilde X, \tilde U, ...
+%   Per-mechanism column subsets keep their appendix subscripts (\tilde X_U,
+%   \tilde W_Y, \tilde Z_A), and U^[A], U^[Y] are the confounding-controlled inputs.
 %
 % LAYOUT (top -> bottom): header -> parameter row -> generation row ->
-%   post-processing box (star circles + caption) -> {Sample A | f_aug | Sample Y}
+%   post-processing box (tilde circles + caption) -> {Sample A | confounding | Sample Y}
 %   -> aggregate -> accept/reject -> output.
 %
 % X lives on T rows and is only *broadcast* across K, so the green T*K plate is
-% L-SHAPED: its top-left notch excludes the Generate-X box and X*; U,W,Z,A,Y and
-% the K-aggregate sit inside it.
+% L-SHAPED: its top-left notch excludes the Generate-X box and \tilde X; U,W,Z,A,Y
+% and the K-aggregate sit inside it. The plate top clears the *whole* of the
+% Generate-W,Z box (step 4), which is the tallest node on the generation row.
 %
 % Code of record: proximalfm/prior/_dataset.py::SCMPrior.{get_batch,generate_dataset},
 %                 proximalfm/prior/_reg2cls.py (process_features / dominates),
@@ -32,84 +49,101 @@
 %
 % NOTE: custom styles are prefixed "pp" to avoid clashing with built-in TikZ keys.
 % -----------------------------------------------------------------------------
+
+% ---- palette: Okabe--Ito, mirrored from analysis_prior/design.py -------------
+\definecolor{ppcX}{HTML}{0072B2}   % blue       -- baseline covariates
+\definecolor{ppcU}{HTML}{D55E00}   % vermilion  -- latent confounder
+\definecolor{ppcW}{HTML}{009E73}   % green      -- outcome-inducing proxy
+\definecolor{ppcZ}{HTML}{E69F00}   % orange     -- treatment-inducing proxy
+\definecolor{ppcA}{HTML}{CC79A7}   % purple     -- treatment
+\definecolor{ppcY}{HTML}{56B4E9}   % sky blue   -- outcome
+
 \begin{tikzpicture}[
   line cap=round, line join=round,
   font=\footnotesize,
-  % ---- process boxes (rounded rectangles) -----------------------------------
-  pphdr/.style={rounded corners=2.5pt, draw=black!45, fill=black!3,
+  % ---- colour-by-block helpers ----------------------------------------------
+  % One knob per block: node outlines sit at !70!black (legible at 0.5pt),
+  % fills at !7 (a tint, never a wash). #1 is one of ppcX/ppcU/ppcW/ppcZ/ppcA/ppcY.
+  ppcol/.style={draw=#1!70!black, fill=#1!7},
+  ppink/.style={draw=#1!70!black},                   % same hue, for arrows
+  % ---- process boxes (achromatic: structure, not variables) ------------------
+  pphdr/.style={rounded corners=2.5pt, draw=black!35, fill=black!4,
     line width=0.5pt, inner sep=5pt, align=center},
-  ppgen/.style={rounded corners=2.5pt, draw=black!55, fill=gray!4,
-    line width=0.5pt, inner sep=4pt, align=center},
-  ppabox/.style={rounded corners=2.5pt, draw=red!60!black, fill=red!4,
-    line width=0.6pt, inner sep=5pt, align=left, font=\scriptsize},
-  ppybox/.style={rounded corners=2.5pt, draw=blue!60!black, fill=blue!5,
-    line width=0.6pt, inner sep=5pt, align=left, font=\scriptsize},
-  ppagg/.style={rounded corners=2.5pt, draw=brown!65!black, fill=brown!8,
+  ppgen/.style={rounded corners=2.5pt, ppcol=#1, fill=white,
+    line width=0.6pt, inner sep=4pt, align=center},
+  ppgen/.default=ppcX,
+  ppabox/.style={rounded corners=2.5pt, ppcol=ppcA, fill=ppcA!6,
+    line width=0.7pt, inner sep=5pt, align=left, font=\scriptsize},
+  ppybox/.style={rounded corners=2.5pt, ppcol=ppcY, fill=ppcY!8,
+    line width=0.7pt, inner sep=5pt, align=left, font=\scriptsize},
+  ppagg/.style={rounded corners=2.5pt, draw=black!45, fill=white,
     line width=0.6pt, inner sep=5pt, align=center, font=\scriptsize},
-  ppacc/.style={rounded corners=2.5pt, draw=orange!72!black, fill=orange!6,
-    line width=0.6pt, inner sep=5pt, align=center, font=\scriptsize},
-  ppout/.style={rounded corners=2.5pt, draw=black!55, fill=gray!4,
-    line width=0.6pt, inner sep=5pt, align=center},
+  ppacc/.style={rounded corners=2.5pt, draw=black!60, fill=black!5,
+    line width=0.7pt, inner sep=5pt, align=center, font=\scriptsize},
+  ppout/.style={rounded corners=2.5pt, draw=black!60, fill=white,
+    line width=0.7pt, inner sep=5pt, align=center},
   % ---- parameters (squares) -------------------------------------------------
-  ppparam/.style={rectangle, draw=black!55, fill=yellow!12, line width=0.5pt,
+  ppparam/.style={rectangle, ppcol=#1, line width=0.5pt,
     inner sep=3.5pt, font=\scriptsize, minimum height=6mm},
+  ppparam/.default=ppcX,
   % ---- data variables (circles) ---------------------------------------------
-  ppvar/.style={circle, draw=blue!65!black, fill=blue!6, line width=0.6pt,
+  ppvar/.style={circle, ppcol=#1, line width=0.7pt,
     inner sep=1pt, minimum size=8mm, font=\footnotesize},
-  ppvarA/.style={circle, draw=red!60!black, fill=red!6, line width=0.6pt,
-    inner sep=1pt, minimum size=8mm, font=\footnotesize},
-  ppvarU/.style={circle, draw=teal!55!black, fill=teal!9, line width=0.6pt,
-    inner sep=1pt, minimum size=9mm, font=\scriptsize},
-  ppvarY/.style={rounded corners=3pt, draw=blue!60!black, fill=blue!6,
-    line width=0.6pt, inner sep=2.5pt, font=\scriptsize},
+  ppvar/.default=ppcX,
+  ppvarU/.style={rounded corners=3pt, ppcol=ppcU, line width=0.7pt,
+    inner sep=3pt, font=\scriptsize},
+  ppvarY/.style={rounded corners=3pt, ppcol=ppcY, line width=0.7pt,
+    inner sep=2.5pt, font=\scriptsize},
   % ---- containers -----------------------------------------------------------
-  ppplate/.style={rounded corners=6pt, draw=green!45!black, fill=green!5,
+  ppplate/.style={rounded corners=6pt, draw=black!38, fill=black!3,
     line width=0.7pt},
-  ppband/.style={rounded corners=4pt, draw=violet!60!black, fill=none,
+  ppband/.style={rounded corners=4pt, draw=black!45, fill=none,
     line width=0.6pt, dash pattern=on 1.2pt off 1.6pt},
   % ---- arrows ---------------------------------------------------------------
-  ppparr/.style={draw=black!55, line width=0.5pt, dash pattern=on 0.4pt off 1.6pt,
+  ppparr/.style={draw=black!50, line width=0.5pt, dash pattern=on 0.4pt off 1.6pt,
     -{Latex[length=1.5mm,width=1.1mm]}},               % parameter -> step
-  ppflow/.style={draw=black!60, line width=0.6pt, -{Latex[length=1.7mm,width=1.2mm]}},
-  pparrA/.style={draw=red!55!black, line width=0.5pt, -{Latex[length=1.4mm,width=1mm]}},
-  pparrY/.style={draw=blue!55!black, line width=0.5pt, -{Latex[length=1.4mm,width=1mm]}},
-  ppdup/.style={draw=teal!55!black, line width=0.6pt, densely dashed,
+  ppflow/.style={ppink=#1, line width=0.6pt, -{Latex[length=1.7mm,width=1.2mm]}},
+  ppflow/.default=ppcX,
+  ppgrey/.style={draw=black!55, line width=0.6pt, -{Latex[length=1.7mm,width=1.2mm]}},
+  pparrA/.style={ppink=ppcA, line width=0.6pt, -{Latex[length=1.4mm,width=1mm]}},
+  pparrY/.style={ppink=ppcY, line width=0.6pt, -{Latex[length=1.4mm,width=1mm]}},
+  ppdup/.style={ppink=ppcU, line width=0.6pt, densely dashed,
     -{Latex[length=1.5mm,width=1.1mm]}},
-  ppdep/.style={draw=black!40, line width=0.5pt, densely dotted,
-    -{Latex[length=1.3mm,width=0.9mm]}},               % gen-step data dependency
-  pploop/.style={draw=orange!75!black, line width=0.7pt, dashed,
-    dash pattern=on 2.4pt off 1.8pt, -{Latex[length=1.8mm,width=1.3mm]}},
+  ppdep/.style={ppink=#1, line width=0.5pt, densely dotted,
+    -{Latex[length=1.4mm,width=1mm]}},                 % gen-step data dependency
+  ppdep/.default=ppcX,
   % ---- a light note attached to a variable ----------------------------------
-  ppnote/.style={rounded corners=2.5pt, draw=teal!55!black, fill=teal!4,
+  ppnote/.style={rounded corners=2.5pt, ppcol=ppcU, fill=ppcU!5,
     line width=0.5pt, inner sep=4pt, align=left, font=\scriptsize},
 ]
 
 % =============================================================================
 % Background: the K Monte-Carlo replicate plate (L-shaped; notch excludes the
 % X column, which is on T rows and only broadcast across K).
+% The top edge sits ABOVE the Generate-W,Z box so step 4 is fully enclosed.
 % =============================================================================
 \draw[ppplate]
-  (0.30,8.20) -- (14.05,8.20) -- (14.05,22.45) -- (4.20,22.45)
+  (0.30,8.20) -- (14.05,8.20) -- (14.05,22.80) -- (4.20,22.80)
   -- (4.20,17.90) -- (0.30,17.90) -- cycle;
-\node[font=\scriptsize\itshape, color=green!40!black, rotate=-90, anchor=south]
+\node[font=\scriptsize\itshape, color=black!55, rotate=-90, anchor=south]
   at (14.35,15.0) {computed on the $T\times K$ Monte-Carlo replicate rows};
 
 % =============================================================================
 % 1. Header + the parameter squares that configure the generation steps.
 % =============================================================================
-\node[pphdr, text width=13.8cm] (hdr) at (7.20,25.85) {%
-  \textbf{1.\ Sample dimensions, MLP mechanisms \& noise roots}
+\node[pphdr, text width=14.8cm] (hdr) at (7.20,25.85) {%
+  \textbf{1.\ Sample dimensions, MLP mechanisms \& noise roots}\\
   \; {\scriptsize\itshape (once per dataset -- fixed across resamples)}\\[2pt]
   dimensions $d_X,d_U,d_W,d_Z$ with $\min(d_W,d_Z)\!\ge\!d_U$;\quad
   fixed MLPs $f_X,f_U,f_W,f_Z,f_A,f_Y,f_{\mathrm{aug}}$;\quad
-  noise $\varepsilon_X,\varepsilon_U,\varepsilon_W,\varepsilon_Z,\varepsilon_A,\varepsilon_Y$};
+  noise roots $\varepsilon_{(\cdot)}$};
 
-\node[ppparam] (pX) at (2.30,24.05) {$d_X,\ f_X$};
-\node[ppparam] (pU) at (7.00,24.05) {$d_U,\ f_U$};
-\node[ppparam] (pW) at (10.60,24.05) {$d_W,\ f_W$};
-\node[ppparam] (pZ) at (12.40,24.05) {$d_Z,\ f_Z$};
+\node[ppparam=ppcX] (pX) at (2.30,24.05) {$d_X,\ f_X,\ \varepsilon_X$};
+\node[ppparam=ppcU] (pU) at (7.00,24.05) {$d_U,\ f_U,\ \varepsilon_U$};
+\node[ppparam=ppcZ] (pZ) at (10.45,24.05) {$d_Z,\ f_Z,\ \varepsilon_Z$};
+\node[ppparam=ppcW] (pW) at (12.85,24.05) {$d_W,\ f_W,\ \varepsilon_W$};
 
-% the (dimension, mechanism) pairs are the outputs of step 1.
+% the (dimension, mechanism, noise) triples are the outputs of step 1.
 \draw[ppparr] (hdr.south -| pX) -- (pX.north);
 \draw[ppparr] (hdr.south -| pU) -- (pU.north);
 \draw[ppparr] (hdr.south -| pW) -- (pW.north);
@@ -118,86 +152,108 @@
 % =============================================================================
 % 2. Generation row.
 % =============================================================================
-\node[ppgen, text width=2.6cm] (genX)  at (2.30,21.90) {%
-  \textbf{2.\ Generate }$X$\\[1pt] $X=f_X(\varepsilon_X)$\ (root)\\[1pt]
+\node[ppgen=ppcX, text width=2.6cm] (genX)  at (2.30,21.90) {%
+  \textbf{2.\ Generate }$X$\\[1pt] from $f_X(\varepsilon_X)$\\[1pt]
   {\scriptsize\itshape on $T$ rows, then broadcast $\times K$}};
-\node[ppgen, text width=2.9cm] (genU)  at (7.00,21.90) {%
-  \textbf{3.\ Generate }$U$\\[1pt] $U=f_U(X,\varepsilon_U)$};
-\node[ppgen, text width=3.4cm] (genWZ) at (11.50,21.90) {%
+\node[ppgen=ppcU, text width=2.9cm] (genU)  at (7.00,21.90) {%
+  \textbf{3.\ Generate }$U$\\[1pt] from $f_U(\tilde X_U,\varepsilon_U)$};
+\node[ppgen=ppcW, text width=3.4cm] (genWZ) at (11.50,21.90) {%
   \textbf{4.\ Generate }$W,Z$\\[1pt]
-  $W=f_W(U,X,5\varepsilon_W)$\\ $Z=f_Z(U,X,5\varepsilon_Z)$};
+  from $f_Z(\tilde U,\tilde X_Z,\varepsilon_Z)$\\ and $f_W(\tilde U,\tilde X_W,\varepsilon_W)$};
 
 % parameter -> step (dotted).
 \draw[ppparr] (pX.south) -- (genX.north);
 \draw[ppparr] (pU.south) -- (genU.north);
-\draw[ppparr] (pW.south) -- ([xshift=-9mm]genWZ.north);
-\draw[ppparr] (pZ.south) -- ([xshift= 9mm]genWZ.north);
+\draw[ppparr] (pZ.south) -- ([xshift=-9mm]genWZ.north);
+\draw[ppparr] (pW.south) -- ([xshift= 9mm]genWZ.north);
 
 % =============================================================================
-% 3. Post-processing BOX: concise caption on TOP, star circles BELOW.
+% 3. Post-processing BOX: concise caption on TOP, tilde circles BELOW.
 %    Generation arrows terminate on the box's top border; the box maps its four
-%    inputs to the post-processed variables X*,U*,W*,Z*.
-%    Transparent fill so the plate notch (X* white / U*,W*,Z* green) shows through.
+%    inputs to the post-processed blocks \tilde X, \tilde U, \tilde W, \tilde Z.
+%    Transparent fill so the plate notch shows through.
 % =============================================================================
-\draw[ppband] (0.55,18.20) rectangle (13.75,20.45);
-\node[rounded corners=2.5pt, fill=violet!6, draw=violet!45!black, line width=0.4pt,
+\draw[ppband] (0.85,18.20) rectangle (13.75,20.45);
+\node[rounded corners=2.5pt, fill=black!5, draw=black!45, line width=0.4pt,
       inner sep=4pt, align=center, font=\scriptsize, text width=11.6cm,
-      text=violet!45!black] (pplab) at (7.15,19.75) {%
+      text=black!75] (pplab) at (7.15,19.75) {%
   \textbf{5.\ Post-process:} categorise $\cdot$ remove outliers $\cdot$ standardise;
   \ \ $W,Z$ categories \emph{dominate} $U$'s};
 
-\node[ppvar] (Xstar) at (2.30,18.65) {$X^{*}$};
-\node[ppvar] (Ustar) at (7.00,18.65) {$U^{*}$};
-\node[ppvar] (Wstar) at (10.60,18.65) {$W^{*}$};
-\node[ppvar] (Zstar) at (12.40,18.65) {$Z^{*}$};
+\node[ppvar=ppcX] (Xt) at (2.30,18.65) {$\tilde X$};
+\node[ppvar=ppcU] (Ut) at (7.00,18.65) {$\tilde U$};
+% Z sits left of W so that Z -> A (left) and W -> Y (right) do not cross.
+\node[ppvar=ppcZ] (Zt) at (10.60,18.65) {$\tilde Z$};
+\node[ppvar=ppcW] (Wt) at (12.40,18.65) {$\tilde W$};
 
 % generation -> post-process strip -> post-processed variable.
-\draw[ppflow] (genX.south)               -- (pplab.north -| genX.south);
-\draw[ppflow] (pplab.south -| Xstar)     -- (Xstar.north);
-\draw[ppflow] (genU.south)               -- (pplab.north -| genU.south);
-\draw[ppflow] (pplab.south -| Ustar)     -- (Ustar.north);
-\draw[ppflow] ([xshift=-9mm]genWZ.south) -- (pplab.north -| Wstar);
-\draw[ppflow] (pplab.south -| Wstar)     -- (Wstar.north);
-\draw[ppflow] ([xshift= 9mm]genWZ.south) -- (pplab.north -| Zstar);
-\draw[ppflow] (pplab.south -| Zstar)     -- (Zstar.north);
+\draw[ppflow=ppcX] (genX.south)               -- (pplab.north -| genX.south);
+\draw[ppflow=ppcX] (pplab.south -| Xt)        -- (Xt.north);
+\draw[ppflow=ppcU] (genU.south)               -- (pplab.north -| genU.south);
+\draw[ppflow=ppcU] (pplab.south -| Ut)        -- (Ut.north);
+\draw[ppflow=ppcZ] ([xshift=-9mm]genWZ.south) -- (pplab.north -| Zt);
+\draw[ppflow=ppcZ] (pplab.south -| Zt)        -- (Zt.north);
+\draw[ppflow=ppcW] ([xshift= 9mm]genWZ.south) -- (pplab.north -| Wt);
+\draw[ppflow=ppcW] (pplab.south -| Wt)        -- (Wt.north);
+
+% -----------------------------------------------------------------------------
+% Post-processed blocks feeding the LATER generation steps (dotted dependency):
+%   \tilde X -> f_U and f_W,f_Z   (left lane, then a bus under the generation row)
+%   \tilde U -> f_W,f_Z           (right lane)
+% Both leave their circle ON its border (anchors, not xshifts off the rim).
+% -----------------------------------------------------------------------------
+\draw[ppdep=ppcX] (Xt.west) -- (0.45,18.65) -- (0.45,20.90) -- (6.05,20.90)
+  -- ([xshift=-9.5mm]genU.south);
+\draw[ppdep=ppcX] (6.05,20.90) -- (10.15,20.90) -- ([xshift=-13.5mm]genWZ.south);
+
+\draw[ppdep=ppcU] (Ut.south east) |- (13.95,17.75) -- (13.95,21.90) -- (genWZ.east);
 
 % =============================================================================
-% 4. Mechanism steps: Sample A (left), Sample Y0,Y1 (right); U^aug in between.
+% 4. Mechanism steps: Sample A (left), Sample Y0,Y1 (right); confounding control
+%    in between.
 % =============================================================================
-% 6. U-augmentation (numbered box) -> U^aug -> fed into the A and Y mechanisms.
+% 6. Confounding control (numbered box) -> U^[A], U^[Y] -> the A and Y mechanisms.
 \node[ppnote, text width=4.9cm] (auglab) at (7.00,16.55) {%
-  \textbf{6.\ $U$-augmentation.} $U^{\mathrm{aug}}=f_{\mathrm{aug}}(U^{*})$ --- a
-  non-linear expansion of $U$ that increases confounding, fed to $f_A$ and $f_Y$.};
-\node[ppvarU] (aug) at (7.00,15.05) {$U^{\mathrm{aug}}$};
+  \textbf{6.\ Confounding control.} mix $\tilde U$ with columns of
+  $U^{\mathrm{aug}}\!=\!f_{\mathrm{aug}}(\tilde U)$ to reach the sampled shares
+  $s_A,s_Y$};
+\node[ppvarU] (aug) at (7.00,15.05) {$U^{[A]},\ U^{[Y]}$};
 
 \node[ppabox, text width=4.25cm] (A) at (2.95,12.95) {%
   \textbf{7.\ Sample treatment }$A$\\[2pt]
-  $\ell=f_A(X,U,Z,U^{\mathrm{aug}},\varepsilon_A)$\\[1pt]
-  $A\sim\mathrm{Bern}\!\big(\mathrm{clamp}_\epsilon\,\sigma(a\widetilde\ell+b)\big)$};
-\node[ppvarA] (Avar) at (2.95,10.95) {$A$};
+  $\ell=f_A(U^{[A]},\tilde X_A,\tilde Z_A,\varepsilon_A)$\\[1pt]
+  $A\sim\mathrm{Bern}\!\big(\operatorname{clip}(\sigma(s\hat\ell+b),\epsilon,1-\epsilon)\big)$};
+\node[ppvar=ppcA] (Avar) at (2.95,10.95) {$A$};
 
 \node[ppybox, text width=4.65cm] (Y) at (11.15,12.95) {%
   \textbf{8.\ Sample outcomes }$Y_0,Y_1$\\[2pt]
-  $(Y_0,Y_1)=f_Y(X,U,W,U^{\mathrm{aug}},\varepsilon_Y)$\\[1pt]
-  \emph{remix:}\ $\gamma$ (CATE variance), $\alpha$ (ATE)};
+  $(Y_0^{\mathrm{raw}},Y_1^{\mathrm{raw}})=f_Y(U^{[Y]},\tilde X_Y,\tilde W_Y,\varepsilon_Y)$\\[1pt]
+  \emph{heterogeneity remix} with $\gamma,\alpha$};
 \node[ppvarY] (Yvar) at (11.15,10.95) {$Y_0,\,Y_1$};
 
-% parent arrows: covariate X* and proxies Z* (->A), W* (->Y); confounder via U^aug.
-\draw[pparrA] (Xstar.south) to[out=-90,in=105] (A.north west);
-\draw[pparrA] (Zstar.south) to[out=-115,in=45] (A.north east);
-\draw[pparrY] (Xstar.south) to[out=-55,in=140] (Y.north west);
-\draw[pparrY] (Wstar.south) to[out=-90,in=75]  (Y.north east);
+% Parent arrows. The two SHORT ones (Xt -> A, Wt -> Y) stay on their own flank.
+% The two LONG ones (Xt -> Y, Zt -> A) are routed orthogonally through a channel
+% that passes BELOW the U^[A],U^[Y] node, so nothing crosses on top of it; the two
+% channels sit at different heights so they never meet each other either.
+% The four X-side departures use angular anchors so they leave \tilde X exactly
+% on its rim (an xshift off .south floats free of the circle).
+\draw[pparrA] (Xt.250) to[out=-90,in=105] (A.north west);
+\draw[pparrY] (Wt.south) to[out=-90,in=75]  (Y.north east);
 
-% confounding via U-augmentation: U* -> box 6 -> U^aug -> {A,Y}.
-\draw[ppdup] (Ustar.south) -- (auglab.north)
+\draw[pparrY] (Xt.290) |- (11.60,14.55) -- ([xshift=4.5mm]Y.north);
+\draw[pparrA] (Zt.south) |- (4.95,14.20)  -- ([xshift=20mm]A.north);
+
+% confounding control: \tilde U -> box 6 -> U^[A], U^[Y] -> {A,Y}.
+\draw[ppdup] (Ut.south) -- (auglab.north)
   node[midway,right,font=\scriptsize,inner sep=1.5pt]{$f_{\mathrm{aug}}$};
 \draw[ppdup] (auglab.south) -- (aug.north);
-\draw[ppdup] (aug.west) to[out=210,in=80]  (A.north);
-\draw[ppdup] (aug.east) to[out=-30,in=100] (Y.north);
+% these leave the node sideways and come down OUTSIDE the parent channels above.
+\draw[ppdup] (aug.west) -- (3.60,15.05)  -- ([xshift=6.5mm]A.north);
+\draw[ppdup] (aug.east) -- (12.20,15.05) -- ([xshift=10.5mm]Y.north);
 
 % step -> output variable.
-\draw[ppflow] (A.south) -- (Avar.north);
-\draw[ppflow] (Y.south) -- (Yvar.north);
+\draw[ppflow=ppcA] (A.south) -- (Avar.north);
+\draw[ppflow=ppcY] (Y.south) -- (Yvar.north);
 
 % =============================================================================
 % 5/6. Aggregate over K + observed-row draw (inside the plate, at the bottom).
@@ -205,35 +261,28 @@
 \node[ppagg, text width=12.2cm] (agg) at (7.10,9.05) {%
   \textbf{9.\ Aggregate over }$K$\textbf{ \& draw the observed row.}\quad
   $\big(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\big)=\tfrac1K\sum_{k}\big(Y_{0,i,k},Y_{1,i,k}\big)$;\;
-  draw $k_i\!\sim\!\mathcal{U}\{1,\dots,K\}$, set $y_i=a_i\,y_{1}+(1{-}a_i)\,y_{0}$.};
+  draw $k_i\!\sim\!\mathrm{Unif}\{1,\dots,K\}$, set $y_i=a_i\,y_{1}+(1{-}a_i)\,y_{0}$.};
 
-\draw[ppflow] (Avar.south) -- ([xshift=-2.0cm]agg.north);
-\draw[ppflow] (Yvar.south) -- ([xshift= 2.0cm]agg.north);
+\draw[ppflow=ppcA] (Avar.south) -- ([xshift=-2.0cm]agg.north);
+\draw[ppflow=ppcY] (Yvar.south) -- ([xshift= 2.0cm]agg.north);
 
 % =============================================================================
-% 7. Accept / reject completeness gate (below the plate) + resample loop.
+% 7. Accept / reject completeness gate (below the plate).
 % =============================================================================
 \node[ppacc, text width=13.0cm] (acc) at (7.10,7.45) {%
   \textbf{10.\ Accept / reject.}\;
-  keep iff $\min(d_W,d_Z)\ge d_U>0$ \emph{and}
-  $\mathrm{dom}(W,U)\wedge\mathrm{dom}(Z,U)$ on the realised blocks;
-  else resample (give up after \texttt{completeness\_max\_attempts}).};
+  keep iff $\min(d_W,d_Z)\ge d_U>0$ on the realised blocks; else resample.};
 
-\draw[ppflow] (agg.south) -- (acc.north);
-
-% resample loop: reject -> back to the generation row.
-\draw[pploop] (acc.west) -- ++(-0.25,0) |- (genX.west);
-\node[font=\scriptsize\color{orange!62!black}, rotate=90, anchor=south]
-  at (-0.02,15.0) {resample the mechanisms};
+\draw[ppgrey] (agg.south) -- (acc.north);
 
 % =============================================================================
 % 8. Output (full width, bottom).
 % =============================================================================
 \node[ppout, text width=13.0cm] (out) at (7.10,5.95) {%
   \textbf{11.\ Output.}\;
-  context $\{X,\,U_k,\,W_k,\,Z_k,\,A_k\}$ with observed $Y_k(A_k)$;\quad
-  regression targets $\mu_0,\mu_1$ (the $K$-averaged potential outcomes from step 9).};
+  context $\{X,\,W_k,\,Z_k,\,A_k\}$ with observed $Y_k(A_k)$;\quad
+  regression targets $\widehat\mu_0,\widehat\mu_1$ (the $K$-averaged potential outcomes from step 9).};
 
-\draw[ppflow] (acc.south) -- (out.north);
+\draw[ppgrey] (acc.south) -- (out.north);
 
 \end{tikzpicture}

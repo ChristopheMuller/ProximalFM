@@ -44,6 +44,18 @@ GALLERY_BLOCKS = ("X", "U", "W", "Z", "A", "Y")
 #: propensity.
 CROSS_PAIRS = (("U", "W"), ("U", "Z"), ("W", "Z"), ("U", "A"))
 
+#: Colour block for each cross pair, one of its two endpoints. ``CROSS_PAIRS``
+#: touches exactly the four blocks ``{U, W, Z, A}``, so each pair can be
+#: assigned a distinct endpoint's true (unblended) colour with no repeats --
+#: coloring every pair by its child alone would collide, since ``Z`` is the
+#: child of both ``U-Z`` and ``W-Z``.
+CROSS_PAIR_COLOR_BLOCK = {
+    ("U", "W"): "U",
+    ("U", "Z"): "Z",
+    ("W", "Z"): "W",
+    ("U", "A"): "A",
+}
+
 #: Colours for the two potential outcomes overlaid in the ``Y`` marginal panel.
 Y0_COLOR = OKABE_ITO["blue"]
 Y1_COLOR = OKABE_ITO["vermillion"]
@@ -443,9 +455,14 @@ class PriorOverviewAnalysis(Analysis):
         if ncols == 1:
             axes = axes.reshape(nrows, 1)
         for ci, key in enumerate(columns):
-            # Colour by the block being plotted; for a cross pair "A-B" use the
-            # child block B (the second, downstream one).
-            color = block_color(key.split("-")[-1])
+            # Colour by the block being plotted; for a cross pair "A-B" pick
+            # the endpoint assigned in CROSS_PAIR_COLOR_BLOCK, so pairs that
+            # share a block (e.g. "U-Z" and "W-Z") stay visually distinct.
+            if "-" in key:
+                block_a, block_b = key.split("-")
+                color = block_color(CROSS_PAIR_COLOR_BLOCK[(block_a, block_b)])
+            else:
+                color = block_color(key)
             axes[0][ci].set_title(headers[key])
             panels = data[key]
             for ri in range(nrows):

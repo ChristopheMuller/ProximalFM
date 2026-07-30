@@ -13,9 +13,22 @@ This audit measures that on the data the model actually sees. Because the
 categorisation metadata is not persisted in the cache, each block's profile is
 **reconstructed from realised values**: a column with at most ``max_categories``
 distinct values is categorical (with that many categories), otherwise continuous.
-At the shipped cap this is unambiguous -- a continuous column has ~``T`` distinct
-values, far above the cap. This mirrors ``observed_block_profile`` in the prior,
-but reads from the cached arrays rather than the live tensors.
+This requires ``T > max_categories`` to mean anything: on a short enough dataset
+every column would look categorical.
+
+This is *not* quite the rule ``observed_block_profile`` applies in the prior,
+and the difference is why this audit reports a small nonzero violation rate on
+the enforced arm. That function reads a column's type off the categorisation
+metadata -- a column it did not discretise is continuous, hence an unbounded
+wildcard in :func:`dominates` -- whereas here every column is typed from its
+realised values. The two disagree on a never-discretised column that
+nonetheless lands on a small lattice, which happens when a mechanism reads its
+output close to an affine function of one of ``U``'s categorised columns
+(~0.3% of never-discretised columns; ~3% of datasets carry one). Such a column
+is a wildcard to the enforcement check and a low-cardinality categorical column
+here, so a dataset with little profile slack can pass enforcement and still
+fail this audit. The realised-value rule is the honest one for delivered data,
+so it is what we report; see the "Survival" discussion in appendix B.2.4.
 """
 
 from __future__ import annotations
@@ -357,12 +370,11 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
         apply_style()
 
         figures = self._render_category_marginals(results, outdir)
-        figures += self._render_composition_vs_demand(results, outdir)
-        figures += self._render_proxy_stats_by_u_cardinality(results, outdir)
+        figures += self._render_enforcement_vs_u_demand(results, outdir)
         tables = self._render_survival_table(results, outdir)
 
-        # Key is "baseline_label" (not "baseline") because an arm is itself named
-        # "baseline"; a bare "baseline" key would collide with its per-arm entry.
+        # Key is "baseline_label" (not "baseline") to avoid ever colliding with
+        # an arm that happens to be named "baseline".
         summary: Dict[str, Any] = {"baseline_label": results.baseline}
         for label, var in results.variants.items():
             summary[label] = {
@@ -467,68 +479,34 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
         )
         return save_figure(fig, outdir, "category_count_marginals")
 
-    def _render_composition_vs_demand(
+    def _render_enforcement_vs_u_demand(
         self, results: CategoricalComparisonResults, outdir: Path
     ) -> list:
-        """How much enforcement forces proxy structure to track ``U``'s demand.
+        """How enforcement makes proxy structure track ``U``'s categorical demand.
 
-        Mean fraction of proxy columns that are categorical (a per-dataset
-        statistic) vs ``|cats(U)|`` (the per-dataset count of ``U``'s categorical
-        columns), one line+SEM band per arm, pooling ``W`` and ``Z`` (both
-        proxies, built the same way). Under enforcement (``full``) the fraction
-        rises toward ~0.5 as ``U`` becomes more categorical -- each categorical
-        ``U`` column is covered categorically with probability
-        ``proxy_cat_cover_prob`` -- while the unconstrained ``ablation`` stays
-        flat, its categorisation being independent of ``U``.
+        One figure, three panels, all pooling ``W`` and ``Z`` (both proxies, built
+        the same way) and all restricted to the categorised-``U`` arms
+        (``corrupt_U``): the views condition on categorical demand, which would be
+        ~always zero for an arm whose ``U`` is never categorised.
 
-        Only arms with a categorised ``U`` (``corrupt_U``) are shown: the figure
-        conditions on ``U``'s categorical demand, which is ~always zero for the
-        continuous-``U`` ``baseline`` arm. Bins with fewer than ``min_datasets``
-        datasets are dropped as noise.
-        """
-        min_datasets = 5
-        arms = {label: var for label, var in results.variants.items() if var.corrupt_U}
-        styles = variant_styles(arms)
+        Panels 1--2 condition on a *single* ``U`` column's own category count
+        (``2, ..., 9``, coarser tail bins, or ``num`` if continuous) and read off a
+        property of the co-occurring proxy block (see
+        :func:`proxy_stats_by_u_feature`): the fraction of proxy columns that are
+        continuous, then the mean category count of the proxy's categorical
+        columns. Panel 3 moves to the *dataset* level, plotting the mean fraction
+        of categorical proxy columns against ``|cats(U)|``; under enforcement it
+        rises toward ``proxy_cat_cover_prob`` while the unconstrained
+        ``no_enforcement`` arm stays flat.
 
-        fig, ax = plt.subplots(
-            figsize=figsize_grid(ncols=2, panel_aspect=0.85, extra_height_in=0.5),
-        )
-        for label, var in arms.items():
-            # Pool W and Z against the same U: each dataset contributes both.
-            u_pool = var.profiles["U"] + var.profiles["U"]
-            p_pool = var.profiles["W"] + var.profiles["Z"]
-            df = composition_by_demand(u_pool, p_pool)
-            df = df[df["n_datasets"] >= min_datasets]
-            x = df["n_cat_U"].to_numpy()
-            y = df["mean_frac_cat_P"].to_numpy()
-            err = df["sem_frac_cat_P"].to_numpy()
-            color = styles[label]["color"]
-            ax.plot(x, y, marker="o", markersize=3, label=label, color=color)
-            ax.fill_between(x, y - err, y + err, color=color, alpha=0.2)
-
-        ax.set_xlabel("$|\\mathrm{cats}(U)|$")
-        ax.set_ylabel("mean frac. categorical proxy cols")
-        ax.legend(frameon=True)
-        return save_figure(fig, outdir, "proxy_composition_vs_u_demand")
-
-    def _render_proxy_stats_by_u_cardinality(
-        self, results: CategoricalComparisonResults, outdir: Path
-    ) -> list:
-        """Proxy-block composition conditioned on a single ``U`` column's kind.
-
-        The x-axis is a ``U`` column's own category count (``2, 3, ..., 9,
-        10-29, 30+``) or ``num`` if it is continuous; the y-axis is a property of
-        the co-occurring
-        proxy block (see :func:`proxy_stats_by_u_feature`), pooling ``W`` and
-        ``Z``. Left: the proportion of proxy columns that are continuous -- does a
-        high-cardinality ``U`` column co-occur with a more categorical proxy?
-        Right: the mean category count of the proxy's categorical columns.
-
-        Caveat: proxy stats are block-level, so this conditions on "the dataset
-        contains a ``U`` column of this kind", not on a matched column -- read the
-        trends as association. Only categorised-``U`` arms are shown.
+        Caveat for panels 1--2: proxy stats are block-level, so they condition on
+        "the dataset contains a ``U`` column of this kind", not on a matched
+        column -- read the trends as association. Sparse bins are dropped as
+        noise (``min_features`` columns for panels 1--2, ``min_datasets``
+        datasets for panel 3).
         """
         min_features = 20
+        min_datasets = 5
         # Continuous ("num") first, then category-count singletons up to 9, then
         # two coarser tail bins (the cap is 50, so a single "10+" bin would mix
         # barely-categorical columns with near-cap ones).
@@ -550,17 +528,19 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
 
         fig, axes = plt.subplots(
             1,
-            2,
-            figsize=figsize_grid(ncols=2, panel_aspect=0.85, extra_height_in=0.5),
+            3,
+            figsize=figsize_grid(ncols=3, panel_aspect=1.15, extra_height_in=0.5),
         )
         for label, var in arms.items():
+            # Pool W and Z against the same U: each dataset contributes both.
             u_pool = var.profiles["U"] + var.profiles["U"]
             p_pool = var.profiles["W"] + var.profiles["Z"]
+            color = styles[label]["color"]
+
+            # Panels 1-2: per-U-column conditioning.
             df = proxy_stats_by_u_feature(u_pool, p_pool)
             df = df.assign(bin=df["u_card"].map(_label))
-
-            color = styles[label]["color"]
-            for ax, col in zip(axes, ("prop_num", "mean_card")):
+            for ax, col in zip(axes[:2], ("prop_num", "mean_card")):
                 grouped = df.groupby("bin")[col]
                 mean = grouped.mean()
                 # SEM from the non-NaN count in each bin.
@@ -577,12 +557,31 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
                 ax.plot(xs, ys, marker="o", markersize=3, label=label, color=color)
                 ax.fill_between(xs, ys - es, ys + es, color=color, alpha=0.2)
 
-        for ax in axes:
+            # Panel 3: per-dataset conditioning on U's total categorical demand.
+            demand = composition_by_demand(u_pool, p_pool)
+            demand = demand[demand["n_datasets"] >= min_datasets]
+            x = demand["n_cat_U"].to_numpy()
+            y = demand["mean_frac_cat_P"].to_numpy()
+            err = demand["sem_frac_cat_P"].to_numpy()
+            axes[2].plot(x, y, marker="o", markersize=3, label=label, color=color)
+            axes[2].fill_between(x, y - err, y + err, color=color, alpha=0.2)
+
+        # Panels 1-2 share an x-axis meaning; the label is kept terse because a
+        # third of the text width is not much room, with the "num" tick and the
+        # caption carrying the rest.
+        for ax in axes[:2]:
             ax.set_xticks(range(len(order)))
             ax.set_xticklabels(order, rotation=45, ha="right")
-            ax.set_xlabel("$U$ column: categories (or num.)")
-        axes[0].set_ylabel("proxy: fraction continuous cols")
-        axes[1].set_ylabel("proxy: mean categories | categorical")
+            ax.set_xlabel("$U$ col.: categories")
+        axes[0].set_ylabel("proxy: frac. continuous cols")
+        axes[1].set_ylabel("proxy: mean categories | cat.")
+        axes[2].set_xlabel("$|\\mathrm{cats}(U)|$")
+        axes[2].set_ylabel("proxy: frac. categorical cols")
+        axes[2].xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+        # Panel letters: the appendix caption refers to (a)/(b)/(c).
+        for ax, letter in zip(axes, "abc"):
+            ax.set_title(f"({letter})", loc="left")
+
         handles, labels = axes[0].get_legend_handles_labels()
         fig.legend(
             handles,
@@ -591,18 +590,18 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
             ncol=len(arms),
             frameon=True,
         )
-        return save_figure(fig, outdir, "proxy_stats_by_u_cardinality")
+        return save_figure(fig, outdir, "proxy_enforcement_vs_u_demand")
 
     def _render_survival_table(
         self, results: CategoricalComparisonResults, outdir: Path
     ) -> list:
         """Survival of categorical completeness, by number of categorical U columns.
 
-        The informative contrast is ``full`` (enforced -> ~100% by construction)
-        vs ``ablation`` (proxies unconstrained -> the pre-enforcement violation
-        rate). ``baseline`` has a continuous ``U`` (no categorical columns), so it
-        contributes only the ``n_cat_U = 0`` row and is dropped to keep the table
-        about what categorisation + enforcement buy.
+        The informative contrast is ``default`` (enforced -> ~100% by
+        construction) vs ``no_enforcement`` (proxies unconstrained -> the
+        pre-enforcement violation rate). Arms whose ``U`` is never categorised
+        would contribute only the ``n_cat_U = 0`` row, so they are dropped to
+        keep the table about what categorisation + enforcement buy.
         """
         shown = {
             label: var
@@ -640,9 +639,16 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
                 merged[col] = merged[col].fillna(0).astype(int)
 
         # A two-level column header: the shared key under an empty group, then one
-        # ``\multicolumn`` spanner per variant over its three stat columns.
+        # ``\multicolumn`` spanner per variant over its three stat columns. The
+        # table is written with ``escape=False`` (for the math in the key
+        # column), so a variant label with an underscore (e.g.
+        # ``no_enforcement``) needs manual escaping here or it breaks the build.
+        def _split_header(col: str) -> tuple:
+            arm, stat = col.split("::")
+            return (arm.replace("_", "\\_"), stat)
+
         columns = [("", "$|\\mathrm{cats}(U)|$")]
-        columns += [tuple(col.split("::")) for col in merged.columns[1:]]
+        columns += [_split_header(col) for col in merged.columns[1:]]
         merged.columns = pd.MultiIndex.from_tuples(columns)
         table = merged
 
@@ -656,9 +662,9 @@ class CategoricalCompletenessAnalysis(ComparisonAnalysis):
                 "delivered proxies both dominate $U$'s categorical profile "
                 "($\\texttt{dominates}(W, U)$ and $\\texttt{dominates}(Z, U)$), "
                 "measured on realised values after constant-column filtering. "
-                "The \\emph{ablation} arm (proxies unconstrained) gives the "
-                "pre-enforcement violation rate; \\emph{full} (the default) holds "
-                "by construction."
+                "The \\emph{no\\_enforcement} arm (proxies unconstrained) gives "
+                "the pre-enforcement violation rate; \\emph{default} holds by "
+                "construction."
             ),
             label="tab:prior_categorical_completeness_survival",
             escape=False,

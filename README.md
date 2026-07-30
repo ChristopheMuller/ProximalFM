@@ -312,6 +312,22 @@ Enable or disable baselines by (un)commenting entries in the `methods:` list of 
 
 ---
 
+## Prior Audits & Figures
+
+[`analysis_prior/`](analysis_prior/) is a self-contained package that generates datasets from the prior *with
+all latents kept* (unlike training, which never observes them), and renders the figures/tables auditing the
+prior's assumptions and diversity for the paper's Appendix B ([`docs/latex/appendices/B_prior.tex`](docs/latex/appendices/B_prior.tex)). It never trains anything.
+
+```bash
+uv run python -m analysis_prior.main --spec general_ite --analysis mechanism_inputs
+uv run python -m analysis_prior.main --family cat_ablation --analysis categorical_completeness
+```
+
+See [`analysis_prior/README.md`](analysis_prior/README.md) for the full cheat sheet mapping each appendix
+figure/table to the exact CLI command that regenerates it.
+
+---
+
 ## Testing
 
 Validation relies on `pytest`. To run the verification suites across model dimensions and loss metrics:

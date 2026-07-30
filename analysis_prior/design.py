@@ -180,10 +180,8 @@ _VARIANT_CYCLE = [
 VARIANT_COLORS = {
     "triangular": OKABE_ITO["blue"],  # the prior as shipped
     "uniform": OKABE_ITO["orange"],  # pre-Option-B d_U sampling
-    "unenforced": OKABE_ITO["green"],  # completeness enforcement off
-    "full": OKABE_ITO["blue"],  # the unablated prior
-    "ablation": OKABE_ITO["orange"],  # cat_ablation: enforcement off
-    "baseline": OKABE_ITO["green"],  # cat_ablation: continuous U
+    "default": OKABE_ITO["blue"],  # cat_ablation: the unablated prior
+    "no_enforcement": OKABE_ITO["orange"],  # cat_ablation: enforcement off
 }
 
 
@@ -195,7 +193,7 @@ def variant_styles(
     Two kinds of family need two kinds of palette:
 
     - **categorical** (default) -- ablations like triangular / uniform /
-      unenforced. Known labels keep their pinned colour across every figure
+      no_enforcement. Known labels keep their pinned colour across every figure
       (:data:`VARIANT_COLORS`); unknown ones are assigned from a colourblind-safe
       cycle in family order, so the baseline (listed first by the
       identity-first convention) is always the first colour.

@@ -503,6 +503,21 @@ def observed_block_profile(block: Tensor, meta: dict[int, int]) -> BlockProfile:
     what actually survives observation subsampling and filtering. This is the
     profile to feed :func:`dominates` when enforcing completeness post-filter.
 
+    Known blind spot (deliberately not fixed; changing it would change which
+    datasets the prior accepts). A column absent from ``meta`` is counted as
+    continuous unconditionally, i.e. an unbounded wildcard in :func:`dominates`,
+    without checking how many distinct values it actually realises. A mechanism
+    output that was never discretised can still land on a small lattice -- when
+    the mechanism reads it close to an affine function of a categorised input --
+    and is then treated as more informative than it is. Measured on the shipped
+    prior this affects ~0.3% of never-discretised columns (~3% of datasets carry
+    one) and lets roughly 1 dataset in 1024 pass enforcement while failing an
+    audit that types every column from its realised values. The error is
+    one-sided: applied to ``U`` the same convention demands a *continuous* proxy
+    column in return, which is stricter, so this can only admit a dataset via the
+    proxy blocks, never reject a valid one. See appendix B.2.4 ("Survival") and
+    ``analysis_prior/analyses/categorical.py``.
+
     Parameters
     ----------
     block : Tensor

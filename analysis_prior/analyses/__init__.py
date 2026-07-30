@@ -17,11 +17,16 @@ from .base import (
 # Importing each analysis module runs its @register decorator. Keep this list in
 # sync when adding analyses; the import is the registration.
 from . import categorical  # noqa: E402,F401
+from . import confounding  # noqa: E402,F401
 from . import dimensions  # noqa: E402,F401
+from . import exclusion  # noqa: E402,F401
 from . import hyperparameters  # noqa: E402,F401
+from . import mc_targets  # noqa: E402,F401
 from . import mechanism_inputs  # noqa: E402,F401
 from . import mechanism_outputs  # noqa: E402,F401
+from . import outcome  # noqa: E402,F401
 from . import overview  # noqa: E402,F401
+from . import proxy_relevance  # noqa: E402,F401
 from . import treatment  # noqa: E402,F401
 
 __all__ = [
