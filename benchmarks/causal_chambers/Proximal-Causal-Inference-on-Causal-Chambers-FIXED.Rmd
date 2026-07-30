@@ -1,0 +1,309 @@
+---
+title: "Proximal Causal Inference on Causal Chambers bugs fixed"
+output:
+  pdf_document: default
+  html_document: default
+date: "2026-07-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Changes
+
+1. Moment functions now locate Y, A, W, Z, X by column name. Previously they used
+   global position indices (col.Y = 1, col.A = 2, ...) set in the synthetic-data
+   section, and proximal_bridge() only re-assigned these locally, which does not
+   affect functions defined in the global environment. The chamber data frame has
+   columns (U, Y, A, W, Z, X, Y1, Y0), so the bridge functions were run with U as Y,
+   Y as A, A as W, W as Z and Z as X. That is where the broken bridge estimates in
+   the previous knitted pdf came from (42.8, 80.3, 591.8, 1709.4).
+2. Proximal() now fits the ivreg used for starting values on the data it is given.
+   It previously used whatever IVReg object was left in the workspace, which was the
+   fit on the synthetic example.
+3. The bootstrap loop resampled Data (the synthetic example) instead of the chamber
+   data. It now resamples the data it is given.
+4. `data_weak_conf$df` and `data_strong_conf$df` did not exist (the objects are
+   called `..._linear` / `..._non_linear`), so the file did not knit as-is.
+5. Z, W, X are standardised and Y is min-max normalised before fitting, with Y1 and
+   Y0 normalised using the same constants so the true ATE is on the same scale as
+   the estimates. This keeps exp() in the q bridge from overflowing. The q fit is
+   tried from two starting points and the moment value at the optimum is reported,
+   so a failed fit is visible.
+6. Added raw measurement scales for A and Y per benchmark (Ricardo's question), and
+   diagnostics for confounding strength and proxy informativeness.
+
+```{r}
+library(ivreg)
+set.seed(2026)
+```
+
+# Estimators (following Eric's EuroCIM slides)
+
+All functions expect a data frame with named columns Y, A, W, Z, X, with A binary
+in {0,1}. Roles in the proximal DAG:
+
+* Y outcome, A treatment, X observed baseline covariate
+* Z treatment-inducing confounding proxy (associated with U and A, no direct effect on Y)
+* W outcome-inducing confounding proxy (associated with U and Y, not caused by A or Z)
+
+## Outcome bridge h (linear)
+
+h(a, w, x) = b_a + b_w w + b_x x, one parameter vector per treatment arm, solving
+E[ 1{A=a} g(Z,X) {Y - h(a,W,X)} ] = 0 with g(Z,X) = (1, Z, X).
+
+```{r}
+h.linear <- function(data, theta) {
+  as.vector(cbind(1, data$W, data$X) %*% theta)
+}
+
+moment.h <- function(data, theta, a) {
+  ind <- if (a == 1) data$A else 1 - data$A
+  Residuals <- ind * cbind(1, data$Z, data$X) *
+    (data$Y - h.linear(data, theta))
+  sum(colMeans(Residuals)^2)
+}
+```
+
+## Treatment bridge q (log-linear)
+
+q(a, z, x) = exp(c_a + c_z z + c_x x), playing the role of an inverse probability
+weight, solving E[ {1 - 1{A=a} q(a,Z,X)} g(W,X) ] = 0 with g(W,X) = (1, W, X).
+
+```{r}
+q.exp <- function(data, theta) {
+  exp(as.vector(cbind(1, data$Z, data$X) %*% theta))
+}
+
+moment.q <- function(data, theta, a) {
+  ind <- if (a == 1) data$A else 1 - data$A
+  Residuals <- as.vector(1 - ind * q.exp(data, theta)) * cbind(1, data$W, data$X)
+  sum(colMeans(Residuals)^2)
+}
+```
+
+## Proximal estimators: OR, IPW, AIPW
+
+```{r}
+Proximal <- function(data, maxit = 5000) {
+  ## starting values for h from the 2SLS fit on this data
+  IVReg <- ivreg::ivreg(Y ~ A + W + X | A + Z + X, data = data)
+  b <- IVReg$coefficients   # (Intercept), A, W, X
+
+  ctrl <- list(maxit = maxit)
+  h1.opt <- optim(par = c(b[1] + b[2], b[3], b[4]),
+                  fn = function(th) moment.h(data, th, 1), control = ctrl)
+  h0.opt <- optim(par = c(b[1], b[3], b[4]),
+                  fn = function(th) moment.h(data, th, 0), control = ctrl)
+
+  ## starting values for q from a propensity glm, tried with both signs
+  g <- suppressWarnings(
+    glm(A ~ Z + X, data = data, family = "binomial")$coefficients)
+  best.q <- function(a) {
+    fits <- lapply(list(g, -g), function(init)
+      optim(par = init, fn = function(th) moment.q(data, th, a), control = ctrl))
+    fits[[which.min(sapply(fits, `[[`, "value"))]]
+  }
+  q1.opt <- best.q(1)
+  q0.opt <- best.q(0)
+
+  h1.hat <- h.linear(data, h1.opt$par)
+  h0.hat <- h.linear(data, h0.opt$par)
+  q1.hat <- q.exp(data, q1.opt$par)
+  q0.hat <- q.exp(data, q0.opt$par)
+
+  ATE.OR   <- mean(h1.hat - h0.hat)
+  ATE.IPW  <- mean(data$A * q1.hat * data$Y - (1 - data$A) * q0.hat * data$Y)
+  ATE.AIPW <- mean(data$A * q1.hat * (data$Y - h1.hat) -
+                   (1 - data$A) * q0.hat * (data$Y - h0.hat) +
+                   (h1.hat - h0.hat))
+
+  list(est = c(OR = ATE.OR, IPW = ATE.IPW, AIPW = ATE.AIPW),
+       moments = c(h1 = h1.opt$value, h0 = h0.opt$value,
+                   q1 = q1.opt$value, q0 = q0.opt$value))
+}
+
+ProximalBoot <- function(data, B = 100) {
+  est <- t(replicate(B, Proximal(data[sample(nrow(data), replace = TRUE), ])$est))
+  apply(est, 2, quantile, c(0.025, 0.975))
+}
+```
+
+## Reference estimators
+
+```{r}
+naive_regression <- function(data) coef(lm(Y ~ A, data = data))["A"]
+backdoor_adjustment <- function(data) coef(lm(Y ~ A + X + Z + W, data = data))["A"]
+oracle_U_adjustment <- function(data) coef(lm(Y ~ A + X + Z + W + U, data = data))["A"]
+proximal_IVReg <- function(data)
+  coef(ivreg::ivreg(Y ~ A + W + X | A + Z + X, data = data))["A"]
+```
+
+# Check on the synthetic example from the slides
+
+True ATE = 1 by construction. OLS with or without the proxies as covariates is
+biased, proximal 2SLS and the bridge estimators should be approximately unbiased.
+
+```{r}
+expit <- function(v) exp(v) / (1 + exp(v))
+set.seed(123)
+N <- 1000
+X <- rnorm(N); U <- rnorm(N)
+Z <- 0.2 * U + X + rnorm(N) * 0.25
+W <- 0.2 * U + X + rnorm(N) * 0.25
+A <- rbinom(N, 1, expit(0.2 + 0.25 * Z + 0.1 * X + 0.25 * U))
+Y0 <- 2 * U + W + X + rnorm(N) * 0.25
+Y1 <- 1 + 2 * U + W + X + rnorm(N) * 0.25
+Y <- A * Y1 + (1 - A) * Y0
+SynthData <- data.frame(Y = Y, A = A, W = W, Z = Z, X = X, U = U)
+
+c(true.ATE       = mean(Y1 - Y0),
+  naive          = naive_regression(SynthData),
+  adjust.X       = coef(lm(Y ~ A + X, data = SynthData))["A"],
+  backdoor.XZW   = backdoor_adjustment(SynthData),
+  proximal.2SLS  = proximal_IVReg(SynthData))
+```
+
+```{r}
+synth.prox <- Proximal(SynthData)
+synth.prox$est
+synth.prox$moments  # moment values at the optimum, should be near 0
+```
+
+# Causal Chambers benchmarks
+
+Variable roles in the light tunnel (appendix E of the paper): U = green (hidden
+light source, drive 0-255), Y = ir_3, A = led_3_uv (binary, drive 0 or 2047),
+W = pol_1, Z = led_2_uv, X = red.
+
+Preprocessing: Y min-max normalised to [0,1], Y1/Y0 normalised with the same
+constants so the true ATE is on the estimation scale, A mapped from {0,2047} to
+{0,1}, W, Z, X, U standardised (mean 0, sd 1).
+
+```{r}
+normalize_with <- function(x, lo, hi) (x - lo) / (hi - lo)
+
+load_cc_data <- function(path) {
+  raw <- read.csv(path)
+  stopifnot(all(raw$led_3_uv %in% c(0, 2047)))
+  ylo <- min(raw$ir_3); yhi <- max(raw$ir_3)
+  df <- data.frame(
+    U  = as.numeric(scale(raw$green)),
+    Y  = normalize_with(raw$ir_3, ylo, yhi),
+    A  = raw$led_3_uv / 2047,
+    W  = as.numeric(scale(raw$pol_1)),
+    Z  = as.numeric(scale(raw$led_2_uv)),
+    X  = as.numeric(scale(raw$red)),
+    Y1 = normalize_with(raw$Y1, ylo, yhi),
+    Y0 = normalize_with(raw$Y0, ylo, yhi))
+  raw_scales <- c(
+    n         = nrow(raw),
+    P.A1      = mean(raw$led_3_uv > 0),
+    Y.mean    = mean(raw$ir_3), Y.sd = sd(raw$ir_3),
+    Y.min     = ylo,            Y.max = yhi,
+    ATE.raw   = mean(raw$Y1 - raw$Y0))
+  list(df = df, raw = raw_scales)
+}
+
+bench.files <- c(
+  `1 weak linear`       = "N6000_out_binaryA_counterfactuals_weak_confounding_linear.csv",
+  `2 weak non-linear`   = "N6000_out_binaryA_counterfactuals_weak_confounding_non_linear.csv",
+  `3 strong linear`     = "N6000_out_binaryA_counterfactuals_strong_confounding_linear.csv",
+  `4 strong non-linear` = "N6000_out_binaryA_counterfactuals_strong_confounding_non_linear.csv")
+
+benchmarks <- lapply(bench.files, load_cc_data)
+```
+
+## Raw measurement scales
+
+Y (ir_3) is a sensor reading in raw counts and A switches led_3_uv between drive
+levels 0 and 2047. The raw ATE is about 3500 counts in all four benchmarks, i.e.
+the treatment adds the same amount of infrared light in every setting. The
+normalised true ATEs differ across benchmarks mainly because the range of Y (the
+normalisation denominator) is wider under strong confounding, where the light
+source also reaches sensor 3. Normalising by a fixed constant instead of the
+per-dataset range would make ATEs comparable across benchmarks.
+
+```{r}
+round(t(sapply(benchmarks, `[[`, "raw")), 2)
+```
+
+## True ATEs (normalised)
+
+```{r}
+true.ATE <- sapply(benchmarks, function(b) mean(b$df$Y1 - b$df$Y0))
+round(true.ATE, 4)
+```
+
+## All estimators on all benchmarks
+
+```{r}
+run_all <- function(b) {
+  prox <- Proximal(b$df)
+  c(true.ATE      = mean(b$df$Y1 - b$df$Y0),
+    naive         = unname(naive_regression(b$df)),
+    backdoor.XZW  = unname(backdoor_adjustment(b$df)),
+    oracle.XZWU   = unname(oracle_U_adjustment(b$df)),
+    proximal.2SLS = unname(proximal_IVReg(b$df)),
+    prox.OR       = unname(prox$est["OR"]),
+    prox.IPW      = unname(prox$est["IPW"]),
+    prox.AIPW     = unname(prox$est["AIPW"]))
+}
+results <- sapply(benchmarks, run_all)
+round(results, 4)
+```
+
+Moment values at the optimum for the bridge fits. These should be near 0, large
+values mean the fit failed or the parametric form does not hold:
+
+```{r}
+round(t(sapply(benchmarks, function(b) Proximal(b$df)$moments)), 6)
+```
+
+## Bootstrap 95% intervals for the bridge estimators
+
+```{r}
+set.seed(2026)
+boot.CIs <- lapply(benchmarks, function(b) round(ProximalBoot(b$df, B = 100), 4))
+boot.CIs
+```
+
+# Diagnostics: confounding strength and proxy informativeness
+
+The chamber records the counterfactuals, so confounding can be measured directly
+as the association between Y(0) and A (Ricardo's suggestion, the association of
+Y_a and A given all variables not caused by A). Under no confounding, Y(0) is
+independent of A.
+
+```{r}
+confounding_diag <- function(df) {
+  c(`E[Y0|A=1]-E[Y0|A=0]` = mean(df$Y0[df$A == 1]) - mean(df$Y0[df$A == 0]),
+    `Y0~A | Z,W,X`        = coef(lm(Y0 ~ A + Z + W + X, data = df))["A"],
+    `Y0~A | Z,W,X,U`      = coef(lm(Y0 ~ A + Z + W + X + U, data = df))["A"],
+    `R2: U ~ Z+W+X`       = summary(lm(U ~ Z + W + X, data = df))$r.squared)
+}
+round(t(sapply(benchmarks, function(b) confounding_diag(b$df))), 4)
+```
+
+Reading the table: column 1 is the raw difference in Y(0) between treated and
+control, column 2 is what remains after linear adjustment for the proxies,
+column 3 additionally adjusts for U, column 4 is the R squared of U regressed on
+(Z, W, X). If column 2 is close to 0, conditioning on the proxies already removes
+most of the confounding and backdoor adjustment is expected to do well. This is
+Ricardo's point about the proxies carrying enough signal to reconstruct U.
+
+# Summary
+
+Errors relative to the true ATE:
+
+```{r}
+err <- sweep(results[-1, , drop = FALSE], 2, results["true.ATE", ], "-")
+round(err, 4)
+```
+
+Absolute error ranking per benchmark (smaller is better):
+
+```{r}
+apply(abs(err), 2, function(v) names(sort(v)))
+```
