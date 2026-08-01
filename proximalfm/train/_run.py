@@ -545,6 +545,7 @@ class Trainer:
                 replay_small=c.replay_small,
                 prior_type=c.prior_type,
                 mcmc_cate=getattr(c, "mcmc_cate", 200),
+                mc_targets_on_context=getattr(c, "mc_targets_on_context", True),
                 scm_fixed_hp={
                     **DEFAULT_FIXED_HP,
                     "prior_mc_mem_budget": getattr(

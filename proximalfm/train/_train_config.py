@@ -313,6 +313,16 @@ def build_parser():
         "linearly more generation cost. Only used by the on-the-fly SCM prior.",
     )
     parser.add_argument(
+        "--mc_targets_on_context",
+        type=str2bool,
+        default=True,
+        help="If True, estimate MU0/MU1 for every row. If False, only the query "
+        "rows [train_size:] are Monte-Carlo replicated and MU0/MU1 are NaN on the "
+        "context prefix. Training only ever reads the query slice, so False is "
+        "the recommended setting for the on-the-fly SCM prior: it roughly halves "
+        "generation cost at the default train_size range.",
+    )
+    parser.add_argument(
         "--prior_mc_mem_budget",
         type=int,
         default=DEFAULT_FIXED_HP["prior_mc_mem_budget"],

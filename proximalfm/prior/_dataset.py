@@ -34,6 +34,10 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
+# - Query-Only MC Targets: 'mc_targets_on_context=False' replicates only the
+#   query rows [train_size:] when estimating MU0/MU1, leaving the context prefix
+#   NaN. The trainer reads MU only on that slice, so this is a pure compute win
+#   there; analysis/visualisation code uses all T rows, hence the opt-in default.
 # - Exogenous-Noise Model: All meaningful randomness enters each mechanism as
 #   explicit eps input columns whose count is proportional to the mechanism's
 #   signal input width (sampled 'noise_share_of_input_in_*' converted via
@@ -520,6 +524,14 @@ class SCMPrior(Prior):
         (MU0/MU1) per row. Higher values reduce the noise of the estimate at
         the cost of more memory/compute.
 
+    mc_targets_on_context : bool, default=True
+        If True (the default), every row gets ``mcmc_cate`` replicates and
+        MU0/MU1 are estimated for the whole sequence. If False, only the query
+        rows ``[train_size:]`` are replicated and MU0/MU1 are ``NaN`` on the
+        context prefix. Training reads MU only on the query slice, so False is
+        the cheaper equivalent there; see :meth:`generate_dataset` for the
+        implications.
+
     fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters.
 
@@ -558,6 +570,7 @@ class SCMPrior(Prior):
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mcmc_cate: int = 200,
+        mc_targets_on_context: bool = True,
         fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,
@@ -597,6 +610,7 @@ class SCMPrior(Prior):
         self.seq_len_per_gp = seq_len_per_gp
         self.prior_type = prior_type
         self.mcmc_cate = mcmc_cate
+        self.mc_targets_on_context = mc_targets_on_context
         self.fixed_hp = fixed_hp
         self.sampled_hp = sampled_hp
         self.n_jobs = n_jobs
@@ -614,23 +628,14 @@ class SCMPrior(Prior):
         hp_sampler = HpSamplerList(self.sampled_hp, device=self.device)
         return hp_sampler.sample()
 
-    def _cap_mc_samples(self, K: int, T: int, params: Dict[str, Any]) -> int:
-        """Cap the Monte Carlo sample count ``K`` to respect the memory budget.
+    @staticmethod
+    def _per_row_estimate(params: Dict[str, Any]) -> int:
+        """Estimated live tensor elements per generated row.
 
-        The generator materializes several ``(T * K)``-row tensors at once. The
-        single widest is the MLP-SCM activation pool of width
-        ``num_layers * hidden_dim``; alongside it live the raw + normalized proxy
-        and confounder blocks. We estimate the combined per-row width and choose
-        the largest ``K`` for which ``T * K * per_row`` stays under
-        ``prior_mc_mem_budget`` (counted in tensor elements / floats).
-
-        Returns a value in ``[1, K]``. A budget of ``None`` or ``<= 0`` disables
-        capping and returns ``K`` unchanged.
+        The single widest block is the MLP-SCM activation pool of width
+        ``num_layers * hidden_dim``; alongside it live the raw + normalized
+        proxy and confounder blocks and the exogenous-noise inputs.
         """
-        budget = params.get("prior_mc_mem_budget", None)
-        if budget is None or budget <= 0:
-            return K
-
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
 
@@ -645,7 +650,7 @@ class SCMPrior(Prior):
         )
         noise_mult = 1.0 + max_noise_share / (1.0 - max_noise_share)
 
-        per_row = (
+        return (
             num_layers * hidden_dim
             + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
@@ -658,18 +663,43 @@ class SCMPrior(Prior):
             + 8
         )
 
-        max_rows = int(budget // max(1, T * per_row))
-        K_eff = max(1, min(K, max_rows))
+    def _cap_mc_samples(
+        self, K: int, T_ctx: int, T_q: int, params: Dict[str, Any]
+    ) -> int:
+        """Cap the Monte Carlo sample count ``K`` to respect the memory budget.
+
+        The generator materializes several ``N``-row tensors at once, where
+        ``N = T_ctx + T_q * K`` is the replicated row count (``T_ctx`` context
+        rows carry no replicates, see :meth:`generate_dataset`). Given the
+        per-row width from :meth:`_per_row_estimate`, we choose the largest
+        ``K`` for which ``N * per_row`` stays under ``prior_mc_mem_budget``
+        (counted in tensor elements / floats).
+
+        Returns a value in ``[1, K]``. A budget of ``None`` or ``<= 0`` disables
+        capping and returns ``K`` unchanged.
+
+        With ``T_ctx = 0, T_q = T`` this reduces to the historical
+        ``budget // (T * per_row)``: floor division satisfies
+        ``(a // b) // c == a // (b * c)`` for positive integers.
+        """
+        budget = params.get("prior_mc_mem_budget", None)
+        if budget is None or budget <= 0:
+            return K
+
+        per_row = self._per_row_estimate(params)
+        max_rows = int(budget // max(1, per_row))
+        K_eff = max(1, min(K, (max_rows - T_ctx) // max(1, T_q)))
 
         global _MC_BUDGET_WARNED
         if K_eff < K and not _MC_BUDGET_WARNED:
             _MC_BUDGET_WARNED = True
             warnings.warn(
                 f"prior_mc_mem_budget={budget:,} elements caps mcmc_cate from {K} "
-                f"to {K_eff} for seq_len={T} (estimated {per_row} cols/row). "
-                "MU0/MU1 will use fewer Monte Carlo samples (still unbiased, just "
-                "noisier). Raise prior_mc_mem_budget if you have more RAM, or lower "
-                "max_seq_len / hidden_dim / num_layers to keep K high.",
+                f"to {K_eff} for T_ctx={T_ctx}, T_q={T_q} (estimated {per_row} "
+                "cols/row). MU0/MU1 will use fewer Monte Carlo samples (still "
+                "unbiased, just noisier). Raise prior_mc_mem_budget if you have "
+                "more RAM, or lower max_seq_len / hidden_dim / num_layers to keep "
+                "K high.",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -679,6 +709,28 @@ class SCMPrior(Prior):
     @torch.no_grad()
     def generate_dataset(self, params: Dict[str, Any]) -> Tuple[Tensor, Tensor, Tensor]:
         """Generate a single valid dataset based on the provided parameters.
+
+        Monte Carlo replicates
+        ----------------------
+        Each covariate row is replicated ``K = mcmc_cate`` times so MU0/MU1 can
+        be estimated as the mean of the potential outcomes over the replicates.
+        ``params["mc_targets_on_context"]`` controls which rows get replicated:
+
+        * ``True`` (default) -- all ``T`` rows; the mechanisms see ``T * K`` rows.
+        * ``False`` -- only the ``T_q = T - train_size`` query rows; the
+          mechanisms see ``T_ctx + T_q * K`` rows and MU0/MU1 are ``NaN`` on the
+          context prefix. At the default ``train_size ~ U(0.1, 0.9) * T`` this
+          roughly halves generation compute and peak memory.
+
+        With ``T_ctx > 0`` the pooled row set is dominated by the query
+        replicates, so the statistics computed over it -- ``safe_normalize`` on
+        U/W/Z, the rank-mode bin boundaries in ``process_features``,
+        ``sample_A``'s logit standardisation and ``ate_raw`` -- are estimated
+        from a query-weighted rather than a balanced sample. All remain
+        consistent estimators of the same population quantities over ``N``
+        i.i.d. rows, so the DGP is unchanged *in distribution*; the generated
+        data is however not bit-identical to a ``mc_targets_on_context=True``
+        run under the same seed. Equality is exact only at ``T_ctx == 0``.
 
         Parameters
         ----------
@@ -708,7 +760,7 @@ class SCMPrior(Prior):
         def safe_normalize(tensor: Tensor) -> Tensor:
             """Normalize a tensor while avoiding division by zero."""
             # One fused reduction for both stats instead of two separate scans;
-            # runs on the (T*K)-row U/W/Z blocks.
+            # runs on the N-row U/W/Z blocks.
             std, mean = torch.std_mean(tensor, dim=0, keepdim=True)
             return (tensor - mean) / (std + 1e-8)
 
@@ -717,8 +769,23 @@ class SCMPrior(Prior):
         if K < 1:
             raise ValueError("mcmc_cate must be >= 1")
 
+        # Only the query rows need Monte Carlo replicates: MU0/MU1 are read
+        # exclusively on the ``[train_size:]`` slice downstream, and the model
+        # must not see the CEPOs of its own context. Context rows therefore run
+        # a single replicate, and the mechanisms process
+        # ``N = T_ctx + T_q * K`` rows instead of ``T * K``.
+        if params.get("mc_targets_on_context", True):
+            T_ctx = 0
+        else:
+            # train_size is only metadata elsewhere, so it is not guaranteed to
+            # be < seq_len (int-valued ranges are allowed). Clamp so at least
+            # one query row survives.
+            T_ctx = max(0, min(int(params.get("train_size", 0)), T - 1))
+        T_q = T - T_ctx
+
         # Memory safeguard
-        K = self._cap_mc_samples(K, T, params)
+        K = self._cap_mc_samples(K, T_ctx, T_q, params)
+        N = T_ctx + T_q * K
 
         # Counts resamples triggered by the completeness check below.
         attempt = 0
@@ -752,11 +819,15 @@ class SCMPrior(Prior):
                     "categorical completeness is defined relative to a categorised U."
                 )
 
-            X_rep_ = (
-                X_[:, None, :]
-                .expand(T, K, params["dim_X"])
-                .reshape(T * K, params["dim_X"])
-            )
+            # Row layout of every N-row tensor below:
+            #   [ context rows 0..T_ctx-1 ] [ query row 0 x K ] [ query row 1 x K ] ...
+            # i.e. the replicate block is a contiguous suffix, so the MU
+            # reduction is a single view(T_q, K).mean(1) and no gather is needed.
+            # Built by broadcasting straight into one preallocated buffer: an
+            # expand().reshape() plus a cat would copy the query block twice.
+            X_rep_ = X_.new_empty((N, params["dim_X"]))
+            X_rep_[:T_ctx] = X_[:T_ctx]
+            X_rep_[T_ctx:].view(T_q, K, params["dim_X"])[:] = X_[T_ctx:, None, :]
 
             if params.get("covariate_edge_subsampling", True):
 
@@ -781,7 +852,7 @@ class SCMPrior(Prior):
                 share = float(params.get(f"noise_share_of_input_in_{key}", 0.3))
                 k = self.confounding_input_dim(share, n_signal, floor=floor)
                 return XSampler(
-                    seq_len=T * K,
+                    seq_len=N,
                     num_features=k,
                     pre_stats=params.get("pre_sample_cause_stats", False),
                     sampling=params.get("sampling", "mixed"),
@@ -950,7 +1021,7 @@ class SCMPrior(Prior):
             y1_raw = y_joint_raw[:, 1]
 
             gamma_hetero = torch.rand(1, device=self.device)
-            alphas = torch.rand(T * K, device=self.device)
+            alphas = torch.rand(N, device=self.device)
 
             cate_raw = y1_raw - y0_raw
             ate_raw = cate_raw.mean()
@@ -963,11 +1034,33 @@ class SCMPrior(Prior):
                 1 - gamma_hetero
             ) * alphas * (y1_raw - ate_raw)
 
-            MU0 = y0_mc.reshape(T, K).mean(dim=1)
-            MU1 = y1_mc.reshape(T, K).mean(dim=1)
+            # The query block is contiguous by construction, so ``view`` (which
+            # would raise on a non-contiguous layout) doubles as an assertion.
+            if T_ctx == 0:
+                MU0 = y0_mc.view(T, K).mean(dim=1)
+                MU1 = y1_mc.view(T, K).mean(dim=1)
 
-            obs_k = torch.randint(K, size=(T,), device=self.device)
-            obs_idx = torch.arange(T, device=self.device) * K + obs_k
+                obs_k = torch.randint(K, size=(T,), device=self.device)
+                obs_idx = torch.arange(T, device=self.device) * K + obs_k
+            else:
+                # Context rows have no K-average to report. NaN rather than the
+                # single realised draw: any consumer that reads MU outside
+                # ``[train_size:]`` is looking at something that was never
+                # computed, and should fail loudly instead of silently getting
+                # ITE-quality values.
+                nan_pad = torch.full(
+                    (T_ctx,), float("nan"), device=self.device, dtype=y0_mc.dtype
+                )
+                MU0 = torch.cat([nan_pad, y0_mc[T_ctx:].view(T_q, K).mean(dim=1)])
+                MU1 = torch.cat([nan_pad, y1_mc[T_ctx:].view(T_q, K).mean(dim=1)])
+
+                obs_k = torch.randint(K, size=(T_q,), device=self.device)
+                obs_idx = torch.cat(
+                    [
+                        torch.arange(T_ctx, device=self.device),
+                        T_ctx + torch.arange(T_q, device=self.device) * K + obs_k,
+                    ]
+                )
 
             U = U_mc[obs_idx]
             W = W_mc[obs_idx]
@@ -1326,6 +1419,7 @@ class SCMPrior(Prior):
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
                         "mcmc_cate": self.mcmc_cate,
+                        "mc_targets_on_context": self.mc_targets_on_context,
                         # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
                         "max_dim_U": self.max_dim_U,
                         "max_dim_X": gp_max_X,
@@ -1552,6 +1646,13 @@ class PriorDataset(IterableDataset):
         Number of Monte Carlo samples used to estimate the CATE targets
         (MU0/MU1) per row.
 
+    mc_targets_on_context : bool, default=True
+        If False, replicate only the query rows ``[train_size:]`` and leave
+        MU0/MU1 as ``NaN`` on the context prefix. Roughly halves generation
+        cost at the default ``train_size ~ U(0.1, 0.9) * seq_len``. Training
+        never reads context MU; analysis/visualisation code does, so the
+        default keeps the full-sequence behaviour.
+
     scm_fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters for the SCM.
 
@@ -1590,6 +1691,7 @@ class PriorDataset(IterableDataset):
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mcmc_cate: int = 200,
+        mc_targets_on_context: bool = True,
         scm_fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         scm_sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,
@@ -1619,6 +1721,7 @@ class PriorDataset(IterableDataset):
             replay_small=replay_small,
             prior_type=prior_type,
             mcmc_cate=mcmc_cate,
+            mc_targets_on_context=mc_targets_on_context,
             fixed_hp=scm_fixed_hp,
             sampled_hp=scm_sampled_hp,
             n_jobs=n_jobs,
@@ -1646,6 +1749,7 @@ class PriorDataset(IterableDataset):
         self.device = device
         self.prior_type = prior_type
         self.mcmc_cate = mcmc_cate
+        self.mc_targets_on_context = mc_targets_on_context
 
     @property
     def last_diagnostics(self):
@@ -1737,6 +1841,7 @@ class PriorDataset(IterableDataset):
             f"  sequence length varies across groups: {self.seq_len_per_gp}\n"
             f"  train_size: {self.min_train_size} - {self.max_train_size}\n"
             f"  mcmc_cate: {self.mcmc_cate}\n"
+            f"  mc_targets_on_context: {self.mc_targets_on_context}\n"
             f"  device: {self.device}\n"
             f")"
         )

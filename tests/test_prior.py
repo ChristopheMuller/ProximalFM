@@ -1,6 +1,8 @@
 import contextlib
+import json
 import math
 import random
+import warnings
 
 import numpy as np
 import torch
@@ -1228,3 +1230,234 @@ def test_mechanisms_receive_only_the_dither_layer_noise():
         _dataset_mod.MLPSCM = real
     assert stds and all(s in (dither, 0.0) for s in stds)
     assert any(s == dither for s in stds)
+
+
+# ---------------------------------------------------------------------------
+# Query-only Monte Carlo targets (mc_targets_on_context)
+# ---------------------------------------------------------------------------
+
+
+def _make_mc_split_prior(mc_targets_on_context, train_frac=0.5, seq_len=96, K=3):
+    """A small prior with the train/test split pinned to ``train_frac``."""
+    return SCMPrior(
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=1,
+        max_dim_U=5,
+        min_dim_W=1,
+        max_dim_W=5,
+        min_dim_Z=1,
+        max_dim_Z=5,
+        min_dim_X=1,
+        max_dim_X=5,
+        min_seq_len=None,
+        max_seq_len=seq_len,
+        min_train_size=train_frac,
+        max_train_size=train_frac + 0.001,
+        prior_type="mlp_scm",
+        mcmc_cate=K,
+        mc_targets_on_context=mc_targets_on_context,
+        fixed_hp=FAST_FIXED_HP,
+        n_jobs=1,
+    )
+
+
+def _capture_params(prior):
+    """The exact params dict ``get_batch`` builds, without generating anything."""
+    captured = {}
+    real = SCMPrior.generate_dataset
+
+    class _Stop(Exception):
+        pass
+
+    def spy(self, params):
+        captured.update(params)
+        raise _Stop
+
+    SCMPrior.generate_dataset = spy
+    try:
+        prior.get_batch()
+    except _Stop:
+        pass
+    finally:
+        SCMPrior.generate_dataset = real
+    return captured
+
+
+def _seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+
+def test_mc_targets_on_context_off_matches_full_at_zero_context():
+    # With no context rows, every row is a query row, so the query-only path
+    # must consume the RNG stream identically and produce bit-identical output.
+    prior = _make_mc_split_prior(mc_targets_on_context=True)
+    _seed(0)
+    params = _capture_params(prior)
+
+    _seed(1)
+    full = prior.generate_dataset({**params, "train_size": 0})
+    _seed(1)
+    query_only = prior.generate_dataset(
+        {**params, "train_size": 0, "mc_targets_on_context": False}
+    )
+
+    assert len(full) == len(query_only)
+    for a, b in zip(full[:-1], query_only[:-1]):  # last entry is the diagnostics dict
+        assert torch.equal(a, b)
+
+
+def test_mc_targets_on_context_off_nans_context_prefix():
+    prior = _make_mc_split_prior(mc_targets_on_context=False, train_frac=0.5)
+    out = prior.get_batch()
+    MU0, MU1, train_sizes = out[9], out[10], out[16]
+
+    train_size = int(train_sizes[0].item())
+    assert 0 < train_size < MU0.shape[1]
+
+    for MU in (MU0, MU1):
+        assert MU[:, :train_size].isnan().all()
+        assert MU[:, train_size:].isfinite().all()
+
+    # Only the CEPO targets carry the NaN marker; the observational tuple and
+    # the realized potential outcomes stay fully defined on every row.
+    for tensor in out[:9]:
+        assert tensor.isnan().sum() == 0
+
+
+def test_mc_targets_on_context_default_is_full():
+    prior = _make_mc_split_prior(mc_targets_on_context=True, train_frac=0.5)
+    assert prior.mc_targets_on_context is True
+    out = prior.get_batch()
+    MU0, MU1 = out[9], out[10]
+    assert MU0.isfinite().all()
+    assert MU1.isfinite().all()
+
+
+def test_mc_targets_on_context_survives_train_size_at_or_past_seq_len():
+    # train_size is only metadata elsewhere, so int-valued ranges can put it at
+    # or beyond seq_len. The generator must still leave at least one query row.
+    prior = _make_mc_split_prior(mc_targets_on_context=False)
+    _seed(2)
+    params = _capture_params(prior)
+    T = params["seq_len"]
+
+    for train_size in (T, T + 50):
+        _seed(3)
+        out = prior.generate_dataset({**params, "train_size": train_size})
+        MU0, MU1 = out[9], out[10]
+        assert MU0.shape == (T,)
+        # Exactly one query row survives the clamp.
+        assert MU0[:-1].isnan().all() and math.isfinite(float(MU0[-1]))
+        assert MU1[:-1].isnan().all() and math.isfinite(float(MU1[-1]))
+
+
+def test_cap_mc_samples_matches_legacy_formula_without_context():
+    # The rewritten cap solves N(K) = T_ctx + T_q*K <= budget/per_row. At
+    # T_ctx=0, T_q=T it must reproduce the historical budget // (T * per_row)
+    # exactly -- floor division gives (a // b) // c == a // (b * c).
+    prior = SCMPrior(batch_size=1)
+    for T in (128, 1024, 4096):
+        for K in (1, 8, 200):
+            for budget in (0, 10_000, 1_000_000, 500_000_000):
+                params = {
+                    "prior_mc_mem_budget": budget,
+                    "num_layers": 4,
+                    "hidden_dim": 20,
+                    "dim_X": 7,
+                    "dim_U": 3,
+                    "dim_W": 5,
+                    "dim_Z": 5,
+                }
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    got = prior._cap_mc_samples(K, 0, T, params)
+                if budget <= 0:
+                    assert got == K
+                    continue
+                per_row = prior._per_row_estimate(params)
+                assert got == max(1, min(K, int(budget // max(1, T * per_row))))
+
+
+def test_cap_mc_samples_allows_larger_k_with_context():
+    # Half the rows carrying no replicates roughly doubles the K that fits in
+    # the same element budget.
+    prior = SCMPrior(batch_size=1)
+    params = {
+        "prior_mc_mem_budget": 2_000_000,
+        "num_layers": 4,
+        "hidden_dim": 20,
+        "dim_X": 7,
+        "dim_U": 3,
+        "dim_W": 5,
+        "dim_Z": 5,
+    }
+    T = 1024
+    T_ctx = T // 2
+    T_q = T - T_ctx
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        full = prior._cap_mc_samples(10_000, 0, T, params)
+        split = prior._cap_mc_samples(10_000, T_ctx, T_q, params)
+
+    assert split > full
+    # Halving the replicated rows buys ~2x the K (exactly 2x only up to the
+    # floor divisions and the T_ctx rows subtracted off the budget first).
+    assert 1.5 * full <= split <= 2.5 * full
+
+    # The contract that matters: the resulting row count fits the budget.
+    per_row = prior._per_row_estimate(params)
+    assert T * full * per_row <= params["prior_mc_mem_budget"]
+    assert (T_ctx + T_q * split) * per_row <= params["prior_mc_mem_budget"]
+
+
+def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
+    # The NaN context prefix must survive the sparse on-disk round-trip, and
+    # the flag must be recorded in metadata so a val/ directory is
+    # self-describing about how its MU targets were produced.
+    train_size = 12
+    args = ArgsMock(
+        save_dir=str(tmp_path),
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=3,
+        min_dim_W=4,
+        max_dim_W=4,
+        min_dim_Z=4,
+        max_dim_Z=4,
+        min_dim_X=5,
+        max_dim_X=5,
+        min_seq_len=None,
+        max_seq_len=40,
+        log_seq_len=False,
+        seq_len_per_gp=False,
+        min_train_size=train_size,
+        max_train_size=train_size + 1,
+        replay_small=False,
+        prior_type="mlp_scm",
+        mcmc_cate=3,
+        mc_targets_on_context=False,
+        num_batches=1,
+        resume_from=0,
+        n_jobs=1,
+        num_threads_per_generate=1,
+        device="cpu",
+    )
+
+    SavePriorDataset(args).run()
+
+    with open(tmp_path / "metadata.json") as f:
+        assert json.load(f)["mc_targets_on_context"] is False
+
+    loader = LoadPriorDataset(data_dir=str(tmp_path), batch_size=2, max_batches=1)
+    batch = next(iter(loader))
+    MU0, MU1, train_sizes = batch[9], batch[10], batch[16]
+
+    t = int(train_sizes[0].item())
+    assert t == train_size
+    for MU in (MU0, MU1):
+        assert MU[:, :t].isnan().all()
+        assert MU[:, t:].isfinite().all()

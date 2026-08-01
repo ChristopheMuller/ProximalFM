@@ -708,6 +708,10 @@ class LoadPriorDataset(IterableDataset):
                 f"    replay_small: {self.metadata.get('replay_small', 'N/A')}\n"
             )
             repr_str += f"    mcmc_cate: {self.metadata.get('mcmc_cate', 'N/A')}\n"
+            repr_str += (
+                "    mc_targets_on_context: "
+                f"{self.metadata.get('mc_targets_on_context', 'N/A')}\n"
+            )
         repr_str += ")"
 
         return repr_str
@@ -751,6 +755,7 @@ class SavePriorDataset:
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
             mcmc_cate=self.args.mcmc_cate,
+            mc_targets_on_context=getattr(self.args, "mc_targets_on_context", True),
             scm_fixed_hp=DEFAULT_FIXED_HP,
             scm_sampled_hp=DEFAULT_SAMPLED_HP,
             n_jobs=self.args.n_jobs,
@@ -781,6 +786,7 @@ class SavePriorDataset:
             "max_train_size": self.args.max_train_size,
             "replay_small": self.args.replay_small,
             "mcmc_cate": self.args.mcmc_cate,
+            "mc_targets_on_context": getattr(self.args, "mc_targets_on_context", True),
         }
         with open(self.save_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -1061,6 +1067,15 @@ if __name__ == "__main__":
         type=int,
         default=200,
         help="Number of Monte Carlo latent/noise worlds per X used to estimate MU0/MU1.",
+    )
+    parser.add_argument(
+        "--mc_targets_on_context",
+        type=str2bool,
+        default=True,
+        help="If False, only the query rows [train_size:] are Monte-Carlo "
+        "replicated and MU0/MU1 are NaN on the context prefix. Roughly halves "
+        "generation cost. Safe for training data (the trainer reads MU only on "
+        "the query slice); keep True for data feeding analysis_prior/visu_prior.",
     )
     parser.add_argument(
         "--n_jobs", type=int, default=-1, help="Number of jobs for parallel processing"

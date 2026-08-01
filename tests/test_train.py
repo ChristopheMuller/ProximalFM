@@ -1,6 +1,9 @@
+import math
+
 import pytest
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._run import Trainer
+from proximalfm.prior._dataset import PriorDataset
 import torch
 from unittest.mock import patch, MagicMock
 
@@ -170,3 +173,52 @@ def test_trainer_sub_functions(dummy_args):
     assert a_X.shape[2] == 6
     assert a_W.shape[2] == 5
     assert a_Z.shape[2] == 4
+
+
+@pytest.mark.parametrize("mc_targets_on_context", [True, False])
+def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_context):
+    """The trainer must be unaffected by NaN MU values on the context prefix.
+
+    Runs a real prior batch (not a mock) through the loss path. With
+    mc_targets_on_context=False the MU targets are NaN for rows [:train_size];
+    the trainer only ever slices [train_size:], so every reported loss and
+    target statistic must still be finite.
+    """
+    dummy_args.mc_targets_on_context = mc_targets_on_context
+    trainer = Trainer(dummy_args)
+
+    prior = PriorDataset(
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=dummy_args.max_dim_U,
+        min_dim_W=2,
+        max_dim_W=dummy_args.max_dim_W,
+        min_dim_Z=2,
+        max_dim_Z=dummy_args.max_dim_Z,
+        min_dim_X=2,
+        max_dim_X=dummy_args.max_dim_X,
+        min_seq_len=None,
+        max_seq_len=64,
+        # A wide context so both treatment arms are present; run_micro_batch
+        # legitimately returns None when one arm is missing.
+        min_train_size=24,
+        max_train_size=25,
+        prior_type="mlp_scm",
+        mcmc_cate=3,
+        mc_targets_on_context=mc_targets_on_context,
+        n_jobs=1,
+        device="cpu",
+    )
+    batch = prior.get_batch()
+
+    MU0, train_sizes = batch[9], batch[16]
+    train_size = int(train_sizes[0].item())
+    # Guard that the parametrisation actually exercises both regimes.
+    assert bool(MU0[:, :train_size].isnan().all()) is not mc_targets_on_context
+
+    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+
+    assert results, "expected the micro batch to produce metrics"
+    for key, value in results.items():
+        assert math.isfinite(value), f"{key} is not finite: {value}"
