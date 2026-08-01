@@ -182,8 +182,10 @@ def target_frame(records: Sequence[PriorDatasetRecord], k: int) -> pd.DataFrame:
                 "var_cate": var_cate,
                 "nsr": sigma2 / var_q if usable else np.nan,
                 # Direct regression slope of Q_loo on ITE. Equals S(1) up to
-                # sampling error, and is the line drawn on the scatter; slope
-                # 1 would mean the "CATE target" is just the ITE.
+                # sampling error, and is the line drawn on the scatter. Because
+                # the noisy target is the *regressor*, its noise dilutes the
+                # slope: slope 1 would mean the K=1 target carries no replicate
+                # noise at all, i.e. is already the CATE.
                 "slope": var_q / var_ite if var_ite > 0 else np.nan,
                 # Implied identities, used nowhere above. The ITE one is
                 # near-algebraic given the estimators (see module docstring);
@@ -304,18 +306,20 @@ class McTargetsAnalysis(Analysis):
 
     @staticmethod
     def _scatter_panel(ax, results: McTargetResults) -> None:
-        """One dataset's K=1 target against the CATE it is meant to estimate.
+        """The CATE a K=1 target is meant to estimate, against that target.
 
-        The reference axis is the leave-one-out replicate mean, independent of
-        the plotted single replicate and carrying ~1/(K-1) of its noise, so the
-        vertical scatter around the identity *is* the Monte Carlo error a K=1
-        target would hand the model.
+        Axes: the K=1 target (the retained replicate) on the **horizontal**, the
+        leave-one-out replicate mean on the **vertical**. The latter is
+        independent of the plotted single replicate and carries ~1/(K-1) of its
+        noise, so it stands in for the truth and the vertical scatter about the
+        identity *is* the Monte Carlo error a K=1 target would hand the model.
 
-        The informative feature is the **slope**, not the diagonal cloud: a
-        target that were merely the ITE plus noise would regress on it with
-        slope 1, whereas averaging over replicates shrinks it to
-        ``Var(Q)/Var(ITE) = S(1)``. The gap between the two lines is what the
-        Monte Carlo integration removed.
+        The informative feature is the **slope**, not the diagonal cloud. Noise
+        in a *regressor* dilutes a slope (noise in the response does not), and
+        the noisy target is on the horizontal, so the slope comes out at exactly
+        that target's reliability, ``Var(Q)/Var(ITE) = S(1)``. A noise-free
+        target would instead give slope 1, so the gap between the fitted line
+        and the identity is the replicate noise that averaging removes.
         """
         if not results.contrast:
             ax.set_axis_off()
