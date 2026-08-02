@@ -4,24 +4,12 @@ import pytest
 # Adjust this import path based on your actual project structure
 from proximalfm._model import ProximalFM
 
+NBINS = 100
 
-@pytest.fixture
-def setup_model_and_data():
-    """
-    Fixture to initialize a minimal TabICL model and synthetic data.
-    """
-    # Dimensions
-    B = 2  # Batch size (number of tables)
-    T = 15  # Total sequence length (rows per table)
-    train_size = 10  # Number of training samples
 
-    H_X = 5  # Baseline covariates
-    H_Z = 3  # Treatment proxies
-    H_W = 4  # Outcome proxies
-    H_A = 1  # Treatment variable
-
-    # Initialize a miniature version of TabICL for fast testing
-    model = ProximalFM(
+def build_model(**overrides):
+    """Build a miniature ProximalFM for fast testing."""
+    kwargs = dict(
         embed_dim=16,
         col_num_blocks=1,
         col_nhead=2,
@@ -31,10 +19,14 @@ def setup_model_and_data():
         row_num_cls=4,
         icl_num_blocks=1,
         icl_nhead=2,
-        nbins=100,
+        nbins=NBINS,
     )
+    kwargs.update(overrides)
+    return ProximalFM(**kwargs)
 
-    # Generate synthetic input tensors
+
+def build_data(B=2, T=15, train_size=10, H_X=5, H_Z=3, H_W=4, H_A=1):
+    """Synthetic inputs matching the miniature model."""
     X = torch.randn(B, T, H_X)
     Z = torch.randn(B, T, H_Z)
     W = torch.randn(B, T, H_W)
@@ -48,7 +40,16 @@ def setup_model_and_data():
     d_Z = torch.full((B,), H_Z, dtype=torch.long)
     d_W = torch.full((B,), H_W, dtype=torch.long)
 
-    return model, (X, Z, W, A, y_train, d_X, d_Z, d_W), (B, T, train_size)
+    return (X, Z, W, A, y_train, d_X, d_Z, d_W), (B, T, train_size)
+
+
+@pytest.fixture
+def setup_model_and_data():
+    """
+    Fixture to initialize a minimal TabICL model and synthetic data.
+    """
+    inputs, dims = build_data()
+    return build_model(), inputs, dims
 
 
 def test_tabicl_training_mode(setup_model_and_data):
@@ -65,7 +66,7 @@ def test_tabicl_training_mode(setup_model_and_data):
     out = model(*inputs)
 
     # Check shape: (Batch, Test_Size, Out_Dim)
-    expected_shape = (B, test_size, 200)
+    expected_shape = (B, test_size, 2 * NBINS)
     assert (
         out.shape == expected_shape
     ), f"Training output shape mismatch. Expected {expected_shape}, got {out.shape}"
@@ -90,7 +91,136 @@ def test_tabicl_padding_logic(setup_model_and_data):
     model.train()
     out = model(X, Z, W, A, y_train, d_X=d_X_reduced, d_Z=d_Z_reduced, d_W=d_W_reduced)
 
-    expected_shape = (B, test_size, 200)
+    expected_shape = (B, test_size, 2 * NBINS)
     assert (
         out.shape == expected_shape
     ), "Model failed to handle reduced feature counts properly."
+
+
+def test_cate_single_output_dim():
+    """The single-tau head emits exactly `nbins` logits, not `2 * nbins`."""
+    model = build_model(loss_type="cate_single")
+    inputs, (B, T, train_size) = build_data()
+    test_size = T - train_size
+
+    model.train()
+    out = model(*inputs)
+
+    assert out.shape == (B, test_size, NBINS)
+    assert not torch.isnan(out).any()
+
+
+def test_cate_single_has_its_own_bin_grid():
+    """The tau grid is a separate buffer set and does not disturb `bin_centers`."""
+    model = build_model(loss_type="cate_single", cate_vmin=-2.0, cate_vmax=2.0)
+
+    assert model.cate_bin_edges[0].item() == pytest.approx(-2.0)
+    assert model.cate_bin_edges[-1].item() == pytest.approx(2.0)
+    # The potential-outcome grid keeps the default range, untouched by cate_vmin/vmax.
+    assert model.bin_edges[0].item() == pytest.approx(model.vmin)
+    assert model.bin_edges[-1].item() == pytest.approx(model.vmax)
+    assert not torch.allclose(model.cate_bin_centers, model.bin_centers)
+
+    # A model with no tau head must not carry the tau buffers at all.
+    baseline = build_model(loss_type="bins_po")
+    assert not hasattr(baseline, "cate_bin_edges")
+
+
+def test_cate_single_rejects_potential_outcome_targets():
+    """Only target='cate' makes sense for a head that models the difference."""
+    model = build_model(loss_type="cate_single")
+    inputs, _ = build_data()
+    X, Z, W, A, y_train, d_X, d_Z, d_W = inputs
+
+    for target in ("y0", "y1"):
+        with pytest.raises(ValueError, match="cate_single"):
+            model.predict(X, Z, W, A, y_train, target=target, d_X=d_X, d_Z=d_Z, d_W=d_W)
+
+
+def test_cate_single_is_shift_invariant():
+    """Shifting every outcome by a constant must not move the predicted CATE.
+
+    tau is a difference, so de-standardisation uses the context *scale* only; the
+    context mean cancels. This is the invariant that catches the whole class of
+    de-standardisation bug (adding y_context_mean to a difference).
+    """
+    torch.manual_seed(0)
+    model = build_model(loss_type="cate_single")
+    inputs, _ = build_data()
+    X, Z, W, A, y_train, d_X, d_Z, d_W = inputs
+
+    shift = 100.0
+    base = model.predict(X, Z, W, A, y_train, target="cate", d_X=d_X, d_Z=d_Z, d_W=d_W)
+    shifted = model.predict(
+        X, Z, W, A, y_train + shift, target="cate", d_X=d_X, d_Z=d_Z, d_W=d_W
+    )
+
+    assert torch.allclose(base, shifted, atol=1e-4), (
+        "CATE prediction changed when all outcomes were shifted by a constant: "
+        "the de-standardisation is adding the context mean to a difference."
+    )
+
+
+def test_cate_single_predict_output_types():
+    """distribution / mean / quantiles are all supported and mutually consistent."""
+    model = build_model(loss_type="cate_single")
+    inputs, (B, T, train_size) = build_data()
+    X, Z, W, A, y_train, d_X, d_Z, d_W = inputs
+    test_size = T - train_size
+    kwargs = dict(target="cate", d_X=d_X, d_Z=d_Z, d_W=d_W)
+
+    dist = model.predict(X, Z, W, A, y_train, output_type="distribution", **kwargs)
+    assert dist["weights"].shape == (B, test_size, NBINS)
+    assert torch.allclose(dist["weights"].sum(-1), torch.ones(B, test_size), atol=1e-5)
+
+    mean = model.predict(X, Z, W, A, y_train, output_type="mean", **kwargs)
+    assert mean.shape == (B, test_size)
+
+    qs = model.predict(
+        X,
+        Z,
+        W,
+        A,
+        y_train,
+        output_type="quantiles",
+        quantiles=[0.1, 0.5, 0.9],
+        **kwargs,
+    )
+    assert qs.shape == (B, test_size, 3)
+    # Quantiles are monotone in the requested levels.
+    assert (qs[..., 0] <= qs[..., 1]).all() and (qs[..., 1] <= qs[..., 2]).all()
+
+
+def test_cate_single_checkpoint_surgery():
+    """Warm-starting from a two-head checkpoint drops exactly the final decoder layer."""
+    from proximalfm.train._run import get_parameter_state
+
+    torch.manual_seed(0)
+    old_model = build_model(loss_type="bins_po")
+    new_model = build_model(loss_type="cate_single")
+
+    rules = {"default": "freeze", "icl_predictor.decoder.2.": "scratch"}
+
+    new_state = new_model.state_dict()
+    buffer_names = set(dict(new_model.named_buffers()).keys())
+
+    transferred = {}
+    for name, weight in old_model.state_dict().items():
+        if name in buffer_names:
+            continue
+        if name in new_state and weight.shape == new_state[name].shape:
+            if get_parameter_state(name, rules) in ("finetune", "freeze"):
+                transferred[name] = weight
+
+    missing = {
+        name
+        for name in new_model.state_dict()
+        if name not in transferred and name not in buffer_names
+    }
+    assert missing == {
+        "icl_predictor.decoder.2.weight",
+        "icl_predictor.decoder.2.bias",
+    }, f"Unexpected set of non-transferred parameters: {sorted(missing)}"
+
+    result = new_model.load_state_dict(transferred, strict=False)
+    assert result.unexpected_keys == []

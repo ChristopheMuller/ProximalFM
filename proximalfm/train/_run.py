@@ -99,9 +99,27 @@ def get_parameter_state(param_name: str, rules: dict) -> str:
     return rules.get(best_match, rules.get("default", "scratch"))
 
 
-with open("transfer_rules.yaml", "r") as f:
-    config = yaml.safe_load(f)
-TRANSFER_RULES = config.get("transfer_rules", {})
+def load_transfer_rules(path: str) -> dict:
+    """Load the transfer/freeze rules yaml.
+
+    Resolved relative to the CWD first, then to the repository root, so that a run
+    launched from a subdirectory picks up the same file rather than silently failing
+    or using a different one.
+    """
+    candidates = [path]
+    if not os.path.isabs(path):
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        candidates.append(os.path.join(repo_root, path))
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            with open(candidate, "r") as f:
+                rules_config = yaml.safe_load(f) or {}
+            return rules_config.get("transfer_rules", {})
+
+    raise FileNotFoundError(
+        f"Transfer rules file not found: tried {', '.join(candidates)}"
+    )
 
 
 def compute_crps_loss(
@@ -205,6 +223,22 @@ def compute_hl_gaussian_cross_entropy_loss(
     loss = -torch.sum(p * log_probs, dim=-1)
 
     return loss.mean()
+
+
+def compute_cate_distribution_loss(
+    logits: torch.Tensor,
+    cate_target: torch.Tensor,
+    bin_edges: torch.Tensor,
+    sigma: float,
+) -> torch.Tensor:
+    """Distributional term for the single-histogram CATE head ("cate_single").
+
+    Isolated behind its own name so that swapping in a noise-aware likelihood (which
+    needs a per-row target variance) is a change to this function alone.
+    """
+    return compute_hl_gaussian_cross_entropy_loss(
+        logits, cate_target, bin_edges, sigma=sigma
+    )
 
 
 def compute_gaussian_nll(
@@ -391,8 +425,17 @@ class Trainer:
     def build_model(self):
         """Build and initialize the ProximalFM model."""
 
+        transfer_rules = load_transfer_rules(
+            getattr(self.config, "transfer_rules", "transfer_rules.yaml")
+        )
+
         self.model_config = {
             "loss_type": self.loss_type,
+            "nbins": self.config.nbins,
+            "vmin": self.config.vmin,
+            "vmax": self.config.vmax,
+            "cate_vmin": self.config.cate_vmin,
+            "cate_vmax": self.config.cate_vmax,
             "embed_dim": self.config.embed_dim,
             "col_num_blocks": self.config.col_num_blocks,
             "col_nhead": self.config.col_nhead,
@@ -452,13 +495,19 @@ class Trainer:
 
                 clean_old_state_dict[clean_key] = v
 
-            # 1. Filter weights based on TRANSFER_RULES using the clean state dict
+            # 1. Filter weights based on the transfer rules using the clean state dict.
+            # Buffers (bin grids) are derived from the config, never learned: restoring
+            # them from the checkpoint would let a stale vmin/vmax override the grid the
+            # current run was configured with.
+            buffer_names = set(dict(model.named_buffers()).keys())
             for name, weight in clean_old_state_dict.items():
+                if name in buffer_names:
+                    continue
                 if (
                     name in model_state_dict
                     and weight.shape == model_state_dict[name].shape
                 ):
-                    state = get_parameter_state(name, TRANSFER_RULES)
+                    state = get_parameter_state(name, transfer_rules)
                     if state in ["finetune", "freeze"]:
                         filtered_state_dict[name] = weight
                         # Track the count of weights successfully mapped over
@@ -468,7 +517,7 @@ class Trainer:
             model.load_state_dict(filtered_state_dict, strict=False)
         # 3. Apply freezing logic
         for name, param in model.named_parameters():
-            state = get_parameter_state(name, TRANSFER_RULES)
+            state = get_parameter_state(name, transfer_rules)
             if state == "freeze":
                 param.requires_grad = False
             else:
@@ -971,7 +1020,7 @@ class Trainer:
                     sync_ddp=False,
                     include_count=True,
                 )
-                results.update(buffered_train_metrics)
+                results.update(self._drop_meaningless_metrics(buffered_train_metrics))
                 self.train_evaluator.reset()
 
             # Save checkpoints
@@ -1532,6 +1581,34 @@ class Trainer:
 
                 total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
 
+            elif loss_type == "cate_single":
+                # A single histogram over tau, so no slicing: out_dim == nbins.
+                hl_sigma = self.get_hl_sigma()
+
+                loss_cate_dist = compute_cate_distribution_loss(
+                    pred_logits,
+                    true_cate_std,
+                    self.raw_model.cate_bin_edges,
+                    sigma=hl_sigma,
+                )
+
+                probs_cate = F.softmax(pred_logits, dim=-1)
+                pred_cate_std = torch.sum(
+                    probs_cate * self.raw_model.cate_bin_centers, dim=-1
+                )
+
+                cate_error_std = pred_cate_std - true_cate_std
+                loss_cate = torch.mean(cate_error_std**2)
+
+                lambda_cate = getattr(self.config, "lambda_cate", 0.0)
+
+                total_loss = loss_cate_dist + (lambda_cate * loss_cate)
+
+                # The evaluator expects per-arm predictions; this head has none.
+                # Zero-padding keeps it running (val_po/* metrics are gated off below).
+                mean_pred_y0_std = torch.zeros_like(y_test_0_std)
+                mean_pred_y1_std = torch.zeros_like(y_test_1_std)
+
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -1606,6 +1683,22 @@ class Trainer:
                     if is_train
                     else hl_sigma,
                 }
+            elif loss_type == "cate_single":
+                micro_results = {
+                    "loss/total": reported_loss_total,
+                    "loss/cate_dist": (loss_cate_dist.item() / num_micro_batches)
+                    if is_train
+                    else loss_cate_dist.item(),
+                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
+                    if is_train
+                    else (lambda_cate * loss_cate).item(),
+                    "loss/hl_sigma": (hl_sigma / num_micro_batches)
+                    if is_train
+                    else hl_sigma,
+                }
+            else:
+                raise ValueError(f"Unknown loss_type: {loss_type}")
+
             scale = num_micro_batches if is_train else 1
             micro_results.update(
                 {
@@ -1793,11 +1886,13 @@ class Trainer:
             for batch in self.val_dataloader:
                 self.run_val_batch(batch)
 
-        final_metrics = self.val_evaluator.compute(
-            prefix="val_",
-            sync_ddp=self.ddp,
-            device=self.config.device,
-            include_count=True,
+        final_metrics = self._drop_meaningless_metrics(
+            self.val_evaluator.compute(
+                prefix="val_",
+                sync_ddp=self.ddp,
+                device=self.config.device,
+                include_count=True,
+            )
         )
 
         # Time (seconds) taken to pass over the whole validation set.
@@ -1807,6 +1902,17 @@ class Trainer:
         self.model.train()
 
         return final_metrics
+
+    def _drop_meaningless_metrics(self, metrics: dict) -> dict:
+        """Strip per-arm (po/*) metrics for loss types that predict effects directly.
+
+        Those loss types have no y0/y1 head and feed the evaluator zeros, so the
+        resulting po/* numbers are artefacts. Dropping them is preferable to logging
+        zeros that later read as results.
+        """
+        if self.loss_type not in ("cate_decomposition", "cate_single"):
+            return metrics
+        return {k: v for k, v in metrics.items() if "po/" not in k}
 
     def get_hl_sigma(self) -> float:
         """

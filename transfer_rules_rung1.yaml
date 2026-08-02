@@ -1,0 +1,12 @@
+# Unfreezing ladder, rung 1 -- train the whole decoder MLP.
+#
+# Question this rung answers: is the coupling *non-linearly* decodable from the frozen
+# row representations?
+#
+# decoder.0 keeps its checkpoint weights (shape is unchanged) and is fine-tuned;
+# decoder.2 changes shape with the head and starts from scratch.
+
+transfer_rules:
+  default: "freeze"
+  "icl_predictor.decoder.": "finetune"
+  "icl_predictor.decoder.2.": "scratch"

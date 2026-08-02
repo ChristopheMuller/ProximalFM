@@ -1,0 +1,12 @@
+# Unfreezing ladder, rung 0 -- train ONLY the final decoder Linear.
+#
+# Question this rung answers: is the mu0/mu1 coupling *linearly* decodable from the
+# frozen row representations? If rung 0 suffices, the backbone already encodes the joint
+# posterior and only the read-out was wrong.
+#
+# Trainable parameter count should be exactly nbins * (2 * d_model) + nbins.
+# See transfer_rules.yaml for the semantics of finetune / freeze / scratch.
+
+transfer_rules:
+  default: "freeze"
+  "icl_predictor.decoder.2.": "scratch"

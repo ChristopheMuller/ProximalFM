@@ -222,3 +222,54 @@ def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_contex
     assert results, "expected the micro batch to produce metrics"
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
+
+
+def test_trainer_micro_batch_cate_single(dummy_args):
+    """The cate_single loss branch runs and reports its own finite metrics.
+
+    Guards the loss branch and the metrics arm together: a missing metrics arm
+    would raise NameError rather than return a dict.
+    """
+    dummy_args.loss_type = "cate_single"
+    dummy_args.lambda_cate = 0.1
+    trainer = Trainer(dummy_args)
+
+    assert trainer.raw_model.icl_predictor.decoder[-1].out_features == (
+        trainer.raw_model.nbins
+    )
+
+    prior = PriorDataset(
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=dummy_args.max_dim_U,
+        min_dim_W=2,
+        max_dim_W=dummy_args.max_dim_W,
+        min_dim_Z=2,
+        max_dim_Z=dummy_args.max_dim_Z,
+        min_dim_X=2,
+        max_dim_X=dummy_args.max_dim_X,
+        min_seq_len=None,
+        max_seq_len=64,
+        min_train_size=24,
+        max_train_size=25,
+        prior_type="mlp_scm",
+        mcmc_cate=3,
+        n_jobs=1,
+        device="cpu",
+    )
+    batch = prior.get_batch()
+
+    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+
+    assert results, "expected the micro batch to produce metrics"
+    assert "loss/cate_dist" in results
+    assert "loss/cate" in results
+    for key, value in results.items():
+        assert math.isfinite(value), f"{key} is not finite: {value}"
+
+    # Per-arm metrics are artefacts of the evaluator zero-padding for this head.
+    metrics = trainer._drop_meaningless_metrics(
+        {"val_po/rmse_y0": 0.0, "val_cate/npehe": 1.0}
+    )
+    assert metrics == {"val_cate/npehe": 1.0}

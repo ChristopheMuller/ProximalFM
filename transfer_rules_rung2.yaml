@@ -1,0 +1,14 @@
+# Unfreezing ladder, rung 2 -- decoder plus the last two ICL transformer blocks.
+#
+# Question this rung answers: does the in-context learning stage need light adaptation to
+# expose the joint posterior, or is the frozen representation enough?
+#
+# Block indices assume the default --icl_num_blocks 12 (last two are 10 and 11). Adjust
+# them if you change that flag, otherwise these rules silently match nothing.
+
+transfer_rules:
+  default: "freeze"
+  "icl_predictor.tf_icl.blocks.10.": "finetune"
+  "icl_predictor.tf_icl.blocks.11.": "finetune"
+  "icl_predictor.decoder.": "finetune"
+  "icl_predictor.decoder.2.": "scratch"

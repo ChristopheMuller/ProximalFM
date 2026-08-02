@@ -500,6 +500,14 @@ def build_parser():
         help="Path to specific checkpoint file to load",
     )
     parser.add_argument(
+        "--transfer_rules",
+        default="transfer_rules.yaml",
+        type=str,
+        help="Path to the yaml of per-parameter transfer/freeze rules "
+        "(finetune / freeze / scratch, longest matching prefix wins). Resolved "
+        "relative to the CWD, then to the repository root.",
+    )
+    parser.add_argument(
         "--save_best",
         default=True,
         type=str2bool,
@@ -568,14 +576,52 @@ def build_parser():
         "--lambda_cate",
         type=float,
         default=0.0,
-        help="Weight for the CATE loss term. If 0, CATE loss is not used.",
+        help="Weight for the CATE loss term. If 0, CATE loss is not used. "
+        "Set it explicitly for --loss_type cate_single: the MSE term protects the "
+        "predicted mean and gives the from-scratch head an early learning signal.",
     )
 
     parser.add_argument(
         "--loss_type",
         type=str,
         default="bins_po",
-        choices=["bins_po", "hl", "cate_decomposition"],
+        choices=["bins_po", "hl", "cate_decomposition", "cate_single"],
+    )
+
+    parser.add_argument(
+        "--nbins",
+        type=int,
+        default=1000,
+        help="Number of bins in the histogram head(s).",
+    )
+
+    parser.add_argument(
+        "--vmin",
+        type=float,
+        default=-10.0,
+        help="Lower edge of the potential-outcome bin grid (standardized scale).",
+    )
+
+    parser.add_argument(
+        "--vmax",
+        type=float,
+        default=10.0,
+        help="Upper edge of the potential-outcome bin grid (standardized scale).",
+    )
+
+    parser.add_argument(
+        "--cate_vmin",
+        type=float,
+        default=-3.0,
+        help="Lower edge of the tau bin grid used by --loss_type cate_single "
+        "(standardized scale). tau is much narrower than Y(a), hence its own grid.",
+    )
+
+    parser.add_argument(
+        "--cate_vmax",
+        type=float,
+        default=3.0,
+        help="Upper edge of the tau bin grid used by --loss_type cate_single.",
     )
 
     parser.add_argument(

@@ -52,10 +52,15 @@ class ProximalFM(nn.Module):
 
     Parameters
     ----------
-    loss_type : Literal["bins_po", "cate_decomposition"], default="bins_po"
+    loss_type : Literal["bins_po", "hl", "cate_single", "cate_decomposition"], default="bins_po"
         Determines the output space and learning objective:
         - "bins_po": Predicts binned distributions for both potential outcomes (y0, y1).
           Output dimension is `nbins * 2`.
+        - "hl": Same output space as "bins_po" (`nbins * 2`); differs only in the training
+          loss (HL-Gaussian cross-entropy instead of CRPS).
+        - "cate_single": Predicts a single binned distribution directly over the treatment
+          effect `tau = mu1 - mu0`, on its own bin grid (`cate_vmin`/`cate_vmax`).
+          Output dimension is `nbins`. Only `target="cate"` is supported.
         - "cate_decomposition": Predicts ATE as a Gaussian likelihood (mean, log-var)
           and the heterogeneous effect (CATE - ATE) as a binned distribution.
           Output dimension is `nbins + 2`.
@@ -169,10 +174,14 @@ class ProximalFM(nn.Module):
 
     def __init__(
         self,
-        loss_type: Literal["bins_po", "cate_decomposition", "hl"] = "bins_po",
+        loss_type: Literal[
+            "bins_po", "cate_decomposition", "hl", "cate_single"
+        ] = "bins_po",
         nbins: int = 1000,
         vmin: float = -10.0,
         vmax: float = 10.0,
+        cate_vmin: float = -3.0,
+        cate_vmax: float = 3.0,
         joint_quantiles: bool = False,
         embed_dim: int = 128,
         col_num_blocks: int = 3,
@@ -219,12 +228,14 @@ class ProximalFM(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
-        if loss_type not in ["bins_po", "cate_decomposition", "hl"]:
+        if loss_type not in ["bins_po", "cate_decomposition", "hl", "cate_single"]:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
         self.loss_type = loss_type
         self.nbins = nbins
         self.vmin = vmin
         self.vmax = vmax
+        self.cate_vmin = cate_vmin
+        self.cate_vmax = cate_vmax
         self.joint_quantiles = joint_quantiles
 
         self.embed_dim = embed_dim
@@ -285,8 +296,23 @@ class ProximalFM(nn.Module):
         self.register_buffer("bin_width", bin_width)
         self.register_buffer("bin_centers", bin_centers)
 
+        if self.loss_type == "cate_single":
+            # tau = mu1 - mu0 is much narrower than Y(a) on the standardized scale, so it
+            # gets its own grid. Distinct buffer names matter: the surgical transfer loader
+            # copies buffers by name+shape, so reusing "bin_edges" would let a two-head
+            # checkpoint silently overwrite this grid with its own [vmin, vmax].
+            cate_bin_edges = torch.linspace(cate_vmin, cate_vmax, nbins + 1)
+            cate_bin_width = cate_bin_edges[1] - cate_bin_edges[0]
+            cate_bin_centers = cate_bin_edges[:-1] + 0.5 * cate_bin_width
+
+            self.register_buffer("cate_bin_edges", cate_bin_edges)
+            self.register_buffer("cate_bin_width", cate_bin_width)
+            self.register_buffer("cate_bin_centers", cate_bin_centers)
+
         if self.loss_type == "bins_po" or self.loss_type == "hl":
             out_dim = nbins * 2
+        elif self.loss_type == "cate_single":
+            out_dim = nbins
         else:  # self.loss_type == "cate_decomposition"
             out_dim = nbins + 2
 
@@ -581,7 +607,6 @@ class ProximalFM(nn.Module):
         embed_with_test: bool = False,
         inference_config: Optional[InferenceConfig] = None,
     ) -> Tensor:
-
         train_size = y_train.shape[1]
         B, T, _ = X.shape
 
@@ -675,8 +700,11 @@ class ProximalFM(nn.Module):
                 vals = vals.expand(-1, probs.shape[1], -1)
 
             for q in q_list:
-                idx = torch.searchsorted(cdf, q).clamp(max=self.nbins - 1)
-                q_vals = torch.gather(vals, -1, idx.unsqueeze(-1)).squeeze(-1)
+                # searchsorted only accepts a scalar when the boundaries are 1-D, so
+                # broadcast the level to one query per (batch, row).
+                q_expanded = q.expand(*cdf.shape[:-1], 1).contiguous()
+                idx = torch.searchsorted(cdf, q_expanded).clamp(max=self.nbins - 1)
+                q_vals = torch.gather(vals, -1, idx).squeeze(-1)
                 results.append(q_vals)
             return torch.stack(results, dim=-1)
 
@@ -768,6 +796,43 @@ class ProximalFM(nn.Module):
 
             else:
                 raise ValueError(f"Unknown output_type: {output_type}")
+
+        # ==========================================
+        # ROUTING: Single CATE histogram
+        # ==========================================
+        elif self.loss_type == "cate_single":
+            if target not in ["cate"]:
+                raise ValueError(
+                    f"loss_type 'cate_single' directly estimates treatment effects "
+                    f"and does not support predicting target='{target}'."
+                )
+
+            probs_cate = torch.softmax(logits, dim=-1)
+
+            # tau is a difference, so the context mean cancels: de-standardize with the
+            # context scale ONLY. Adding y_mean_view here would bias the whole CATE.
+            vals_cate = self.cate_bin_centers.view(1, 1, -1) * y_std_view
+
+            if output_type == "distribution":
+                return {"values": vals_cate, "weights": probs_cate}
+
+            elif output_type == "mean":
+                return _get_mean(probs_cate, vals_cate)
+
+            elif output_type == "quantiles":
+                if quantiles is None:
+                    quantiles = [0.1, 0.5, 0.9]
+                q_tensor = torch.tensor(
+                    quantiles, device=logits.device, dtype=logits.dtype
+                )
+
+                return _get_quantiles(probs_cate, vals_cate, q_tensor)
+
+            else:
+                raise ValueError(f"Unknown output_type: {output_type}")
+
+        else:
+            raise ValueError(f"Unhandled loss_type: {self.loss_type}")
 
     @staticmethod
     def _average_ensemble_outputs(outputs: list) -> Union[Tensor, dict]:
