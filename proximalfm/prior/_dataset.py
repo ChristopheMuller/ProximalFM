@@ -34,6 +34,10 @@ an infinite stream of synthetic datasets with diverse characteristics.
 #   proxies stay consistent with the mechanisms that produced Y and A.
 # - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
 #   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
+# - Target-Leaf Mechanisms: f_Z and f_A run on the T observed rows only, not on
+#   the N Monte-Carlo rows. Z and A are leaves w.r.t. MU0/MU1 (Z never feeds
+#   f_W/f_Y, A never feeds f_Y), so their replicates were computed only to be
+#   discarded at 'obs_idx'. Distribution-preserving; see generate_dataset.
 # - Query-Only MC Targets: 'mc_targets_on_context=False' replicates only the
 #   query rows [train_size:] when estimating MU0/MU1, leaving the context prefix
 #   NaN. The trainer reads MU only on that slice, so this is a pure compute win
@@ -630,11 +634,17 @@ class SCMPrior(Prior):
 
     @staticmethod
     def _per_row_estimate(params: Dict[str, Any]) -> int:
-        """Estimated live tensor elements per generated row.
+        """Estimated live tensor elements per *replicated* (``N``-row) row.
 
         The single widest block is the MLP-SCM activation pool of width
         ``num_layers * hidden_dim``; alongside it live the raw + normalized
         proxy and confounder blocks and the exogenous-noise inputs.
+
+        Counts only what the replicate block actually carries. ``f_Z`` and
+        ``f_A`` are leaves w.r.t. MU0/MU1 and run on the ``T`` observed rows
+        (see :meth:`generate_dataset`), so ``Z``, ``A`` and their covariate /
+        noise inputs contribute nothing here: the ``N``-row mechanisms are
+        ``f_U``, ``f_W`` and ``f_y`` alone.
         """
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
@@ -643,24 +653,25 @@ class SCMPrior(Prior):
         # share / (1 - share) times its signal width (share clamped at 0.75 by
         # confounding_input_dim, i.e. worst case 4x). Use the largest sampled
         # share as a coarse over-estimate; exact widths depend on binomial
-        # subsampling draws not known at cap time.
+        # subsampling draws not known at cap time. Z/A are excluded: their eps
+        # blocks are T rows.
         max_noise_share = max(
             min(float(params.get(f"noise_share_of_input_in_{k}", 0.3)), 0.75)
-            for k in ("U", "W", "Z", "A", "Y")
+            for k in ("U", "W", "Y")
         )
         noise_mult = 1.0 + max_noise_share / (1.0 - max_noise_share)
 
         return (
             num_layers * hidden_dim
-            + params["dim_X"]
-            + 2 * (params["dim_U"] + params["dim_W"] + params["dim_Z"])
-            + math.ceil(
-                noise_mult
-                * 3
-                * (params["dim_X"] + max(params["dim_W"], params["dim_Z"]) + 1)
-            )
-            + 5 * params["dim_X"]
-            + 8
+            + params["dim_X"]  # X_rep_
+            # raw + normalized U and W (Z is T rows)
+            + 2 * (params["dim_U"] + params["dim_W"])
+            # eps_U, eps_W, eps_Y, sized off the widest N-row signal input
+            + math.ceil(noise_mult * 3 * (params["dim_X"] + params["dim_W"] + 1))
+            # the X_U_ / X_W_ / X_Y_ covariate subsamples
+            + 3 * params["dim_X"]
+            # y_joint_raw (2), alphas, cate_raw, y0_mc, y1_mc
+            + 6
         )
 
     def _cap_mc_samples(
@@ -677,6 +688,13 @@ class SCMPrior(Prior):
 
         Returns a value in ``[1, K]``. A budget of ``None`` or ``<= 0`` disables
         capping and returns ``K`` unchanged.
+
+        ``prior_mc_mem_budget`` is a calibration dial, not a hard ceiling: it
+        counts only the replicate-block tensors :meth:`_per_row_estimate`
+        models, so measured peak RSS runs ~1.5x above it (allocator overhead,
+        the transient copies inside ``process_features``, the T-row Z/A branch,
+        and the interpreter baseline are all outside the model). Tune it
+        against observed RSS rather than reading it as bytes.
 
         With ``T_ctx = 0, T_q = T`` this reduces to the historical
         ``budget // (T * per_row)``: floor division satisfies
@@ -724,13 +742,27 @@ class SCMPrior(Prior):
 
         With ``T_ctx > 0`` the pooled row set is dominated by the query
         replicates, so the statistics computed over it -- ``safe_normalize`` on
-        U/W/Z, the rank-mode bin boundaries in ``process_features``,
-        ``sample_A``'s logit standardisation and ``ate_raw`` -- are estimated
-        from a query-weighted rather than a balanced sample. All remain
-        consistent estimators of the same population quantities over ``N``
-        i.i.d. rows, so the DGP is unchanged *in distribution*; the generated
-        data is however not bit-identical to a ``mc_targets_on_context=True``
-        run under the same seed. Equality is exact only at ``T_ctx == 0``.
+        U/W, the rank-mode bin boundaries in ``process_features`` and
+        ``ate_raw`` -- are estimated from a query-weighted rather than a
+        balanced sample. All remain consistent estimators of the same
+        population quantities over ``N`` i.i.d. rows, so the DGP is unchanged
+        *in distribution*; the generated data is however not bit-identical to a
+        ``mc_targets_on_context=True`` run under the same seed. Equality is
+        exact only at ``T_ctx == 0``.
+
+        Which mechanisms see the replicates
+        -----------------------------------
+        Only ``f_U``, ``f_W`` and ``f_y`` run on the ``N`` replicated rows,
+        because ``MU0``/``MU1`` are means over the replicate worlds of ``Y``.
+        ``f_Z`` and ``f_A`` are *leaves* with respect to those targets -- the
+        proximal DAG keeps ``Z`` out of ``f_W``/``f_Y`` and ``A`` out of
+        ``f_Y`` -- so their non-observed replicates could only ever be
+        discarded. They are therefore evaluated on the ``T`` observed rows
+        alone, reading the confounder in its realised world (``U_obs_``). This
+        is the same joint law by construction (``X_rep_[obs_idx] == X_``) and
+        removes ~40% of generation compute; the branch's own statistics
+        (``safe_normalize`` on Z, its bin boundaries, ``sample_A``'s logit
+        standardisation) are consequently estimated from ``T`` rows.
 
         Parameters
         ----------
@@ -792,6 +824,24 @@ class SCMPrior(Prior):
 
         while True:
             attempt += 1
+
+            # Row index of the realised (observed) replicate of every row. Drawn
+            # up front because the Z -> A branch is evaluated on *these rows
+            # only*: both are leaves w.r.t. the MC targets (Z never enters
+            # f_W/f_Y, A never enters f_Y), so their non-observed replicates
+            # were only ever computed to be discarded here.
+            if T_ctx == 0:
+                obs_k = torch.randint(K, size=(T,), device=self.device)
+                obs_idx = torch.arange(T, device=self.device) * K + obs_k
+            else:
+                obs_k = torch.randint(K, size=(T_q,), device=self.device)
+                obs_idx = torch.cat(
+                    [
+                        torch.arange(T_ctx, device=self.device),
+                        T_ctx + torch.arange(T_q, device=self.device) * K + obs_k,
+                    ]
+                )
+
             eps_X_sampler = XSampler(
                 seq_len=T,
                 num_features=params["dim_X"],
@@ -831,35 +881,41 @@ class SCMPrior(Prior):
 
             if params.get("covariate_edge_subsampling", True):
 
-                def _cov_subsample(key: str) -> Tensor:
+                def _cov_subsample_cols(key: str) -> Tensor:
                     p = float(params.get(f"covariate_share_of_X_in_{key}", 0.5))
                     m = int(
                         torch.distributions.binomial.Binomial(
                             total_count=params["dim_X"], probs=p
                         ).sample()
                     )
-                    return X_rep_[:, torch.randperm(params["dim_X"])[:m]]
+                    return torch.randperm(params["dim_X"])[:m]
 
-                X_U_ = _cov_subsample("U")
-                X_W_ = _cov_subsample("W")
-                X_Z_ = _cov_subsample("Z")
-                X_A_ = _cov_subsample("A")
-                X_Y_ = _cov_subsample("Y")
+                # X_rep_[obs_idx] == X_ by construction of the replicate layout,
+                # so the Z/A mechanisms read their covariates straight off the
+                # T-row X_ rather than the N-row replicate buffer.
+                X_U_ = X_rep_[:, _cov_subsample_cols("U")]
+                X_W_ = X_rep_[:, _cov_subsample_cols("W")]
+                X_Z_ = X_[:, _cov_subsample_cols("Z")]
+                X_A_ = X_[:, _cov_subsample_cols("A")]
+                X_Y_ = X_rep_[:, _cov_subsample_cols("Y")]
             else:
-                X_U_ = X_W_ = X_Z_ = X_A_ = X_Y_ = X_rep_
+                X_U_ = X_W_ = X_Y_ = X_rep_
+                X_Z_ = X_A_ = X_
 
-            def sample_eps(key: str, n_signal: int, floor: int = 1) -> Tensor:
+            def sample_eps(
+                key: str, n_signal: int, rows: int, floor: int = 1
+            ) -> Tensor:
                 share = float(params.get(f"noise_share_of_input_in_{key}", 0.3))
                 k = self.confounding_input_dim(share, n_signal, floor=floor)
                 return XSampler(
-                    seq_len=N,
+                    seq_len=rows,
                     num_features=k,
                     pre_stats=params.get("pre_sample_cause_stats", False),
                     sampling=params.get("sampling", "mixed"),
                     device=self.device,
                 ).sample()
 
-            eps_U = sample_eps("U", X_U_.shape[-1], floor=params["dim_U"])
+            eps_U = sample_eps("U", X_U_.shape[-1], N, floor=params["dim_U"])
 
             input_U = torch.cat([X_U_, eps_U], dim=-1)
 
@@ -874,13 +930,16 @@ class SCMPrior(Prior):
             if categorize_U:
                 U_mc, u_meta = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
+            # The confounder as realised in the *observed* world of each row --
+            # the only latent state the Z/A branch is ever read in.
+            U_obs_ = U_mc_[obs_idx]
 
             # Proxies must dominate U's pre-filter profile when enforcing.
             require_profile = (
                 block_profile(params["dim_U"], u_meta) if enforce_cat else None
             )
 
-            eps_W = sample_eps("W", params["dim_U"] + X_W_.shape[-1])
+            eps_W = sample_eps("W", params["dim_U"] + X_W_.shape[-1], N)
             input_W = torch.cat([U_mc_, X_W_, eps_W], dim=-1)
 
             f_W = prior_cls(
@@ -895,8 +954,11 @@ class SCMPrior(Prior):
             )
             W_mc_ = safe_normalize(W_mc)
 
-            eps_Z = sample_eps("Z", params["dim_U"] + X_Z_.shape[-1])
-            input_Z = torch.cat([U_mc_, X_Z_, eps_Z], dim=-1)
+            # Z is a leaf w.r.t. MU0/MU1, so it is generated on the T observed
+            # rows only -- hence ``Z_obs`` rather than the ``_mc`` (N-row)
+            # naming used for U and W above.
+            eps_Z = sample_eps("Z", params["dim_U"] + X_Z_.shape[-1], T)
+            input_Z = torch.cat([U_obs_, X_Z_, eps_Z], dim=-1)
 
             f_Z = prior_cls(
                 in_dim=input_Z.shape[-1],
@@ -904,11 +966,11 @@ class SCMPrior(Prior):
                 **params,
             ).to(self.device)
 
-            Z_mc = f_Z(input_Z)
-            Z_mc, z_meta = process_features(
-                Z_mc, params, require_profile=require_profile
+            Z_obs = f_Z(input_Z)
+            Z_obs, z_meta = process_features(
+                Z_obs, params, require_profile=require_profile
             )
-            Z_mc_ = safe_normalize(Z_mc)
+            Z_obs_ = safe_normalize(Z_obs)
 
             if params.get("proxy_edge_subsampling", True):
                 m_W = int(
@@ -924,10 +986,10 @@ class SCMPrior(Prior):
                     ).sample()
                 )
                 W_direct = W_mc_[:, torch.randperm(params["dim_W"])[:m_W]]
-                Z_direct = Z_mc_[:, torch.randperm(params["dim_Z"])[:m_Z]]
+                Z_direct = Z_obs_[:, torch.randperm(params["dim_Z"])[:m_Z]]
             else:
                 W_direct = W_mc_
-                Z_direct = Z_mc_
+                Z_direct = Z_obs_
 
             if params.get("confounding_dim_control", True):
                 # Shares are defined relative to the non-noise (signal) input
@@ -947,7 +1009,7 @@ class SCMPrior(Prior):
                     k_Y, k_A, params["dim_U"], perm
                 )
                 U_sel_y = U_mc_[:, idx_y]
-                U_sel_a = U_mc_[:, idx_a]
+                U_sel_a = U_obs_[:, idx_a]
 
                 aug_out_dim = max(aug_dim_y, aug_dim_a)
                 if aug_out_dim > 0:
@@ -957,24 +1019,34 @@ class SCMPrior(Prior):
                         num_layers=3,
                         hidden_dim=max(10, aug_out_dim),
                     ).to(self.device)
-                    u_aug = f_u_augment(U_mc_)
+                    # Both sides must read the *same* network. Only the Y side
+                    # needs all N rows, so when it takes no augmentation columns
+                    # the net runs on the T observed rows alone.
+                    if aug_dim_y > 0:
+                        u_aug = f_u_augment(U_mc_)
+                        u_aug_y = u_aug[:, :aug_dim_y]
+                        u_aug_a = u_aug[obs_idx][:, :aug_dim_a]
+                    else:
+                        u_aug_y = U_mc_[:, :0]
+                        u_aug_a = f_u_augment(U_obs_)[:, :aug_dim_a]
                 else:
-                    u_aug = U_mc_[:, :0]
-
-                u_aug_y = u_aug[:, :aug_dim_y]
-                u_aug_a = u_aug[:, :aug_dim_a]
+                    u_aug_y = U_mc_[:, :0]
+                    u_aug_a = U_obs_[:, :0]
             else:
                 U_sel_y = U_mc_
-                U_sel_a = U_mc_
+                U_sel_a = U_obs_
                 u_aug_y = U_mc_[:, :0]
-                u_aug_a = U_mc_[:, :0]
+                u_aug_a = U_obs_[:, :0]
 
+            # A inherits Z's row set: every input above is already T rows, so
+            # the treatment is drawn directly in its observed world.
             eps_A = sample_eps(
                 "A",
                 U_sel_a.shape[-1]
                 + X_A_.shape[-1]
                 + Z_direct.shape[-1]
                 + u_aug_a.shape[-1],
+                T,
             )
             input_A = torch.cat([U_sel_a, X_A_, Z_direct, eps_A, u_aug_a], dim=-1)
 
@@ -987,7 +1059,7 @@ class SCMPrior(Prior):
 
             A_logits = f_A(input_A).squeeze(-1)
 
-            A_mc, A_probs_mc = self.sample_A(
+            A, A_probs = self.sample_A(
                 A_logits,
                 shift=params.get("propensity_shift", 0.0),
                 scale=params.get("propensity_scale", 1.0),
@@ -1000,6 +1072,7 @@ class SCMPrior(Prior):
                 + X_Y_.shape[-1]
                 + W_direct.shape[-1]
                 + u_aug_y.shape[-1],
+                N,
             )
             input_y = torch.cat([U_sel_y, X_Y_, W_direct, eps_Y, u_aug_y], dim=-1)
 
@@ -1039,9 +1112,6 @@ class SCMPrior(Prior):
             if T_ctx == 0:
                 MU0 = y0_mc.view(T, K).mean(dim=1)
                 MU1 = y1_mc.view(T, K).mean(dim=1)
-
-                obs_k = torch.randint(K, size=(T,), device=self.device)
-                obs_idx = torch.arange(T, device=self.device) * K + obs_k
             else:
                 # Context rows have no K-average to report. NaN rather than the
                 # single realised draw: any consumer that reads MU outside
@@ -1054,19 +1124,10 @@ class SCMPrior(Prior):
                 MU0 = torch.cat([nan_pad, y0_mc[T_ctx:].view(T_q, K).mean(dim=1)])
                 MU1 = torch.cat([nan_pad, y1_mc[T_ctx:].view(T_q, K).mean(dim=1)])
 
-                obs_k = torch.randint(K, size=(T_q,), device=self.device)
-                obs_idx = torch.cat(
-                    [
-                        torch.arange(T_ctx, device=self.device),
-                        T_ctx + torch.arange(T_q, device=self.device) * K + obs_k,
-                    ]
-                )
-
             U = U_mc[obs_idx]
             W = W_mc[obs_idx]
-            Z = Z_mc[obs_idx]
-            A = A_mc[obs_idx]
-            A_probs = A_probs_mc[obs_idx]
+            # Z, A and A_probs were generated on the observed rows directly.
+            Z = Z_obs
             y0 = y0_mc[obs_idx]
             y1 = y1_mc[obs_idx]
 
@@ -1157,7 +1218,7 @@ class SCMPrior(Prior):
                             "params": _scalar_params(params),
                             "gamma_hetero": float(gamma_hetero),
                             "attempts": attempt,
-                            "A_logits": A_logits[obs_idx].detach().cpu(),
+                            "A_logits": A_logits.detach().cpu(),
                             "A_logit_mean": float(A_logits.mean()),
                             "A_logit_std": float(A_logits.std()),
                             "mechanisms": {

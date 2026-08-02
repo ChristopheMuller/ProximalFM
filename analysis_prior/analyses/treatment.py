@@ -98,9 +98,12 @@ def reconstruct_pipeline(record: PriorDatasetRecord) -> Dict[str, Any]:
         )
 
     raw = np.asarray(record.a_logits, dtype=np.float64)
-    # The full-population mean/std sample_A standardises by. Stored explicitly so
-    # this is exact even when K > 1 (observed slice != whole population); fall
-    # back to the slice's own moments for older records that only kept the slice.
+    # The mean/std sample_A standardises by. f_A now runs directly on the T
+    # observed rows (Z/A are leaves w.r.t. MU0/MU1, generator no longer
+    # replicates them K-fold), so these coincide with raw's own moments for
+    # any current record; stored explicitly only for older records generated
+    # before that change, where sample_A standardised over the full T*K
+    # population and raw held just the observed-row slice of it.
     mean = record.a_logit_mean if record.a_logit_mean is not None else float(raw.mean())
     std = (
         record.a_logit_std if record.a_logit_std is not None else float(raw.std(ddof=1))

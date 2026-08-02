@@ -1413,6 +1413,100 @@ def test_cap_mc_samples_allows_larger_k_with_context():
     assert (T_ctx + T_q * split) * per_row <= params["prior_mc_mem_budget"]
 
 
+# ---------------------------------------------------------------------------
+# Target-leaf mechanisms (f_Z / f_A skip the Monte Carlo replicates)
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _capture_mechanism_rows():
+    """Record ``(num_outputs, n_rows)`` of every MLPSCM forward pass.
+
+    ``generate_dataset`` looks MLPSCM up as a module global, so patching the
+    module attribute intercepts every mechanism. The row count is what this
+    guards: only the mechanisms feeding MU0/MU1 may see the replicated block.
+    """
+    records: list[tuple[int, int]] = []
+    real = _dataset_mod.MLPSCM
+
+    class SpyMLPSCM(real):
+        def forward(self, input):
+            records.append((self.num_outputs, input.shape[0]))
+            return super().forward(input)
+
+    _dataset_mod.MLPSCM = SpyMLPSCM
+    try:
+        yield records
+    finally:
+        _dataset_mod.MLPSCM = real
+
+
+def test_target_leaf_mechanisms_skip_mc_replicates():
+    # Z and A are leaves w.r.t. the Monte Carlo targets -- the proximal DAG
+    # keeps Z out of f_W/f_Y and A out of f_Y -- so every replicate of theirs
+    # beyond the observed one would be computed only to be discarded. f_Z and
+    # f_A must therefore run on the T observed rows while f_U / f_W / f_Y run
+    # on the full T*K block. This is the guard against silently regressing that
+    # (it costs ~40% of generation time).
+    _seed(0)
+    T, K = 64, 8
+    prior = SCMPrior(
+        batch_size=1,
+        batch_size_per_gp=1,
+        # Distinct block dims so num_outputs identifies the mechanism, and
+        # confounding_dim_control off so no augmentation net collides with them.
+        min_dim_U=3,
+        max_dim_U=3,
+        min_dim_W=4,
+        max_dim_W=4,
+        min_dim_Z=5,
+        max_dim_Z=5,
+        min_dim_X=6,
+        max_dim_X=6,
+        min_seq_len=T,
+        max_seq_len=T + 1,
+        prior_type="mlp_scm",
+        mcmc_cate=K,
+        fixed_hp={**FAST_FIXED_HP, "confounding_dim_control": False},
+        n_jobs=1,
+    )
+    with _capture_mechanism_rows() as records:
+        prior.get_batch()
+
+    rows = {}
+    for num_outputs, n_rows in records:
+        rows.setdefault(num_outputs, set()).add(n_rows)
+
+    assert rows[6] == {T}  # f_X, never replicated
+    assert rows[3] == {T * K}  # f_U
+    assert rows[4] == {T * K}  # f_W
+    assert rows[2] == {T * K}  # f_Y
+    assert rows[5] == {T}  # f_Z -- observed rows only
+    assert rows[1] == {T}  # f_A -- observed rows only
+
+
+def test_target_leaf_mechanisms_preserve_observed_contract():
+    # Moving the Z/A branch off the replicate block must not change what a
+    # dataset delivers: one row per sequence position, A a valid draw from the
+    # clamped propensity, and Y_obs selected by the treatment drawn in the same
+    # world as Z.
+    _seed(1)
+    epsilon = FAST_FIXED_HP["propensity_epsilon"]
+    prior = _make_mc_split_prior(mc_targets_on_context=False, train_frac=0.5)
+    out = prior.get_batch()
+    Z, A, A_probs = out[3], out[4], out[5]
+    Y_obs, Y0, Y1 = out[6], out[7], out[8]
+    MU0, d_Z = out[9], out[14]
+    T = MU0.shape[1]
+
+    assert Z.shape[1] == T
+    assert A.shape == (A.shape[0], T) and A_probs.shape == A.shape
+    assert set(A.unique().tolist()) <= {0, 1}
+    assert bool(((A_probs >= epsilon) & (A_probs <= 1.0 - epsilon)).all())
+    assert bool((d_Z > 0).all())
+    assert torch.equal(Y_obs, torch.where(A == 1, Y1, Y0))
+
+
 def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
     # The NaN context prefix must survive the sparse on-disk round-trip, and
     # the flag must be recorded in metadata so a val/ directory is

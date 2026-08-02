@@ -115,10 +115,15 @@ class PriorDatasetRecord:
         caveat as the diagnostics above.
 
     a_logit_mean, a_logit_std : float, optional
-        Mean and (unbiased) std of the raw logits over the *full* ``T*K``
-        population, i.e. the constants ``sample_A`` standardises by. Stored so
-        the standardised logit is exactly reproducible from ``a_logits`` even
-        when ``K > 1`` (where the observed slice is not the whole population).
+        Mean and (unbiased) std of the raw logits, i.e. the constants
+        ``sample_A`` standardises by. ``f_A`` now runs directly on the ``T``
+        observed rows (Z/A are leaves w.r.t. MU0/MU1, so the generator no
+        longer replicates them K-fold), so these coincide with ``a_logits``'s
+        own moments for any current record. Stored explicitly for older
+        records generated before that change, where ``sample_A`` standardised
+        over the full ``T*K`` population and ``a_logits`` held only the
+        observed-row slice of it -- reproducing the standardised logit from
+        the slice alone would not have been exact for those.
     """
 
     index: int
