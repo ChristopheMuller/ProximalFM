@@ -1,9 +1,0 @@
-# Unfreezing ladder, rung 3 -- the whole ICL stage; column and row stages stay frozen.
-#
-# Question this rung answers: does the model need to re-represent the posterior entirely?
-# If rung 3 is what it takes, a from-scratch single-head run is eventually warranted.
-
-transfer_rules:
-  default: "freeze"
-  "icl_predictor.": "finetune"
-  "icl_predictor.decoder.2.": "scratch"
