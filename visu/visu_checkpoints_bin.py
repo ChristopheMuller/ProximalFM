@@ -8,9 +8,17 @@ import matplotlib.colors as mcolors
 from proximalfm.prior import PriorDataset
 from proximalfm._model import ProximalFM
 
+from pathlib import Path
+
+# This script lives in visu/; resolve relative paths against the repo root so it
+# runs the same from here or from the project root.
+REPO_ROOT = (
+    Path(__file__).resolve().parents[1] if "__file__" in globals() else Path.cwd()
+)
+
 # %%
 # 1. Configuration & Toggles
-CHECKPOINT_DIR = "mc_baseline/"
+CHECKPOINT_DIR = REPO_ROOT / "mc_baseline"
 TEST_SAMPLE_IDX = 0
 PLOT_MEAN = True
 PLOT_NORMALIZED = True

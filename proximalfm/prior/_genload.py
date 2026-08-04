@@ -1075,7 +1075,7 @@ if __name__ == "__main__":
         help="If False, only the query rows [train_size:] are Monte-Carlo "
         "replicated and MU0/MU1 are NaN on the context prefix. Roughly halves "
         "generation cost. Safe for training data (the trainer reads MU only on "
-        "the query slice); keep True for data feeding analysis_prior/visu_prior.",
+        "the query slice); keep True for data feeding analysis_prior/ or visu/.",
     )
     parser.add_argument(
         "--n_jobs", type=int, default=-1, help="Number of jobs for parallel processing"

@@ -7,9 +7,17 @@ import matplotlib.pyplot as plt
 from proximalfm.prior import PriorDataset
 from proximalfm._model import ProximalFM
 
+from pathlib import Path
+
+# This script lives in visu/; resolve relative paths against the repo root so it
+# runs the same from here or from the project root.
+REPO_ROOT = (
+    Path(__file__).resolve().parents[1] if "__file__" in globals() else Path.cwd()
+)
+
 # %%
 # 1. Configuration & Toggles
-checkpoint_path = "mc_baseline/"
+checkpoint_path = REPO_ROOT / "mc_baseline"
 
 KEEP_CHECK = None
 REMOVE_CHECK = []

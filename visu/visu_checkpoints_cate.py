@@ -7,14 +7,21 @@ import matplotlib.pyplot as plt
 from proximalfm.prior import PriorDataset
 from proximalfm._model import ProximalFM
 
+from pathlib import Path
+
+# This script lives in visu/; resolve relative paths against the repo root so it
+# runs the same from here or from the project root.
+REPO_ROOT = (
+    Path(__file__).resolve().parents[1] if "__file__" in globals() else Path.cwd()
+)
+
 # %%
 # 1. Configuration & Generation
-TARGET = "y1"
-checkpoint_path = "check_3/"
+checkpoint_path = REPO_ROOT / "mc_baseline"
 
 KEEP_CHECK = None
-REMOVE_CHECK = None
-PLOT_NORMALIZED = True
+REMOVE_CHECK = []
+PLOT_NORMALIZED = False
 REMOVE_OUTLIERS = True
 
 prior = PriorDataset(
@@ -26,10 +33,10 @@ prior = PriorDataset(
     max_dim_W=1,
     min_dim_Z=1,
     max_dim_Z=1,
-    min_dim_X=2,
-    max_dim_X=2,
+    min_dim_X=1,
+    max_dim_X=1,
     min_seq_len=None,
-    max_seq_len=512,
+    max_seq_len=100,
     log_seq_len=False,
     seq_len_per_gp=False,
     min_train_size=0.8,
@@ -41,48 +48,64 @@ prior = PriorDataset(
 
 # Fetch batch
 batch = prior.get_batch(batch_size=2)
-U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
+(
+    U,
+    X,
+    W,
+    Z,
+    A,
+    A_probs,
+    Y_obs,
+    Y0,
+    Y1,
+    MU0,
+    MU1,
+    d_U,
+    d_X,
+    d_W,
+    d_Z,
+    seq_len,
+    train_sizes,
+) = batch
 
 # Ensure batch dimension exists
-if len(Y0.shape) == 1:
-    Y0 = Y0.unsqueeze(0)
-if len(Y1.shape) == 1:
-    Y1 = Y1.unsqueeze(0)
+if len(MU0.shape) == 1:
+    MU0 = MU0.unsqueeze(0)
+if len(MU1.shape) == 1:
+    MU1 = MU1.unsqueeze(0)
 if len(A.shape) == 1:
     A = A.unsqueeze(0)
 if len(Y_obs.shape) == 1:
     Y_obs = Y_obs.unsqueeze(0)
 
-split_idx = train_sizes[0].item()
+# Extract and Standardize Targets based ONLY on training context
+train_idx = train_sizes[0].item()
 A_input = A.unsqueeze(-1).float()
 
-# --- NEW NORMALIZATION STRATEGY ---
-y_obs_train_raw = Y_obs[:, :split_idx]
-
-# Calculate Context Stats
+y_obs_train_raw = Y_obs[:, :train_idx]
 y_context_mean = y_obs_train_raw.mean(dim=1, keepdim=True)
 y_context_std = y_obs_train_raw.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
 
-# Standardize Context
 y_obs_train_norm = (y_obs_train_raw - y_context_mean) / y_context_std
 
-# Extract Raw Test Ground Truths
-y0_test_raw = Y0[:, split_idx:]
-y1_test_raw = Y1[:, split_idx:]
+# Calculate Raw and Normalized True CATE
+# CATE(x) = mu1(x) - mu0(x) is the noise-free target the model is trained on
+# (see _run.py), so ground truth comes from MU0/MU1, not the noisy Y0/Y1 (ITE).
+mu0_test_raw = MU0[:, train_idx:]
+mu1_test_raw = MU1[:, train_idx:]
+true_cate_test_raw = mu1_test_raw - mu0_test_raw
 
-true_test_target_raw = y0_test_raw[0] if TARGET == "y0" else y1_test_raw[0]
+mu0_test_norm = (mu0_test_raw - y_context_mean) / y_context_std
+mu1_test_norm = (mu1_test_raw - y_context_mean) / y_context_std
+true_cate_test_norm = mu1_test_norm - mu0_test_norm
 
-# Route based on flag
+# Route the inputs based on PLOT_NORMALIZED flag
 if PLOT_NORMALIZED:
     y_obs_in = y_obs_train_norm
-
-    # Standardize the true values so the plot axes match
-    mean_val = y_context_mean[0, 0].item()
-    std_val = y_context_std[0, 0].item()
-    true_test_target = (true_test_target_raw - mean_val) / std_val
+    true_target = true_cate_test_norm[0]  # Focus on the first batch item
 else:
     y_obs_in = y_obs_train_raw
-    true_test_target = true_test_target_raw
+    true_target = true_cate_test_raw[0]
 
 # %%
 # 2. Locate and Filter Checkpoints
@@ -112,21 +135,21 @@ if not all_checkpoints:
 first_checkpoint = torch.load(
     os.path.join(checkpoint_path, all_checkpoints[0]),
     map_location="cpu",
-    weights_only=False,
+    weights_only=True,
 )
 model = ProximalFM(**first_checkpoint["config"])
 model.eval()
 
 # %%
-# 3. Setup Plotting Grid
+# 3. Setup Plotting Grids
 num_checkpoints = len(all_checkpoints)
 num_cols = min(4, num_checkpoints)
 num_rows = (num_checkpoints + num_cols - 1) // num_cols
 
-fig, axes = plt.subplots(
+fig1, axes1 = plt.subplots(
     num_rows, num_cols, figsize=(4 * num_cols, 4 * num_rows), squeeze=False
 )
-axes = axes.flatten()
+axes1 = axes1.flatten()
 
 # 4. Evaluate and Plot
 for i, checkp in enumerate(all_checkpoints):
@@ -134,69 +157,61 @@ for i, checkp in enumerate(all_checkpoints):
 
     try:
         checkpoint = torch.load(ckpt_full_path, map_location="cpu", weights_only=True)
-    except RuntimeError as e:
-        print(
-            f"Skipping {checkp}: File incomplete or corrupted (likely being written right now)."
-        )
+    except RuntimeError:
+        print(f"Skipping {checkp}: File incomplete or corrupted.")
         continue
 
     step = checkpoint["curr_step"]
     print(f"Plotting Checkpoint: {checkp}, Step: {step}")
 
-    # Strip 'module.' prefix if saved via DDP
-    state_dict = checkpoint["state_dict"]
-    state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+    state_dict = {
+        k.replace("module.", ""): v for k, v in checkpoint["state_dict"].items()
+    }
     model.load_state_dict(state_dict)
 
     with torch.inference_mode():
-        # Predict natively dictates the output scale based on y_obs_in!
-        out = model.predict(
-            X=X,  # Handled internally by predict
+        # Because model.predict() now scales and un-scales internally,
+        # it natively returns the standardized outputs if y_obs_in is already standardized!
+        out_mean = model.predict(
+            X=X,
             Z=Z,
             W=W,
             A=A_input,
             y_train=y_obs_in,
             output_type="mean",
-            target=TARGET,
+            target="cate",
+            d_W=d_W,
+            d_Z=d_Z,
+            d_X=d_X,
         )[0]
 
     # Convert to numpy
-    true_np = true_test_target.cpu().numpy()
-    out_np = out.cpu().numpy()
-
-    # Calculate R2 (and MSE for reference)
+    true_np = true_target.cpu().numpy()
+    out_np = out_mean.cpu().numpy()
     mse = np.mean((true_np - out_np) ** 2)
-    variance = np.var(true_np)
 
-    if variance > 1e-8:
-        r2 = 1.0 - (mse / variance)
-    else:
-        r2 = 1.0 if mse < 1e-8 else 0.0
+    # --- Plot 1: Scatter (CATE) ---
+    ax1 = axes1[i]
+    ax1.scatter(true_np, out_np, alpha=0.7, edgecolors="none")
 
-    ax = axes[i]
-    ax.scatter(true_np, out_np, alpha=0.7, edgecolors="none")
-
-    # Determine bounds for the y=x reference line
     if REMOVE_OUTLIERS and PLOT_NORMALIZED:
-        ax.set_xlim(-3, 3)
-        ax.set_ylim(-3, 3)
+        ax1.set_xlim(-3, 3)
+        ax1.set_ylim(-3, 3)
         line_min, line_max = -3, 3
     else:
         line_min = min(true_np.min(), out_np.min())
         line_max = max(true_np.max(), out_np.max())
 
-    ax.plot([line_min, line_max], [line_min, line_max], color="red", linestyle="--")
+    ax1.plot([line_min, line_max], [line_min, line_max], color="red", linestyle="--")
 
-    # Formatting
-    ax.set_title(f"Step {step} | R²: {r2:.3f}")
-    unit_label = "(Normalized)" if PLOT_NORMALIZED else "(Raw)"
-    ax.set_xlabel(f"True {TARGET.upper()} {unit_label}")
-    ax.set_ylabel(f"Predicted {TARGET.upper()} {unit_label}")
-    ax.grid(True, alpha=0.3)
+    ax1.set_title(f"Step {step} | MSE: {mse:.3f}")
+    unit = "(Normalized)" if PLOT_NORMALIZED else "(Raw)"
+    ax1.set_xlabel(f"True CATE {unit}")
+    ax1.set_ylabel(f"Predicted CATE {unit}")
+    ax1.grid(True, alpha=0.3)
 
-# Clean up any empty subplots
-for j in range(num_checkpoints, len(axes)):
-    fig.delaxes(axes[j])
+for j in range(num_checkpoints, len(axes1)):
+    fig1.delaxes(axes1[j])
 
-plt.tight_layout()
+fig1.tight_layout()
 plt.show()
