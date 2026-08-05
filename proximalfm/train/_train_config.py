@@ -563,12 +563,6 @@ def build_parser():
         "than training before hitting memory limits. Defaults to "
         "--micro_batch_size when unset.",
     )
-    parser.add_argument(
-        "--eval_buffer_episodes",
-        type=int,
-        default=256,
-        help="Number of episodes to aggregate before logging buffered train metrics.",
-    )
 
     ###########################################################################
     ###### LOSS ###############################################################

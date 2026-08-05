@@ -78,9 +78,7 @@ class Trainer:
         self.configure_amp()
         self.load_checkpoint()
 
-        self.train_evaluator = CausalEvaluator()
         self.val_evaluator = CausalEvaluator()
-        self.eval_buffer_episodes = getattr(self.config, "eval_buffer_episodes", 64)
 
         self.val_micro_batch_size = (
             getattr(self.config, "val_micro_batch_size", None)
@@ -721,14 +719,6 @@ class Trainer:
         if self.master_process:
             # Add timing information to results
             results.update({"prior_time": prior_time, "train_time": train_time})
-            if self.train_evaluator.ready(self.eval_buffer_episodes):
-                buffered_train_metrics = self.train_evaluator.compute(
-                    prefix="train_",
-                    sync_ddp=False,
-                    include_count=True,
-                )
-                results.update(self._drop_meaningless_metrics(buffered_train_metrics))
-                self.train_evaluator.reset()
 
             # Save checkpoints
             is_temp_save = self.curr_step % self.config.save_temp_every == 0
@@ -1332,15 +1322,11 @@ class Trainer:
 
         # Evaluation & Metric extraction block
         with torch.no_grad():
-            if is_train:
-                should_update_evaluator = self.master_process
-                evaluator = self.train_evaluator
-            else:
-                should_update_evaluator = True
-                evaluator = self.val_evaluator
-
-            if should_update_evaluator:
-                evaluator.update(
+            # Point metrics are a validation-surface concern only: on the training
+            # distribution they duplicate the loss at a batch size chosen for
+            # throughput rather than estimator variance.
+            if not is_train:
+                self.val_evaluator.update(
                     pred_y0=mean_pred_y0_std,
                     pred_y1=mean_pred_y1_std,
                     true_y0=y_test_0_std,
