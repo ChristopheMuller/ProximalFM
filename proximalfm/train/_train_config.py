@@ -584,6 +584,15 @@ def build_parser():
         "--dist_eval_dir. 0 disables it; -1 (default) resolves to "
         "--point_val_interval.",
     )
+    parser.add_argument(
+        "--dist_eval_max_episodes",
+        default=None,
+        type=nullable_int,
+        help="Cap on the number of frozen-set episodes scored per "
+        "dist_validate() pass. None (default) scores every episode in "
+        "--dist_eval_dir. A single-process cap for now; becomes a per-rank "
+        "cap once DDP sharding lands (EVAL_PLAN step 6d).",
+    )
 
     ###########################################################################
     ###### LOSS ###############################################################

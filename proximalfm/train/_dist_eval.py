@@ -57,6 +57,7 @@ __all__ = [
     "PosteriorEvaluator",
     "UnsupportedLossTypeError",
     "episode_predictive",
+    "require_single_cate_head",
     "score_episode",
     "score_frozen_set",
 ]
@@ -275,7 +276,14 @@ class PosteriorEvaluator:
 # --------------------------------------------------------------------------
 
 
-def _require_single_cate_head(model) -> None:
+def require_single_cate_head(model) -> None:
+    """Raise :class:`UnsupportedLossTypeError` unless ``model`` predicts one
+    histogram over ``tau`` on a single shared grid.
+
+    Called both eagerly (``Trainer.__init__``, so a ``bins_po``/``hl`` config
+    with ``--dist_eval_dir`` set fails at construction rather than hundreds of
+    steps into training) and per-episode inside :func:`episode_predictive`.
+    """
     from proximalfm._model.proximalfm import CATE_SINGLE_LOSS_TYPES
 
     loss_type = getattr(model, "loss_type", None)
@@ -325,7 +333,7 @@ def episode_predictive(
     tuple of Tensor
         ``(probs, bin_edges)`` with shapes ``(n_q, B)`` and ``(B + 1,)``.
     """
-    _require_single_cate_head(model)
+    require_single_cate_head(model)
 
     (
         U,
@@ -444,17 +452,24 @@ def score_frozen_set(
     max_episodes: Optional[int] = None,
     levels: Tuple[float, ...] = (0.5, 0.9),
     alpha: float = 0.05,
+    meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """Score a whole frozen set; returns the merged ``prior/*`` metric dict.
 
     ``out`` is the frozen set's *root* (the directory holding both ``val/`` and
     ``frozen_meta.pt``), because the sidecar is not optional: without it there
     is no frozen comparison scale and no ``tau_star``.
+
+    ``meta`` lets a caller that already loaded the sidecar (``Trainer``, which
+    loads it once at construction because it is the expensive part) pass it
+    straight through instead of paying ``load_frozen_meta`` again on every
+    pass. ``None`` (the CLI's case) loads it here.
     """
     from posterior_eval.build_prior_frozen_set import load_frozen_meta
 
     out = Path(out)
-    meta = load_frozen_meta(out)
+    if meta is None:
+        meta = load_frozen_meta(out)
     n_max = int(meta["global"]["n_max"])
     n_ctx = n_max if n_ctx is None else int(n_ctx)
     if not 1 <= n_ctx <= n_max:

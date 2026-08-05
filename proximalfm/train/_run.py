@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import warnings
 from contextlib import nullcontext
+from pathlib import Path
 
 import math
 import numpy as np
@@ -26,6 +27,7 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._eval import CausalEvaluator
+from proximalfm.train._dist_eval import require_single_cate_head, score_frozen_set
 from proximalfm.train._logger import ExperimentLogger
 from proximalfm.train._losses import (
     compute_cate_distribution_loss,
@@ -101,6 +103,22 @@ class Trainer:
             if dist_eval_interval == -1
             else dist_eval_interval
         )
+
+        # `--dist_eval_dir`: load the frozen-set sidecar once, here, rather
+        # than on every dist_validate() pass -- it carries the per-episode
+        # tau_star_std/s2_std and it is the expensive part (EVAL_PLAN step
+        # 6c). Loaded on every rank (not just master) and left unguarded by
+        # try/except, so a missing or malformed sidecar fails loudly at
+        # construction instead of hundreds of steps into training. Likewise
+        # for an unsupported loss_type: the posterior of a difference is not
+        # identified by two marginals (bins_po/hl), so that is fatal here too.
+        self.dist_eval_dir = getattr(self.config, "dist_eval_dir", None)
+        self._dist_eval_meta = None
+        if self.dist_eval_dir is not None:
+            from posterior_eval.build_prior_frozen_set import load_frozen_meta
+
+            self._dist_eval_meta = load_frozen_meta(Path(self.dist_eval_dir))
+            require_single_cate_head(self.raw_model)
 
     def configure_ddp(self):
         """Set up distributed training and system configuration."""
@@ -731,7 +749,8 @@ class Trainer:
 
         Advances ``curr_step`` by exactly one and preserves the per-step cadence
         of checkpointing (``save_temp_every`` / ``save_perm_every``) and
-        validation (``point_val_interval``). Returns the (possibly augmented) results.
+        validation (``point_val_interval``, and ``dist_eval_interval`` for the
+        ``prior/*`` surface). Returns the (possibly augmented) results.
         """
         self.curr_step += 1
 
@@ -755,18 +774,43 @@ class Trainer:
                 ):
                     self.manage_checkpoint()
 
-        # Must run on ALL processes to prevent DDP hangs during all_reduce
-        if self.val_dataloader is not None and (
+        # Point validation must run on ALL processes to prevent DDP hangs
+        # during all_reduce (CausalEvaluator.compute(sync_ddp=True)).
+        ran_point_val = self.val_dataloader is not None and (
             self.curr_step % self.config.point_val_interval == 0 or self.curr_step == 1
-        ):
-            val_results = self.validate()
-            results.update(val_results)
+        )
+        surface_results = {}
+        if ran_point_val:
+            surface_results.update(self.point_validate())
 
-            # Overwrite best_model.ckpt if the monitored metric improved. Saving
-            # is master-only (like the step checkpoints); val_results is already
-            # DDP-synced so every rank agrees on the value.
-            if self.master_process and self.save_best:
-                self._maybe_save_best(val_results)
+        # Distributional (prior/*) evaluation is rank-0 only for now
+        # (EVAL_PLAN step 6c): PosteriorEvaluator.compute has no sync_ddp
+        # path, so entering it on every rank would either duplicate the pass
+        # or, once episode sharding lands (step 6d), deadlock on an all_reduce
+        # the other ranks never issue.
+        ran_dist_val = (
+            self.master_process
+            and self.dist_eval_dir is not None
+            and self.dist_eval_interval > 0
+            and (self.curr_step % self.dist_eval_interval == 0 or self.curr_step == 1)
+        )
+        if ran_dist_val:
+            surface_results.update(self.dist_validate())
+
+        if surface_results:
+            results.update(surface_results)
+
+            # Overwrite best_model.ckpt if the monitored metric improved.
+            # Saving is master-only (like the step checkpoints); point
+            # results are already DDP-synced so every rank would agree on the
+            # value. Only compare on a step where the surface that produces
+            # the monitored metric actually ran -- otherwise a prior/*
+            # best_metric would warn on every plain validation pass whenever
+            # dist_eval_interval and point_val_interval don't coincide.
+            monitors_dist_surface = self.best_metric.startswith("prior/")
+            surface_ran = ran_dist_val if monitors_dist_surface else ran_point_val
+            if self.master_process and self.save_best and surface_ran:
+                self._maybe_save_best(surface_results)
 
         # Route training logs through the new Logger class
         results["lr"] = self.scheduler.get_last_lr()[0]
@@ -1567,13 +1611,13 @@ class Trainer:
         return total_valid_samples
 
     @torch.inference_mode()
-    def validate(self):
+    def point_validate(self):
         """Run one full pass over the entire validation set.
 
         Metrics are accumulated across every validation episode and computed
-        once, so each ``validate()`` call reports performance over the whole
-        val_dir (i.e. logged exactly when all validation episodes have been
-        visited once).
+        once, so each ``point_validate()`` call reports performance over the
+        whole val_dir (i.e. logged exactly when all validation episodes have
+        been visited once).
         """
         if self.val_dataloader is None:
             return {}
@@ -1601,6 +1645,43 @@ class Trainer:
         self.model.train()
 
         return final_metrics
+
+    @torch.inference_mode()
+    def dist_validate(self):
+        """Run one full pass over the frozen prior set (EVAL_PLAN step 6c).
+
+        Mirrors :meth:`point_validate`'s shape -- one pass, metrics computed
+        once at the end, ``model.eval()``/``model.train()`` around it -- but scores
+        ``--dist_eval_dir`` via :func:`score_frozen_set` instead, emitting both
+        ``prior/point/*`` and ``prior/dist/*``.
+
+        Rank-0 only: :class:`~proximalfm.train._dist_eval.PosteriorEvaluator`
+        has no ``sync_ddp`` path, so this must not be entered on more than one
+        process (the caller in ``_post_step`` gates on ``master_process``);
+        DDP sharding is step 6d.
+        """
+        if self.dist_eval_dir is None:
+            return {}
+
+        self.model.eval()
+
+        with Timer() as dist_timer:
+            metrics = score_frozen_set(
+                self.raw_model,
+                self.dist_eval_dir,
+                device=self.config.device,
+                max_episodes=getattr(self.config, "dist_eval_max_episodes", None),
+                meta=self._dist_eval_meta,
+            )
+
+        # Time (seconds) taken to pass over the (possibly capped) frozen set.
+        # Flat under prior/, matching val/time's treatment: a pass diagnostic,
+        # not a point-vs-dist metric.
+        metrics["prior/time"] = dist_timer.elapsed
+
+        self.model.train()
+
+        return metrics
 
     @torch.no_grad()
     def _target_noise_metrics(

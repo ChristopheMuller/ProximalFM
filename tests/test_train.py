@@ -3,7 +3,9 @@ import math
 import pytest
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._run import Trainer
+from proximalfm.train._dist_eval import UnsupportedLossTypeError
 from proximalfm.prior._dataset import PriorDataset
+from posterior_eval.build_prior_frozen_set import BuildConfig, build
 import torch
 from unittest.mock import patch, MagicMock
 
@@ -51,6 +53,27 @@ def _dummy_args_list(tmp_path):
 def dummy_args(tmp_path):
     parser = build_parser()
     return parser.parse_args(_dummy_args_list(tmp_path))
+
+
+@pytest.fixture(scope="module")
+def tiny_frozen_set(tmp_path_factory):
+    """A tiny real frozen prior set for the ``--dist_eval_dir`` tests.
+
+    Same shape as ``tests/test_posterior_eval.py``'s ``frozen`` fixture, just
+    smaller: these tests only need the trainer wiring to fire, not meaningful
+    numbers.
+    """
+    out = tmp_path_factory.mktemp("dist_eval_frozen_set")
+    cfg = BuildConfig(
+        n_datasets=2,
+        n_max=16,
+        n_q=4,
+        mc_cate=4,
+        seed=20260805,
+        prior_mc_mem_budget=2_000_000_000,
+    )
+    build(cfg, out, datasets_per_file=2, progress=False)
+    return out
 
 
 def _parse_args(tmp_path, extra):
@@ -460,15 +483,17 @@ def test_non_prior_dist_best_metric_without_dist_eval_dir_does_not_warn(
 
 @patch("wandb.init")
 def test_prior_best_metric_with_dist_eval_dir_set_does_not_warn(
-    mock_wandb_init, tmp_path, capsys
+    mock_wandb_init, tmp_path, capsys, tiny_frozen_set
 ):
     args = _parse_args(
         tmp_path,
         [
             "--best_metric",
             "prior/dist/crps",
+            "--loss_type",
+            "cate_single",
             "--dist_eval_dir",
-            str(tmp_path),
+            str(tiny_frozen_set),
         ],
     )
     Trainer(args)
@@ -476,3 +501,170 @@ def test_prior_best_metric_with_dist_eval_dir_set_does_not_warn(
     assert "dist_eval_dir is None" not in captured.out
     assert "higher-is-better" not in captured.out
     assert "lower-is-better" not in captured.out
+
+
+# --------------------------------------------------------------------------
+# Step 6c: dist_validate(), single process
+# --------------------------------------------------------------------------
+
+
+@patch("wandb.init")
+def test_bins_po_with_dist_eval_dir_raises_at_construction(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    """The step-5 reason (two marginals don't identify a posterior of their
+    difference) must be fatal at construction, not discovered at the first
+    dist_validate() pass hundreds of steps into training."""
+    args = _parse_args(tmp_path, ["--dist_eval_dir", str(tiny_frozen_set)])
+    assert args.loss_type == "bins_po"
+    with pytest.raises(UnsupportedLossTypeError):
+        Trainer(args)
+
+
+@patch("wandb.init")
+def test_dist_validate_is_a_noop_when_dir_unset(mock_wandb_init, dummy_args):
+    trainer = Trainer(dummy_args)
+    assert trainer.dist_validate() == {}
+
+
+@patch("wandb.init")
+def test_post_step_unchanged_when_dist_eval_dir_unset(mock_wandb_init, dummy_args):
+    """The clean no-op: with --dist_eval_dir unset, _post_step never produces
+    a prior/* key, exactly as before this feature existed."""
+    trainer = Trainer(dummy_args)
+    results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+    assert not any(k.startswith("prior/") for k in results)
+
+
+@patch("wandb.init")
+def test_dist_eval_lands_exactly_on_the_gated_steps(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "2",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    fired = {}
+    for _ in range(5):
+        results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+        fired[trainer.curr_step] = "prior/dist/crps" in results
+
+    # curr_step == 1 always fires (mirrors validate()'s early sanity check),
+    # then every multiple of --dist_eval_interval.
+    assert fired == {1: True, 2: True, 3: False, 4: True, 5: False}
+
+
+@patch("wandb.init")
+def test_dist_eval_pass_emits_both_prior_surfaces(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "1",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+
+    assert "prior/point/cate/npehe" in results
+    assert "prior/dist/crps" in results
+    assert "prior/time" in results
+
+
+@patch("wandb.init")
+def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    """dist_eval_interval coarser than point_val_interval: a prior/* best
+    metric must not warn (or attempt a comparison) on the steps where only
+    point validation ran."""
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--best_metric",
+            "prior/dist/crps",
+            "--best_metric_mode",
+            "min",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "3",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    trainer._post_step({}, prior_time=0.0, train_time=0.0)  # step 1: dist fires
+    assert trainer.best_metric_value is not None
+    first_best = trainer.best_metric_value
+
+    trainer._post_step({}, prior_time=0.0, train_time=0.0)  # step 2: dist idle
+    assert trainer.best_metric_value == first_best
+
+
+@patch("wandb.init")
+def test_val_point_best_metric_only_saves_best_on_steps_the_point_surface_ran(
+    mock_wandb_init, tmp_path, capsys, tiny_frozen_set
+):
+    """The symmetric case of the test above: a val/point/* best_metric (the
+    default) must not be gated by dist_eval_interval. dist_eval_interval is
+    made *finer* than point_val_interval here specifically so that some steps
+    run dist only -- the case where surface_ran must collapse to
+    ran_point_val rather than ran_dist_val."""
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--best_metric",
+            "val/point/cate/npehe",
+            "--best_metric_mode",
+            "min",
+            "--val_dir",
+            str(tiny_frozen_set / "val"),
+            "--point_val_interval",
+            "3",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "1",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    trainer._post_step({}, prior_time=0.0, train_time=0.0)  # step 1: both fire
+    assert trainer.best_metric_value is not None
+    first_best = trainer.best_metric_value
+
+    trainer._post_step(
+        {}, prior_time=0.0, train_time=0.0
+    )  # step 2: point idle, dist fires
+    assert trainer.best_metric_value == first_best
+    captured = capsys.readouterr()
+    assert "not found in validation results" not in captured.out
+
+    # step 3: point fires again (3 % point_val_interval == 0); must not error
+    # and must still be comparing the same val/point/* key.
+    trainer._post_step({}, prior_time=0.0, train_time=0.0)
+    assert trainer.best_metric_value is not None
