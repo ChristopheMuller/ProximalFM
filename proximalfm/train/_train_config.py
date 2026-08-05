@@ -548,7 +548,7 @@ def build_parser():
         help="Directory for validation data.",
     )
     parser.add_argument(
-        "--val_interval",
+        "--point_val_interval",
         default=50,
         type=int,
         help="Steps between validation checks",

@@ -712,7 +712,7 @@ class Trainer:
 
         Advances ``curr_step`` by exactly one and preserves the per-step cadence
         of checkpointing (``save_temp_every`` / ``save_perm_every``) and
-        validation (``val_interval``). Returns the (possibly augmented) results.
+        validation (``point_val_interval``). Returns the (possibly augmented) results.
         """
         self.curr_step += 1
 
@@ -738,7 +738,7 @@ class Trainer:
 
         # Must run on ALL processes to prevent DDP hangs during all_reduce
         if self.val_dataloader is not None and (
-            self.curr_step % self.config.val_interval == 0 or self.curr_step == 1
+            self.curr_step % self.config.point_val_interval == 0 or self.curr_step == 1
         ):
             val_results = self.validate()
             results.update(val_results)
