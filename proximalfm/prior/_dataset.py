@@ -552,13 +552,13 @@ class SCMPrior(Prior):
         (MU0/MU1) per row. Higher values reduce the noise of the estimate at
         the cost of more memory/compute.
 
-    mc_targets_on_context : bool, default=True
-        If True (the default), every row gets ``mc_cate`` replicates and
-        MU0/MU1 are estimated for the whole sequence. If False, only the query
-        rows ``[train_size:]`` are replicated and MU0/MU1 are ``NaN`` on the
-        context prefix. Training reads MU only on the query slice, so False is
-        the cheaper equivalent there; see :meth:`generate_dataset` for the
-        implications.
+    mc_targets_on_context : bool, default=False
+        If True, every row gets ``mc_cate`` replicates and MU0/MU1 are
+        estimated for the whole sequence. If False (the default), only the
+        query rows ``[train_size:]`` are replicated and MU0/MU1 are ``NaN`` on
+        the context prefix. Training reads MU only on the query slice, so
+        False is the cheaper equivalent there; see :meth:`generate_dataset`
+        for the implications.
 
     fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters.
@@ -598,7 +598,7 @@ class SCMPrior(Prior):
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mc_cate: int = 200,
-        mc_targets_on_context: bool = True,
+        mc_targets_on_context: bool = False,
         fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,
@@ -834,7 +834,7 @@ class SCMPrior(Prior):
         # must not see the CEPOs of its own context. Context rows therefore run
         # a single replicate, and the mechanisms process
         # ``N = T_ctx + T_q * K`` rows instead of ``T * K``.
-        if params.get("mc_targets_on_context", True):
+        if params.get("mc_targets_on_context", False):
             T_ctx = 0
         else:
             # train_size is only metadata elsewhere, so it is not guaranteed to
@@ -1760,12 +1760,13 @@ class PriorDataset(IterableDataset):
         Number of Monte Carlo samples used to estimate the CATE targets
         (MU0/MU1) per row.
 
-    mc_targets_on_context : bool, default=True
-        If False, replicate only the query rows ``[train_size:]`` and leave
-        MU0/MU1 as ``NaN`` on the context prefix. Roughly halves generation
-        cost at the default ``train_size ~ U(0.1, 0.9) * seq_len``. Training
-        never reads context MU; analysis/visualisation code does, so the
-        default keeps the full-sequence behaviour.
+    mc_targets_on_context : bool, default=False
+        If False (the default), replicate only the query rows
+        ``[train_size:]`` and leave MU0/MU1 as ``NaN`` on the context prefix.
+        Roughly halves generation cost at the default
+        ``train_size ~ U(0.1, 0.9) * seq_len``. Training never reads context
+        MU; set True for analysis/visualisation code that needs full-sequence
+        MU0/MU1.
 
     scm_fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters for the SCM.
@@ -1805,7 +1806,7 @@ class PriorDataset(IterableDataset):
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mc_cate: int = 200,
-        mc_targets_on_context: bool = True,
+        mc_targets_on_context: bool = False,
         scm_fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         scm_sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
         n_jobs: int = -1,

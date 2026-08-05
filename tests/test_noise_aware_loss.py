@@ -11,7 +11,7 @@ import math
 import pytest
 import torch
 
-from proximalfm.train._run import (
+from proximalfm.train._losses import (
     compute_cate_distribution_loss,
     compute_cate_noise_aware_nll,
     gaussian_bin_mass,

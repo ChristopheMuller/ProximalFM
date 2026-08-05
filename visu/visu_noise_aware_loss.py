@@ -2,8 +2,8 @@
 """Interactive visualization of the ``cate_single_noise_aware`` loss.
 
 Drives the *actual* training-code functions (``gaussian_bin_mass``,
-``compute_cate_noise_aware_nll``, ``compute_cate_distribution_loss`` and
-``Trainer.get_hl_sigma``, all imported straight from
+``compute_cate_noise_aware_nll``, ``compute_cate_distribution_loss`` from
+:mod:`proximalfm.train._losses`, and ``Trainer.get_hl_sigma`` from
 :mod:`proximalfm.train._run`) with sliders, so nothing here can silently
 drift from what training does. See the docstrings of those functions (and
 ``cate_single_noise_aware`` in ``proximalfm/train/_run.py``) for the math.
@@ -42,8 +42,8 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 
-from proximalfm.train._run import (
-    Trainer,
+from proximalfm.train._run import Trainer
+from proximalfm.train._losses import (
     gaussian_bin_mass,
     compute_cate_noise_aware_nll,
     compute_cate_distribution_loss,

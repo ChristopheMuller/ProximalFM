@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import os
-import random
-import timeit
 import warnings
-import functools
 from contextlib import nullcontext
-from typing import Union
 
 import math
 import numpy as np
@@ -18,11 +14,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.multiprocessing import set_start_method
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group, destroy_process_group
+from torch.distributed import init_process_group
 
 from tqdm import tqdm
-import datetime
-import wandb
 import yaml
 
 from proximalfm._model.proximalfm import ProximalFM
@@ -32,6 +26,23 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._eval import CausalEvaluator
+from proximalfm.train._logger import ExperimentLogger
+from proximalfm.train._losses import (
+    compute_cate_distribution_loss,
+    compute_cate_noise_aware_nll,
+    compute_crps_loss,
+    compute_gaussian_nll,
+    compute_hl_gaussian_cross_entropy_loss,
+)
+from proximalfm.train._utils import (
+    Timer,
+    ddp_cleanup,
+    empty_accelerator_cache,
+    get_parameter_state,
+    is_oom_error,
+    load_transfer_rules,
+    seed_dataloader_worker,
+)
 
 
 warnings.filterwarnings(
@@ -39,420 +50,6 @@ warnings.filterwarnings(
     message=".*The PyTorch API of nested tensors is in prototype stage.*",
     category=UserWarning,
 )
-
-
-def seed_dataloader_worker(worker_id: int) -> None:
-    """Seed NumPy (and torch/random) independently in each dataloader worker.
-
-    PyTorch reseeds ``torch`` and ``random`` per worker but NOT NumPy, and the SCM
-    prior draws dimensions / hyperparameters via ``np.random`` in many places. Left
-    unseeded, workers can produce correlated (partially duplicated) datasets. Derive
-    every generator's seed from ``torch.initial_seed()``, which PyTorch already makes
-    unique per (DDP rank, worker), so this stays reproducible and decorrelated.
-    """
-    worker_seed = torch.initial_seed() % (2**31 - 1)
-    np.random.seed(worker_seed)
-    random.seed(worker_seed)
-
-
-def is_oom_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` is an out-of-memory error from any accelerator.
-
-    Covers CUDA (``torch.cuda.OutOfMemoryError``, a ``RuntimeError`` subclass) as
-    well as MPS / generic backends, which surface OOM as a plain ``RuntimeError``
-    whose message mentions running out of memory. Note that *asynchronous* MPS
-    command-buffer failures (kIOGPUCommandBufferCallbackErrorOutOfMemory) may not
-    be raised at the originating op and can leave the context unusable; those are
-    not reliably recoverable even when caught here.
-    """
-    if isinstance(exc, torch.cuda.OutOfMemoryError):
-        return True
-    if isinstance(exc, RuntimeError):
-        msg = str(exc).lower()
-        return (
-            "out of memory" in msg
-            or "insufficient memory" in msg
-            or "mps backend out of memory" in msg
-        )
-    return False
-
-
-def empty_accelerator_cache(device: str) -> None:
-    """Free cached allocator memory on the active accelerator (CUDA or MPS)."""
-    device = str(device)
-    if "cuda" in device:
-        torch.cuda.empty_cache()
-    elif "mps" in device and hasattr(torch, "mps"):
-        torch.mps.empty_cache()
-
-
-def get_parameter_state(param_name: str, rules: dict) -> str:
-    """Finds the longest matching prefix in the rules dict for a given parameter name."""
-    best_match = "default"
-    longest_prefix = 0
-    for prefix, state in rules.items():
-        if prefix == "default":
-            continue
-        if param_name.startswith(prefix) and len(prefix) > longest_prefix:
-            best_match = prefix
-            longest_prefix = len(prefix)
-    return rules.get(best_match, rules.get("default", "scratch"))
-
-
-def load_transfer_rules(path: str) -> dict:
-    """Load the transfer/freeze rules yaml.
-
-    Resolved relative to the CWD first, then to the repository root, so that a run
-    launched from a subdirectory picks up the same file rather than silently failing
-    or using a different one.
-    """
-    candidates = [path]
-    if not os.path.isabs(path):
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        candidates.append(os.path.join(repo_root, path))
-
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            with open(candidate, "r") as f:
-                rules_config = yaml.safe_load(f) or {}
-            return rules_config.get("transfer_rules", {})
-
-    raise FileNotFoundError(
-        f"Transfer rules file not found: tried {', '.join(candidates)}"
-    )
-
-
-def compute_crps_loss(
-    logits: torch.Tensor, y_target: torch.Tensor, bin_edges: torch.Tensor
-) -> torch.Tensor:
-    """Ranked Probability Score (discrete CRPS).
-
-    Hyperparameter-free, and unlike cross-entropy it respects the distance
-    between bins. Computed as the MSE between the predicted CDF and the ideal
-    step-function CDF of the target.
-    """
-    pred_cdf = torch.cumsum(F.softmax(logits, dim=-1), dim=-1)
-    # bin_edges[1:] are the upper edges: the step CDF is 1 from the bin
-    # containing the target onwards.
-    target_cdf = (bin_edges[1:].view(1, 1, -1) >= y_target.unsqueeze(-1)).float()
-
-    return torch.mean((pred_cdf - target_cdf) ** 2, dim=-1).mean()
-
-
-def gaussian_bin_mass(
-    bin_edges: torch.Tensor,
-    center: torch.Tensor,
-    sigma: Union[float, torch.Tensor],
-) -> torch.Tensor:
-    """Mass that ``N(center, sigma^2)`` puts in each histogram bin.
-
-    Returns an *unnormalized* ``(..., nbins)`` tensor: it sums to one only when
-    ``[bin_edges[0], bin_edges[-1]]`` covers the Gaussian. Callers decide what to
-    do with the missing tail -- ``compute_hl_gaussian_cross_entropy_loss``
-    renormalizes over the available support, ``compute_cate_noise_aware_nll``
-    does not (see its docstring).
-
-    The mass is *integrated* over each bin rather than sampling the density at
-    the bin centre. That matters whenever ``sigma`` drops below one bin width,
-    where a sampled kernel collapses toward a point mass and any correction
-    built on it silently vanishes.
-
-    Parameters
-    ----------
-    bin_edges : Tensor
-        Shape ``(nbins + 1,)``, ascending.
-
-    center : Tensor
-        Shape ``(...)``. The Gaussian mean, on the same scale as ``bin_edges``.
-
-    sigma : float or Tensor
-        Standard deviation. A tensor must broadcast against ``center``, which is
-        what lets a *per-row* noise scale be used; the scalar case covers the
-        fixed schedule.
-
-    Returns
-    -------
-    Tensor
-        Shape ``center.shape + (nbins,)``, non-negative.
-    """
-    center_fp32 = center.float()
-    bin_edges_fp32 = bin_edges.to(device=center.device, dtype=torch.float32)
-
-    # Broadcast edges against center: center (...) -> (..., 1), edges (nbins,).
-    edge_shape = (1,) * center_fp32.ndim + (-1,)
-    lower_edges = bin_edges_fp32[:-1].view(edge_shape)
-    upper_edges = bin_edges_fp32[1:].view(edge_shape)
-
-    mu = center_fp32.unsqueeze(-1)
-
-    if isinstance(sigma, torch.Tensor):
-        if (sigma <= 0).any():
-            raise ValueError("sigma must be positive everywhere")
-        scale = sigma.float().unsqueeze(-1)
-    else:
-        if sigma <= 0:
-            raise ValueError(f"sigma must be positive, got {sigma}")
-        scale = float(sigma)
-
-    normalizer = math.sqrt(2.0) * scale
-
-    cdf_upper = 0.5 * (1.0 + torch.erf((upper_edges - mu) / normalizer))
-    cdf_lower = 0.5 * (1.0 + torch.erf((lower_edges - mu) / normalizer))
-
-    return (cdf_upper - cdf_lower).clamp_min(0.0)
-
-
-def compute_hl_gaussian_cross_entropy_loss(
-    logits: torch.Tensor,
-    y_target: torch.Tensor,
-    bin_edges: torch.Tensor,
-    sigma: float,
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    """
-    Histogram Loss with Gaussian soft targets.
-
-    For each scalar target y_i, constructs a discrete target distribution p_i
-    by integrating N(y_i, sigma^2) over the histogram bins, then computes
-
-        HL = - sum_l p_l log q_l
-
-    where q_l = softmax(logits)_l.
-
-    Args:
-        logits:
-            Tensor of shape (..., nbins).
-        y_target:
-            Tensor of shape (...).
-        bin_edges:
-            Tensor of shape (nbins + 1,).
-        sigma:
-            Standard deviation of the Gaussian target on the standardized target scale.
-        eps:
-            Numerical stability constant.
-
-    Returns:
-        Scalar tensor.
-    """
-    if y_target.shape != logits.shape[:-1]:
-        raise ValueError(
-            f"y_target shape {y_target.shape} must match logits shape "
-            f"{logits.shape[:-1]} except for the last dimension."
-        )
-
-    # Compute target probabilities in fp32 for numerical stability,
-    # especially under AMP.
-    logits_fp32 = logits.float()
-
-    p = gaussian_bin_mass(bin_edges, y_target, sigma)
-
-    # Truncated-and-renormalized Gaussian over the available bin support.
-    p = p / (p.sum(dim=-1, keepdim=True) + eps)
-
-    log_probs = F.log_softmax(logits_fp32, dim=-1)
-
-    loss = -torch.sum(p * log_probs, dim=-1)
-
-    return loss.mean()
-
-
-def compute_cate_distribution_loss(
-    logits: torch.Tensor,
-    cate_target: torch.Tensor,
-    bin_edges: torch.Tensor,
-    sigma: float,
-) -> torch.Tensor:
-    """Distributional term for the single-histogram CATE head ("cate_single").
-
-    Kept as the noise-*unaware* baseline. See
-    :func:`compute_cate_noise_aware_nll` for the version that accounts for the
-    Monte Carlo error in the target.
-    """
-    return compute_hl_gaussian_cross_entropy_loss(
-        logits, cate_target, bin_edges, sigma=sigma
-    )
-
-
-def compute_cate_noise_aware_nll(
-    logits: torch.Tensor,
-    cate_target: torch.Tensor,
-    bin_edges: torch.Tensor,
-    target_var: torch.Tensor,
-    sigma: float,
-) -> torch.Tensor:
-    """Noise-aware NLL for the CATE head: ``-log[(P * N(0, s^2 + sigma^2))(t)]``.
-
-    The supervised target ``t = MU1 - MU0`` is a Monte Carlo mean over ``K``
-    replicates, so ``t = tau* + e`` with ``e ~ N(0, s^2)`` and ``s^2`` the
-    per-row ``target_var``. Fitting a histogram directly to ``t`` therefore
-    converges to ``posterior(tau) * N(0, s^2)`` -- over-dispersed by
-    construction. Convolving the *prediction* with the noise kernel before
-    evaluating the likelihood moves the minimizer back onto ``posterior(tau)``.
-
-    Treating ``P`` as the histogram density (``p_i / w`` on bin ``i``),
-
-        (P * N)(t) = sum_i p_i * [Phi((t - e_i)/s) - Phi((t - e_{i+1})/s)] / w
-
-    which is a normalized density in ``t`` over the whole real line, so **no
-    edge/leakage policy is required here** -- unlike a convolution that
-    re-projects ``P`` back onto the same bin grid, which does push mass past the
-    grid ends and needs an explicit clamp. An evaluator sharing
-    :func:`gaussian_bin_mass` must not carry this assumption across.
-
-    ``sigma`` is *not* set to ``s``. Doing so would smooth the target by the very
-    noise being removed and double the over-dispersion. It stays what it always
-    was -- a smoothing regularizer and a hard floor on the learnable width,
-    annealed toward one bin width -- and enters as ``s^2 + sigma^2`` inside a
-    single kernel. This also gives the degenerate path for free: where ``s^2`` is
-    zero or NaN (context rows, ``K = 1``, data predating target-noise tracking)
-    the kernel width falls back to ``sigma`` and the loss reduces to the plain
-    smoothed NLL. Nothing propagates NaN.
-
-    Parameters
-    ----------
-    logits : Tensor
-        Shape ``(..., nbins)``, unnormalized log-weights over ``bin_edges``.
-
-    cate_target : Tensor
-        Shape ``(...)``. The observed noisy target, on the head's grid scale.
-
-    bin_edges : Tensor
-        Shape ``(nbins + 1,)``, uniform.
-
-    target_var : Tensor
-        Shape broadcastable to ``cate_target``. Per-row ``s^2`` **in the head's
-        units**, i.e. already divided by the squared context scale used to
-        standardize the target.
-
-    sigma : float
-        Smoothing scale from the training schedule.
-
-    Returns
-    -------
-    Tensor
-        Scalar mean NLL.
-    """
-    if cate_target.shape != logits.shape[:-1]:
-        raise ValueError(
-            f"cate_target shape {cate_target.shape} must match logits shape "
-            f"{logits.shape[:-1]} except for the last dimension."
-        )
-    if sigma <= 0:
-        raise ValueError(f"sigma must be positive, got {sigma}")
-
-    s2 = torch.nan_to_num(target_var.float(), nan=0.0, posinf=0.0).clamp_min(0.0)
-    s2 = s2.expand_as(cate_target)
-    kernel_sd = torch.sqrt(s2 + float(sigma) ** 2)
-
-    mass = gaussian_bin_mass(bin_edges, cate_target, kernel_sd)
-
-    # Density, not mass: divide by the bin width so the result integrates to one
-    # in t. The grid is uniform, so this is a single scalar.
-    bin_width = (bin_edges[1] - bin_edges[0]).to(mass.device, torch.float32)
-
-    # clamp_min before log: bins many sigmas from the target underflow to exactly
-    # zero, and -inf there would poison the logsumexp even though those bins
-    # contribute nothing.
-    log_kernel = torch.log(mass.clamp_min(1e-38)) - torch.log(bin_width)
-    log_probs = F.log_softmax(logits.float(), dim=-1)
-
-    nll = -torch.logsumexp(log_probs + log_kernel, dim=-1)
-
-    return nll.mean()
-
-
-def compute_gaussian_nll(
-    mean: torch.Tensor, log_var: torch.Tensor, target: torch.Tensor
-) -> torch.Tensor:
-    """
-    Computes the Negative Log-Likelihood for a Gaussian distribution.
-    Assumes isotropic gaussian (used here for ATE modeling).
-    """
-    nll = 0.5 * torch.exp(-log_var) * (target - mean) ** 2 + 0.5 * log_var
-    return nll.mean()
-
-
-class Timer:
-    """Context manager for timing code execution."""
-
-    def __enter__(self):
-        self.start_time = timeit.default_timer()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.elapsed = timeit.default_timer() - self.start_time
-        return False  # Don't suppress exceptions
-
-
-def ddp_cleanup(func):
-    """Decorator to clean up DDP process group after method execution.
-
-    Ensures that destroy_process_group() is called if DDP is enabled,
-    even if an exception occurs during method execution.
-    """
-
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-        try:
-            return func(self, *args, **kwargs)
-        finally:
-            if self.ddp:
-                destroy_process_group()
-
-    return wrapper
-
-
-class ExperimentLogger:
-    """Handles communication with wandb to abstract tracking away from the main loop."""
-
-    def __init__(self, config, is_master=True):
-        self.config = config
-        self.is_master = is_master
-        self.use_wandb = config.wandb_log and self.is_master
-        self.run = None
-        self.last_logged_step = -1
-
-        if self.use_wandb:
-            self._init_wandb()
-
-    def _init_wandb(self):
-        if hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
-            os.makedirs(self.config.checkpoint_dir, exist_ok=True)
-
-        id_path = os.path.join(self.config.checkpoint_dir, "wand_id.txt")
-        if self.config.wandb_id is None:
-            if os.path.exists(id_path):
-                with open(id_path, "r") as f:
-                    self.config.wandb_id = f.read().strip()
-
-        current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        name_with_time = f"{self.config.wandb_name}_{current_time}"
-
-        self.run = wandb.init(
-            dir=self.config.wandb_dir,
-            project=self.config.wandb_project,
-            name=name_with_time,
-            id=self.config.wandb_id,
-            config=self.config,
-            resume="allow",
-            mode=self.config.wandb_mode,
-        )
-
-        with open(id_path, "w") as f:
-            f.write(self.run.id)
-
-    def log(self, metrics_dict: dict, step: int):
-        """Logs metrics to wandb if initialized."""
-        if self.use_wandb and self.run is not None:
-            if step > self.last_logged_step:
-                wandb.log(metrics_dict, step=step)
-                self.last_logged_step = step
-
-    def log_summary(self, summary_dict: dict):
-        """Logs static summary metrics (e.g., parameter counts)."""
-        if self.use_wandb and self.run is not None:
-            for k, v in summary_dict.items():
-                self.run.summary[k] = v
 
 
 class Trainer:
@@ -603,13 +200,11 @@ class Trainer:
             clean_old_state_dict = {}
             for k, v in old_state_dict.items():
                 clean_key = k
-                # Remove DDP wrapper prefix if present
+                # Strip DDP's "module." prefix, then torch.compile's
+                # "_orig_mod." prefix -- in that order, since a DDP-wrapped
+                # compiled model nests them as "module._orig_mod.".
                 if clean_key.startswith("module."):
                     clean_key = clean_key[7:]
-                # Remove torch.compile wrapper prefix if present
-                if clean_key.startswith("_orig_mod."):
-                    clean_key = clean_key[10:]
-                # Catch edge cases where DDP wraps a compiled model (module._orig_mod.)
                 if clean_key.startswith("_orig_mod."):
                     clean_key = clean_key[10:]
 
@@ -714,7 +309,7 @@ class Trainer:
                 replay_small=c.replay_small,
                 prior_type=c.prior_type,
                 mc_cate=getattr(c, "mc_cate", 200),
-                mc_targets_on_context=getattr(c, "mc_targets_on_context", True),
+                mc_targets_on_context=getattr(c, "mc_targets_on_context", False),
                 scm_fixed_hp={
                     **DEFAULT_FIXED_HP,
                     "prior_mc_mem_budget": getattr(
@@ -766,7 +361,6 @@ class Trainer:
             self.val_dataloader = None
             return
 
-        # 1. Count exactly how many batch files exist in the folder
         all_val_files = [
             f
             for f in os.listdir(self.config.val_dir)
@@ -776,14 +370,6 @@ class Trainer:
 
         if total_val_files == 0:
             raise ValueError(f"No validation files found in {self.config.val_dir}")
-
-        self.val_batches_per_rank = len(
-            [
-                i
-                for i in range(total_val_files)
-                if i % self.ddp_world_size == self.ddp_rank
-            ]
-        )
 
         val_dataset = LoadPriorDataset(
             data_dir=self.config.val_dir,
@@ -866,6 +452,20 @@ class Trainer:
         else:
             self.amp_ctx = nullcontext()
 
+    @staticmethod
+    def _list_step_checkpoints(ckpt_dir: str) -> list[str]:
+        """Filenames in ``ckpt_dir`` matching the ``step-<N>.ckpt`` pattern."""
+        return [
+            f
+            for f in os.listdir(ckpt_dir)
+            if f.startswith("step-") and f.endswith(".ckpt")
+        ]
+
+    @staticmethod
+    def _checkpoint_step(filename: str) -> int:
+        """Parse ``<N>`` out of a ``step-<N>.ckpt`` filename."""
+        return int(filename.split("-")[1].split(".")[0])
+
     def get_latest_checkpoint(self):
         """Returns the latest checkpoint from `checkpoint_dir`
 
@@ -878,21 +478,14 @@ class Trainer:
 
         os.makedirs(ckpt_dir, exist_ok=True)
 
-        # Filter for files with "ckpt" extension matching the pattern "step-*.ckpt"
-        checkpoints = [
-            f
-            for f in os.listdir(ckpt_dir)
-            if f.startswith("step-") and f.endswith(".ckpt")
-        ]
+        checkpoints = self._list_step_checkpoints(ckpt_dir)
 
         if not checkpoints:
             return None
 
         # Sort the checkpoint files by step number and get the latest
         try:
-            latest_checkpoint = sorted(
-                checkpoints, key=lambda x: int(x.split("-")[1].split(".")[0])
-            )[-1]
+            latest_checkpoint = sorted(checkpoints, key=self._checkpoint_step)[-1]
             checkpoint_path = os.path.join(ckpt_dir, latest_checkpoint)
             return checkpoint_path
         except Exception as e:
@@ -1071,16 +664,11 @@ class Trainer:
 
         limit = self.config.max_checkpoints
 
-        # Filter for files with "ckpt" extension matching the pattern "step-*.ckpt"
-        checkpoints = [
-            f
-            for f in os.listdir(ckpt_dir)
-            if f.startswith("step-") and f.endswith(".ckpt")
-        ]
+        checkpoints = self._list_step_checkpoints(ckpt_dir)
         temp_checkpoints = []
         for ckpt in checkpoints:
             try:
-                step = int(ckpt.split("-")[1].split(".")[0])
+                step = self._checkpoint_step(ckpt)
                 # Consider a checkpoint temporary if its step is not divisible by save_perm_every
                 if step % self.config.save_perm_every != 0:
                     temp_checkpoints.append((step, ckpt))
@@ -1361,31 +949,13 @@ class Trainer:
     ):
         """Truncate micro batch tensors to required dimensions.
 
-        Truncates sequence length and feature dimensions to the validated `seq_len`
-        and the maximum active features (``micro_d.max()``) respectively. This
-        optimizes memory and computation by removing unused tensor elements.
+        Truncates sequence length to the validated ``seq_len`` and each of
+        X/W/Z's feature dimension to its own max active width
+        (``micro_d_X.max()`` etc.), removing padding the micro batch doesn't
+        need. ``micro_A`` and the Y-family tensors share the truncated
+        sequence length but are not feature-truncated.
 
-        Parameters
-        ----------
-        micro_X : Tensor
-            Input features per dataset of shape ``(B, T, H)``.
-
-        micro_y : Tensor
-            Target labels per dataset of shape ``(B, T)``.
-
-        micro_d : Tensor
-            Number of active features per dataset of shape ``(B,)``.
-
-        seq_len : int
-            Validated sequence length for this micro batch.
-
-        Returns
-        -------
-        micro_X : Tensor
-            Truncated features of shape ``(B, seq_len, micro_d.max())``.
-
-        micro_y : Tensor
-            Truncated labels of shape ``(B, seq_len)``.
+        Returns the same ten tensors, in the same order as the input args.
         """
         # Truncate sequence length
         if micro_X.shape[1] > seq_len:
@@ -1425,6 +995,23 @@ class Trainer:
             micro_MU1,
             micro_S2,
         )
+
+    def _ddp_all_valid(self, local_valid: bool) -> bool:
+        """AND ``local_valid`` across all DDP ranks (no-op outside DDP).
+
+        Every rank must skip the same micro batch together, or ranks that
+        disagree on whether a step happened diverge and hang on the next
+        collective (e.g. gradient all-reduce).
+        """
+        if not self.ddp:
+            return local_valid
+        valid_tensor = torch.tensor(
+            [1 if local_valid else 0],
+            device=self.config.device,
+            dtype=torch.int32,
+        )
+        torch.distributed.all_reduce(valid_tensor, op=torch.distributed.ReduceOp.MIN)
+        return bool(valid_tensor.item())
 
     def run_micro_batch(
         self, micro_batch, micro_batch_idx, num_micro_batches, is_train=True
@@ -1555,27 +1142,14 @@ class Trainer:
         n0 = (A_train == 0).sum(dim=1)  # (B,)
         n1 = (A_train == 1).sum(dim=1)  # (B,)
 
-        local_valid = not ((n0 == 0).any() or (n1 == 0).any())
-
-        if self.ddp:
-            valid_tensor = torch.tensor(
-                [1 if local_valid else 0],
-                device=self.config.device,
-                dtype=torch.int32,
-            )
-            torch.distributed.all_reduce(
-                valid_tensor,
-                op=torch.distributed.ReduceOp.MIN,
-            )
-            global_valid = bool(valid_tensor.item())
-        else:
-            global_valid = local_valid
-
-        if not global_valid:
+        # A single-arm context (all-0 or all-1 treatment) makes the CATE
+        # target undefined for this episode; skip it everywhere in the DDP
+        # group rather than only where it happened to occur.
+        if not self._ddp_all_valid(not ((n0 == 0).any() or (n1 == 0).any())):
             return None
 
         with self.amp_ctx:
-            # 3. Model predicts logits of shape (B, test_size, nbins * 2)
+            # Model predicts logits of shape (B, test_size, nbins * 2)
             pred_logits = self.model(
                 micro_X,
                 micro_Z,
@@ -1587,23 +1161,7 @@ class Trainer:
                 micro_d_W,
             )
 
-            local_valid = not pred_logits.isnan().any()
-
-            if self.ddp:
-                valid_tensor = torch.tensor(
-                    [1 if local_valid else 0],
-                    device=self.config.device,
-                    dtype=torch.int32,
-                )
-                torch.distributed.all_reduce(
-                    valid_tensor,
-                    op=torch.distributed.ReduceOp.MIN,
-                )
-                global_valid = bool(valid_tensor.item())
-            else:
-                global_valid = local_valid
-
-            if not global_valid:
+            if not self._ddp_all_valid(not pred_logits.isnan().any()):
                 return None
 
             # Loss configuration routing
@@ -1791,62 +1349,39 @@ class Trainer:
                     true_cate=true_cate_std,
                 )
 
+            # Training metrics are accumulated over num_micro_batches to sum to
+            # one step's worth once every micro batch has been added in; eval
+            # metrics are reported per micro batch as-is (scale=1 is a no-op).
+            scale = num_micro_batches if is_train else 1
+
             # Dictionary structure routes cleanly back to log aggregation
             if loss_type == "bins_po":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/y0": (loss_y0.item() / num_micro_batches)
-                    if is_train
-                    else loss_y0.item(),
-                    "loss/y1": (loss_y1.item() / num_micro_batches)
-                    if is_train
-                    else loss_y1.item(),
-                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
-                    if is_train
-                    else (lambda_cate * loss_cate).item(),
+                    "loss/y0": loss_y0.item() / scale,
+                    "loss/y1": loss_y1.item() / scale,
+                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
                 }
             elif loss_type == "cate_decomposition":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/ate_nll": (
-                        (lambda_ate * loss_ate_nll).item() / num_micro_batches
-                    )
-                    if is_train
-                    else (lambda_ate * loss_ate_nll).item(),
-                    "loss/he_crps": (
-                        (lambda_he * loss_he_crps).item() / num_micro_batches
-                    )
-                    if is_train
-                    else (lambda_he * loss_he_crps).item(),
+                    "loss/ate_nll": (lambda_ate * loss_ate_nll).item() / scale,
+                    "loss/he_crps": (lambda_he * loss_he_crps).item() / scale,
                 }
             elif loss_type == "hl":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/y0_hl": (loss_y0.item() / num_micro_batches)
-                    if is_train
-                    else loss_y0.item(),
-                    "loss/y1_hl": (loss_y1.item() / num_micro_batches)
-                    if is_train
-                    else loss_y1.item(),
-                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
-                    if is_train
-                    else (lambda_cate * loss_cate).item(),
-                    "loss/hl_sigma": (hl_sigma / num_micro_batches)
-                    if is_train
-                    else hl_sigma,
+                    "loss/y0_hl": loss_y0.item() / scale,
+                    "loss/y1_hl": loss_y1.item() / scale,
+                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
+                    "loss/hl_sigma": hl_sigma / scale,
                 }
             elif loss_type in ("cate_single", "cate_single_noise_aware"):
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/cate_dist": (loss_cate_dist.item() / num_micro_batches)
-                    if is_train
-                    else loss_cate_dist.item(),
-                    "loss/cate": ((lambda_cate * loss_cate).item() / num_micro_batches)
-                    if is_train
-                    else (lambda_cate * loss_cate).item(),
-                    "loss/hl_sigma": (hl_sigma / num_micro_batches)
-                    if is_train
-                    else hl_sigma,
+                    "loss/cate_dist": loss_cate_dist.item() / scale,
+                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
+                    "loss/hl_sigma": hl_sigma / scale,
                 }
 
                 if loss_type == "cate_single_noise_aware":
@@ -1857,13 +1392,12 @@ class Trainer:
                             probs_cate,
                             pred_cate_std,
                             micro_K_eff,
-                            scale=num_micro_batches if is_train else 1,
+                            scale=scale,
                         )
                     )
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
-            scale = num_micro_batches if is_train else 1
             micro_results.update(
                 {
                     "target/cate_mean": true_cate_std.mean().item() / scale,

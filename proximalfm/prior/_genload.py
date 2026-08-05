@@ -909,7 +909,7 @@ class SavePriorDataset:
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
             mc_cate=self.args.mc_cate,
-            mc_targets_on_context=getattr(self.args, "mc_targets_on_context", True),
+            mc_targets_on_context=getattr(self.args, "mc_targets_on_context", False),
             scm_fixed_hp=DEFAULT_FIXED_HP,
             scm_sampled_hp=DEFAULT_SAMPLED_HP,
             n_jobs=self.args.n_jobs,
@@ -940,7 +940,7 @@ class SavePriorDataset:
             "max_train_size": self.args.max_train_size,
             "replay_small": self.args.replay_small,
             "mc_cate": self.args.mc_cate,
-            "mc_targets_on_context": getattr(self.args, "mc_targets_on_context", True),
+            "mc_targets_on_context": getattr(self.args, "mc_targets_on_context", False),
         }
         with open(self.save_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
@@ -1207,11 +1207,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--mc_targets_on_context",
         type=str2bool,
-        default=True,
-        help="If False, only the query rows [train_size:] are Monte-Carlo "
-        "replicated and MU0/MU1 are NaN on the context prefix. Roughly halves "
-        "generation cost. Safe for training data (the trainer reads MU only on "
-        "the query slice); keep True for data feeding analysis_prior/ or visu/.",
+        default=False,
+        help="If False (the default), only the query rows [train_size:] are "
+        "Monte-Carlo replicated and MU0/MU1 are NaN on the context prefix. "
+        "Roughly halves generation cost. Safe for training data (the trainer "
+        "reads MU only on the query slice); set True for data feeding "
+        "analysis_prior/ or visu/.",
     )
     parser.add_argument(
         "--n_jobs", type=int, default=-1, help="Number of jobs for parallel processing"
