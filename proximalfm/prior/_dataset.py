@@ -121,6 +121,30 @@ def _scalar_params(params: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _mc_mean_var(replicates: Tensor, K: int) -> Tensor:
+    """Sampling variance of the Monte Carlo mean, per row.
+
+    ``replicates`` is ``(rows, K)`` holding the per-replicate CATE draws
+    ``y1_mc - y0_mc``; the supervised target is their mean over ``K``, so its
+    sampling variance is ``Var_k(.) / K`` (unbiased, ``K - 1`` dof).
+
+    Note this is the *paired* variance of the difference, not
+    ``[Var(y1_mc) + Var(y0_mc)] / K``. Both arms come out of a single ``f_y``
+    forward pass over the same replicate rows (shared ``U_mc`` and ``alphas``),
+    so they are strongly positively correlated and summing their variances
+    would materially over-state the target noise.
+
+    ``K < 2`` admits no variance estimate; returns zeros rather than NaN so
+    consumers can tell "no replicates" apart from the NaN used to mark context
+    rows that were never Monte Carlo replicated at all.
+    """
+    if K < 2:
+        return torch.zeros(
+            replicates.shape[0], device=replicates.device, dtype=replicates.dtype
+        )
+    return replicates.var(dim=1, unbiased=True) / K
+
+
 class Prior:
     """Abstract base class for dataset prior generators (Proximal Causal Learning).
 
@@ -772,14 +796,18 @@ class SCMPrior(Prior):
 
         Returns
         -------
-        X : Tensor
-            Features tensor of shape ``(seq_len, max_features)``.
+        tuple
+            ``(U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1, d_U, d_X, d_W,
+            d_Z, S2, K_eff, diagnostics)`` for a single dataset, all tensors
+            un-batched. Row-shaped entries are ``(seq_len,)`` or
+            ``(seq_len, max_dim_*)``; ``d_*`` and ``K_eff`` are 0-d ``long``.
 
-        y : Tensor
-            Labels tensor of shape ``(seq_len,)``.
-
-        d : Tensor
-            Number of active features after filtering (scalar Tensor).
+            ``S2`` is the per-row sampling variance of the CATE target
+            ``MU1 - MU0`` (see :func:`_mc_mean_var`), NaN on the context prefix
+            wherever ``MU0``/``MU1`` are. ``K_eff`` is the realised replicate
+            count after :meth:`_cap_mc_samples`, which may be below the
+            requested ``mcmc_cate``. ``diagnostics`` is ``None`` unless the
+            ``collect_mechanism_diagnostics`` fixed HP is set.
         """
 
         if params["prior_type"] == "mlp_scm":
@@ -1107,11 +1135,18 @@ class SCMPrior(Prior):
                 1 - gamma_hetero
             ) * alphas * (y1_raw - ate_raw)
 
+            # Per-replicate CATE draws. The supervised target MU1 - MU0 is their
+            # mean, so S2 = Var_k(.) / K is the variance of the noise that target
+            # carries around the true CEPO contrast -- what the noise-aware loss
+            # deconvolves. See :func:`_mc_mean_var` for why this is paired.
+            cate_mc = y1_mc - y0_mc
+
             # The query block is contiguous by construction, so ``view`` (which
             # would raise on a non-contiguous layout) doubles as an assertion.
             if T_ctx == 0:
                 MU0 = y0_mc.view(T, K).mean(dim=1)
                 MU1 = y1_mc.view(T, K).mean(dim=1)
+                S2 = _mc_mean_var(cate_mc.view(T, K), K)
             else:
                 # Context rows have no K-average to report. NaN rather than the
                 # single realised draw: any consumer that reads MU outside
@@ -1123,6 +1158,7 @@ class SCMPrior(Prior):
                 )
                 MU0 = torch.cat([nan_pad, y0_mc[T_ctx:].view(T_q, K).mean(dim=1)])
                 MU1 = torch.cat([nan_pad, y1_mc[T_ctx:].view(T_q, K).mean(dim=1)])
+                S2 = torch.cat([nan_pad, _mc_mean_var(cate_mc[T_ctx:].view(T_q, K), K)])
 
             U = U_mc[obs_idx]
             W = W_mc[obs_idx]
@@ -1142,7 +1178,7 @@ class SCMPrior(Prior):
                 z_profile = observed_block_profile(Z, z_meta)
 
             # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
-            U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1 = (
+            U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, S2 = (
                 U.unsqueeze(0),
                 X.unsqueeze(0),
                 W.unsqueeze(0),
@@ -1154,6 +1190,7 @@ class SCMPrior(Prior):
                 y1.unsqueeze(0),
                 MU0.unsqueeze(0),
                 MU1.unsqueeze(0),
+                S2.unsqueeze(0),
             )
             d_U = torch.tensor([params["dim_U"]], device=self.device, dtype=torch.long)
             d_X = torch.tensor([params["dim_X"]], device=self.device, dtype=torch.long)
@@ -1226,7 +1263,7 @@ class SCMPrior(Prior):
                                 "Y": mechanism_diagnostics(f_y, input_y, widths_Y),
                             },
                         }
-                U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, d_U, d_X, d_W, d_Z = (
+                U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, S2, d_U, d_X, d_W, d_Z = (
                     U.squeeze(0),
                     X.squeeze(0),
                     W.squeeze(0),
@@ -1238,11 +1275,18 @@ class SCMPrior(Prior):
                     y1.squeeze(0),
                     MU0.squeeze(0),
                     MU1.squeeze(0),
+                    S2.squeeze(0),
                     d_U.squeeze(0),
                     d_X.squeeze(0),
                     d_W.squeeze(0),
                     d_Z.squeeze(0),
                 )
+                # The *realised* K, i.e. after ``_cap_mc_samples``. The nominal
+                # ``mcmc_cate`` is not a substitute: prior_mc_mem_budget caps it
+                # per dataset behind a once-per-process warning, so this is the
+                # only place downstream code can see how many replicates the
+                # targets were actually averaged over.
+                K_eff = torch.tensor(K, device=self.device, dtype=torch.long)
                 return (
                     U,
                     X,
@@ -1259,6 +1303,8 @@ class SCMPrior(Prior):
                     d_X,
                     d_W,
                     d_Z,
+                    S2,
+                    K_eff,
                     diagnostics,
                 )
 
@@ -1527,6 +1573,8 @@ class SCMPrior(Prior):
             d_X_list,
             d_W_list,
             d_Z_list,
+            S2_list,
+            K_eff_list,
             diagnostics_list,
         ) = zip(*results)
 
@@ -1556,6 +1604,7 @@ class SCMPrior(Prior):
             MU1 = nested_tensor(
                 [t.to(self.device) for t in MU1_list], device=self.device
             )
+            S2 = nested_tensor([t.to(self.device) for t in S2_list], device=self.device)
         else:
             U = torch.stack(U_list).to(self.device)
             X = torch.stack(X_list).to(self.device)
@@ -1568,12 +1617,14 @@ class SCMPrior(Prior):
             Y1 = torch.stack(Y1_list).to(self.device)
             MU0 = torch.stack(MU0_list).to(self.device)
             MU1 = torch.stack(MU1_list).to(self.device)
+            S2 = torch.stack(S2_list).to(self.device)
 
         # Metadata
         d_U = torch.stack(d_U_list).to(self.device)
         d_X = torch.stack(d_X_list).to(self.device)
         d_W = torch.stack(d_W_list).to(self.device)
         d_Z = torch.stack(d_Z_list).to(self.device)
+        K_eff = torch.stack(K_eff_list).to(self.device)
 
         seq_lens = torch.tensor(
             [params["seq_len"] for params in param_list],
@@ -1604,6 +1655,8 @@ class SCMPrior(Prior):
             d_Z,
             seq_lens,
             train_sizes,
+            S2,
+            K_eff,
         )
 
     def get_prior(self) -> str:
@@ -1833,29 +1886,19 @@ class PriorDataset(IterableDataset):
 
         Returns
         -------
-        X : Tensor or NestedTensor
-            1. For SCM-based priors:
-             - If seq_len_per_gp=False, shape is ``(batch_size, seq_len, max_features)``.
-             - If seq_len_per_gp=True, returns a NestedTensor.
+        tuple
+            The 19-tuple ``(U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1,
+            d_U, d_X, d_W, d_Z, seq_lens, train_sizes, S2, K_eff)``.
 
-            2. For DummyPrior, random Gaussian values of
-            ``(batch_size, seq_len, max_features)``.
+            Row-shaped entries are ``(batch_size, seq_len)`` or
+            ``(batch_size, seq_len, max_dim_*)``, or a NestedTensor when
+            ``seq_len_per_gp=True``. Per-dataset metadata (``d_*``,
+            ``seq_lens``, ``train_sizes``, ``K_eff``) is ``(batch_size,)``.
 
-        y : Tensor or NestedTensor
-            1. For SCM-based priors:
-             - If seq_len_per_gp=False, shape is ``(batch_size, seq_len)``.
-             - If seq_len_per_gp=True, returns a NestedTensor.
-
-            2. For DummyPrior, random class labels of ``(batch_size, seq_len)``.
-
-        d : Tensor
-            Number of active features per dataset of shape ``(batch_size,)``.
-
-        seq_lens : Tensor
-            Sequence length for each dataset of shape ``(batch_size,)``.
-
-        train_sizes : Tensor
-            Position for train/test split for each dataset of shape ``(batch_size,)``.
+            ``S2`` and ``K_eff`` are appended last deliberately: existing
+            positional readers index 0..16, so growing the tuple at the end
+            leaves them valid. See :meth:`SCMPrior.generate_dataset` for their
+            meaning.
         """
         return self.prior.get_batch(batch_size)
 

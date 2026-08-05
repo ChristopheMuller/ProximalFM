@@ -56,6 +56,10 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+# Batch files written before S2/K_eff existed are still perfectly usable; warn
+# once per process rather than once per file so the log stays readable.
+_LEGACY_TARGET_VAR_WARNED = False
+
 
 def dense2sparse(
     dense_tensor: torch.Tensor,
@@ -294,6 +298,8 @@ class LoadPriorDataset(IterableDataset):
         self.buffer_Y1 = None
         self.buffer_MU0 = None
         self.buffer_MU1 = None
+        self.buffer_S2 = None
+        self.buffer_K_eff = None
         self.buffer_d_U = None
         self.buffer_d_X = None
         self.buffer_d_W = None
@@ -314,7 +320,7 @@ class LoadPriorDataset(IterableDataset):
         -------
         tuple
             A tuple containing (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1,
-            d_U, d_X, d_W, d_Z, seq_lens, train_sizes, batch_size).
+            d_U, d_X, d_W, d_Z, seq_lens, train_sizes, S2, K_eff, batch_size).
         """
         batch_file = self.data_dir / f"batch_{self.current_idx:06d}.pt"
 
@@ -353,6 +359,39 @@ class LoadPriorDataset(IterableDataset):
         train_sizes = batch["train_sizes"]
         batch_size = batch["batch_size"]
 
+        # S2 is the per-row sampling variance of the CATE target and K_eff the
+        # realised replicate count (see SCMPrior.generate_dataset). Files written
+        # before these existed -- and the synthetic/ validation sets, which have
+        # no Monte Carlo replicates at all -- get zeros: "this target carries no
+        # measurable MC noise". That is exactly right for the exact-tau realistic
+        # mechanisms and merely conservative elsewhere, and the noise-aware loss
+        # degrades to its plain sigma-smoothed form on those rows. The trainer
+        # logs the affected fraction as noise/frac_fallback rather than letting
+        # it pass unnoticed. K_eff = 0 marks "unknown".
+        if "S2" in batch and "K_eff" in batch:
+            S2, K_eff = batch["S2"], batch["K_eff"]
+        else:
+            global _LEGACY_TARGET_VAR_WARNED
+            if not _LEGACY_TARGET_VAR_WARNED:
+                _LEGACY_TARGET_VAR_WARNED = True
+                warnings.warn(
+                    f"{batch_file} carries no S2/K_eff (pre-dating target-noise "
+                    "tracking, or built by synthetic/build_proximal_datasets.py). "
+                    "Treating the CATE targets as noise-free: loss_type="
+                    "'cate_single_noise_aware' falls back to its plain "
+                    "sigma-smoothed NLL on these rows. Regenerate the batches to "
+                    "get the noise-aware likelihood.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            if MU0.is_nested:
+                S2 = torch.nested.nested_tensor(
+                    [torch.zeros_like(MU0[i]) for i in range(MU0.size(0))]
+                )
+            else:
+                S2 = torch.zeros_like(MU0)
+            K_eff = torch.zeros(batch_size, dtype=torch.long, device=d_U.device)
+
         if X.is_nested:
             # Wrap nested tensors with SliceNestedTensor
             U = SliceNestedTensor(U)
@@ -366,6 +405,7 @@ class LoadPriorDataset(IterableDataset):
             Y1 = SliceNestedTensor(Y1)
             MU0 = SliceNestedTensor(MU0)
             MU1 = SliceNestedTensor(MU1)
+            S2 = SliceNestedTensor(S2)
         else:
             # Convert sparse tensor to dense
             T = seq_lens[0]
@@ -407,6 +447,8 @@ class LoadPriorDataset(IterableDataset):
             d_Z,
             seq_lens,
             train_sizes,
+            S2,
+            K_eff,
             batch_size,
         )
 
@@ -441,6 +483,8 @@ class LoadPriorDataset(IterableDataset):
                 d_Z,
                 seq_lens,
                 train_sizes,
+                S2,
+                K_eff,
                 file_batch_size,
             ) = self._load_batch_file()
 
@@ -455,6 +499,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y1 = Y1
             self.buffer_MU0 = MU0
             self.buffer_MU1 = MU1
+            self.buffer_S2 = S2
+            self.buffer_K_eff = K_eff
             self.buffer_d_U = d_U
             self.buffer_d_X = d_X
             self.buffer_d_W = d_W
@@ -490,6 +536,8 @@ class LoadPriorDataset(IterableDataset):
                     d_Z,
                     seq_lens,
                     train_sizes,
+                    S2,
+                    K_eff,
                     file_batch_size,
                 ) = self._load_batch_file()
 
@@ -507,6 +555,8 @@ class LoadPriorDataset(IterableDataset):
                     self.buffer_Y1 = Y1
                     self.buffer_MU0 = MU0
                     self.buffer_MU1 = MU1
+                    self.buffer_S2 = S2
+                    self.buffer_K_eff = K_eff
                     self.buffer_d_U = d_U
                     self.buffer_d_X = d_X
                     self.buffer_d_W = d_W
@@ -550,6 +600,9 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_MU1 = cat_slice_nested_tensors(
                             [self.buffer_MU1, MU1], dim=0
                         )
+                        self.buffer_S2 = cat_slice_nested_tensors(
+                            [self.buffer_S2, S2], dim=0
+                        )
                     else:
                         self.buffer_U = torch.cat([self.buffer_U, U], dim=0)
                         self.buffer_X = torch.cat([self.buffer_X, X], dim=0)
@@ -564,7 +617,9 @@ class LoadPriorDataset(IterableDataset):
                         self.buffer_Y1 = torch.cat([self.buffer_Y1, Y1], dim=0)
                         self.buffer_MU0 = torch.cat([self.buffer_MU0, MU0], dim=0)
                         self.buffer_MU1 = torch.cat([self.buffer_MU1, MU1], dim=0)
+                        self.buffer_S2 = torch.cat([self.buffer_S2, S2], dim=0)
 
+                    self.buffer_K_eff = torch.cat([self.buffer_K_eff, K_eff], dim=0)
                     self.buffer_d_U = torch.cat([self.buffer_d_U, d_U], dim=0)
                     self.buffer_d_X = torch.cat([self.buffer_d_X, d_X], dim=0)
                     self.buffer_d_W = torch.cat([self.buffer_d_W, d_W], dim=0)
@@ -596,6 +651,8 @@ class LoadPriorDataset(IterableDataset):
         Y1_out = self.buffer_Y1[:output_size]
         MU0_out = self.buffer_MU0[:output_size]
         MU1_out = self.buffer_MU1[:output_size]
+        S2_out = self.buffer_S2[:output_size]
+        K_eff_out = self.buffer_K_eff[:output_size]
         d_U_out = self.buffer_d_U[:output_size]
         d_X_out = self.buffer_d_X[:output_size]
         d_W_out = self.buffer_d_W[:output_size]
@@ -616,6 +673,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y1 = self.buffer_Y1[output_size:]
             self.buffer_MU0 = self.buffer_MU0[output_size:]
             self.buffer_MU1 = self.buffer_MU1[output_size:]
+            self.buffer_S2 = self.buffer_S2[output_size:]
+            self.buffer_K_eff = self.buffer_K_eff[output_size:]
             self.buffer_d_U = self.buffer_d_U[output_size:]
             self.buffer_d_X = self.buffer_d_X[output_size:]
             self.buffer_d_W = self.buffer_d_W[output_size:]
@@ -636,6 +695,8 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_Y1 = None
             self.buffer_MU0 = None
             self.buffer_MU1 = None
+            self.buffer_S2 = None
+            self.buffer_K_eff = None
             self.buffer_d_U = None
             self.buffer_d_X = None
             self.buffer_d_W = None
@@ -656,6 +717,7 @@ class LoadPriorDataset(IterableDataset):
             Y1_out = Y1_out.nested_tensor
             MU0_out = MU0_out.nested_tensor
             MU1_out = MU1_out.nested_tensor
+            S2_out = S2_out.nested_tensor
 
         return (
             U_out,
@@ -675,6 +737,8 @@ class LoadPriorDataset(IterableDataset):
             d_Z_out,
             seq_lens_out,
             train_sizes_out,
+            S2_out,
+            K_eff_out,
         )
 
     def __repr__(self) -> str:
@@ -811,6 +875,8 @@ class SavePriorDataset:
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ):
         """Save batch data in sparse format for efficient storage.
 
@@ -854,6 +920,8 @@ class SavePriorDataset:
                 "Y1": Y1,
                 "MU0": MU0,
                 "MU1": MU1,
+                "S2": S2,
+                "K_eff": K_eff,
                 "d_U": d_U,
                 "d_X": d_X,
                 "d_W": d_W,
@@ -896,6 +964,8 @@ class SavePriorDataset:
                 d_Z,
                 seq_lens,
                 train_sizes,
+                S2,
+                K_eff,
             ) = self.prior.get_batch()
 
             # Move tensors to CPU before saving
@@ -909,6 +979,7 @@ class SavePriorDataset:
             )
             Y_obs, Y0, Y1 = Y_obs.cpu(), Y0.cpu(), Y1.cpu()
             MU0, MU1 = MU0.cpu(), MU1.cpu()
+            S2, K_eff = S2.cpu(), K_eff.cpu()
             d_U, d_X, d_W, d_Z = d_U.cpu(), d_X.cpu(), d_W.cpu(), d_Z.cpu()
             seq_lens = seq_lens.cpu()
             train_sizes = train_sizes.cpu()
@@ -932,6 +1003,8 @@ class SavePriorDataset:
                 d_Z,
                 seq_lens,
                 train_sizes,
+                S2,
+                K_eff,
             )
 
 

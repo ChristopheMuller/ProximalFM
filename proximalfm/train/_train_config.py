@@ -577,15 +577,30 @@ def build_parser():
         type=float,
         default=0.0,
         help="Weight for the CATE loss term. If 0, CATE loss is not used. "
-        "Set it explicitly for --loss_type cate_single: the MSE term protects the "
-        "predicted mean and gives the from-scratch head an early learning signal.",
+        "Set it explicitly for --loss_type cate_single / cate_single_noise_aware: "
+        "the MSE term protects the predicted mean and gives the from-scratch head "
+        "an early learning signal. It needs no adjustment under the noise-aware "
+        "objective, since convolving the prediction leaves its mean unchanged.",
     )
 
     parser.add_argument(
         "--loss_type",
         type=str,
         default="bins_po",
-        choices=["bins_po", "hl", "cate_decomposition", "cate_single"],
+        choices=[
+            "bins_po",
+            "hl",
+            "cate_decomposition",
+            "cate_single",
+            "cate_single_noise_aware",
+        ],
+        help="Training objective. 'cate_single_noise_aware' uses the same head as "
+        "'cate_single' (checkpoints are interchangeable) but treats the target as a "
+        "Monte Carlo estimate of tau and deconvolves its sampling noise, so the head "
+        "converges to a posterior over tau rather than to that posterior blurred by "
+        "MC error. It reads the per-row noise variance the generator emits, so "
+        "pre-generated data written before that existed trains as if noise-free "
+        "(watch noise/frac_fallback).",
     )
 
     parser.add_argument(
@@ -613,15 +628,17 @@ def build_parser():
         "--cate_vmin",
         type=float,
         default=-3.0,
-        help="Lower edge of the tau bin grid used by --loss_type cate_single "
-        "(standardized scale). tau is much narrower than Y(a), hence its own grid.",
+        help="Lower edge of the tau bin grid used by --loss_type cate_single and "
+        "cate_single_noise_aware (standardized scale). tau is much narrower than "
+        "Y(a), hence its own grid.",
     )
 
     parser.add_argument(
         "--cate_vmax",
         type=float,
         default=3.0,
-        help="Upper edge of the tau bin grid used by --loss_type cate_single.",
+        help="Upper edge of the tau bin grid used by --loss_type cate_single and "
+        "cate_single_noise_aware.",
     )
 
     parser.add_argument(

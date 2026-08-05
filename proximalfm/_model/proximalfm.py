@@ -39,6 +39,17 @@ from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 from .ensemble import FeatureEnsemble, apply_permutation, apply_value_transform
 
+# Loss types sharing the single-histogram CATE head: same out_dim, same
+# cate_bin_* grid, same predict path. They differ only in the training
+# objective ("cate_single_noise_aware" deconvolves the Monte Carlo noise on the
+# target; see proximalfm.train._run.compute_cate_noise_aware_nll), which is why
+# a "cate_single" checkpoint fine-tunes into the noise-aware one with no head
+# surgery. Anything that branches on the head's *shape* must test membership
+# here rather than equality with "cate_single".
+CATE_SINGLE_LOSS_TYPES = ("cate_single", "cate_single_noise_aware")
+
+SUPPORTED_LOSS_TYPES = ("bins_po", "cate_decomposition", "hl", *CATE_SINGLE_LOSS_TYPES)
+
 
 class ProximalFM(nn.Module):
     """A Tabular In-Context Learning Foundation Model.
@@ -52,7 +63,7 @@ class ProximalFM(nn.Module):
 
     Parameters
     ----------
-    loss_type : Literal["bins_po", "hl", "cate_single", "cate_decomposition"], default="bins_po"
+    loss_type : Literal["bins_po", "hl", "cate_single", "cate_single_noise_aware", "cate_decomposition"], default="bins_po"
         Determines the output space and learning objective:
         - "bins_po": Predicts binned distributions for both potential outcomes (y0, y1).
           Output dimension is `nbins * 2`.
@@ -61,6 +72,12 @@ class ProximalFM(nn.Module):
         - "cate_single": Predicts a single binned distribution directly over the treatment
           effect `tau = mu1 - mu0`, on its own bin grid (`cate_vmin`/`cate_vmax`).
           Output dimension is `nbins`. Only `target="cate"` is supported.
+        - "cate_single_noise_aware": Architecturally identical to "cate_single" (same
+          out_dim, same grid, same predict path), so checkpoints are interchangeable.
+          The training loss instead treats the supervised target as a *noisy* estimate
+          of `tau` -- it is a Monte Carlo mean over `mcmc_cate` replicates -- and
+          deconvolves that noise, so the head converges to a posterior over `tau`
+          rather than to that posterior blurred by MC error.
         - "cate_decomposition": Predicts ATE as a Gaussian likelihood (mean, log-var)
           and the heterogeneous effect (CATE - ATE) as a binned distribution.
           Output dimension is `nbins + 2`.
@@ -175,7 +192,11 @@ class ProximalFM(nn.Module):
     def __init__(
         self,
         loss_type: Literal[
-            "bins_po", "cate_decomposition", "hl", "cate_single"
+            "bins_po",
+            "cate_decomposition",
+            "hl",
+            "cate_single",
+            "cate_single_noise_aware",
         ] = "bins_po",
         nbins: int = 1000,
         vmin: float = -10.0,
@@ -228,7 +249,7 @@ class ProximalFM(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
-        if loss_type not in ["bins_po", "cate_decomposition", "hl", "cate_single"]:
+        if loss_type not in SUPPORTED_LOSS_TYPES:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
         self.loss_type = loss_type
         self.nbins = nbins
@@ -296,7 +317,7 @@ class ProximalFM(nn.Module):
         self.register_buffer("bin_width", bin_width)
         self.register_buffer("bin_centers", bin_centers)
 
-        if self.loss_type == "cate_single":
+        if self.loss_type in CATE_SINGLE_LOSS_TYPES:
             # tau = mu1 - mu0 is much narrower than Y(a) on the standardized scale, so it
             # gets its own grid. Distinct buffer names matter: the surgical transfer loader
             # copies buffers by name+shape, so reusing "bin_edges" would let a two-head
@@ -311,7 +332,7 @@ class ProximalFM(nn.Module):
 
         if self.loss_type == "bins_po" or self.loss_type == "hl":
             out_dim = nbins * 2
-        elif self.loss_type == "cate_single":
+        elif self.loss_type in CATE_SINGLE_LOSS_TYPES:
             out_dim = nbins
         else:  # self.loss_type == "cate_decomposition"
             out_dim = nbins + 2
@@ -800,10 +821,10 @@ class ProximalFM(nn.Module):
         # ==========================================
         # ROUTING: Single CATE histogram
         # ==========================================
-        elif self.loss_type == "cate_single":
+        elif self.loss_type in CATE_SINGLE_LOSS_TYPES:
             if target not in ["cate"]:
                 raise ValueError(
-                    f"loss_type 'cate_single' directly estimates treatment effects "
+                    f"loss_type '{self.loss_type}' directly estimates treatment effects "
                     f"and does not support predicting target='{target}'."
                 )
 

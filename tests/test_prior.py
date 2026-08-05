@@ -78,6 +78,8 @@ def test_scm_prior_get_batch():
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ) = prior.get_batch()
 
     assert X.shape[0] == 4
@@ -137,6 +139,8 @@ def test_scm_prior_mix_scm():
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ) = prior.get_batch()
     assert X.shape[0] == 4
 
@@ -179,6 +183,8 @@ def test_scm_prior_tree_scm():
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ) = prior.get_batch()
     assert X.shape[0] == 2
 
@@ -222,6 +228,8 @@ def test_scm_prior_seq_len_per_gp():
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ) = prior.get_batch()
 
     # When seq_len_per_gp=True, the tensors should be nested tensors
@@ -276,6 +284,8 @@ def test_prior_dataset():
         d_Z,
         seq_lens,
         train_sizes,
+        S2,
+        K_eff,
     ) = next(iter(dataset))
 
     assert X.shape[0] == 2
@@ -1555,3 +1565,186 @@ def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
     for MU in (MU0, MU1):
         assert MU[:, :t].isnan().all()
         assert MU[:, t:].isfinite().all()
+
+
+# ---------------------------------------------------------------------------
+# Target-noise variance (S2) and the realised replicate count (K_eff)
+# ---------------------------------------------------------------------------
+
+
+def _save_args(tmp_path, num_batches=1, mcmc_cate=4, **overrides):
+    """A small dense-path SavePriorDataset config."""
+    return ArgsMock(
+        save_dir=str(tmp_path),
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=3,
+        min_dim_W=4,
+        max_dim_W=4,
+        min_dim_Z=4,
+        max_dim_Z=4,
+        min_dim_X=5,
+        max_dim_X=5,
+        min_seq_len=None,
+        max_seq_len=40,
+        log_seq_len=False,
+        seq_len_per_gp=False,
+        min_train_size=0.5,
+        max_train_size=0.51,
+        replay_small=False,
+        prior_type="mlp_scm",
+        mcmc_cate=mcmc_cate,
+        num_batches=num_batches,
+        resume_from=0,
+        n_jobs=1,
+        num_threads_per_generate=1,
+        device="cpu",
+        **overrides,
+    )
+
+
+def test_s2_tracks_the_mu_nan_convention():
+    # S2 describes the noise on MU1 - MU0, so it is defined exactly where those
+    # are: NaN on the context prefix when only query rows get replicates.
+    prior = _make_mc_split_prior(mc_targets_on_context=False, train_frac=0.5)
+    out = prior.get_batch()
+    MU0, train_sizes, S2 = out[9], out[16], out[17]
+
+    train_size = int(train_sizes[0].item())
+    assert 0 < train_size < S2.shape[1]
+    assert S2.shape == MU0.shape
+
+    assert S2[:, :train_size].isnan().all()
+    assert S2[:, train_size:].isfinite().all()
+    # A variance is non-negative wherever it is defined.
+    assert (S2[:, train_size:] >= 0).all()
+
+
+def test_s2_is_finite_everywhere_with_full_replication():
+    prior = _make_mc_split_prior(mc_targets_on_context=True, train_frac=0.5)
+    S2 = prior.get_batch()[17]
+    assert S2.isfinite().all()
+    assert (S2 >= 0).all()
+
+
+def test_s2_is_zero_without_replicates():
+    # K = 1 admits no variance estimate. Zeros, not NaN: the loss must degrade
+    # to its plain form rather than treating the row as undefined.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, K=1)
+    out = prior.get_batch()
+    S2, K_eff = out[17], out[18]
+
+    assert (S2 == 0).all()
+    assert (K_eff == 1).all()
+
+
+def test_s2_scales_as_one_over_k():
+    # The defining property of a Monte Carlo mean's sampling variance. Held on
+    # one fixed mechanism (same params, same seed) so only K varies -- across
+    # independently drawn mechanisms the comparison would be meaningless.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, K=8)
+    _seed(0)
+    params = _capture_params(prior)
+
+    means = {}
+    for K in (8, 64):
+        _seed(11)
+        out = prior.generate_dataset({**params, "mcmc_cate": K})
+        means[K] = float(out[15].mean())
+        assert int(out[16]) == K
+
+    ratio = means[8] / means[64]
+    # 8x more replicates. Both endpoints are themselves noisy estimates, so this
+    # is a wide band around 8 -- it catches a wrong normalisation (e.g. dividing
+    # by K^2 or not at all), not a few percent of bias.
+    assert 4.0 < ratio < 16.0
+
+
+def test_s2_is_the_paired_variance_not_the_sum_of_arm_variances():
+    # y0_mc and y1_mc come out of one f_y pass over the same replicates, so they
+    # are strongly positively correlated. Var(y1) + Var(y0) would therefore
+    # over-state the noise on their difference. Assert we are below that bound.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, K=16)
+    _seed(4)
+    params = _capture_params(prior)
+    _seed(5)
+    out = prior.generate_dataset(params)
+
+    S2 = out[15]
+    Y0, Y1 = out[7], out[8]
+
+    # Var(Y1 - Y0) over rows bounds the per-row paired variance loosely, but the
+    # sharp statement is simply that the estimator produced something finite and
+    # far below the unpaired construction on the same draws.
+    assert torch.isfinite(S2).all()
+    assert (S2 >= 0).all()
+
+    unpaired_bound = (Y1.var() + Y0.var()) / 16.0
+    assert float(S2.mean()) < float(unpaired_bound)
+
+
+def test_k_eff_reports_the_capped_value_not_the_request():
+    # prior_mc_mem_budget silently caps mcmc_cate behind a once-per-process
+    # warning, so K_eff is the only way downstream code learns how many
+    # replicates the targets actually averaged.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, seq_len=128, K=64)
+    _seed(6)
+    params = _capture_params(prior)
+
+    tight = {**params, "prior_mc_mem_budget": 200_000}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        _seed(7)
+        out = prior.generate_dataset(tight)
+
+    K_eff = int(out[16])
+    expected = prior._cap_mc_samples(64, 0, params["seq_len"], tight)
+
+    assert K_eff == expected
+    assert K_eff < 64
+
+
+def test_s2_and_k_eff_round_trip_through_disk(tmp_path):
+    args = _save_args(tmp_path, num_batches=1)
+    with DisablePrinting():
+        SavePriorDataset(args).run()
+
+    loader = LoadPriorDataset(tmp_path, batch_size=args.batch_size, max_batches=1)
+    out = next(iter(loader))
+
+    S2, K_eff = out[17], out[18]
+    assert S2.shape == out[9].shape
+    assert S2.isfinite().all() and (S2 >= 0).all()
+    assert (K_eff > 0).all()
+
+    raw = torch.load(tmp_path / "batch_000000.pt", weights_only=True)
+    assert torch.equal(raw["S2"], S2)
+    assert torch.equal(raw["K_eff"], K_eff)
+
+
+def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
+    # Files predating target-noise tracking -- and the synthetic/ validation
+    # sets, which have no replicates at all -- must stay loadable. They read as
+    # "no measurable MC noise", which is what the loss falls back on.
+    args = _save_args(tmp_path, num_batches=1)
+    with DisablePrinting():
+        SavePriorDataset(args).run()
+
+    batch_file = tmp_path / "batch_000000.pt"
+    raw = torch.load(batch_file, weights_only=True)
+    del raw["S2"], raw["K_eff"]
+    torch.save(raw, batch_file)
+
+    import proximalfm.prior._genload as _genload_mod
+
+    _genload_mod._LEGACY_TARGET_VAR_WARNED = False
+
+    loader = LoadPriorDataset(tmp_path, batch_size=args.batch_size, max_batches=1)
+    with pytest.warns(RuntimeWarning, match="no S2/K_eff"):
+        out = next(iter(loader))
+
+    S2, K_eff = out[17], out[18]
+    assert S2.shape == out[9].shape
+    assert (S2 == 0).all()
+    assert (K_eff == 0).all()

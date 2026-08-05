@@ -6,6 +6,7 @@ import timeit
 import warnings
 import functools
 from contextlib import nullcontext
+from typing import Union
 
 import math
 import numpy as np
@@ -147,6 +148,69 @@ def compute_crps_loss(
     return crps.mean()
 
 
+def gaussian_bin_mass(
+    bin_edges: torch.Tensor,
+    center: torch.Tensor,
+    sigma: Union[float, torch.Tensor],
+) -> torch.Tensor:
+    """Mass that ``N(center, sigma^2)`` puts in each histogram bin.
+
+    Returns an *unnormalized* ``(..., nbins)`` tensor: it sums to one only when
+    ``[bin_edges[0], bin_edges[-1]]`` covers the Gaussian. Callers decide what to
+    do with the missing tail -- ``compute_hl_gaussian_cross_entropy_loss``
+    renormalizes over the available support, ``compute_cate_noise_aware_nll``
+    does not (see its docstring).
+
+    The mass is *integrated* over each bin rather than sampling the density at
+    the bin centre. That matters whenever ``sigma`` drops below one bin width,
+    where a sampled kernel collapses toward a point mass and any correction
+    built on it silently vanishes.
+
+    Parameters
+    ----------
+    bin_edges : Tensor
+        Shape ``(nbins + 1,)``, ascending.
+
+    center : Tensor
+        Shape ``(...)``. The Gaussian mean, on the same scale as ``bin_edges``.
+
+    sigma : float or Tensor
+        Standard deviation. A tensor must broadcast against ``center``, which is
+        what lets a *per-row* noise scale be used; the scalar case covers the
+        fixed schedule.
+
+    Returns
+    -------
+    Tensor
+        Shape ``center.shape + (nbins,)``, non-negative.
+    """
+    center_fp32 = center.float()
+    bin_edges_fp32 = bin_edges.to(device=center.device, dtype=torch.float32)
+
+    # Broadcast edges against center: center (...) -> (..., 1), edges (nbins,).
+    edge_shape = (1,) * center_fp32.ndim + (-1,)
+    lower_edges = bin_edges_fp32[:-1].view(edge_shape)
+    upper_edges = bin_edges_fp32[1:].view(edge_shape)
+
+    mu = center_fp32.unsqueeze(-1)
+
+    if isinstance(sigma, torch.Tensor):
+        if (sigma <= 0).any():
+            raise ValueError("sigma must be positive everywhere")
+        scale = sigma.float().unsqueeze(-1)
+    else:
+        if sigma <= 0:
+            raise ValueError(f"sigma must be positive, got {sigma}")
+        scale = float(sigma)
+
+    normalizer = math.sqrt(2.0) * scale
+
+    cdf_upper = 0.5 * (1.0 + torch.erf((upper_edges - mu) / normalizer))
+    cdf_lower = 0.5 * (1.0 + torch.erf((lower_edges - mu) / normalizer))
+
+    return (cdf_upper - cdf_lower).clamp_min(0.0)
+
+
 def compute_hl_gaussian_cross_entropy_loss(
     logits: torch.Tensor,
     y_target: torch.Tensor,
@@ -179,9 +243,6 @@ def compute_hl_gaussian_cross_entropy_loss(
     Returns:
         Scalar tensor.
     """
-    if sigma <= 0:
-        raise ValueError(f"sigma must be positive, got {sigma}")
-
     if y_target.shape != logits.shape[:-1]:
         raise ValueError(
             f"y_target shape {y_target.shape} must match logits shape "
@@ -191,29 +252,8 @@ def compute_hl_gaussian_cross_entropy_loss(
     # Compute target probabilities in fp32 for numerical stability,
     # especially under AMP.
     logits_fp32 = logits.float()
-    y_target_fp32 = y_target.float()
-    bin_edges_fp32 = bin_edges.to(device=logits.device, dtype=torch.float32)
 
-    lower_edges = bin_edges_fp32[:-1]
-    upper_edges = bin_edges_fp32[1:]
-
-    # Shape for broadcasting edges against y_target:
-    # y_target: (...), edges: (nbins,) -> (..., nbins)
-    edge_shape = (1,) * y_target_fp32.ndim + (-1,)
-    lower_edges = lower_edges.view(edge_shape)
-    upper_edges = upper_edges.view(edge_shape)
-
-    y = y_target_fp32.unsqueeze(-1)
-
-    normalizer = math.sqrt(2.0) * sigma
-
-    cdf_upper = 0.5 * (1.0 + torch.erf((upper_edges - y) / normalizer))
-    cdf_lower = 0.5 * (1.0 + torch.erf((lower_edges - y) / normalizer))
-
-    p = cdf_upper - cdf_lower
-
-    # Numerical safety.
-    p = p.clamp_min(0.0)
+    p = gaussian_bin_mass(bin_edges, y_target, sigma)
 
     # Truncated-and-renormalized Gaussian over the available bin support.
     p = p / (p.sum(dim=-1, keepdim=True) + eps)
@@ -233,12 +273,101 @@ def compute_cate_distribution_loss(
 ) -> torch.Tensor:
     """Distributional term for the single-histogram CATE head ("cate_single").
 
-    Isolated behind its own name so that swapping in a noise-aware likelihood (which
-    needs a per-row target variance) is a change to this function alone.
+    Kept as the noise-*unaware* baseline. See
+    :func:`compute_cate_noise_aware_nll` for the version that accounts for the
+    Monte Carlo error in the target.
     """
     return compute_hl_gaussian_cross_entropy_loss(
         logits, cate_target, bin_edges, sigma=sigma
     )
+
+
+def compute_cate_noise_aware_nll(
+    logits: torch.Tensor,
+    cate_target: torch.Tensor,
+    bin_edges: torch.Tensor,
+    target_var: torch.Tensor,
+    sigma: float,
+) -> torch.Tensor:
+    """Noise-aware NLL for the CATE head: ``-log[(P * N(0, s^2 + sigma^2))(t)]``.
+
+    The supervised target ``t = MU1 - MU0`` is a Monte Carlo mean over ``K``
+    replicates, so ``t = tau* + e`` with ``e ~ N(0, s^2)`` and ``s^2`` the
+    per-row ``target_var``. Fitting a histogram directly to ``t`` therefore
+    converges to ``posterior(tau) * N(0, s^2)`` -- over-dispersed by
+    construction. Convolving the *prediction* with the noise kernel before
+    evaluating the likelihood moves the minimizer back onto ``posterior(tau)``.
+
+    Treating ``P`` as the histogram density (``p_i / w`` on bin ``i``),
+
+        (P * N)(t) = sum_i p_i * [Phi((t - e_i)/s) - Phi((t - e_{i+1})/s)] / w
+
+    which is a normalized density in ``t`` over the whole real line, so **no
+    edge/leakage policy is required here** -- unlike a convolution that
+    re-projects ``P`` back onto the same bin grid, which does push mass past the
+    grid ends and needs an explicit clamp. An evaluator sharing
+    :func:`gaussian_bin_mass` must not carry this assumption across.
+
+    ``sigma`` is *not* set to ``s``. Doing so would smooth the target by the very
+    noise being removed and double the over-dispersion. It stays what it always
+    was -- a smoothing regularizer and a hard floor on the learnable width,
+    annealed toward one bin width -- and enters as ``s^2 + sigma^2`` inside a
+    single kernel. This also gives the degenerate path for free: where ``s^2`` is
+    zero or NaN (context rows, ``K = 1``, data predating target-noise tracking)
+    the kernel width falls back to ``sigma`` and the loss reduces to the plain
+    smoothed NLL. Nothing propagates NaN.
+
+    Parameters
+    ----------
+    logits : Tensor
+        Shape ``(..., nbins)``, unnormalized log-weights over ``bin_edges``.
+
+    cate_target : Tensor
+        Shape ``(...)``. The observed noisy target, on the head's grid scale.
+
+    bin_edges : Tensor
+        Shape ``(nbins + 1,)``, uniform.
+
+    target_var : Tensor
+        Shape broadcastable to ``cate_target``. Per-row ``s^2`` **in the head's
+        units**, i.e. already divided by the squared context scale used to
+        standardize the target.
+
+    sigma : float
+        Smoothing scale from the training schedule.
+
+    Returns
+    -------
+    Tensor
+        Scalar mean NLL.
+    """
+    if cate_target.shape != logits.shape[:-1]:
+        raise ValueError(
+            f"cate_target shape {cate_target.shape} must match logits shape "
+            f"{logits.shape[:-1]} except for the last dimension."
+        )
+    if sigma <= 0:
+        raise ValueError(f"sigma must be positive, got {sigma}")
+
+    s2 = torch.nan_to_num(target_var.float(), nan=0.0, posinf=0.0).clamp_min(0.0)
+    s2 = s2.expand_as(cate_target)
+    kernel_sd = torch.sqrt(s2 + float(sigma) ** 2)
+
+    mass = gaussian_bin_mass(bin_edges, cate_target, kernel_sd)
+
+    # Density, not mass: divide by the bin width so the result integrates to one
+    # in t. The grid is uniform, so this is a single scalar.
+    bin_width = (bin_edges[1] - bin_edges[0]).to(mass.device, torch.float32)
+
+    # clamp_min before log: bins many sigmas from the target underflow to exactly
+    # zero, and -inf there would poison the logsumexp even though those bins
+    # contribute nothing.
+    log_kernel = torch.log(mass.clamp_min(1e-38)) - torch.log(bin_width)
+    log_probs = F.log_softmax(logits.float(), dim=-1)
+
+    nll = -torch.logsumexp(log_probs + log_kernel, dim=-1)
+
+    return nll.mean()
 
 
 def compute_gaussian_nll(
@@ -995,8 +1124,8 @@ class Trainer:
         """
         if any(t.is_nested for t in batch):
             return batch
-        # batch[13] = seq_lens, batch[14] = train_sizes (per-dataset metadata).
-        seq_lens, train_sizes = batch[13], batch[14]
+        # batch[15] = seq_lens, batch[16] = train_sizes (per-dataset metadata).
+        seq_lens, train_sizes = batch[15], batch[16]
         if seq_lens.unique().numel() > 1 or train_sizes.unique().numel() > 1:
             return batch
         perm = torch.randperm(batch[0].shape[0], device=batch[0].device)
@@ -1234,6 +1363,7 @@ class Trainer:
         micro_Y1,
         micro_MU0,
         micro_MU1,
+        micro_S2,
         micro_d_X,
         micro_d_W,
         micro_d_Z,
@@ -1278,6 +1408,7 @@ class Trainer:
             micro_Y1 = micro_Y1[:, :seq_len]
             micro_MU0 = micro_MU0[:, :seq_len]
             micro_MU1 = micro_MU1[:, :seq_len]
+            micro_S2 = micro_S2[:, :seq_len]
 
         # Truncate feature dimensions
         max_X = micro_d_X.max().item()
@@ -1302,6 +1433,7 @@ class Trainer:
             micro_Y1,
             micro_MU0,
             micro_MU1,
+            micro_S2,
         )
 
     def run_micro_batch(
@@ -1344,6 +1476,8 @@ class Trainer:
             micro_d_Z,
             micro_seq_len,
             micro_train_size,
+            micro_S2,
+            micro_K_eff,
         ) = micro_batch
 
         seq_len, train_size = self.validate_micro_batch(micro_seq_len, micro_train_size)
@@ -1358,6 +1492,7 @@ class Trainer:
             micro_Y1,
             micro_MU0,
             micro_MU1,
+            micro_S2,
         ) = self.align_micro_batch(
             micro_X,
             micro_W,
@@ -1368,6 +1503,7 @@ class Trainer:
             micro_Y1,
             micro_MU0,
             micro_MU1,
+            micro_S2,
             micro_d_X,
             micro_d_W,
             micro_d_Z,
@@ -1384,6 +1520,7 @@ class Trainer:
         micro_Y1 = micro_Y1.to(self.config.device)
         micro_MU0 = micro_MU0.to(self.config.device)
         micro_MU1 = micro_MU1.to(self.config.device)
+        micro_S2 = micro_S2.to(self.config.device)
         micro_d_X = micro_d_X.to(self.config.device)
         micro_d_W = micro_d_W.to(self.config.device)
         micro_d_Z = micro_d_Z.to(self.config.device)
@@ -1409,6 +1546,14 @@ class Trainer:
         sampled_y_test_0_std = (y_test_0_sampled - y_context_mean) / y_context_std
         sampled_y_test_1_std = (y_test_1_sampled - y_context_mean) / y_context_std
         sampled_ite_std = sampled_y_test_1_std - sampled_y_test_0_std
+
+        # Monte Carlo noise on the CATE target, converted into the head's units.
+        # S2 is a variance in raw y^2; the head lives on the cate_vmin/cate_vmax
+        # grid in standardized-y space, so it scales by 1 / y_context_std^2 --
+        # a *per-episode* factor. Skipping this division would leave the
+        # convolution wrong by a random factor per episode, silently.
+        # y_context_std is (B, 1) and broadcasts over the (B, n_q) query rows.
+        target_var_std = micro_S2[:, train_size:] / (y_context_std**2)
 
         # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
@@ -1581,16 +1726,25 @@ class Trainer:
 
                 total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
 
-            elif loss_type == "cate_single":
+            elif loss_type in ("cate_single", "cate_single_noise_aware"):
                 # A single histogram over tau, so no slicing: out_dim == nbins.
                 hl_sigma = self.get_hl_sigma()
 
-                loss_cate_dist = compute_cate_distribution_loss(
-                    pred_logits,
-                    true_cate_std,
-                    self.raw_model.cate_bin_edges,
-                    sigma=hl_sigma,
-                )
+                if loss_type == "cate_single_noise_aware":
+                    loss_cate_dist = compute_cate_noise_aware_nll(
+                        pred_logits,
+                        true_cate_std,
+                        self.raw_model.cate_bin_edges,
+                        target_var=target_var_std,
+                        sigma=hl_sigma,
+                    )
+                else:
+                    loss_cate_dist = compute_cate_distribution_loss(
+                        pred_logits,
+                        true_cate_std,
+                        self.raw_model.cate_bin_edges,
+                        sigma=hl_sigma,
+                    )
 
                 probs_cate = F.softmax(pred_logits, dim=-1)
                 pred_cate_std = torch.sum(
@@ -1602,6 +1756,9 @@ class Trainer:
 
                 lambda_cate = getattr(self.config, "lambda_cate", 0.0)
 
+                # The MSE guard needs no adjustment for the convolution:
+                # mean(P * N) == mean(P), so it constrains the same quantity
+                # under either objective.
                 total_loss = loss_cate_dist + (lambda_cate * loss_cate)
 
                 # The evaluator expects per-arm predictions; this head has none.
@@ -1683,7 +1840,7 @@ class Trainer:
                     if is_train
                     else hl_sigma,
                 }
-            elif loss_type == "cate_single":
+            elif loss_type in ("cate_single", "cate_single_noise_aware"):
                 micro_results = {
                     "loss/total": reported_loss_total,
                     "loss/cate_dist": (loss_cate_dist.item() / num_micro_batches)
@@ -1696,6 +1853,18 @@ class Trainer:
                     if is_train
                     else hl_sigma,
                 }
+
+                if loss_type == "cate_single_noise_aware":
+                    micro_results.update(
+                        self._target_noise_metrics(
+                            target_var_std,
+                            true_cate_std,
+                            probs_cate,
+                            pred_cate_std,
+                            micro_K_eff,
+                            scale=num_micro_batches if is_train else 1,
+                        )
+                    )
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -1825,8 +1994,8 @@ class Trainer:
             if batch[i].dim() == 3 and batch[i].shape[-1] == 1:
                 batch[i] = batch[i].squeeze(-1)
 
-        seq_lens = batch[13]  # shape (B,)
-        train_sizes = batch[14]  # shape (B,)
+        seq_lens = batch[15]  # shape (B,)
+        train_sizes = batch[16]  # shape (B,)
         sort_idx = torch.argsort(seq_lens * (train_sizes.max() + 1) + train_sizes)
         batch = [t[sort_idx] for t in batch]
 
@@ -1903,6 +2072,61 @@ class Trainer:
 
         return final_metrics
 
+    @torch.no_grad()
+    def _target_noise_metrics(
+        self,
+        target_var_std,
+        true_cate_std,
+        probs_cate,
+        pred_cate_std,
+        micro_K_eff,
+        scale: int,
+    ) -> dict:
+        """Diagnostics for the noise-aware CATE objective.
+
+        ``s / sd_pred`` is the one to watch. It sets how much the noise
+        correction is worth at all -- below ~0.2 the induced width inflation is
+        under 2% and the correction is barely detectable -- but it is *not* a
+        constant: ``sd_pred`` shrinks as the posterior sharpens, so a replicate
+        count that was comfortably sufficient early can quietly become the
+        binding constraint later in a run. Hence a logged series, not a one-off
+        check.
+        """
+        centers = self.raw_model.cate_bin_centers.float()
+        probs = probs_cate.float()
+        mean = pred_cate_std.float().unsqueeze(-1)
+        var_pred = torch.sum(probs * (centers.view(1, 1, -1) - mean) ** 2, dim=-1)
+
+        s2 = torch.nan_to_num(target_var_std.float(), nan=0.0, posinf=0.0).clamp_min(
+            0.0
+        )
+        mean_s = torch.sqrt(s2).mean()
+        mean_sd_pred = torch.sqrt(var_pred.clamp_min(0.0)).mean()
+
+        # Rows the convolution cannot act on: no replicate variance available
+        # (K = 1, context rows, or data predating target-noise tracking). They
+        # fall back to the plain sigma-smoothed NLL, which is correct but is not
+        # the objective this loss_type exists for -- so surface the share.
+        frac_fallback = (~(s2 > 0)).float().mean()
+
+        # Targets past the grid ends get essentially no likelihood under any
+        # prediction, so a non-trivial share here means cate_vmin/cate_vmax are
+        # too tight and the loss is being driven by rows it cannot represent.
+        edges = self.raw_model.cate_bin_edges
+        out_of_grid = (
+            ((true_cate_std < edges[0]) | (true_cate_std > edges[-1])).float().mean()
+        )
+
+        return {
+            "noise/mean_s": mean_s.item() / scale,
+            "noise/mean_sd_pred": mean_sd_pred.item() / scale,
+            "noise/s_over_sd_pred": (mean_s / mean_sd_pred.clamp_min(1e-12)).item()
+            / scale,
+            "noise/frac_fallback": frac_fallback.item() / scale,
+            "noise/mean_K": micro_K_eff.float().mean().item() / scale,
+            "target/cate_out_of_grid_frac": out_of_grid.item() / scale,
+        }
+
     def _drop_meaningless_metrics(self, metrics: dict) -> dict:
         """Strip per-arm (po/*) metrics for loss types that predict effects directly.
 
@@ -1910,7 +2134,11 @@ class Trainer:
         resulting po/* numbers are artefacts. Dropping them is preferable to logging
         zeros that later read as results.
         """
-        if self.loss_type not in ("cate_decomposition", "cate_single"):
+        if self.loss_type not in (
+            "cate_decomposition",
+            "cate_single",
+            "cate_single_noise_aware",
+        ):
             return metrics
         return {k: v for k, v in metrics.items() if "po/" not in k}
 

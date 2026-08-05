@@ -276,6 +276,8 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         d_Z,
         _seq_lens,
         _train_sizes,
+        _S2,
+        _K_eff,
     ) = dataset.get_batch()
 
     widths = {"U": int(d_U[0]), "X": int(d_X[0]), "W": int(d_W[0]), "Z": int(d_Z[0])}
