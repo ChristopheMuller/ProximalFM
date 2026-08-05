@@ -781,6 +781,96 @@ class LoadPriorDataset(IterableDataset):
         return repr_str
 
 
+def write_batch_file(
+    save_dir,
+    batch_idx,
+    *,
+    U,
+    X,
+    W,
+    Z,
+    A,
+    A_probs,
+    Y_obs,
+    Y0,
+    Y1,
+    MU0,
+    MU1,
+    d_U,
+    d_X,
+    d_W,
+    d_Z,
+    seq_lens,
+    train_sizes,
+    S2,
+    K_eff,
+    seq_len_per_gp=False,
+):
+    """Write one ``batch_{idx:06d}.pt`` file in the on-disk prior format.
+
+    The single writer of that format: :class:`SavePriorDataset` delegates here,
+    and so must any other producer of a ``val/``-style directory. The format is
+    what :class:`LoadPriorDataset` replays, so a second implementation drifts
+    silently (see the missing ``MU0``/``MU1``/``S2``/``K_eff`` in
+    ``synthetic/build_proximal_datasets.py``).
+
+    ``U``/``X``/``W``/``Z`` are flattened to the ragged 1-D layout
+    :func:`sparse2dense` expects, unless ``seq_len_per_gp`` says the caller
+    already passed nested (hence already sparse) tensors. Writes through a
+    ``.tmp`` sibling and renames, so an interrupted run leaves no half file.
+    """
+    save_dir = Path(save_dir)
+
+    if seq_len_per_gp:
+        # Tensors are nested and already sparse
+        B = len(d_X)
+    else:
+        B, T, _ = X.shape
+        U = dense2sparse(
+            U.view(-1, U.shape[-1]), d_U.repeat_interleave(T), dtype=torch.float32
+        )
+        X = dense2sparse(
+            X.view(-1, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
+        )
+        W = dense2sparse(
+            W.view(-1, W.shape[-1]), d_W.repeat_interleave(T), dtype=torch.float32
+        )
+        Z = dense2sparse(
+            Z.view(-1, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
+        )
+
+    # Create temporary file first
+    batch_file = save_dir / f"batch_{batch_idx:06d}.pt"
+    temp_file = save_dir / f"batch_{batch_idx:06d}.pt.tmp"
+    torch.save(
+        {
+            "U": U,
+            "X": X,
+            "W": W,
+            "Z": Z,
+            "A": A,
+            "A_probs": A_probs,
+            "Y_obs": Y_obs,
+            "Y0": Y0,
+            "Y1": Y1,
+            "MU0": MU0,
+            "MU1": MU1,
+            "S2": S2,
+            "K_eff": K_eff,
+            "d_U": d_U,
+            "d_X": d_X,
+            "d_W": d_W,
+            "d_Z": d_Z,
+            "seq_lens": seq_lens,
+            "train_sizes": train_sizes,
+            "batch_size": B,
+        },
+        temp_file,
+    )
+    # Atomic rename to ensure file integrity
+    temp_file.replace(batch_file)
+
+
 class SavePriorDataset:
     """Generates and saves batches of prior datasets to disk.
 
@@ -880,60 +970,33 @@ class SavePriorDataset:
     ):
         """Save batch data in sparse format for efficient storage.
 
-        This method handles the conversion between dense and sparse tensor formats
-        when appropriate and saves the batch data to a PyTorch file. It uses an atomic
-        write pattern (writing to a temporary file and then renaming) to ensure data
-        integrity even if the process is interrupted during saving.
+        Thin wrapper over :func:`write_batch_file`, which is the single
+        implementation of the on-disk format.
         """
-
-        if self.args.seq_len_per_gp:
-            # Tensors are nested and already sparse
-            B = len(d_X)
-        else:
-            B, T, _ = X.shape
-            U = dense2sparse(
-                U.view(-1, U.shape[-1]), d_U.repeat_interleave(T), dtype=torch.float32
-            )
-            X = dense2sparse(
-                X.view(-1, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
-            )
-            W = dense2sparse(
-                W.view(-1, W.shape[-1]), d_W.repeat_interleave(T), dtype=torch.float32
-            )
-            Z = dense2sparse(
-                Z.view(-1, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
-            )
-
-        # Create temporary file first
-        batch_file = self.save_dir / f"batch_{batch_idx:06d}.pt"
-        temp_file = self.save_dir / f"batch_{batch_idx:06d}.pt.tmp"
-        torch.save(
-            {
-                "U": U,
-                "X": X,
-                "W": W,
-                "Z": Z,
-                "A": A,
-                "A_probs": A_probs,
-                "Y_obs": Y_obs,
-                "Y0": Y0,
-                "Y1": Y1,
-                "MU0": MU0,
-                "MU1": MU1,
-                "S2": S2,
-                "K_eff": K_eff,
-                "d_U": d_U,
-                "d_X": d_X,
-                "d_W": d_W,
-                "d_Z": d_Z,
-                "seq_lens": seq_lens,
-                "train_sizes": train_sizes,
-                "batch_size": B,
-            },
-            temp_file,
+        write_batch_file(
+            self.save_dir,
+            batch_idx,
+            U=U,
+            X=X,
+            W=W,
+            Z=Z,
+            A=A,
+            A_probs=A_probs,
+            Y_obs=Y_obs,
+            Y0=Y0,
+            Y1=Y1,
+            MU0=MU0,
+            MU1=MU1,
+            d_U=d_U,
+            d_X=d_X,
+            d_W=d_W,
+            d_Z=d_Z,
+            seq_lens=seq_lens,
+            train_sizes=train_sizes,
+            S2=S2,
+            K_eff=K_eff,
+            seq_len_per_gp=self.args.seq_len_per_gp,
         )
-        # Atomic rename to ensure file integrity
-        temp_file.replace(batch_file)
 
     def run(self):
         """Generate and save batches of prior datasets."""
