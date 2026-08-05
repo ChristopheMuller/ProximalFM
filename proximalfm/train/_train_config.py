@@ -565,6 +565,27 @@ def build_parser():
     )
 
     ###########################################################################
+    ###### Distributional (prior) evaluation ##################################
+    ###########################################################################
+    parser.add_argument(
+        "--dist_eval_dir",
+        default=None,
+        type=str,
+        help="Root directory of the frozen posterior-eval set (holds both the "
+        "val/-format episodes and frozen_meta.pt; see "
+        "posterior_eval/build_prior_frozen_set.py). None disables the prior/* "
+        "distributional evaluation surface.",
+    )
+    parser.add_argument(
+        "--dist_eval_interval",
+        default=-1,
+        type=int,
+        help="Steps between distributional evaluation passes against "
+        "--dist_eval_dir. 0 disables it; -1 (default) resolves to "
+        "--point_val_interval.",
+    )
+
+    ###########################################################################
     ###### LOSS ###############################################################
     ###########################################################################
     parser.add_argument(

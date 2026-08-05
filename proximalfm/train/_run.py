@@ -93,6 +93,15 @@ class Trainer:
         self._check_best_metric_config()
         self._load_best_metric_value()
 
+        # Resolved once here rather than re-read from config at every step:
+        # -1 tracks point_val_interval, 0 disables.
+        dist_eval_interval = getattr(self.config, "dist_eval_interval", -1)
+        self.dist_eval_interval = (
+            self.config.point_val_interval
+            if dist_eval_interval == -1
+            else dist_eval_interval
+        )
+
     def configure_ddp(self):
         """Set up distributed training and system configuration."""
         self.ddp = int(os.environ.get("RANK", -1)) != -1
@@ -561,10 +570,20 @@ class Trainer:
                 "validation never runs, so no best_model.ckpt will be saved."
             )
 
+        if self.best_metric.startswith("prior/dist/") and (
+            getattr(self.config, "dist_eval_dir", None) is None
+        ):
+            print(
+                f"[save_best] Warning: best_metric '{self.best_metric}' is on the "
+                "prior/dist/* surface but dist_eval_dir is None; distributional "
+                "evaluation never runs, so this metric will never appear in "
+                "validation results."
+            )
+
         name = self.best_metric.lower()
         higher_is_better = any(k in name for k in ("r2", "sign_agreement"))
         lower_is_better = any(
-            k in name for k in ("rmse", "npehe", "mse", "bias", "loss")
+            k in name for k in ("rmse", "npehe", "mse", "bias", "loss", "crps")
         )
         if higher_is_better and self.best_metric_mode == "min":
             print(

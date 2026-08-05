@@ -8,48 +8,54 @@ import torch
 from unittest.mock import patch, MagicMock
 
 
+def _dummy_args_list(tmp_path):
+    # minimal dummy config
+    # Note: embed_dim / row_nhead must be > 2 for RotaryEmbedding (16 / 4 = 4)
+    return [
+        "--max_steps",
+        "1",
+        "--batch_size",
+        "2",
+        "--micro_batch_size",
+        "2",
+        "--min_seq_len",
+        "10",
+        "--max_seq_len",
+        "20",
+        "--min_train_size",
+        "5",
+        "--max_train_size",
+        "15",
+        "--embed_dim",
+        "16",
+        "--row_nhead",
+        "4",
+        "--col_num_blocks",
+        "1",
+        "--row_num_blocks",
+        "1",
+        "--icl_num_blocks",
+        "1",
+        "--amp",
+        "False",
+        "--device",
+        "cpu",
+        "--wandb_mode",
+        "disabled",
+        "--checkpoint_dir",
+        str(tmp_path),
+    ]
+
+
 @pytest.fixture
 def dummy_args(tmp_path):
     parser = build_parser()
-    # minimal dummy config
-    # Note: embed_dim / row_nhead must be > 2 for RotaryEmbedding (16 / 4 = 4)
-    args = parser.parse_args(
-        [
-            "--max_steps",
-            "1",
-            "--batch_size",
-            "2",
-            "--micro_batch_size",
-            "2",
-            "--min_seq_len",
-            "10",
-            "--max_seq_len",
-            "20",
-            "--min_train_size",
-            "5",
-            "--max_train_size",
-            "15",
-            "--embed_dim",
-            "16",
-            "--row_nhead",
-            "4",
-            "--col_num_blocks",
-            "1",
-            "--row_num_blocks",
-            "1",
-            "--icl_num_blocks",
-            "1",
-            "--amp",
-            "False",
-            "--device",
-            "cpu",
-            "--wandb_mode",
-            "disabled",
-            "--checkpoint_dir",
-            str(tmp_path),
-        ]
-    )
-    return args
+    return parser.parse_args(_dummy_args_list(tmp_path))
+
+
+def _parse_args(tmp_path, extra):
+    parser = build_parser()
+    return parser.parse_args(_dummy_args_list(tmp_path) + extra)
 
 
 @patch("wandb.init")
@@ -405,3 +411,68 @@ def test_cate_single_checkpoint_loads_into_the_noise_aware_head(dummy_args):
 
     assert torch.equal(noise_aware.cate_bin_edges, point.cate_bin_edges)
     assert torch.equal(noise_aware.cate_bin_centers, point.cate_bin_centers)
+
+
+@patch("wandb.init")
+def test_dist_eval_interval_minus_one_resolves_to_point_val_interval(
+    mock_wandb_init, tmp_path
+):
+    args = _parse_args(
+        tmp_path,
+        ["--point_val_interval", "37", "--dist_eval_interval", "-1"],
+    )
+    trainer = Trainer(args)
+    assert trainer.dist_eval_interval == 37
+
+
+@patch("wandb.init")
+def test_dist_eval_interval_zero_and_unset_dir_disable_it(mock_wandb_init, tmp_path):
+    args = _parse_args(tmp_path, ["--dist_eval_interval", "0"])
+    trainer = Trainer(args)
+    assert trainer.dist_eval_interval == 0
+    assert trainer.config.dist_eval_dir is None
+
+
+@patch("wandb.init")
+def test_prior_dist_best_metric_without_dist_eval_dir_warns(
+    mock_wandb_init, tmp_path, capsys
+):
+    args = _parse_args(tmp_path, ["--best_metric", "prior/dist/crps"])
+    Trainer(args)
+    captured = capsys.readouterr()
+    assert "prior/dist/crps" in captured.out
+    assert "dist_eval_dir is None" in captured.out
+
+
+@pytest.mark.parametrize(
+    "best_metric",
+    ["prior/point/cate/npehe", "val/point/cate/npehe", "val/dist/crps"],
+)
+@patch("wandb.init")
+def test_non_prior_dist_best_metric_without_dist_eval_dir_does_not_warn(
+    mock_wandb_init, tmp_path, capsys, best_metric
+):
+    args = _parse_args(tmp_path, ["--best_metric", best_metric])
+    Trainer(args)
+    captured = capsys.readouterr()
+    assert "dist_eval_dir is None" not in captured.out
+
+
+@patch("wandb.init")
+def test_prior_best_metric_with_dist_eval_dir_set_does_not_warn(
+    mock_wandb_init, tmp_path, capsys
+):
+    args = _parse_args(
+        tmp_path,
+        [
+            "--best_metric",
+            "prior/dist/crps",
+            "--dist_eval_dir",
+            str(tmp_path),
+        ],
+    )
+    Trainer(args)
+    captured = capsys.readouterr()
+    assert "dist_eval_dir is None" not in captured.out
+    assert "higher-is-better" not in captured.out
+    assert "lower-is-better" not in captured.out
