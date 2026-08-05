@@ -269,7 +269,7 @@ Point the trainer at the `val/` folder:
 uv run python -m proximalfm.train \
     <your usual training flags> \
     --val_dir synthetic/validation_data/val \
-    --val_interval 50 \
+    --point_val_interval 50 \
     --save_best true \
     --best_metric val/point/cate/npehe \
     --best_metric_mode min
@@ -278,7 +278,7 @@ uv run python -m proximalfm.train \
 | Flag | Default | Meaning |
 |---|---|---|
 | `--val_dir` | `None` | Directory of `batch_*.pt` files to validate on (no validation if unset). |
-| `--val_interval` | `50` | Steps between validation passes. |
+| `--point_val_interval` | `50` | Steps between validation passes. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
 | `--best_metric` | `val/point/cate/npehe` | Metric key to monitor (e.g. `val/point/cate/rmse`, `val/point/ate/rmse`, `val/point/cate/r2`). |
 | `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |
