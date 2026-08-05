@@ -250,6 +250,9 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         replay_small=False,
         prior_type=spec.prior_type,
         mc_cate=spec.mc_cate,
+        # Analysis needs MU0/MU1 over the whole sequence, not just the query
+        # slice the trainer reads; the generator default is query-only.
+        mc_targets_on_context=True,
         scm_fixed_hp=fixed_hp,
         scm_sampled_hp=sampled_hp,
         # Nested parallelism would reintroduce the RNG problem this function

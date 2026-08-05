@@ -127,6 +127,7 @@ def _generate_without_diagnostics(spec, index):
         replay_small=False,
         prior_type=spec.prior_type,
         mc_cate=spec.mc_cate,
+        mc_targets_on_context=True,
         scm_fixed_hp=fixed_hp,
         scm_sampled_hp=sampled_hp,
         n_jobs=1,

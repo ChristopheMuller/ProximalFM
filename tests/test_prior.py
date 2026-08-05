@@ -1477,6 +1477,7 @@ def test_target_leaf_mechanisms_skip_mc_replicates():
         max_seq_len=T + 1,
         prior_type="mlp_scm",
         mc_cate=K,
+        mc_targets_on_context=True,
         fixed_hp={**FAST_FIXED_HP, "confounding_dim_control": False},
         n_jobs=1,
     )
@@ -1706,7 +1707,7 @@ def test_k_eff_reports_the_capped_value_not_the_request():
 
 
 def test_s2_and_k_eff_round_trip_through_disk(tmp_path):
-    args = _save_args(tmp_path, num_batches=1)
+    args = _save_args(tmp_path, num_batches=1, mc_targets_on_context=True)
     with DisablePrinting():
         SavePriorDataset(args).run()
 
