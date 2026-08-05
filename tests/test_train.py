@@ -6,6 +6,7 @@ from proximalfm.train import _run
 from proximalfm.train._run import Trainer
 from proximalfm.train._dist_eval import UnsupportedLossTypeError
 from proximalfm.prior._dataset import PriorDataset
+from proximalfm.prior._prior_config import DEFAULT_SAMPLED_HP
 from posterior_eval.build_prior_frozen_set import BuildConfig, build
 import torch
 from unittest.mock import patch, MagicMock
@@ -80,6 +81,69 @@ def tiny_frozen_set(tmp_path_factory):
 def _parse_args(tmp_path, extra):
     parser = build_parser()
     return parser.parse_args(_dummy_args_list(tmp_path) + extra)
+
+
+# The prior samples propensity_shift ~ U(-2.5, 2.5) and a log-scaled
+# propensity_scale, so an unlucky draw makes P(A=1|.) near-degenerate and every
+# context row lands in one arm. run_micro_batch then *correctly* returns None
+# for the whole micro batch, and any test that asserts on its metrics fails --
+# not because the code under test is wrong, but because that draw came up.
+# Measured over the config below, that happens with probability ~0.8% on
+# average (up to ~13% for some hyperparameter draws), which is exactly the
+# order of flakiness that makes these tests depend on the global RNG stream.
+#
+# Dropping the two entries (falsy values are skipped by HpSamplerList) leaves
+# sample_A on its shift=0 / scale=1 defaults, i.e. sigmoid of standardized
+# logits. Overlap is then a property of the prior rather than of the draw: with
+# a 24-row context the single-arm probability falls to ~1e-7.
+_BALANCED_PROPENSITY_HP = {
+    **DEFAULT_SAMPLED_HP,
+    "propensity_shift": None,
+    "propensity_scale": None,
+}
+
+
+def _overlap_prior(args, *, mc_cate, mc_targets_on_context=False):
+    """A prior whose context carries both treatment arms by construction."""
+    return PriorDataset(
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=args.max_dim_U,
+        min_dim_W=2,
+        max_dim_W=args.max_dim_W,
+        min_dim_Z=2,
+        max_dim_Z=args.max_dim_Z,
+        min_dim_X=2,
+        max_dim_X=args.max_dim_X,
+        min_seq_len=None,
+        max_seq_len=64,
+        # A wide context, so both arms are well populated under a balanced
+        # propensity rather than merely likely to be.
+        min_train_size=24,
+        max_train_size=25,
+        prior_type="mlp_scm",
+        mc_cate=mc_cate,
+        mc_targets_on_context=mc_targets_on_context,
+        scm_sampled_hp=_BALANCED_PROPENSITY_HP,
+        n_jobs=1,
+        device="cpu",
+    )
+
+
+def _batch_with_both_arms(prior):
+    """Draw a batch and state the two-arm precondition the trainer needs.
+
+    Asserted rather than assumed: if a future prior change reintroduces
+    near-degenerate propensities, this fails where the cause is legible instead
+    of downstream on an empty metrics dict.
+    """
+    batch = prior.get_batch()
+    train_size = int(batch[16][0].item())
+    A_context = batch[4][:, :train_size].squeeze(-1)
+    assert bool((A_context == 0).any(dim=1).all()), "a context episode is all-treated"
+    assert bool((A_context == 1).any(dim=1).all()), "a context episode is all-control"
+    return batch
 
 
 @patch("wandb.init")
@@ -224,30 +288,10 @@ def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_contex
     dummy_args.mc_targets_on_context = mc_targets_on_context
     trainer = Trainer(dummy_args)
 
-    prior = PriorDataset(
-        batch_size=2,
-        batch_size_per_gp=2,
-        min_dim_U=2,
-        max_dim_U=dummy_args.max_dim_U,
-        min_dim_W=2,
-        max_dim_W=dummy_args.max_dim_W,
-        min_dim_Z=2,
-        max_dim_Z=dummy_args.max_dim_Z,
-        min_dim_X=2,
-        max_dim_X=dummy_args.max_dim_X,
-        min_seq_len=None,
-        max_seq_len=64,
-        # A wide context so both treatment arms are present; run_micro_batch
-        # legitimately returns None when one arm is missing.
-        min_train_size=24,
-        max_train_size=25,
-        prior_type="mlp_scm",
-        mc_cate=3,
-        mc_targets_on_context=mc_targets_on_context,
-        n_jobs=1,
-        device="cpu",
+    prior = _overlap_prior(
+        dummy_args, mc_cate=3, mc_targets_on_context=mc_targets_on_context
     )
-    batch = prior.get_batch()
+    batch = _batch_with_both_arms(prior)
 
     MU0, train_sizes = batch[9], batch[16]
     train_size = int(train_sizes[0].item())
@@ -279,27 +323,7 @@ def test_trainer_micro_batch_cate_single(dummy_args):
         trainer.raw_model.nbins
     )
 
-    prior = PriorDataset(
-        batch_size=2,
-        batch_size_per_gp=2,
-        min_dim_U=2,
-        max_dim_U=dummy_args.max_dim_U,
-        min_dim_W=2,
-        max_dim_W=dummy_args.max_dim_W,
-        min_dim_Z=2,
-        max_dim_Z=dummy_args.max_dim_Z,
-        min_dim_X=2,
-        max_dim_X=dummy_args.max_dim_X,
-        min_seq_len=None,
-        max_seq_len=64,
-        min_train_size=24,
-        max_train_size=25,
-        prior_type="mlp_scm",
-        mc_cate=3,
-        n_jobs=1,
-        device="cpu",
-    )
-    batch = prior.get_batch()
+    batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=3))
 
     results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
 
@@ -335,28 +359,10 @@ def test_trainer_micro_batch_cate_single_noise_aware(dummy_args, mc_targets_on_c
     )
     assert hasattr(trainer.raw_model, "cate_bin_edges")
 
-    prior = PriorDataset(
-        batch_size=2,
-        batch_size_per_gp=2,
-        min_dim_U=2,
-        max_dim_U=dummy_args.max_dim_U,
-        min_dim_W=2,
-        max_dim_W=dummy_args.max_dim_W,
-        min_dim_Z=2,
-        max_dim_Z=dummy_args.max_dim_Z,
-        min_dim_X=2,
-        max_dim_X=dummy_args.max_dim_X,
-        min_seq_len=None,
-        max_seq_len=64,
-        min_train_size=24,
-        max_train_size=25,
-        prior_type="mlp_scm",
-        mc_cate=8,
-        mc_targets_on_context=mc_targets_on_context,
-        n_jobs=1,
-        device="cpu",
+    prior = _overlap_prior(
+        dummy_args, mc_cate=8, mc_targets_on_context=mc_targets_on_context
     )
-    batch = prior.get_batch()
+    batch = _batch_with_both_arms(prior)
 
     S2, train_sizes = batch[17], batch[16]
     train_size = int(train_sizes[0].item())
@@ -389,27 +395,8 @@ def test_noise_aware_falls_back_when_the_variance_is_missing(dummy_args):
     dummy_args.loss_type = "cate_single_noise_aware"
     trainer = Trainer(dummy_args)
 
-    prior = PriorDataset(
-        batch_size=2,
-        batch_size_per_gp=2,
-        min_dim_U=2,
-        max_dim_U=dummy_args.max_dim_U,
-        min_dim_W=2,
-        max_dim_W=dummy_args.max_dim_W,
-        min_dim_Z=2,
-        max_dim_Z=dummy_args.max_dim_Z,
-        min_dim_X=2,
-        max_dim_X=dummy_args.max_dim_X,
-        min_seq_len=None,
-        max_seq_len=64,
-        min_train_size=24,
-        max_train_size=25,
-        prior_type="mlp_scm",
-        mc_cate=1,
-        n_jobs=1,
-        device="cpu",
-    )
-    results = trainer.run_micro_batch(prior.get_batch(), 0, 1, is_train=False)
+    batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=1))
+    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
 
     assert results["noise/frac_fallback"] == 1.0
     assert results["noise/mean_s"] == 0.0
