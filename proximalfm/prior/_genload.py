@@ -149,6 +149,70 @@ def sparse2dense(
     return dense
 
 
+def sparse2dense_blocks(
+    sparse_tensor: torch.Tensor,
+    dims: torch.Tensor,
+    seq_len: int,
+    dtype: torch.dtype = torch.float32,
+) -> torch.Tensor:
+    """Decode the block-structured layout the batch files actually use.
+
+    Equivalent to ``sparse2dense(sparse_tensor, dims.repeat_interleave(seq_len))``
+    reshaped to ``(len(dims), seq_len, dims.max())``, but exploits the structure
+    the generic function cannot see: every batch file stores one dataset's
+    features as ``seq_len`` consecutive rows of the *same* width ``dims[i]``, so
+    each dataset is one contiguous ``dims[i] * seq_len`` run that reshapes
+    straight into ``(seq_len, dims[i])``.
+
+    ``sparse2dense`` has to assume a per-row width and builds a
+    ``(len(dims) * seq_len, max_len)`` boolean mask to place the values --
+    ~19 MB of bools for a 480-episode / 2048-row batch, four times over
+    (U/X/W/Z). That mask is what this avoids.
+
+    Parameters
+    ----------
+    sparse_tensor : torch.Tensor
+        1D tensor holding the datasets' features back to back.
+
+    dims : torch.Tensor
+        Per-dataset feature width, shape ``(num_datasets,)``.
+
+    seq_len : int
+        Rows per dataset (shared by every dataset in the file).
+
+    dtype : torch.dtype, default=torch.float32
+        Output data type.
+
+    Returns
+    -------
+    torch.Tensor
+        Dense tensor of shape ``(num_datasets, seq_len, dims.max())``, zero
+        padded past each dataset's own width.
+    """
+    assert sparse_tensor.dim() == 1, "data must be 1D"
+    dims = dims.to(torch.long)
+    block_sizes = dims * seq_len
+    assert block_sizes.sum() == len(
+        sparse_tensor
+    ), "data length must match sum(dims) * seq_len"
+
+    num_datasets = len(dims)
+    max_dim = int(dims.max()) if num_datasets else 0
+    dense = torch.zeros(
+        num_datasets,
+        seq_len,
+        max_dim,
+        dtype=dtype,
+        device=sparse_tensor.device,
+    )
+    offset = 0
+    for i, (dim, block) in enumerate(zip(dims.tolist(), block_sizes.tolist())):
+        dense[i, :, :dim] = sparse_tensor[offset : offset + block].view(seq_len, dim)
+        offset += block
+
+    return dense
+
+
 class SliceNestedTensor:
     """A wrapper for nested tensors that supports slicing along the first dimension.
 
@@ -408,19 +472,11 @@ class LoadPriorDataset(IterableDataset):
             S2 = SliceNestedTensor(S2)
         else:
             # Convert sparse tensor to dense
-            T = seq_lens[0]
-            U = sparse2dense(U, d_U.repeat_interleave(T), dtype=torch.float32).view(
-                batch_size, T, -1
-            )
-            X = sparse2dense(X, d_X.repeat_interleave(T), dtype=torch.float32).view(
-                batch_size, T, -1
-            )
-            W = sparse2dense(W, d_W.repeat_interleave(T), dtype=torch.float32).view(
-                batch_size, T, -1
-            )
-            Z = sparse2dense(Z, d_Z.repeat_interleave(T), dtype=torch.float32).view(
-                batch_size, T, -1
-            )
+            T = int(seq_lens[0])
+            U = sparse2dense_blocks(U, d_U, T, dtype=torch.float32)
+            X = sparse2dense_blocks(X, d_X, T, dtype=torch.float32)
+            W = sparse2dense_blocks(W, d_W, T, dtype=torch.float32)
+            Z = sparse2dense_blocks(Z, d_Z, T, dtype=torch.float32)
 
         # Delete file if requested
         if self.delete_after_load and batch_file.exists():

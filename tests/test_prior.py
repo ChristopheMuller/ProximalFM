@@ -15,6 +15,7 @@ from proximalfm.prior._genload import (
     LoadPriorDataset,
     dense2sparse,
     sparse2dense,
+    sparse2dense_blocks,
     SliceNestedTensor,
     cat_slice_nested_tensors,
 )
@@ -448,6 +449,28 @@ def test_sparse2dense():
         AssertionError, match="data length must match sum of row_lengths"
     ):
         sparse2dense(sparse, torch.tensor([2, 2]))
+
+
+@pytest.mark.parametrize("dims", [[3], [2, 5, 1], [4, 4, 4], [1, 7]])
+@pytest.mark.parametrize("seq_len", [1, 6])
+def test_sparse2dense_blocks_matches_sparse2dense(dims, seq_len):
+    # sparse2dense_blocks is a structure-aware fast path, not a new semantic:
+    # it must agree bit for bit with the generic function on the layout the
+    # batch files use (seq_len consecutive rows per dataset, all of width d_i).
+    dims = torch.tensor(dims)
+    sparse = torch.arange(float(int((dims * seq_len).sum())))
+
+    fast = sparse2dense_blocks(sparse, dims, seq_len)
+    reference = sparse2dense(
+        sparse, dims.repeat_interleave(seq_len), max_len=int(dims.max())
+    ).view(len(dims), seq_len, -1)
+
+    assert torch.equal(fast, reference)
+
+
+def test_sparse2dense_blocks_rejects_a_length_mismatch():
+    with pytest.raises(AssertionError, match=r"sum\(dims\) \* seq_len"):
+        sparse2dense_blocks(torch.arange(5.0), torch.tensor([2, 2]), 2)
 
 
 # ---------------------------------------------------------------------------
