@@ -61,6 +61,16 @@ warnings.filterwarnings(
 _LEGACY_TARGET_VAR_WARNED = False
 
 
+class PriorBatchTimeout(RuntimeError):
+    """The next batch file did not appear within ``LoadPriorDataset.timeout``.
+
+    Distinguishes "the producer has not written this file (yet)" -- the one
+    condition under which the loader may legitimately give up and hand back a
+    short batch -- from every other failure (a truncated ``.pt``, a malformed
+    payload, an unpickling error), which must propagate.
+    """
+
+
 def dense2sparse(
     dense_tensor: torch.Tensor,
     row_lengths: torch.Tensor,
@@ -328,7 +338,7 @@ class LoadPriorDataset(IterableDataset):
         wait_time = 0
         while not batch_file.exists():
             if wait_time >= self.timeout:
-                raise RuntimeError(f"Timeout waiting for batch file {batch_file}")
+                raise PriorBatchTimeout(f"Timeout waiting for batch file {batch_file}")
             time.sleep(5)
             wait_time += 5
 
@@ -631,8 +641,15 @@ class LoadPriorDataset(IterableDataset):
                         [self.buffer_train_sizes, train_sizes], dim=0
                     )
                     self.buffer_size += file_batch_size
-            except Exception as e:
-                # If we can't load more files, use what we have
+            except PriorBatchTimeout as e:
+                # The producer has not written the next file yet. Topping the
+                # buffer up is best-effort, so return the short batch we already
+                # have. Every other failure -- a truncated file, a payload
+                # missing a key, an unpickling error -- is a real fault and must
+                # propagate: swallowing it here would leave the loader retrying
+                # the same unreadable index forever (_load_batch_file raises
+                # before advancing current_idx), silently yielding short batches
+                # for the rest of the run.
                 print(f"Warning: Could not load more files: {str(e)}")
                 break
 

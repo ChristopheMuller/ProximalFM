@@ -13,6 +13,8 @@ from proximalfm.prior._reg2cls import BlockProfile, dominates
 from proximalfm.prior._genload import (
     SavePriorDataset,
     LoadPriorDataset,
+    PriorBatchTimeout,
+    write_batch_file,
     dense2sparse,
     sparse2dense,
     SliceNestedTensor,
@@ -1722,6 +1724,67 @@ def test_s2_and_k_eff_round_trip_through_disk(tmp_path):
     raw = torch.load(tmp_path / "batch_000000.pt", weights_only=True)
     assert torch.equal(raw["S2"], S2)
     assert torch.equal(raw["K_eff"], K_eff)
+
+
+def _write_dummy_batch(save_dir, batch_idx, B=2, T=6, d=3):
+    """Write one minimal, fully deterministic batch file.
+
+    Deliberately avoids SavePriorDataset: these tests only exercise the loader's
+    file handling, and running the SCM generator would consume global RNG and
+    shift the stream for every test that runs afterwards.
+    """
+    ones = torch.ones(B, T, d)
+    col = torch.ones(B, T)
+    dims = torch.full((B,), d, dtype=torch.long)
+    write_batch_file(
+        save_dir,
+        batch_idx,
+        U=ones,
+        X=ones,
+        W=ones,
+        Z=ones,
+        A=col,
+        A_probs=col,
+        Y_obs=col,
+        Y0=col,
+        Y1=col,
+        MU0=col,
+        MU1=col,
+        d_U=dims,
+        d_X=dims,
+        d_W=dims,
+        d_Z=dims,
+        seq_lens=torch.full((B,), T, dtype=torch.long),
+        train_sizes=torch.full((B,), T // 2, dtype=torch.long),
+        S2=torch.zeros(B, T),
+        K_eff=torch.zeros(B, dtype=torch.long),
+    )
+    return B
+
+
+def test_unreadable_batch_file_raises_instead_of_yielding_a_short_batch(tmp_path):
+    # Topping the buffer up is best-effort only for "the producer has not
+    # written the next file yet". A corrupt file is a real fault: swallowing it
+    # would leave the loader retrying the same index forever (_load_batch_file
+    # raises before advancing current_idx), quietly halving every batch.
+    B = _write_dummy_batch(tmp_path, 0)
+    (tmp_path / "batch_000001.pt").write_bytes(b"not a torch checkpoint")
+
+    # batch_size spans two files, so __next__ must reach the corrupt one.
+    loader = LoadPriorDataset(tmp_path, batch_size=2 * B, max_batches=2, timeout=0)
+    with pytest.raises(Exception) as excinfo:
+        next(iter(loader))
+    assert not isinstance(excinfo.value, PriorBatchTimeout)
+
+
+def test_missing_batch_file_still_returns_the_partial_buffer(tmp_path):
+    # The other side of the same coin: a genuinely absent next file times out
+    # and hands back the short batch already buffered, as before.
+    B = _write_dummy_batch(tmp_path, 0)
+
+    loader = LoadPriorDataset(tmp_path, batch_size=2 * B, max_batches=2, timeout=0)
+    out = next(iter(loader))
+    assert out[1].shape[0] == B
 
 
 def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
