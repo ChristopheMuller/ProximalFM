@@ -344,7 +344,9 @@ class LoadPriorDataset(IterableDataset):
         self.batch_size = batch_size
         self.ddp_world_size = ddp_world_size
         self.ddp_rank = ddp_rank
+        # Overwritten by __iter__ once the dataloader worker identity is known.
         self.current_idx = ddp_rank + start_from
+        self.stride = ddp_world_size
         self.max_batches = max_batches
         self.timeout = timeout
         self.delete_after_load = delete_after_load
@@ -383,7 +385,28 @@ class LoadPriorDataset(IterableDataset):
         self.buffer_size = 0
 
     def __iter__(self):
-        self.current_idx = self.ddp_rank + self.start_from
+        """Claim this replica's disjoint slice of the batch-file indices.
+
+        An ``IterableDataset`` is *copied* into every dataloader worker, so a
+        worker that does not narrow its own share replays the exact same files
+        as its siblings. Sharding on ``ddp_rank`` alone did precisely that:
+        with the trainer's default ``--train_dataloader_num_workers 4``, all
+        four workers walked the identical index sequence and a ``--prior_dir``
+        run consumed every batch file four times over (and, under
+        ``delete_after_load``, raced to unlink it).
+
+        Interleave both axes into one flat stride so each (rank, worker) pair
+        owns a distinct residue class. With a single worker the offset and
+        stride reduce to the previous ``ddp_rank`` / ``ddp_world_size``, so the
+        ``num_workers=0`` path -- validation, and every existing test -- is
+        unchanged.
+        """
+        worker_info = torch.utils.data.get_worker_info()
+        num_workers = 1 if worker_info is None else worker_info.num_workers
+        worker_id = 0 if worker_info is None else worker_info.id
+
+        self.stride = self.ddp_world_size * num_workers
+        self.current_idx = self.start_from + self.ddp_rank * num_workers + worker_id
         self.buffer_size = 0
         return self
 
@@ -492,8 +515,8 @@ class LoadPriorDataset(IterableDataset):
         if self.delete_after_load and batch_file.exists():
             batch_file.unlink()
 
-        # Prepare next index for this process
-        self.current_idx += self.ddp_world_size
+        # Prepare next index for this (rank, worker) shard
+        self.current_idx += self.stride
 
         return (
             U,
@@ -822,7 +845,7 @@ class LoadPriorDataset(IterableDataset):
             f"  batch_size: {self.batch_size}\n"
             f"  ddp_world_size: {self.ddp_world_size}\n"
             f"  ddp_rank: {self.ddp_rank}\n"
-            f"  start_from: {self.current_idx - self.ddp_rank}\n"
+            f"  start_from: {self.start_from}\n"
             f"  max_batches: {self.max_batches or 'Infinite'}\n"
             f"  timeout: {self.timeout}\n"
             f"  delete_after_load: {self.delete_after_load}\n"
