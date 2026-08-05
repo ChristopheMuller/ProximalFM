@@ -1226,10 +1226,6 @@ class Trainer:
                 # CATE prediction synthesizes the additive ATE and HE predictions
                 pred_cate_std = ate_mu + mean_he_pred_std
 
-                # Evaluator requirements zero-padding to avoid crash (MSE will be ignored)
-                mean_pred_y0_std = torch.zeros_like(y_test_0_std)
-                mean_pred_y1_std = torch.zeros_like(y_test_1_std)
-
             elif loss_type == "hl":
                 nbins = self.raw_model.nbins
                 logits_y0 = pred_logits[..., :nbins]
@@ -1304,11 +1300,6 @@ class Trainer:
                 # under either objective.
                 total_loss = loss_cate_dist + (lambda_cate * loss_cate)
 
-                # The evaluator expects per-arm predictions; this head has none.
-                # Zero-padding keeps it running (val_po/* metrics are gated off below).
-                mean_pred_y0_std = torch.zeros_like(y_test_0_std)
-                mean_pred_y1_std = torch.zeros_like(y_test_1_std)
-
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
@@ -1326,14 +1317,22 @@ class Trainer:
             # distribution they duplicate the loss at a batch size chosen for
             # throughput rather than estimator variance.
             if not is_train:
-                self.val_evaluator.update(
-                    pred_y0=mean_pred_y0_std,
-                    pred_y1=mean_pred_y1_std,
-                    true_y0=y_test_0_std,
-                    true_y1=y_test_1_std,
-                    pred_cate=pred_cate_std,
-                    true_cate=true_cate_std,
-                )
+                # Only bins_po/hl have a real per-arm head; other loss types
+                # predict the effect directly and have no honest po/* to report.
+                if loss_type in ("bins_po", "hl"):
+                    self.val_evaluator.update(
+                        pred_y0=mean_pred_y0_std,
+                        pred_y1=mean_pred_y1_std,
+                        true_y0=y_test_0_std,
+                        true_y1=y_test_1_std,
+                        pred_cate=pred_cate_std,
+                        true_cate=true_cate_std,
+                    )
+                else:
+                    self.val_evaluator.update(
+                        pred_cate=pred_cate_std,
+                        true_cate=true_cate_std,
+                    )
 
             # Training metrics are accumulated over num_micro_batches to sum to
             # one step's worth once every micro batch has been added in; eval
@@ -1569,13 +1568,11 @@ class Trainer:
             for batch in self.val_dataloader:
                 self.run_val_batch(batch)
 
-        final_metrics = self._drop_meaningless_metrics(
-            self.val_evaluator.compute(
-                prefix="val_",
-                sync_ddp=self.ddp,
-                device=self.config.device,
-                include_count=True,
-            )
+        final_metrics = self.val_evaluator.compute(
+            prefix="val_",
+            sync_ddp=self.ddp,
+            device=self.config.device,
+            include_count=True,
         )
 
         # Time (seconds) taken to pass over the whole validation set.
@@ -1640,21 +1637,6 @@ class Trainer:
             "noise/mean_K": micro_K_eff.float().mean().item() / scale,
             "target/cate_out_of_grid_frac": out_of_grid.item() / scale,
         }
-
-    def _drop_meaningless_metrics(self, metrics: dict) -> dict:
-        """Strip per-arm (po/*) metrics for loss types that predict effects directly.
-
-        Those loss types have no y0/y1 head and feed the evaluator zeros, so the
-        resulting po/* numbers are artefacts. Dropping them is preferable to logging
-        zeros that later read as results.
-        """
-        if self.loss_type not in (
-            "cate_decomposition",
-            "cate_single",
-            "cate_single_noise_aware",
-        ):
-            return metrics
-        return {k: v for k, v in metrics.items() if "po/" not in k}
 
     def get_hl_sigma(self) -> float:
         """

@@ -59,37 +59,46 @@ class CausalEvaluator:
     def update(
         self,
         *,
-        pred_y0: torch.Tensor,
-        pred_y1: torch.Tensor,
-        true_y0: torch.Tensor,
-        true_y1: torch.Tensor,
         pred_cate: torch.Tensor,
         true_cate: torch.Tensor,
+        pred_y0: torch.Tensor | None = None,
+        pred_y1: torch.Tensor | None = None,
+        true_y0: torch.Tensor | None = None,
+        true_y1: torch.Tensor | None = None,
         extra_metrics: dict[str, float | torch.Tensor] | None = None,
     ):
         """
         Update evaluator state with one micro-batch. All inputs are assumed
         to be in standardized space.
+
+        Per-arm predictions (``pred_y0``/``pred_y1``/``true_y0``/``true_y1``)
+        are optional: loss types with no y0/y1 head (``cate_decomposition``,
+        ``cate_single``, ``cate_single_noise_aware``) have nothing honest to
+        pass here, so ``po/*`` metrics are only produced when all four are
+        given.
         """
 
-        pred_y0 = pred_y0.detach().float()
-        pred_y1 = pred_y1.detach().float()
-        true_y0 = true_y0.detach().float()
-        true_y1 = true_y1.detach().float()
         pred_cate = pred_cate.detach().float()
         true_cate = true_cate.detach().float()
 
-        batch_size = pred_y0.shape[0]
+        batch_size = pred_cate.shape[0]
 
-        # 1. Potential outcome metrics (per-episode; summarized via percentiles)
-        mse_y0 = F.mse_loss(pred_y0, true_y0, reduction="none").mean(dim=1)
-        mse_y1 = F.mse_loss(pred_y1, true_y1, reduction="none").mean(dim=1)
+        # 1. Potential outcome metrics (per-episode; summarized via percentiles).
+        # Opt-in: only loss types with a real per-arm head pass these.
+        if pred_y0 is not None:
+            pred_y0 = pred_y0.detach().float()
+            pred_y1 = pred_y1.detach().float()
+            true_y0 = true_y0.detach().float()
+            true_y1 = true_y1.detach().float()
 
-        rmse_y0 = torch.sqrt(mse_y0)
-        rmse_y1 = torch.sqrt(mse_y1)
+            mse_y0 = F.mse_loss(pred_y0, true_y0, reduction="none").mean(dim=1)
+            mse_y1 = F.mse_loss(pred_y1, true_y1, reduction="none").mean(dim=1)
 
-        self.metric_values["po/rmse_y0"].append(rmse_y0.cpu())
-        self.metric_values["po/rmse_y1"].append(rmse_y1.cpu())
+            rmse_y0 = torch.sqrt(mse_y0)
+            rmse_y1 = torch.sqrt(mse_y1)
+
+            self.metric_values["po/rmse_y0"].append(rmse_y0.cpu())
+            self.metric_values["po/rmse_y1"].append(rmse_y1.cpu())
 
         # 2. CATE metrics (per-episode; summarized via percentiles)
         mse_cate = F.mse_loss(pred_cate, true_cate, reduction="none").mean(dim=1)

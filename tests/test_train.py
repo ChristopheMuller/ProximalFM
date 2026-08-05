@@ -230,6 +230,10 @@ def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_contex
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
 
+    # bins_po has a real per-arm head, so its po/* metrics are genuine and kept.
+    val_metrics = trainer.val_evaluator.compute(prefix="val_")
+    assert any(key.startswith("val_po/") for key in val_metrics)
+
 
 def test_trainer_micro_batch_cate_single(dummy_args):
     """The cate_single loss branch runs and reports its own finite metrics.
@@ -275,11 +279,11 @@ def test_trainer_micro_batch_cate_single(dummy_args):
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
 
-    # Per-arm metrics are artefacts of the evaluator zero-padding for this head.
-    metrics = trainer._drop_meaningless_metrics(
-        {"val_po/rmse_y0": 0.0, "val_cate/npehe": 1.0}
-    )
-    assert metrics == {"val_cate/npehe": 1.0}
+    # cate_single has no per-arm head, so the val evaluator was updated without
+    # pred_y0/pred_y1/true_y0/true_y1 and reports no po/* metrics.
+    val_metrics = trainer.val_evaluator.compute(prefix="val_")
+    assert not any(key.startswith("val_po/") for key in val_metrics)
+    assert any(key.startswith("val_cate/") for key in val_metrics)
 
 
 @pytest.mark.parametrize("mc_targets_on_context", [True, False])

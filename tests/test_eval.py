@@ -76,6 +76,20 @@ def test_update_perfect_prediction(evaluator, batch_size, seq_len):
     assert metrics["eval/episodes"] == batch_size
 
 
+def test_update_without_per_arm_predictions_omits_po_metrics(evaluator):
+    """A cate_single-shaped update (no per-arm head) reports cate/ate but no po/*."""
+    batch_size, seq_len = 4, 5
+    pred_cate = torch.rand(batch_size, seq_len)
+
+    evaluator.update(pred_cate=pred_cate, true_cate=pred_cate.clone())
+
+    metrics = evaluator.compute()
+
+    assert metrics["cate/rmse"] == pytest.approx(0.0, abs=1e-6)
+    assert "ate/rmse" in metrics
+    assert not any(key.startswith("po/") for key in metrics)
+
+
 @pytest.mark.parametrize("offset", [1.0, 2.0, 0.5])
 def test_update_known_values(evaluator, offset):
     """Test RMSE computation against manually calculated expected values."""
