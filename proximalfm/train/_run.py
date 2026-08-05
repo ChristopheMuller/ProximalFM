@@ -86,7 +86,7 @@ class Trainer:
         )
 
         self.save_best = getattr(self.config, "save_best", True)
-        self.best_metric = getattr(self.config, "best_metric", "val_cate/npehe")
+        self.best_metric = getattr(self.config, "best_metric", "val/point/cate/npehe")
         self.best_metric_mode = getattr(self.config, "best_metric_mode", "min")
         self.best_metric_value = None
         self._warned_missing_metric = False
@@ -1569,14 +1569,14 @@ class Trainer:
                 self.run_val_batch(batch)
 
         final_metrics = self.val_evaluator.compute(
-            prefix="val_",
+            prefix="val/point/",
             sync_ddp=self.ddp,
             device=self.config.device,
             include_count=True,
         )
 
         # Time (seconds) taken to pass over the whole validation set.
-        final_metrics["val_time"] = val_timer.elapsed
+        final_metrics["val/time"] = val_timer.elapsed
 
         self.val_evaluator.reset()
         self.model.train()

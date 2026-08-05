@@ -518,11 +518,11 @@ def build_parser():
     )
     parser.add_argument(
         "--best_metric",
-        default="val_cate/npehe",
+        default="val/point/cate/npehe",
         type=str,
         help="Validation metric key to monitor for best-model checkpointing "
-        "(e.g. 'val_cate/rmse', 'val_ate/rmse', 'val_cate/r2'). See CausalEvaluator "
-        "for available keys.",
+        "(e.g. 'val/point/cate/rmse', 'val/point/ate/rmse', 'val/point/cate/r2'). "
+        "See CausalEvaluator for available keys.",
     )
     parser.add_argument(
         "--best_metric_mode",

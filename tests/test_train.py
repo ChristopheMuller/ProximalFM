@@ -231,8 +231,8 @@ def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_contex
         assert math.isfinite(value), f"{key} is not finite: {value}"
 
     # bins_po has a real per-arm head, so its po/* metrics are genuine and kept.
-    val_metrics = trainer.val_evaluator.compute(prefix="val_")
-    assert any(key.startswith("val_po/") for key in val_metrics)
+    val_metrics = trainer.val_evaluator.compute(prefix="val/point/")
+    assert any(key.startswith("val/point/po/") for key in val_metrics)
 
 
 def test_trainer_micro_batch_cate_single(dummy_args):
@@ -281,9 +281,9 @@ def test_trainer_micro_batch_cate_single(dummy_args):
 
     # cate_single has no per-arm head, so the val evaluator was updated without
     # pred_y0/pred_y1/true_y0/true_y1 and reports no po/* metrics.
-    val_metrics = trainer.val_evaluator.compute(prefix="val_")
-    assert not any(key.startswith("val_po/") for key in val_metrics)
-    assert any(key.startswith("val_cate/") for key in val_metrics)
+    val_metrics = trainer.val_evaluator.compute(prefix="val/point/")
+    assert not any(key.startswith("val/point/po/") for key in val_metrics)
+    assert any(key.startswith("val/point/cate/") for key in val_metrics)
 
 
 @pytest.mark.parametrize("mc_targets_on_context", [True, False])

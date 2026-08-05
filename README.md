@@ -271,7 +271,7 @@ uv run python -m proximalfm.train \
     --val_dir synthetic/validation_data/val \
     --val_interval 50 \
     --save_best true \
-    --best_metric val_cate/npehe \
+    --best_metric val/point/cate/npehe \
     --best_metric_mode min
 ```
 
@@ -280,7 +280,7 @@ uv run python -m proximalfm.train \
 | `--val_dir` | `None` | Directory of `batch_*.pt` files to validate on (no validation if unset). |
 | `--val_interval` | `50` | Steps between validation passes. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
-| `--best_metric` | `val_cate/npehe` | Metric key to monitor (e.g. `val_cate/rmse`, `val_ate/rmse`, `val_cate/r2`). |
+| `--best_metric` | `val/point/cate/npehe` | Metric key to monitor (e.g. `val/point/cate/rmse`, `val/point/ate/rmse`, `val/point/cate/r2`). |
 | `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |
 | `--val_micro_batch_size` | `--micro_batch_size` | Validation runs without backward, so it can afford a larger micro-batch. |
 
