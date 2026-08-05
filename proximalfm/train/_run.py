@@ -29,7 +29,6 @@ from proximalfm._model.proximalfm import ProximalFM
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
-from proximalfm.prior._linear_dataset import LinearPriorDataset
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
 from proximalfm.train._eval import CausalEvaluator
@@ -126,26 +125,18 @@ def load_transfer_rules(path: str) -> dict:
 def compute_crps_loss(
     logits: torch.Tensor, y_target: torch.Tensor, bin_edges: torch.Tensor
 ) -> torch.Tensor:
+    """Ranked Probability Score (discrete CRPS).
+
+    Hyperparameter-free, and unlike cross-entropy it respects the distance
+    between bins. Computed as the MSE between the predicted CDF and the ideal
+    step-function CDF of the target.
     """
-    Computes the Ranked Probability Score (Discrete CRPS).
-    Requires zero hyperparameters and naturally respects the distance between bins.
-    """
-    # Convert logits to probabilities
-    probs = F.softmax(logits, dim=-1)
+    pred_cdf = torch.cumsum(F.softmax(logits, dim=-1), dim=-1)
+    # bin_edges[1:] are the upper edges: the step CDF is 1 from the bin
+    # containing the target onwards.
+    target_cdf = (bin_edges[1:].view(1, 1, -1) >= y_target.unsqueeze(-1)).float()
 
-    # 1. Compute predicted CDF
-    pred_cdf = torch.cumsum(probs, dim=-1)
-
-    # 2. Compute target CDF
-    # It is an ideal step function: 0 for bins below the target, 1 for bins above
-    y_target_expanded = y_target.unsqueeze(-1)
-    # bin_edges[1:] represents the upper edge of each bin
-    target_cdf = (bin_edges[1:].view(1, 1, -1) >= y_target_expanded).float()
-
-    # 3. CRPS is the Mean Squared Error between the CDFs
-    crps = torch.mean((pred_cdf - target_cdf) ** 2, dim=-1)
-
-    return crps.mean()
+    return torch.mean((pred_cdf - target_cdf) ** 2, dim=-1).mean()
 
 
 def gaussian_bin_mass(
@@ -750,7 +741,6 @@ class Trainer:
         if self.master_process:
             print(dataset)
 
-        # Create dataloader for efficient loading and prefetching.
         # pin_memory only accelerates CPU->CUDA host transfers. It is a no-op (and
         # warns) when the prior is already generated on an accelerator, and is
         # unsupported on MPS, so only pin when the prior comes from the CPU and the
@@ -1444,19 +1434,23 @@ class Trainer:
         Parameters
         ----------
         micro_batch : tuple
-            (micro_X, micro_y, micro_d, micro_seq_len, micro_train_size) tensors
-            for the micro batch.
+            The 19-tensor prior batch tuple, sliced along the dataset dimension.
 
         micro_batch_idx : int
-            Index of the current micro batch.
+            Index of the current micro batch (unused; kept for call-site clarity).
 
         num_micro_batches : int
-            Total number of micro batches.
+            Total number of micro batches. Losses and reported metrics are divided
+            by it during training so that the accumulated batch sums to one step.
+
+        is_train : bool
+            Whether to backpropagate and feed the training evaluator.
 
         Returns
         -------
-        dict
-            Result dictionary with 'ce' and 'accuracy' keys.
+        dict or None
+            Per-micro-batch loss/target metrics, or ``None`` when the micro batch
+            was skipped (a single-arm context, or NaN logits).
         """
         (
             micro_U,
@@ -1511,21 +1505,22 @@ class Trainer:
         )
 
         # Move to device
-        micro_X = micro_X.to(self.config.device)
-        micro_W = micro_W.to(self.config.device)
-        micro_Z = micro_Z.to(self.config.device)
-        micro_A = micro_A.to(self.config.device)
-        micro_Y_obs = micro_Y_obs.to(self.config.device)
-        micro_Y0 = micro_Y0.to(self.config.device)
-        micro_Y1 = micro_Y1.to(self.config.device)
-        micro_MU0 = micro_MU0.to(self.config.device)
-        micro_MU1 = micro_MU1.to(self.config.device)
-        micro_S2 = micro_S2.to(self.config.device)
-        micro_d_X = micro_d_X.to(self.config.device)
-        micro_d_W = micro_d_W.to(self.config.device)
-        micro_d_Z = micro_d_Z.to(self.config.device)
+        device = self.config.device
+        micro_X = micro_X.to(device)
+        micro_W = micro_W.to(device)
+        micro_Z = micro_Z.to(device)
+        micro_A = micro_A.to(device)
+        micro_Y_obs = micro_Y_obs.to(device)
+        micro_Y0 = micro_Y0.to(device)
+        micro_Y1 = micro_Y1.to(device)
+        micro_MU0 = micro_MU0.to(device)
+        micro_MU1 = micro_MU1.to(device)
+        micro_S2 = micro_S2.to(device)
+        micro_d_X = micro_d_X.to(device)
+        micro_d_W = micro_d_W.to(device)
+        micro_d_Z = micro_d_Z.to(device)
 
-        # 2. Standardize Targets based ONLY on the observed training context
+        # 2. Standardize targets based ONLY on the observed training context
         y_train_obs = micro_Y_obs[:, :train_size]
         y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
         y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
@@ -1884,23 +1879,22 @@ class Trainer:
         return micro_results
 
     def run_batch(self, batch):
-        """Train the model on a batch of datasets.
+        """Train the model on one batch of datasets (a single optimizer step).
 
-        Handles gradient accumulation by splitting the batch into micro-batches.
-        Supports variable-sized datasets by padding. Skips micro-batches on CUDA
-        OOM errors. Updates model parameters and returns loss and accuracy metrics.
+        Splits the batch into micro-batches for gradient accumulation, padding
+        nested tensors first. Micro-batches that OOM are skipped, and the logged
+        metrics are rescaled so a partial batch still reports per-batch values.
 
         Parameters
         ----------
         batch : tuple
-            Contains tensors (X, y, d, seq_len, train_size) for the batch.
-            X and y can be Tensors or NestedTensors (for variable sequence
-            lengths).
+            The 19-tensor prior batch tuple. Entries may be nested tensors when
+            sequence lengths vary across datasets.
 
         Returns
         -------
         dict
-            Dictionary containing 'ce' (cross-entropy loss) and 'accuracy'.
+            Loss and target metrics for the step, summed over micro-batches.
 
         Raises
         ------
