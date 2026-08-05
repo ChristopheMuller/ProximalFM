@@ -783,14 +783,13 @@ class Trainer:
         if ran_point_val:
             surface_results.update(self.point_validate())
 
-        # Distributional (prior/*) evaluation is rank-0 only for now
-        # (EVAL_PLAN step 6c): PosteriorEvaluator.compute has no sync_ddp
-        # path, so entering it on every rank would either duplicate the pass
-        # or, once episode sharding lands (step 6d), deadlock on an all_reduce
-        # the other ranks never issue.
+        # Distributional (prior/*) evaluation runs on ALL processes: the
+        # episodes are sharded round-robin and the metrics are all-reduced
+        # (EVAL_PLAN step 6d), so every rank must enter dist_validate() or the
+        # collectives inside it deadlock. The gate below is deliberately built
+        # only from values every rank agrees on.
         ran_dist_val = (
-            self.master_process
-            and self.dist_eval_dir is not None
+            self.dist_eval_dir is not None
             and self.dist_eval_interval > 0
             and (self.curr_step % self.dist_eval_interval == 0 or self.curr_step == 1)
         )
@@ -1655,10 +1654,12 @@ class Trainer:
         ``--dist_eval_dir`` via :func:`score_frozen_set` instead, emitting both
         ``prior/point/*`` and ``prior/dist/*``.
 
-        Rank-0 only: :class:`~proximalfm.train._dist_eval.PosteriorEvaluator`
-        has no ``sync_ddp`` path, so this must not be entered on more than one
-        process (the caller in ``_post_step`` gates on ``master_process``);
-        DDP sharding is step 6d.
+        Runs on every rank (EVAL_PLAN step 6d): episode ``i`` is scored by rank
+        ``i % world_size`` and the accumulators are all-reduced, so the result
+        is the single-process one up to the pooled-PIT subsample. Every rank
+        must therefore reach this method on the same steps -- including a rank
+        whose shard is empty, which is not hypothetical when
+        ``--dist_eval_max_episodes`` is smaller than the world size.
         """
         if self.dist_eval_dir is None:
             return {}
@@ -1672,6 +1673,9 @@ class Trainer:
                 device=self.config.device,
                 max_episodes=getattr(self.config, "dist_eval_max_episodes", None),
                 meta=self._dist_eval_meta,
+                rank=self.ddp_rank,
+                world_size=self.ddp_world_size,
+                sync_ddp=self.ddp,
             )
 
         # Time (seconds) taken to pass over the (possibly capped) frozen set.

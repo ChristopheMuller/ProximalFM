@@ -12,7 +12,13 @@ Two kinds of check, and both are needed:
   same quantity by an independent path.
 """
 
+import json
 import math
+import os
+import socket
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 import torch
@@ -343,3 +349,143 @@ def test_two_head_checkpoints_are_refused(frozen):
     _, out = frozen
     with pytest.raises(UnsupportedLossTypeError, match="two per-arm histograms"):
         score_frozen_set(_FakeTwoHeadModel(), out)
+
+
+# --------------------------------------------------------------------------
+# DDP: sharded episodes, synced metrics (EVAL_PLAN step 6d)
+# --------------------------------------------------------------------------
+
+
+def test_sync_ddp_false_is_the_single_process_path(frozen):
+    """The regression guard: with no process group, the step-6d parameters are
+    inert and the numbers are step 6c's."""
+    _, out = frozen
+    model = _FakeCateModel()
+    baseline = score_frozen_set(model, out)
+    assert score_frozen_set(model, out, rank=0, world_size=1, sync_ddp=True) == baseline
+
+
+@pytest.fixture(scope="module")
+def frozen4(tmp_path_factory):
+    """Four episodes, so a world of 2 gets a genuinely split shard."""
+    out = tmp_path_factory.mktemp("frozen_score_ddp")
+    cfg = BuildConfig(
+        n_datasets=4,
+        n_max=32,
+        n_q=8,
+        mc_cate=8,
+        seed=20260805,
+        prior_mc_mem_budget=2_000_000_000,
+    )
+    build(cfg, out, datasets_per_file=2, progress=False)
+    return cfg, out
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _run_sharded(out_dir, tmp_path, world_size, max_episodes=None, timeout=300):
+    """Launch ``world_size`` real gloo ranks; return each rank's metric dict.
+
+    Every rank's JSON is returned, not just rank 0's: after an all-reduce all
+    ranks must agree, and a rank that quietly skipped the collectives would
+    still write a file -- just a different one.
+    """
+    script = Path(__file__).resolve().parent / "ddp_dist_eval_worker.py"
+    env = dict(os.environ)
+    env.update(MASTER_ADDR="127.0.0.1", MASTER_PORT=str(_free_port()))
+    env.pop("RANK", None)
+
+    procs, paths = [], []
+    for rank in range(world_size):
+        path = Path(tmp_path) / f"rank{rank}.json"
+        paths.append(path)
+        cmd = [sys.executable, str(script), "--dir", str(out_dir), "--out", str(path)]
+        if max_episodes is not None:
+            cmd += ["--max-episodes", str(max_episodes)]
+        procs.append(
+            subprocess.Popen(
+                cmd,
+                env={**env, "RANK": str(rank), "WORLD_SIZE": str(world_size)},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        )
+
+    outputs = []
+    try:
+        for proc in procs:
+            outputs.append(proc.communicate(timeout=timeout)[0])
+    except subprocess.TimeoutExpired:
+        for proc in procs:
+            proc.kill()
+        pytest.fail(f"a rank did not finish within {timeout}s -- deadlock")
+
+    for rank, (proc, text) in enumerate(zip(procs, outputs)):
+        assert proc.returncode == 0, f"rank {rank} failed:\n{text}"
+    return [json.loads(p.read_text()) for p in paths]
+
+
+def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
+    cfg, out = frozen4
+    single = score_frozen_set(_FakeCateModel(), out)
+    per_rank = _run_sharded(out, tmp_path, world_size=2)
+
+    assert per_rank[0] == per_rank[1], "ranks disagree; a reduction was skipped"
+    sharded = per_rank[0]
+
+    # Counts first: the shard split is the thing most likely to lose episodes.
+    assert sharded["prior/dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert sharded["prior/point/eval/episodes"] == cfg.n_datasets
+
+    # Weighted sums reduce exactly, so these are equalities, not tolerances --
+    # including the driver-accumulated pooled RMSE, which lives outside either
+    # evaluator and has its own reduce.
+    for key in (
+        "prior/dist/crps",
+        "prior/dist/crps_oracle",
+        "prior/dist/cov50",
+        "prior/dist/cov90",
+        "prior/dist/width50",
+        "prior/dist/width90",
+        "prior/dist/mean_sd",
+        "prior/dist/sd_over_rmse",
+        "prior/dist/out_of_grid_frac",
+        "prior/point/cate/rmse_pooled",
+        "prior/point/ate/rmse",
+    ):
+        assert sharded[key] == pytest.approx(single[key], rel=1e-9), key
+
+    # Per-episode statistics are gathered, so the *set* is the same and the
+    # quantiles over it are exact too.
+    for key in ("prior/dist/pit_ks_episode_median", "prior/dist/pit_ks_episode_p90"):
+        assert sharded[key] == pytest.approx(single[key], rel=1e-9), key
+
+    # The pooled PIT is subsampled per rank before the gather, so the pooled KS
+    # is the same statistic on a possibly different sample. Compare as a
+    # distribution, not for equality.
+    assert sharded["prior/dist/pit_ks"] == pytest.approx(
+        single["prior/dist/pit_ks"], abs=0.05
+    )
+
+
+def test_empty_shard_still_completes(frozen4, tmp_path):
+    """One episode, two ranks: rank 1 accumulates nothing and must still enter
+    every collective. This is the deadlock the commit exists to get right."""
+    cfg, out = frozen4
+    single = score_frozen_set(_FakeCateModel(), out, max_episodes=1)
+    per_rank = _run_sharded(out, tmp_path, world_size=2, max_episodes=1)
+
+    assert per_rank[0] == per_rank[1]
+    assert per_rank[0]["prior/dist/eval/rows"] == cfg.n_q
+    assert per_rank[0]["prior/point/eval/episodes"] == 1
+    assert per_rank[0]["prior/point/cate/rmse_pooled"] == pytest.approx(
+        single["prior/point/cate/rmse_pooled"], rel=1e-9
+    )
+    assert per_rank[0]["prior/dist/crps"] == pytest.approx(
+        single["prior/dist/crps"], rel=1e-9
+    )

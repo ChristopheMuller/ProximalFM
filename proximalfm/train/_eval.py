@@ -179,9 +179,8 @@ class CausalEvaluator:
         if not ddp_active and self.num_episodes == 0:
             return {}
 
-        keys = sorted(self.metric_sums.keys())
         count = float(self.num_episodes)
-        sums = [float(self.metric_sums[k]) for k in keys]
+        raw_sums = {k: float(v) for k, v in self.metric_sums.items()}
 
         # Concatenate per-episode value tensors (local) for percentile metrics.
         value_tensors = {
@@ -192,38 +191,46 @@ class CausalEvaluator:
             if device is None:
                 raise ValueError("device must be provided when sync_ddp=True")
 
-            payload = torch.tensor(
-                [count, *sums],
-                dtype=torch.float64,
-                device=device,
-            )
-            dist.all_reduce(payload, op=dist.ReduceOp.SUM)
-
-            count = payload[0].item()
-            sums = payload[1:].tolist()
-
-            # Gather the full per-episode value tensors across ranks so the
-            # quantiles are computed over the global set of episodes. Keys may
-            # differ per rank (e.g. a rank with only homogeneous episodes has no
-            # "cate/r2"), so gather plain dicts and merge by key.
+            # Everything travels in one all_gather_object rather than an
+            # all_reduce over a packed tensor: the key sets are *not* guaranteed
+            # to agree across ranks. A rank that accumulated nothing (an empty
+            # shard under the step-6d distributional pass) has no sum keys at
+            # all, and a packed all_reduce would then be issued with mismatched
+            # sizes -- a hang, not an error. Summing gathered dicts by key is
+            # exact for sums and sidesteps the alignment problem entirely.
             world_size = dist.get_world_size()
             gathered: list[dict | None] = [None] * world_size
             dist.all_gather_object(
-                gathered, {k: t.cpu() for k, t in value_tensors.items()}
+                gathered,
+                {
+                    "count": count,
+                    "sums": raw_sums,
+                    "values": {k: t.cpu() for k, t in value_tensors.items()},
+                },
             )
+
+            count = 0.0
+            raw_sums = defaultdict(float)
             merged = defaultdict(list)
-            for rank_dict in gathered:
-                if not rank_dict:
+            for rank_payload in gathered:
+                if not rank_payload:
                     continue
-                for k, t in rank_dict.items():
+                count += float(rank_payload["count"])
+                for k, v in rank_payload["sums"].items():
+                    raw_sums[k] += float(v)
+                # Quantiles are computed over the *global* set of episodes. Keys
+                # may differ per rank here too (a rank with only homogeneous
+                # episodes has no "cate/r2").
+                for k, t in rank_payload["values"].items():
                     if t.numel() > 0:
                         merged[k].append(t)
+            raw_sums = dict(raw_sums)
             value_tensors = {k: torch.cat(v) for k, v in merged.items() if v}
 
         if count <= 0:
             return {}
 
-        raw_sums = {k: v for k, v in zip(keys, sums)}
+        keys = sorted(raw_sums.keys())
         metrics = {}
 
         # 1. Per-episode metrics: median + inter-quartile bounds.

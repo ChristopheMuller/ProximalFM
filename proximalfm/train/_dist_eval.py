@@ -29,8 +29,10 @@ uniform overall. ``pit_ks_episode_p90`` is the number that catches it.
 
 The class mirrors :class:`proximalfm.train._eval.CausalEvaluator`'s
 ``reset``/``update``/``compute`` shape so the trainer wiring (step 6) is
-mechanical. DDP synchronisation is deliberately *not* here yet -- it lands with
-that wiring.
+mechanical, ``sync_ddp`` included: :func:`score_frozen_set` shards the episodes
+round-robin across ranks and every rank then enters the same collectives, so a
+rank whose shard came out empty still participates rather than hanging the
+group.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
+import torch.distributed as dist
 
 from proximalfm.train._dist_metrics import (
     coverage,
@@ -96,7 +99,9 @@ class PosteriorEvaluator:
         time* rather than during accumulation, so the pooled sample stays an
         unbiased draw from all episodes rather than a prefix of them. A frozen
         set is bounded (``n_datasets * n_q`` rows), so this is a memory guard,
-        not a routine path.
+        not a routine path. Under DDP the cap is applied *per rank* as
+        ``max_pit // world_size`` before the gather -- gathering first and
+        subsampling after would defeat the memory bound that motivates it.
     seed : int
         Seeds the subsample, so the pooled KS is reproducible.
     """
@@ -192,12 +197,37 @@ class PosteriorEvaluator:
         self._rows += n
         self._episodes += 1
 
-    def _pooled_pit(self) -> torch.Tensor:
+    def _sum_keys(self) -> List[str]:
+        """The accumulator's keys, in a rank-independent order.
+
+        Not ``sorted(self._sums)``: a rank whose shard came out empty has an
+        empty ``_sums``, so the all-reduce payload has to be laid out from
+        ``self.levels`` (identical on every rank by construction) rather than
+        from what this rank happened to see.
+        """
+        keys = [
+            "crps",
+            "crps_oracle",
+            "mean_var",
+            "mean_sd",
+            "mse_obs",
+            "mean_s2",
+            "out_of_grid",
+        ]
+        for level in self.levels:
+            tag = f"{round(level * 100)}"
+            keys += [f"cov{tag}", f"width{tag}"]
+        return keys
+
+    def _pooled_pit(self, cap: Optional[int] = None) -> torch.Tensor:
+        cap = self.max_pit if cap is None else cap
+        if not self._pit:
+            return torch.empty(0)
         pool = torch.cat(self._pit)
-        if pool.numel() <= self.max_pit:
+        if pool.numel() <= cap:
             return pool
         gen = torch.Generator().manual_seed(self.seed)
-        idx = torch.randperm(pool.numel(), generator=gen)[: self.max_pit]
+        idx = torch.randperm(pool.numel(), generator=gen)[:cap]
         return pool[idx]
 
     def compute(
@@ -205,13 +235,65 @@ class PosteriorEvaluator:
         *,
         prefix: str = "prior/dist/",
         include_count: bool = True,
+        sync_ddp: bool = False,
+        device: str | torch.device | None = None,
     ) -> Dict[str, float]:
-        """Summarize; returns ``{}`` when nothing was accumulated."""
-        if self._episodes == 0 or self._rows == 0:
+        """Summarize; returns ``{}`` when nothing was accumulated.
+
+        With ``sync_ddp=True`` this reduces across the process group and **must
+        be entered by every rank**, including one that accumulated nothing --
+        the early return below is therefore conditioned on the group being
+        inactive, exactly as :meth:`CausalEvaluator.compute` does it.
+        """
+        ddp_active = sync_ddp and dist.is_available() and dist.is_initialized()
+
+        if not ddp_active and (self._episodes == 0 or self._rows == 0):
             return {}
 
+        keys = self._sum_keys()
         rows = float(self._rows)
-        mean = {k: v / rows for k, v in self._sums.items()}
+        episodes = float(self._episodes)
+        sums = [float(self._sums.get(k, 0.0)) for k in keys]
+
+        world_size = dist.get_world_size() if ddp_active else 1
+        # Subsample locally *before* the gather: the cap is a memory bound, and
+        # gathering the full pools first would spend exactly the memory it
+        # exists to save.
+        pooled = self._pooled_pit(max(1, self.max_pit // world_size))
+        episode_ks = list(self._episode_ks)
+        episode_ks_band = list(self._episode_ks_band)
+
+        if ddp_active:
+            if device is None:
+                raise ValueError("device must be provided when sync_ddp=True")
+
+            payload = torch.tensor(
+                [rows, episodes, *sums], dtype=torch.float64, device=device
+            )
+            dist.all_reduce(payload, op=dist.ReduceOp.SUM)
+            rows = payload[0].item()
+            episodes = payload[1].item()
+            sums = payload[2:].tolist()
+
+            # The three things that do not all-reduce. The PIT sample is needed
+            # as a *sample* (KS is not a sum), and the per-episode statistics
+            # are quantiles over episodes -- a few hundred floats either way.
+            gathered: List[dict | None] = [None] * world_size
+            dist.all_gather_object(
+                gathered,
+                {"pit": pooled.cpu(), "ks": episode_ks, "band": episode_ks_band},
+            )
+            pits = [
+                g["pit"] for g in gathered if g is not None and g["pit"].numel() > 0
+            ]
+            pooled = torch.cat(pits) if pits else torch.empty(0)
+            episode_ks = [x for g in gathered if g is not None for x in g["ks"]]
+            episode_ks_band = [x for g in gathered if g is not None for x in g["band"]]
+
+        if rows <= 0 or episodes <= 0:
+            return {}
+
+        mean = {k: v / rows for k, v in zip(keys, sums)}
         metrics: Dict[str, float] = {}
 
         metrics["crps"] = mean["crps"]
@@ -249,23 +331,22 @@ class PosteriorEvaluator:
 
         metrics["out_of_grid_frac"] = mean["out_of_grid"]
 
-        pooled = self._pooled_pit()
         if pooled.numel() >= 2:
             stat, band = pit_ks(pooled, alpha=self.alpha)
             metrics["pit_ks"] = float(stat)
             metrics["pit_ks_band"] = float(band)
 
-        if self._episode_ks:
-            eps_ks = torch.tensor(self._episode_ks, dtype=torch.float64)
+        if episode_ks:
+            eps_ks = torch.tensor(episode_ks, dtype=torch.float64)
             metrics["pit_ks_episode_median"] = float(eps_ks.median())
             metrics["pit_ks_episode_p90"] = float(
                 eps_ks.quantile(torch.tensor(0.9, dtype=torch.float64))
             )
-            band = torch.tensor(self._episode_ks_band, dtype=torch.float64)
+            band = torch.tensor(episode_ks_band, dtype=torch.float64)
             metrics["pit_ks_episode_band"] = float(band.median())
 
         if include_count:
-            metrics["eval/episodes"] = float(self._episodes)
+            metrics["eval/episodes"] = episodes
             metrics["eval/rows"] = rows
 
         return {f"{prefix}{k}": v for k, v in metrics.items()}
@@ -453,6 +534,9 @@ def score_frozen_set(
     levels: Tuple[float, ...] = (0.5, 0.9),
     alpha: float = 0.05,
     meta: Optional[Dict[str, Any]] = None,
+    rank: int = 0,
+    world_size: int = 1,
+    sync_ddp: bool = False,
 ) -> Dict[str, float]:
     """Score a whole frozen set; returns the merged ``prior/*`` metric dict.
 
@@ -464,6 +548,15 @@ def score_frozen_set(
     loads it once at construction because it is the expensive part) pass it
     straight through instead of paying ``load_frozen_meta`` again on every
     pass. ``None`` (the CLI's case) loads it here.
+
+    ``rank``/``world_size`` shard the episodes round-robin (episode ``i`` is
+    scored by rank ``i % world_size``), and ``sync_ddp`` reduces the three
+    accumulators back into the same numbers a single process would produce.
+    The sharding is applied to the *global* episode index, after
+    ``max_episodes``, so which episodes get scored does not depend on the world
+    size -- only who scores them. A rank may legitimately end up with an empty
+    shard (``max_episodes < world_size``); it must still reach the reductions
+    below, so nothing here returns early on an empty local pass.
     """
     from posterior_eval.build_prior_frozen_set import load_frozen_meta
 
@@ -474,6 +567,8 @@ def score_frozen_set(
     n_ctx = n_max if n_ctx is None else int(n_ctx)
     if not 1 <= n_ctx <= n_max:
         raise ValueError(f"n_ctx={n_ctx} must be in [1, n_max={n_max}]")
+    if not 0 <= rank < world_size:
+        raise ValueError(f"rank={rank} must be in [0, world_size={world_size})")
     records = meta["episodes"]
 
     dist_eval = PosteriorEvaluator(levels=levels, alpha=alpha)
@@ -482,6 +577,8 @@ def score_frozen_set(
     mse_sum, rows = 0.0, 0
     with torch.inference_mode():
         for i, batch in enumerate(iter_frozen_episodes(out / "val", max_episodes)):
+            if i % world_size != rank:
+                continue
             stats = score_episode(
                 model,
                 batch,
@@ -495,8 +592,32 @@ def score_frozen_set(
             mse_sum += stats["mse"] * stats["rows"]
             rows += stats["rows"]
 
-    metrics = dict(point_eval.compute(prefix="prior/point/", include_count=True))
-    metrics.update(dist_eval.compute(prefix="prior/dist/", include_count=True))
+    # ``cate/rmse_pooled`` is accumulated here in the driver, outside either
+    # evaluator, so it needs its own reduce -- the easiest of the three to
+    # forget, and it would silently report only rank 0's shard.
+    if sync_ddp and dist.is_available() and dist.is_initialized():
+        pooled = torch.tensor(
+            [mse_sum, float(rows)], dtype=torch.float64, device=device
+        )
+        dist.all_reduce(pooled, op=dist.ReduceOp.SUM)
+        mse_sum, rows = pooled[0].item(), pooled[1].item()
+
+    metrics = dict(
+        point_eval.compute(
+            prefix="prior/point/",
+            include_count=True,
+            sync_ddp=sync_ddp,
+            device=device,
+        )
+    )
+    metrics.update(
+        dist_eval.compute(
+            prefix="prior/dist/",
+            include_count=True,
+            sync_ddp=sync_ddp,
+            device=device,
+        )
+    )
     if rows:
         metrics["prior/point/cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
     metrics["prior/n_ctx"] = float(n_ctx)

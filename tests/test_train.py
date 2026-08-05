@@ -2,6 +2,7 @@ import math
 
 import pytest
 from proximalfm.train._train_config import build_parser
+from proximalfm.train import _run
 from proximalfm.train._run import Trainer
 from proximalfm.train._dist_eval import UnsupportedLossTypeError
 from proximalfm.prior._dataset import PriorDataset
@@ -668,3 +669,73 @@ def test_val_point_best_metric_only_saves_best_on_steps_the_point_surface_ran(
     # and must still be comparing the same val/point/* key.
     trainer._post_step({}, prior_time=0.0, train_time=0.0)
     assert trainer.best_metric_value is not None
+
+
+# --------------------------------------------------------------------------
+# Step 6d: DDP shard + sync
+# --------------------------------------------------------------------------
+
+
+@patch("wandb.init")
+def test_dist_validate_passes_its_shard_identity_through(
+    mock_wandb_init, tmp_path, tiny_frozen_set, monkeypatch
+):
+    """The pass must be sharded by *this rank's* identity and synced, not run
+    whole on rank 0. Single-process tests cannot observe the deadlock this
+    prevents, so pin the arguments instead: reintroducing a master-only pass
+    would show up here."""
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "1",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    seen = {}
+    real = _run.score_frozen_set
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(_run, "score_frozen_set", spy)
+    # Pretend to be rank 1 of a world of 4; the trainer must forward that.
+    trainer.ddp, trainer.ddp_rank, trainer.ddp_world_size = False, 1, 4
+    trainer.dist_validate()
+
+    assert seen["rank"] == 1
+    assert seen["world_size"] == 4
+    assert seen["sync_ddp"] is False
+
+
+@patch("wandb.init")
+def test_dist_eval_gate_does_not_depend_on_rank(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    """Every rank must reach dist_validate() on the same steps: the pass enters
+    collectives, so a gate that is true on one rank and false on another hangs
+    the group. Assert the gate holds with master_process cleared."""
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "1",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+    trainer.master_process = False  # a non-zero rank
+
+    results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+    assert "prior/dist/crps" in results
