@@ -121,6 +121,7 @@ def run(
         f"  episodes {int(metrics.get('prior/point/eval/episodes', 0))}"
         f"   rows {int(metrics.get('prior/dist/eval/rows', 0))}"
         f"   n_ctx {int(metrics.get('prior/n_ctx', 0))}"
+        f"   grid_scale {metrics.get('prior/grid_scale', float('nan')):.4f}"
     )
     print()
     for group in ("prior/point/", "prior/dist/"):

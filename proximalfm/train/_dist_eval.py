@@ -484,6 +484,13 @@ def score_episode(
     reason: ``CausalEvaluator.cate/rmse`` is a *median over episodes*, so it is
     not the quantity ``posterior_eval/report.py`` prints, and the cheapest place
     to catch a scale bug is a number that must match it exactly.
+
+    Also returns ``grid_scale``, the factor :func:`episode_predictive` applied
+    to the head's own grid to land in the frozen space. It is read off the
+    scored grid rather than recomputed from ``y_train``, so it is by
+    construction the factor actually used. Callers that hold a quantity in head
+    units -- the trainer's ``sigma`` schedule is the one that matters -- need it
+    to put that quantity on the same axis as ``prior/dist/mean_sd``.
     """
     probs, edges = episode_predictive(
         model, batch, record, n_ctx=n_ctx, n_max=n_max, device=device
@@ -504,7 +511,16 @@ def score_episode(
             true_cate=tau_star.reshape(1, -1),
         )
 
-    return {"mse": float(sq_err.double().mean()), "rows": int(tau_star.numel())}
+    head_edges = model.cate_bin_edges.to(edges.device).float()
+    grid_scale = float(
+        (edges[-1] - edges[0]) / (head_edges[-1] - head_edges[0]).clamp_min(_EPS)
+    )
+
+    return {
+        "mse": float(sq_err.double().mean()),
+        "rows": int(tau_star.numel()),
+        "grid_scale": grid_scale,
+    }
 
 
 def iter_frozen_episodes(
@@ -574,7 +590,7 @@ def score_frozen_set(
     dist_eval = PosteriorEvaluator(levels=levels, alpha=alpha)
     point_eval = CausalEvaluator()
 
-    mse_sum, rows = 0.0, 0
+    mse_sum, scale_sum, rows = 0.0, 0.0, 0
     with torch.inference_mode():
         for i, batch in enumerate(iter_frozen_episodes(out / "val", max_episodes)):
             if i % world_size != rank:
@@ -590,17 +606,24 @@ def score_frozen_set(
                 point_evaluator=point_eval,
             )
             mse_sum += stats["mse"] * stats["rows"]
+            # Row-weighted, matching how ``mean_sd`` averages -- the two are
+            # multiplied together downstream, so they must pool the same way.
+            scale_sum += stats["grid_scale"] * stats["rows"]
             rows += stats["rows"]
 
-    # ``cate/rmse_pooled`` is accumulated here in the driver, outside either
-    # evaluator, so it needs its own reduce -- the easiest of the three to
-    # forget, and it would silently report only rank 0's shard.
+    # ``cate/rmse_pooled`` and ``grid_scale`` are accumulated here in the driver,
+    # outside either evaluator, so they need their own reduce -- the easiest of
+    # the three to forget, and they would silently report only rank 0's shard.
     if sync_ddp and dist.is_available() and dist.is_initialized():
         pooled = torch.tensor(
-            [mse_sum, float(rows)], dtype=torch.float64, device=device
+            [mse_sum, scale_sum, float(rows)], dtype=torch.float64, device=device
         )
         dist.all_reduce(pooled, op=dist.ReduceOp.SUM)
-        mse_sum, rows = pooled[0].item(), pooled[1].item()
+        mse_sum, scale_sum, rows = (
+            pooled[0].item(),
+            pooled[1].item(),
+            pooled[2].item(),
+        )
 
     metrics = dict(
         point_eval.compute(
@@ -620,5 +643,12 @@ def score_frozen_set(
     )
     if rows:
         metrics["prior/point/cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
+        # Head units -> frozen space. Exactly 1.0 at n_ctx == n_max (the two
+        # scales are then the same rows under the same formula), so this only
+        # departs from 1 on an n-sweep prefix. Published because the trainer
+        # needs it to express its sigma schedule in mean_sd's units, and a
+        # caller that silently assumed 1.0 would be wrong precisely where the
+        # sweep is interesting.
+        metrics["prior/grid_scale"] = scale_sum / rows
     metrics["prior/n_ctx"] = float(n_ctx)
     return metrics

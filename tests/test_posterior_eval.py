@@ -316,6 +316,35 @@ def test_grid_is_rescaled_into_the_frozen_space(frozen):
     torch.testing.assert_close(edges_s, model.cate_bin_edges * ratio)
 
 
+def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
+    """``prior/grid_scale`` converts head units into the frozen space, and the
+    trainer multiplies its sigma schedule by it (EVAL_PLAN step 6e). A caller
+    that hardcoded 1.0 would be right at n_max and wrong on every sweep prefix,
+    so pin both ends."""
+    cfg, out = frozen
+    model = _FakeCateModel()
+
+    at_n_max = score_frozen_set(model, out)
+    assert at_n_max["prior/grid_scale"] == pytest.approx(1.0, abs=1e-5)
+
+    short = score_frozen_set(model, out, n_ctx=16)
+    assert short["prior/grid_scale"] != pytest.approx(1.0, abs=1e-3)
+
+    # It must be the factor on the grid that was actually scored, not a
+    # separately recomputed one -- averaged over episodes, which all carry the
+    # same row count here.
+    meta = load_frozen_meta(out)
+    ratios = []
+    for i, batch in enumerate(iter_frozen_episodes(out / "val")):
+        _, edges = episode_predictive(
+            model, batch, meta["episodes"][i], n_ctx=16, n_max=cfg.n_max
+        )
+        ratios.append(float(edges[-1] / model.cate_bin_edges[-1]))
+    assert short["prior/grid_scale"] == pytest.approx(
+        sum(ratios) / len(ratios), rel=1e-6
+    )
+
+
 def test_real_model_predict_path(frozen):
     """The fake model above pins the *scale*; this pins the *interface* -- that
     ``predict(output_type="distribution")`` really returns ``weights`` shaped
@@ -456,6 +485,7 @@ def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
         "prior/dist/sd_over_rmse",
         "prior/dist/out_of_grid_frac",
         "prior/point/cate/rmse_pooled",
+        "prior/grid_scale",
         "prior/point/ate/rmse",
     ):
         assert sharded[key] == pytest.approx(single[key], rel=1e-9), key

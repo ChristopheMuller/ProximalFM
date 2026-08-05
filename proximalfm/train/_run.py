@@ -1683,6 +1683,22 @@ class Trainer:
         # not a point-vs-dist metric.
         metrics["prior/time"] = dist_timer.elapsed
 
+        # The sigma schedule on the width axis (EVAL_PLAN step 6e). sigma is a
+        # hard floor on learned width -- the HL-Gaussian target is a Gaussian of
+        # that width, so a perfectly fitted head reports sqrt(sigma^2 + w^2/12)
+        # and no less. A posterior at the floor therefore stops narrowing
+        # because the *schedule* stopped, and reading that flat sd curve as
+        # convergence is the most likely misreading of the whole fine-tune.
+        #
+        # loss/hl_sigma already logs the value, but from the micro-batch path,
+        # in head units, at the training cadence -- three reasons a plot of it
+        # against prior/dist/mean_sd is not a comparison. This emits the same
+        # number in mean_sd's units at mean_sd's cadence, and leaves
+        # loss/hl_sigma alone: it is correct on the training surface.
+        grid_scale = metrics.get("prior/grid_scale")
+        if grid_scale is not None:
+            metrics["diag/sigma"] = self.get_hl_sigma() * grid_scale
+
         self.model.train()
 
         return metrics

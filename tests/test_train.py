@@ -739,3 +739,48 @@ def test_dist_eval_gate_does_not_depend_on_rank(
 
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
     assert "prior/dist/crps" in results
+
+
+# --------------------------------------------------------------------------
+# Step 6e: diag/sigma on the width axis
+# --------------------------------------------------------------------------
+
+
+@patch("wandb.init")
+def test_dist_validate_emits_sigma_on_the_width_axis(
+    mock_wandb_init, tmp_path, tiny_frozen_set
+):
+    """sigma floors the learned width, so it has to be readable next to the
+    width it floors: same dict, same cadence, same units. A plot against
+    loss/hl_sigma is not a comparison (micro-batch cadence, head units)."""
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--dist_eval_dir",
+            str(tiny_frozen_set),
+            "--dist_eval_interval",
+            "1",
+            "--hl_start_sigma",
+            "0.2",
+            "--hl_final_sigma",
+            "0.2",
+        ],
+    )
+    args.lambda_cate = 0.1
+    trainer = Trainer(args)
+
+    metrics = trainer.dist_validate()
+
+    # Both keys, one dict: that is the whole point of the step.
+    assert "diag/sigma" in metrics
+    assert "prior/dist/mean_sd" in metrics
+
+    # And in mean_sd's units, not the head's: sigma times the same head ->
+    # frozen-space factor the scored grid carried.
+    assert metrics["diag/sigma"] == pytest.approx(
+        trainer.get_hl_sigma() * metrics["prior/grid_scale"]
+    )
+    # At n_ctx == n_max the factor is 1, so this also pins the plain value.
+    assert metrics["diag/sigma"] == pytest.approx(0.2, abs=1e-4)
