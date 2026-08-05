@@ -547,13 +547,13 @@ class SCMPrior(Prior):
         'mix_scm' randomly selects between 'mlp_scm' and 'tree_scm' based on
         probabilities.
 
-    mcmc_cate : int, default=200
+    mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets
         (MU0/MU1) per row. Higher values reduce the noise of the estimate at
         the cost of more memory/compute.
 
     mc_targets_on_context : bool, default=True
-        If True (the default), every row gets ``mcmc_cate`` replicates and
+        If True (the default), every row gets ``mc_cate`` replicates and
         MU0/MU1 are estimated for the whole sequence. If False, only the query
         rows ``[train_size:]`` are replicated and MU0/MU1 are ``NaN`` on the
         context prefix. Training reads MU only on the query slice, so False is
@@ -597,7 +597,7 @@ class SCMPrior(Prior):
         max_train_size: Union[int, float] = 0.9,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
-        mcmc_cate: int = 200,
+        mc_cate: int = 200,
         mc_targets_on_context: bool = True,
         fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
@@ -637,7 +637,7 @@ class SCMPrior(Prior):
 
         self.seq_len_per_gp = seq_len_per_gp
         self.prior_type = prior_type
-        self.mcmc_cate = mcmc_cate
+        self.mc_cate = mc_cate
         self.mc_targets_on_context = mc_targets_on_context
         self.fixed_hp = fixed_hp
         self.sampled_hp = sampled_hp
@@ -736,7 +736,7 @@ class SCMPrior(Prior):
         if K_eff < K and not _MC_BUDGET_WARNED:
             _MC_BUDGET_WARNED = True
             warnings.warn(
-                f"prior_mc_mem_budget={budget:,} elements caps mcmc_cate from {K} "
+                f"prior_mc_mem_budget={budget:,} elements caps mc_cate from {K} "
                 f"to {K_eff} for T_ctx={T_ctx}, T_q={T_q} (estimated {per_row} "
                 "cols/row). MU0/MU1 will use fewer Monte Carlo samples (still "
                 "unbiased, just noisier). Raise prior_mc_mem_budget if you have "
@@ -754,7 +754,7 @@ class SCMPrior(Prior):
 
         Monte Carlo replicates
         ----------------------
-        Each covariate row is replicated ``K = mcmc_cate`` times so MU0/MU1 can
+        Each covariate row is replicated ``K = mc_cate`` times so MU0/MU1 can
         be estimated as the mean of the potential outcomes over the replicates.
         ``params["mc_targets_on_context"]`` controls which rows get replicated:
 
@@ -806,7 +806,7 @@ class SCMPrior(Prior):
             ``MU1 - MU0`` (see :func:`_mc_mean_var`), NaN on the context prefix
             wherever ``MU0``/``MU1`` are. ``K_eff`` is the realised replicate
             count after :meth:`_cap_mc_samples`, which may be below the
-            requested ``mcmc_cate``. ``diagnostics`` is ``None`` unless the
+            requested ``mc_cate``. ``diagnostics`` is ``None`` unless the
             ``collect_mechanism_diagnostics`` fixed HP is set.
         """
 
@@ -825,9 +825,9 @@ class SCMPrior(Prior):
             return (tensor - mean) / (std + 1e-8)
 
         T = params["seq_len"]
-        K = int(params.get("mcmc_cate", 200))
+        K = int(params.get("mc_cate", 200))
         if K < 1:
-            raise ValueError("mcmc_cate must be >= 1")
+            raise ValueError("mc_cate must be >= 1")
 
         # Only the query rows need Monte Carlo replicates: MU0/MU1 are read
         # exclusively on the ``[train_size:]`` slice downstream, and the model
@@ -1282,7 +1282,7 @@ class SCMPrior(Prior):
                     d_Z.squeeze(0),
                 )
                 # The *realised* K, i.e. after ``_cap_mc_samples``. The nominal
-                # ``mcmc_cate`` is not a substitute: prior_mc_mem_budget caps it
+                # ``mc_cate`` is not a substitute: prior_mc_mem_budget caps it
                 # per dataset behind a once-per-process warning, so this is the
                 # only place downstream code can see how many replicates the
                 # targets were actually averaged over.
@@ -1525,7 +1525,7 @@ class SCMPrior(Prior):
                         **self.fixed_hp,
                         "seq_len": gp_seq_len,
                         "train_size": gp_train_size,
-                        "mcmc_cate": self.mcmc_cate,
+                        "mc_cate": self.mc_cate,
                         "mc_targets_on_context": self.mc_targets_on_context,
                         # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
                         "max_dim_U": self.max_dim_U,
@@ -1756,7 +1756,7 @@ class PriorDataset(IterableDataset):
          - 'tree_scm': Tree-based mechanisms (e.g., Random Forest, XGBoost).
          - 'mix_scm': Probabilistic mix of the above models.
 
-    mcmc_cate : int, default=200
+    mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets
         (MU0/MU1) per row.
 
@@ -1804,7 +1804,7 @@ class PriorDataset(IterableDataset):
         max_train_size: Union[int, float] = 0.9,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
-        mcmc_cate: int = 200,
+        mc_cate: int = 200,
         mc_targets_on_context: bool = True,
         scm_fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
         scm_sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
@@ -1834,7 +1834,7 @@ class PriorDataset(IterableDataset):
             max_train_size=max_train_size,
             replay_small=replay_small,
             prior_type=prior_type,
-            mcmc_cate=mcmc_cate,
+            mc_cate=mc_cate,
             mc_targets_on_context=mc_targets_on_context,
             fixed_hp=scm_fixed_hp,
             sampled_hp=scm_sampled_hp,
@@ -1862,7 +1862,7 @@ class PriorDataset(IterableDataset):
         self.max_train_size = max_train_size
         self.device = device
         self.prior_type = prior_type
-        self.mcmc_cate = mcmc_cate
+        self.mc_cate = mc_cate
         self.mc_targets_on_context = mc_targets_on_context
 
     @property
@@ -1944,7 +1944,7 @@ class PriorDataset(IterableDataset):
             f"  seq_len: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
             f"  sequence length varies across groups: {self.seq_len_per_gp}\n"
             f"  train_size: {self.min_train_size} - {self.max_train_size}\n"
-            f"  mcmc_cate: {self.mcmc_cate}\n"
+            f"  mc_cate: {self.mc_cate}\n"
             f"  mc_targets_on_context: {self.mc_targets_on_context}\n"
             f"  device: {self.device}\n"
             f")"

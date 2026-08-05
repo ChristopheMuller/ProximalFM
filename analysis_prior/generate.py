@@ -90,7 +90,7 @@ class PriorDatasetRecord:
         ITE.
 
     MU0, MU1 : ndarray, shape (T,)
-        Monte Carlo estimates of E[Y(a) | X], averaged over ``mcmc_cate``
+        Monte Carlo estimates of E[Y(a) | X], averaged over ``mc_cate``
         replicates. ``MU1 - MU0`` is the CATE target.
 
     sampled_hp : dict, optional
@@ -249,7 +249,7 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         seq_len_per_gp=False,
         replay_small=False,
         prior_type=spec.prior_type,
-        mcmc_cate=spec.mcmc_cate,
+        mc_cate=spec.mc_cate,
         scm_fixed_hp=fixed_hp,
         scm_sampled_hp=sampled_hp,
         # Nested parallelism would reintroduce the RNG problem this function
@@ -344,7 +344,7 @@ def generate(
     if progress and indices:
         print(
             f"Generating {len(indices)} datasets for cache {spec.cache_key} "
-            f"(T={spec.seq_len}, K={spec.mcmc_cate}, n_jobs={n_jobs})"
+            f"(T={spec.seq_len}, K={spec.mc_cate}, n_jobs={n_jobs})"
         )
 
     desc = f"cache {spec.cache_key}"

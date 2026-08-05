@@ -14,7 +14,7 @@ Run one analysis on the default (training-scale) prior, forcing regeneration::
 Override individual spec fields on top of a preset::
 
     PYTHONPATH=. uv run python -m analysis_prior.main \\
-        --spec default --n-datasets 128 --seq-len 1000 --mcmc-cate 50
+        --spec default --n-datasets 128 --seq-len 1000 --mc-cate 50
 
 Discovery::
 
@@ -41,7 +41,7 @@ DEFAULT_OUTPUT_DIR = Path(__file__).parent / "results"
 _SPEC_OVERRIDE_FIELDS = (
     "n_datasets",
     "seq_len",
-    "mcmc_cate",
+    "mc_cate",
     "seed",
     "prior_type",
 )
@@ -83,7 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--n-datasets", type=int, default=None)
     parser.add_argument("--seq-len", type=int, default=None)
-    parser.add_argument("--mcmc-cate", type=int, default=None)
+    parser.add_argument("--mc-cate", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
         "--prior-type", default=None, choices=["mlp_scm", "tree_scm", "mix_scm"]
@@ -195,7 +195,7 @@ def _print_caches(cache_dir: Path) -> None:
         spec = entry["generative_spec"]
         print(
             f"  n={entry.get('n_stored'):<5} T={spec.get('seq_len'):<6} "
-            f"K={spec.get('mcmc_cate'):<5} {spec.get('prior_type'):<9} "
+            f"K={spec.get('mc_cate'):<5} {spec.get('prior_type'):<9} "
             f"{Path(entry['path']).name}"
         )
 

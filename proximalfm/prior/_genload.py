@@ -771,7 +771,7 @@ class LoadPriorDataset(IterableDataset):
             repr_str += (
                 f"    replay_small: {self.metadata.get('replay_small', 'N/A')}\n"
             )
-            repr_str += f"    mcmc_cate: {self.metadata.get('mcmc_cate', 'N/A')}\n"
+            repr_str += f"    mc_cate: {self.metadata.get('mc_cate', 'N/A')}\n"
             repr_str += (
                 "    mc_targets_on_context: "
                 f"{self.metadata.get('mc_targets_on_context', 'N/A')}\n"
@@ -908,7 +908,7 @@ class SavePriorDataset:
             max_train_size=self.args.max_train_size,
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
-            mcmc_cate=self.args.mcmc_cate,
+            mc_cate=self.args.mc_cate,
             mc_targets_on_context=getattr(self.args, "mc_targets_on_context", True),
             scm_fixed_hp=DEFAULT_FIXED_HP,
             scm_sampled_hp=DEFAULT_SAMPLED_HP,
@@ -939,7 +939,7 @@ class SavePriorDataset:
             "min_train_size": self.args.min_train_size,
             "max_train_size": self.args.max_train_size,
             "replay_small": self.args.replay_small,
-            "mcmc_cate": self.args.mcmc_cate,
+            "mc_cate": self.args.mc_cate,
             "mc_targets_on_context": getattr(self.args, "mc_targets_on_context", True),
         }
         with open(self.save_dir / "metadata.json", "w") as f:
@@ -1199,7 +1199,7 @@ if __name__ == "__main__":
         help="Type of prior to use",
     )
     parser.add_argument(
-        "--mcmc_cate",
+        "--mc_cate",
         type=int,
         default=200,
         help="Number of Monte Carlo latent/noise worlds per X used to estimate MU0/MU1.",

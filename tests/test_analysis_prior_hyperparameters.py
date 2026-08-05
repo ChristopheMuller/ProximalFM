@@ -172,10 +172,10 @@ def _bound(name: str) -> str:
 
 
 def test_structural_table_reports_spec_fields():
-    spec = PriorSpec(name="s", seq_len=2048, mcmc_cate=100, max_dim_X=10)
+    spec = PriorSpec(name="s", seq_len=2048, mc_cate=100, max_dim_X=10)
     table = build_structural_table(spec).set_index("hyperparameter")
     assert table.loc[_tt("seq_len"), "value"] == "$2048$"
-    assert table.loc[_tt("mcmc_cate"), "value"] == "$100$"
+    assert table.loc[_tt("mc_cate"), "value"] == "$100$"
     assert table.loc[_tt("prior_type"), "value"] == "\\texttt{mlp\\_\\allowbreak scm}"
 
 

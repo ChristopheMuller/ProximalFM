@@ -28,7 +28,7 @@ def _cfg(**overrides):
         n_datasets=4,
         n_max=32,
         n_q=8,
-        mcmc_cate=16,
+        mc_cate=16,
         seed=20260805,
         prior_mc_mem_budget=2_000_000_000,
     )
@@ -83,7 +83,7 @@ def test_round_trips_through_the_standard_val_loader(frozen):
         assert int(seq_lens[0]) == cfg.seq_len
         # train_size is pinned so every episode shares the same prefix geometry.
         assert int(train_sizes[0]) == cfg.n_max
-        assert int(K_eff[0]) == cfg.mcmc_cate
+        assert int(K_eff[0]) == cfg.mc_cate
         assert Y_obs.reshape(1, -1).shape[1] == cfg.seq_len
 
         # mc_targets_on_context=False: the context prefix was never replicated,
@@ -99,7 +99,7 @@ def test_metadata_json_matches_the_prior_format(frozen):
     with open(val_dir / "metadata.json") as f:
         meta = json.load(f)
     # The keys SavePriorDataset writes, so the directory reads like any val set.
-    for key in ("prior_type", "max_seq_len", "mcmc_cate", "mc_targets_on_context"):
+    for key in ("prior_type", "max_seq_len", "mc_cate", "mc_targets_on_context"):
         assert key in meta
     assert meta["mc_targets_on_context"] is False
 
@@ -152,7 +152,7 @@ def test_sidecar_targets_match_the_data_on_disk(frozen):
         )
 
         assert record["query_index"].tolist() == list(range(cfg.n_max, cfg.seq_len))
-        assert record["k_eff"] == cfg.mcmc_cate
+        assert record["k_eff"] == cfg.mc_cate
 
 
 def test_sidecar_carries_per_episode_hyperparameters(frozen):
@@ -168,10 +168,10 @@ def test_sidecar_carries_per_episode_hyperparameters(frozen):
 
 
 def test_a_capped_k_fails_the_build_loudly(tmp_path):
-    # prior_mc_mem_budget caps mcmc_cate behind a once-per-process warning, so a
+    # prior_mc_mem_budget caps mc_cate behind a once-per-process warning, so a
     # long build would report it for the first episode and stay silent after.
-    cfg = _cfg(n_datasets=1, mcmc_cate=64, prior_mc_mem_budget=10_000)
-    with pytest.raises(MonteCarloBudgetError, match="capped mcmc_cate"):
+    cfg = _cfg(n_datasets=1, mc_cate=64, prior_mc_mem_budget=10_000)
+    with pytest.raises(MonteCarloBudgetError, match="capped mc_cate"):
         build(cfg, tmp_path / "capped", progress=False)
 
 
@@ -189,7 +189,7 @@ def test_the_set_has_a_uniform_and_usable_noise_estimate(frozen):
     cfg, out, _val_dir = frozen
     meta = load_frozen_meta(out)
 
-    assert {r["k_eff"] for r in meta["episodes"]} == {cfg.mcmc_cate}
+    assert {r["k_eff"] for r in meta["episodes"]} == {cfg.mc_cate}
     s2 = torch.cat([r["s2"] for r in meta["episodes"]])
     assert s2.isfinite().all()
     assert (s2 > 0).all()

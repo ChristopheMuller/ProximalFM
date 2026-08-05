@@ -75,7 +75,7 @@ class ProximalFM(nn.Module):
         - "cate_single_noise_aware": Architecturally identical to "cate_single" (same
           out_dim, same grid, same predict path), so checkpoints are interchangeable.
           The training loss instead treats the supervised target as a *noisy* estimate
-          of `tau` -- it is a Monte Carlo mean over `mcmc_cate` replicates -- and
+          of `tau` -- it is a Monte Carlo mean over `mc_cate` replicates -- and
           deconvolves that noise, so the head converges to a posterior over `tau`
           rather than to that posterior blurred by MC error.
         - "cate_decomposition": Predicts ATE as a Gaussian likelihood (mean, log-var)

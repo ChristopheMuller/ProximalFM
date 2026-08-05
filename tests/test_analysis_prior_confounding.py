@@ -308,7 +308,7 @@ def test_analysis_end_to_end(tmp_path):
         name="tiny-conf",
         n_datasets=6,
         seq_len=300,
-        mcmc_cate=1,
+        mc_cate=1,
         min_dim_U=2,
         max_dim_U=2,
         min_dim_W=2,

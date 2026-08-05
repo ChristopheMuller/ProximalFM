@@ -24,7 +24,7 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 import pytest
 
 FAST_FIXED_HP = DEFAULT_FIXED_HP
-FAST_MCMC_CATE = 2
+FAST_mc_cate = 2
 
 
 class ArgsMock:
@@ -57,7 +57,7 @@ def test_scm_prior_get_batch():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mlp_scm",
-        mcmc_cate=FAST_MCMC_CATE,
+        mc_cate=FAST_mc_cate,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -118,7 +118,7 @@ def test_scm_prior_mix_scm():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="mix_scm",
-        mcmc_cate=FAST_MCMC_CATE,
+        mc_cate=FAST_mc_cate,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -162,7 +162,7 @@ def test_scm_prior_tree_scm():
         min_train_size=0.1,
         max_train_size=0.8,
         prior_type="tree_scm",
-        mcmc_cate=FAST_MCMC_CATE,
+        mc_cate=FAST_mc_cate,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -207,7 +207,7 @@ def test_scm_prior_seq_len_per_gp():
         max_train_size=0.8,
         seq_len_per_gp=True,
         prior_type="mlp_scm",
-        mcmc_cate=FAST_MCMC_CATE,
+        mc_cate=FAST_mc_cate,
         fixed_hp=FAST_FIXED_HP,
     )
     (
@@ -262,7 +262,7 @@ def test_prior_dataset():
         min_seq_len=20,
         max_seq_len=30,
         prior_type="mlp_scm",
-        mcmc_cate=FAST_MCMC_CATE,
+        mc_cate=FAST_mc_cate,
         scm_fixed_hp=FAST_FIXED_HP,
     )
 
@@ -312,7 +312,7 @@ def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):
         max_train_size=15,
         replay_small=False,
         prior_type="mlp_scm",
-        mcmc_cate=2,
+        mc_cate=2,
         num_batches=2,
         resume_from=0,
         n_jobs=1,
@@ -472,7 +472,7 @@ def _make_prior(fixed_hp, max_dim=8, batch_size=24, sampled_hp=DEFAULT_SAMPLED_H
         min_seq_len=200,
         max_seq_len=201,
         prior_type="mlp_scm",
-        mcmc_cate=2,
+        mc_cate=2,
         fixed_hp=fixed_hp,
         sampled_hp=sampled_hp,
         n_jobs=1,
@@ -793,7 +793,7 @@ def _make_pinned_dims_prior(fixed_hp, sampled_hp, dim=5):
         min_seq_len=200,
         max_seq_len=201,
         prior_type="mlp_scm",
-        mcmc_cate=2,
+        mc_cate=2,
         fixed_hp=fixed_hp,
         sampled_hp={**DEFAULT_SAMPLED_HP, **sampled_hp},
         n_jobs=1,
@@ -991,7 +991,7 @@ def _make_distinct_dims_prior(fixed_hp, sampled_hp):
         min_seq_len=200,
         max_seq_len=201,
         prior_type="mlp_scm",
-        mcmc_cate=2,
+        mc_cate=2,
         fixed_hp=fixed_hp,
         sampled_hp={**DEFAULT_SAMPLED_HP, **sampled_hp},
         n_jobs=1,
@@ -1265,7 +1265,7 @@ def _make_mc_split_prior(mc_targets_on_context, train_frac=0.5, seq_len=96, K=3)
         min_train_size=train_frac,
         max_train_size=train_frac + 0.001,
         prior_type="mlp_scm",
-        mcmc_cate=K,
+        mc_cate=K,
         mc_targets_on_context=mc_targets_on_context,
         fixed_hp=FAST_FIXED_HP,
         n_jobs=1,
@@ -1476,7 +1476,7 @@ def test_target_leaf_mechanisms_skip_mc_replicates():
         min_seq_len=T,
         max_seq_len=T + 1,
         prior_type="mlp_scm",
-        mcmc_cate=K,
+        mc_cate=K,
         fixed_hp={**FAST_FIXED_HP, "confounding_dim_control": False},
         n_jobs=1,
     )
@@ -1542,7 +1542,7 @@ def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
         max_train_size=train_size + 1,
         replay_small=False,
         prior_type="mlp_scm",
-        mcmc_cate=3,
+        mc_cate=3,
         mc_targets_on_context=False,
         num_batches=1,
         resume_from=0,
@@ -1572,7 +1572,7 @@ def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _save_args(tmp_path, num_batches=1, mcmc_cate=4, **overrides):
+def _save_args(tmp_path, num_batches=1, mc_cate=4, **overrides):
     """A small dense-path SavePriorDataset config."""
     return ArgsMock(
         save_dir=str(tmp_path),
@@ -1594,7 +1594,7 @@ def _save_args(tmp_path, num_batches=1, mcmc_cate=4, **overrides):
         max_train_size=0.51,
         replay_small=False,
         prior_type="mlp_scm",
-        mcmc_cate=mcmc_cate,
+        mc_cate=mc_cate,
         num_batches=num_batches,
         resume_from=0,
         n_jobs=1,
@@ -1650,7 +1650,7 @@ def test_s2_scales_as_one_over_k():
     means = {}
     for K in (8, 64):
         _seed(11)
-        out = prior.generate_dataset({**params, "mcmc_cate": K})
+        out = prior.generate_dataset({**params, "mc_cate": K})
         means[K] = float(out[15].mean())
         assert int(out[16]) == K
 
@@ -1685,7 +1685,7 @@ def test_s2_is_the_paired_variance_not_the_sum_of_arm_variances():
 
 
 def test_k_eff_reports_the_capped_value_not_the_request():
-    # prior_mc_mem_budget silently caps mcmc_cate behind a once-per-process
+    # prior_mc_mem_budget silently caps mc_cate behind a once-per-process
     # warning, so K_eff is the only way downstream code learns how many
     # replicates the targets actually averaged.
     prior = _make_mc_split_prior(mc_targets_on_context=True, seq_len=128, K=64)

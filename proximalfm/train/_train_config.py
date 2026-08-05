@@ -305,7 +305,7 @@ def build_parser():
         help="Device for prior data generation",
     )
     parser.add_argument(
-        "--mcmc_cate",
+        "--mc_cate",
         type=int,
         default=200,
         help="Monte Carlo latent/noise worlds per X used to estimate the CATE "
@@ -326,9 +326,9 @@ def build_parser():
         "--prior_mc_mem_budget",
         type=int,
         default=DEFAULT_FIXED_HP["prior_mc_mem_budget"],
-        help="Element-count cap on the (seq_len*mcmc_cate)-row prior generation "
-        "tensors; auto-lowers effective mcmc_cate per dataset to stay under it. "
-        "Raise on large-memory GPUs so mcmc_cate is not throttled; set 0 to disable.",
+        help="Element-count cap on the (seq_len*mc_cate)-row prior generation "
+        "tensors; auto-lowers effective mc_cate per dataset to stay under it. "
+        "Raise on large-memory GPUs so mc_cate is not throttled; set 0 to disable.",
     )
 
     ###########################################################################

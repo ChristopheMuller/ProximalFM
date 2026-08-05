@@ -15,7 +15,7 @@ uv run python -m analysis_prior.main --list-analyses | --list-caches | --list-fa
 `config.py` holds the two objects that drive everything:
 
 - **`PriorSpec`** (`--spec`, from `config.PRESETS`) — a reproducible prior configuration: dimension
-  ranges, `seq_len`, `prior_type`, `mcmc_cate`, HP overrides.
+  ranges, `seq_len`, `prior_type`, `mc_cate`, HP overrides.
 - **`SpecFamily`** (`--family`, from `config.FAMILIES`) — a base spec plus named single-knob
   interventions, for comparison studies; each resolves to its own `PriorSpec`.
 

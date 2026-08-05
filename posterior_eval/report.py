@@ -136,7 +136,7 @@ def compute_report(
     records = meta["episodes"]
     n_grid: List[int] = glob["n_grid"]
     n_max: int = glob["n_max"]
-    K: int = glob["mcmc_cate"]
+    K: int = glob["mc_cate"]
 
     # s in the frozen comparison space, pooled over all query rows.
     s_all = torch.cat([torch.sqrt(r["s2_std"].clamp_min(0)) for r in records])
@@ -145,7 +145,7 @@ def compute_report(
 
     result: Dict[str, Any] = {
         "n_datasets": len(records),
-        "mcmc_cate": K,
+        "mc_cate": K,
         "n_grid": n_grid,
         "s_mean": s_mean,
         "s_median": s_median,
@@ -225,7 +225,7 @@ def report(
 
     print()
     print(f"Frozen set: {out}")
-    print(f"  episodes         {r['n_datasets']}   K = {r['mcmc_cate']}")
+    print(f"  episodes         {r['n_datasets']}   K = {r['mc_cate']}")
     print(f"  uniform K_eff    {r['k_eff_uniform']}")
     print("  target noise s (frozen units)")
     print(
@@ -260,7 +260,7 @@ def report(
     )
     print(
         f"  K for s/sigma_post = {TARGET_RATIO}: {binding['implied_k_star']:,}"
-        f"  (built at {r['mcmc_cate']:,})"
+        f"  (built at {r['mc_cate']:,})"
     )
     print()
     return r

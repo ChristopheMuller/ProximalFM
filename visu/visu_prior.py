@@ -38,7 +38,7 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 
 n_batches = 2
 batch_size = 3
-mcmc_cate = 200
+mc_cate = 200
 
 # If your generator is already unconditional CATE-mode, this config is harmless.
 # If your generator checks params["prior_cate"], this turns the new mode on.
@@ -66,7 +66,7 @@ dataset = PriorDataset(
     max_train_size=0.95,
     replay_small=False,
     prior_type="mlp_scm",
-    mcmc_cate=mcmc_cate,
+    mc_cate=mc_cate,
     scm_fixed_hp=scm_fixed_hp,
     device="cpu",
 )
@@ -216,7 +216,7 @@ for _ in tqdm(range(n_batches), desc="Sampling Batches"):
         df_sample = pd.DataFrame(sample_data)
         df_sample.attrs["train_size"] = train_size
         df_sample.attrs["seq_len"] = seq_len
-        df_sample.attrs["mcmc_cate"] = mcmc_cate
+        df_sample.attrs["mc_cate"] = mc_cate
 
         all_datasets.append(df_sample)
 

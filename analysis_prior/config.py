@@ -78,7 +78,7 @@ class PriorSpec:
     prior_type : str
         ``"mlp_scm"``, ``"tree_scm"`` or ``"mix_scm"``.
 
-    mcmc_cate : int
+    mc_cate : int
         Monte Carlo replicates ``K`` per row used to build the MU0/MU1 targets.
 
     seed : int
@@ -104,7 +104,7 @@ class PriorSpec:
 
     # Defaults mirror the training runs in runs.txt (check4 onward and the
     # mc_run_* series): dims 1-10 for every block, seq_len 2048, MLP SCM. The
-    # MC-CATE runs used mcmc_cate 100-200; 100 matches the most recent (mc_run_4).
+    # MC-CATE runs used mc_cate 100-200; 100 matches the most recent (mc_run_4).
     name: str = "default"
     n_datasets: int = 64
     seq_len: int = 2048
@@ -119,7 +119,7 @@ class PriorSpec:
     max_dim_X: int = 10
 
     prior_type: str = "mlp_scm"
-    mcmc_cate: int = 100
+    mc_cate: int = 100
     seed: int = 0
 
     fixed_hp_overrides: Dict[str, Any] = field(default_factory=dict)
@@ -137,8 +137,8 @@ class PriorSpec:
             raise ValueError("n_datasets must be >= 1")
         if self.seq_len < 2:
             raise ValueError("seq_len must be >= 2")
-        if self.mcmc_cate < 1:
-            raise ValueError("mcmc_cate must be >= 1")
+        if self.mc_cate < 1:
+            raise ValueError("mc_cate must be >= 1")
         if self.prior_type not in ("mlp_scm", "tree_scm", "mix_scm"):
             raise ValueError(f"Unknown prior_type: {self.prior_type!r}")
         for lo, hi, label in (
@@ -282,7 +282,7 @@ PRESETS: Dict[str, PriorSpec] = {
         name="general_ite",
         n_datasets=1024,
         seq_len=2048,
-        mcmc_cate=1,
+        mc_cate=1,
         min_dim_U=1,
         max_dim_U=10,
         min_dim_W=1,
@@ -296,7 +296,7 @@ PRESETS: Dict[str, PriorSpec] = {
         name="mc_targets",
         n_datasets=100,
         seq_len=2048,
-        mcmc_cate=100,
+        mc_cate=100,
         min_dim_U=1,
         max_dim_U=10,
         min_dim_W=1,
@@ -310,7 +310,7 @@ PRESETS: Dict[str, PriorSpec] = {
         name="smoke",
         n_datasets=4,
         seq_len=100,
-        mcmc_cate=8,
+        mc_cate=8,
         min_dim_U=2,
         max_dim_U=3,
         min_dim_W=2,
@@ -345,7 +345,7 @@ class SpecFamily:
     intervention is a small dict of :class:`PriorSpec` field overrides applied
     on top of ``base``. The comparison axis lives here in config -- inspectable
     and reusable -- rather than being hardcoded inside any analysis; a dimension
-    ablation, a ``mcmc_cate`` sweep and a ``seq_len`` sweep are all the same
+    ablation, a ``mc_cate`` sweep and a ``seq_len`` sweep are all the same
     object with different interventions.
 
     Merge semantics: within an intervention, the dict-valued fields

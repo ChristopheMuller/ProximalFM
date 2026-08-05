@@ -208,7 +208,7 @@ def tiny_cache():
         name="tiny-mc",
         n_datasets=3,
         seq_len=128,
-        mcmc_cate=8,
+        mc_cate=8,
         min_dim_U=2,
         max_dim_U=3,
         min_dim_W=2,
@@ -241,4 +241,4 @@ def test_analysis_runs_on_a_real_cache(tiny_cache, tmp_path):
 def test_mc_targets_preset_carries_replicates():
     """The one property the analysis actually requires. Size is a budget knob
     the author is expected to scale, so it is deliberately not asserted."""
-    assert PRESETS["mc_targets"].mcmc_cate >= 2
+    assert PRESETS["mc_targets"].mc_cate >= 2

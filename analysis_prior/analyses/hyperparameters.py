@@ -4,7 +4,7 @@ Three paper tables, all derived from a single :class:`PriorSpec` with no data
 generation required:
 
 - **structural** parameters: the :class:`PriorSpec` fields themselves (block
-  dimension ranges, ``seq_len``, ``mcmc_cate``, ``prior_type``). These live on
+  dimension ranges, ``seq_len``, ``mc_cate``, ``prior_type``). These live on
   the spec rather than in the hyperparameter dicts only because the training
   CLI passes them separately, but they are the most load-bearing knobs in the
   prior -- $d^{\\max}$ is what makes the dimension laws of B.2.2 concrete -- so
@@ -138,7 +138,7 @@ REMOVED_FIXED_HP = {
 STRUCTURAL_GROUPS: List[Tuple[str, List[str]]] = [
     ("Block dimensions", ["dim_X", "dim_U", "dim_W", "dim_Z"]),
     ("Dimension bounds", ["max_dim_X", "max_dim_U", "max_dim_W", "max_dim_Z"]),
-    ("Dataset", ["seq_len", "mcmc_cate", "prior_type"]),
+    ("Dataset", ["seq_len", "mc_cate", "prior_type"]),
 ]
 
 #: One-line gloss per hyperparameter. Kept deliberately terse (fits a table
@@ -182,7 +182,7 @@ NOTES: Dict[str, str] = {
     "max_dim_W": "outcome-proxy dimension ceiling",
     "max_dim_Z": "treatment-proxy dimension ceiling",
     "seq_len": "rows per dataset",
-    "mcmc_cate": "MC replicates $K$ per row behind the $\\mu_0/\\mu_1$ targets",
+    "mc_cate": "MC replicates $K$ per row behind the $\\mu_0/\\mu_1$ targets",
     "prior_type": "mechanism family",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
@@ -416,7 +416,7 @@ def build_structural_table(spec: PriorSpec) -> pd.DataFrame:
         "max_dim_W": f"${_num(spec.max_dim_W)}$",
         "max_dim_Z": f"${_num(spec.max_dim_Z)}$",
         "seq_len": f"${_num(spec.seq_len)}$",
-        "mcmc_cate": f"${_num(spec.mcmc_cate)}$",
+        "mc_cate": f"${_num(spec.mc_cate)}$",
         "prior_type": _tt(spec.prior_type),
     }
     # Values are pre-rendered, so the describer is the identity.

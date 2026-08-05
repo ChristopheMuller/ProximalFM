@@ -10,7 +10,7 @@ dispatches through joblib otherwise, which destroys reproducibility).
 Parallelism moves up one level, across episodes.
 
 *A realised ``K`` equal to the requested one.* ``SCMPrior._cap_mc_samples``
-silently caps ``mcmc_cate`` to fit ``prior_mc_mem_budget``, and its warning is
+silently caps ``mc_cate`` to fit ``prior_mc_mem_budget``, and its warning is
 gated by a module global that fires **once per process** -- so a 400-episode
 build would warn once and be quiet for the other 399. Every episode is checked
 against ``K_eff`` and the build fails loudly instead.
@@ -79,7 +79,7 @@ class BuildConfig:
     n_datasets: int
     n_max: int
     n_q: int
-    mcmc_cate: int
+    mc_cate: int
     seed: int
     prior_mc_mem_budget: int
     min_dim_U: int = 3
@@ -155,7 +155,7 @@ def _build_prior(cfg: BuildConfig) -> PriorDataset:
         max_train_size=cfg.n_max + 1,
         replay_small=False,
         prior_type=cfg.prior_type,
-        mcmc_cate=cfg.mcmc_cate,
+        mc_cate=cfg.mc_cate,
         # Replicate the query rows only. This is what makes a large K affordable.
         mc_targets_on_context=False,
         scm_fixed_hp=fixed_hp,
@@ -215,14 +215,14 @@ def generate_episode(cfg: BuildConfig, index: int) -> Dict[str, Any]:
     ) = batch
 
     k_eff = int(K_eff[0])
-    if k_eff != cfg.mcmc_cate:
+    if k_eff != cfg.mc_cate:
         raise MonteCarloBudgetError(
             f"episode {index}: prior_mc_mem_budget={cfg.prior_mc_mem_budget:,} "
-            f"capped mcmc_cate from {cfg.mcmc_cate} to {k_eff}. The frozen set "
+            f"capped mc_cate from {cfg.mc_cate} to {k_eff}. The frozen set "
             "must have a uniform, known K -- a silently capped episode carries "
             "more target noise than the sidecar claims. Either raise "
             "--prior_mc_mem_budget or lower --n_q (memory scales as "
-            f"n_max + n_q*K = {cfg.n_max + cfg.n_q * cfg.mcmc_cate:,} rows)."
+            f"n_max + n_q*K = {cfg.n_max + cfg.n_q * cfg.mc_cate:,} rows)."
         )
     if int(train_sizes[0]) != cfg.n_max:
         raise RuntimeError(
@@ -328,7 +328,7 @@ def _write_metadata(save_dir: Path, cfg: BuildConfig):
         "min_train_size": cfg.n_max,
         "max_train_size": cfg.n_max + 1,
         "replay_small": False,
-        "mcmc_cate": cfg.mcmc_cate,
+        "mc_cate": cfg.mc_cate,
         "mc_targets_on_context": False,
     }
     with open(save_dir / "metadata.json", "w") as f:
@@ -415,10 +415,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--n_q",
         type=int,
         default=256,
-        help="query rows per episode; memory is n_max + n_q*mcmc_cate rows",
+        help="query rows per episode; memory is n_max + n_q*mc_cate rows",
     )
     p.add_argument(
-        "--mcmc_cate",
+        "--mc_cate",
         type=int,
         default=2000,
         help="K, the Monte Carlo replicate count; trades directly against --n_q for RAM",
@@ -469,7 +469,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         n_datasets=args.n_datasets,
         n_max=args.n_max,
         n_q=args.n_q,
-        mcmc_cate=args.mcmc_cate,
+        mc_cate=args.mc_cate,
         seed=args.seed,
         prior_mc_mem_budget=args.prior_mc_mem_budget,
         min_dim_U=args.min_dim_U,
@@ -493,7 +493,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cli_command=cli_command,
     )
     print(
-        f"Frozen set written to {val_dir} ({cfg.n_datasets} episodes, K={cfg.mcmc_cate})"
+        f"Frozen set written to {val_dir} ({cfg.n_datasets} episodes, K={cfg.mc_cate})"
     )
     print(f"Sidecar: {Path(args.out) / 'frozen_meta.pt'}")
 

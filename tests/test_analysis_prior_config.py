@@ -60,7 +60,7 @@ def test_digest_is_insensitive_to_override_key_order():
         {"seq_len": 999},
         {"max_dim_U": 9},
         {"prior_type": "tree_scm"},
-        {"mcmc_cate": 7},
+        {"mc_cate": 7},
         {"seed": 1},
         {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
@@ -107,7 +107,7 @@ def test_invalid_names_rejected(name):
     [
         ({"n_datasets": 0}, "n_datasets"),
         ({"seq_len": 1}, "seq_len"),
-        ({"mcmc_cate": 0}, "mcmc_cate"),
+        ({"mc_cate": 0}, "mc_cate"),
         ({"prior_type": "nope"}, "Unknown prior_type"),
         ({"min_dim_U": 6, "max_dim_U": 5}, "min_dim_U must be <= max_dim_U"),
         ({"min_dim_W": 0}, "min_dim_W must be >= 1"),
@@ -188,7 +188,7 @@ def test_dataset_seed_stable_when_renamed():
         {"seq_len": 999},
         {"max_dim_U": 9},
         {"prior_type": "tree_scm"},
-        {"mcmc_cate": 7},
+        {"mc_cate": 7},
         {"seed": 1},
         {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
@@ -285,10 +285,10 @@ def test_family_intervention_wins_on_conflicting_keys():
 
 
 def test_family_non_dict_fields_replace():
-    fam = _family(interventions={"short": {"seq_len": 64, "mcmc_cate": 3}})
+    fam = _family(interventions={"short": {"seq_len": 64, "mc_cate": 3}})
     variant = fam.resolve()["short"]
     assert variant.seq_len == 64
-    assert variant.mcmc_cate == 3
+    assert variant.mc_cate == 3
     # Untouched fields come from the base.
     assert variant.fixed_hp_overrides == {"proxy_cat_cover_prob": 0.0}
 

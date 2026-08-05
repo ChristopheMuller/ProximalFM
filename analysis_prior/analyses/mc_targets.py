@@ -100,7 +100,7 @@ from .base import Analysis, AnalysisArtifacts, register
 K_GRID: Tuple[int, ...] = (1, 5, 10, 25, 50, 100, 200, 500)
 
 #: ``K`` values the signal-share histogram overlays. Deliberately independent
-#: of the cache's own ``mcmc_cate``: ``S(K)`` follows analytically from the
+#: of the cache's own ``mc_cate``: ``S(K)`` follows analytically from the
 #: measured ``NSR``, so any ``K`` can be displayed off any ``K>1`` cache --
 #: edit this tuple to re-target the panel at a different production setting
 #: without regenerating anything. Kept a subset of :data:`K_GRID` so every
@@ -147,7 +147,7 @@ def target_frame(records: Sequence[PriorDatasetRecord], k: int) -> pd.DataFrame:
     if k < 2:
         raise ValueError(
             f"the Monte Carlo target analysis needs a cache with K >= 2; this "
-            f"spec has mcmc_cate={k}. Use --spec mc_targets (K=100); a K=1 "
+            f"spec has mc_cate={k}. Use --spec mc_targets (K=100); a K=1 "
             "cache carries no replicate structure to measure."
         )
 
@@ -242,7 +242,7 @@ class McTargetsAnalysis(Analysis):
     )
 
     def compute(self, cache: PriorCache) -> McTargetResults:
-        k = int(cache.spec.mcmc_cate)
+        k = int(cache.spec.mc_cate)
         frame = target_frame(cache.records, k)
 
         contrast: Dict[str, Any] = {}

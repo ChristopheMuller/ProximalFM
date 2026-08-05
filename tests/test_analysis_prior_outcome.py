@@ -55,7 +55,7 @@ def tiny_spec():
         name="tiny-outcome",
         n_datasets=4,
         seq_len=200,
-        mcmc_cate=1,
+        mc_cate=1,
         min_dim_U=2,
         max_dim_U=3,
         min_dim_W=2,

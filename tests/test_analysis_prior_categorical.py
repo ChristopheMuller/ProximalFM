@@ -220,7 +220,7 @@ def tiny_family_caches():
         name="cattest",
         n_datasets=8,
         seq_len=80,
-        mcmc_cate=1,
+        mc_cate=1,
         min_dim_U=1,
         max_dim_U=3,
         min_dim_W=1,

@@ -36,7 +36,7 @@ def test_build_spec_applies_overrides():
     assert spec.seq_len == 123
     assert spec.seed == 7
     # Untouched fields keep the preset value.
-    assert spec.mcmc_cate == PRESETS["smoke"].mcmc_cate
+    assert spec.mc_cate == PRESETS["smoke"].mc_cate
 
 
 def test_build_spec_rename():

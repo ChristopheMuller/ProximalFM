@@ -722,7 +722,7 @@ class Trainer:
                 max_train_size=c.max_train_size,
                 replay_small=c.replay_small,
                 prior_type=c.prior_type,
-                mcmc_cate=getattr(c, "mcmc_cate", 200),
+                mc_cate=getattr(c, "mc_cate", 200),
                 mc_targets_on_context=getattr(c, "mc_targets_on_context", True),
                 scm_fixed_hp={
                     **DEFAULT_FIXED_HP,
