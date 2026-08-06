@@ -91,6 +91,13 @@ class BuildConfig:
     min_dim_X: int = 5
     max_dim_X: int = 20
     prior_type: str = "mlp_scm"
+    # Generation device. The mechanisms are pure torch and device-agnostic (only
+    # the scalar hyperparameter draws go through numpy), so "cuda:0" moves the
+    # N-row replicate block onto GPU memory -- which is the whole constraint on
+    # K. Determinism is per-device: a set built on cuda is reproducible on the
+    # same GPU + torch build, but is NOT bit-identical to a cpu build. The
+    # device is recorded in frozen_meta.pt for exactly this reason.
+    gen_device: str = "cpu"
 
     @property
     def seq_len(self) -> int:
@@ -163,7 +170,7 @@ def _build_prior(cfg: BuildConfig) -> PriorDataset:
         # Nested parallelism would reintroduce the RNG problem; parallelism
         # happens across episodes instead.
         n_jobs=1,
-        device="cpu",
+        device=cfg.gen_device,
     )
 
 
@@ -183,11 +190,29 @@ def _frozen_scale(y_obs: torch.Tensor, n_max: int) -> tuple:
     return mean, std
 
 
+def _to_host(obj: Any) -> Any:
+    """Recursively move tensors in a diagnostics payload to CPU.
+
+    The sidecar is written with ``torch.save`` and read on machines that need
+    not have a GPU, so a stray cuda tensor in ``last_diagnostics`` would make
+    ``frozen_meta.pt`` unloadable on cpu-only hosts.
+    """
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu()
+    if isinstance(obj, dict):
+        return {k: _to_host(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_host(v) for v in obj)
+    return obj
+
+
 def generate_episode(cfg: BuildConfig, index: int) -> Dict[str, Any]:
     """Generate episode ``index``: batch tensors plus its sidecar record."""
     seed = episode_seed(cfg.seed, index)
     random.seed(seed)
     np.random.seed(seed)
+    # Seeds cpu and every cuda device, so the per-episode determinism holds on
+    # whichever device cfg.gen_device names -- within that device, not across.
     torch.manual_seed(seed)
 
     prior = _build_prior(cfg)
@@ -229,36 +254,45 @@ def generate_episode(cfg: BuildConfig, index: int) -> Dict[str, Any]:
             f"episode {index}: train_size={int(train_sizes[0])} != n_max={cfg.n_max}"
         )
 
+    # Brought back to host immediately: only the transient N-row replicate block
+    # needs to live on the accelerator, and everything downstream (stacking,
+    # write_batch_file, the sidecar) is CPU-side and must stay picklable.
     tensors = {
-        "U": U[0],
-        "X": X[0],
-        "W": W[0],
-        "Z": Z[0],
-        "A": A[0],
-        "A_probs": A_probs[0],
-        "Y_obs": Y_obs[0],
-        "Y0": Y0[0],
-        "Y1": Y1[0],
-        "MU0": MU0[0],
-        "MU1": MU1[0],
-        "d_U": d_U[0],
-        "d_X": d_X[0],
-        "d_W": d_W[0],
-        "d_Z": d_Z[0],
-        "seq_lens": seq_lens[0],
-        "train_sizes": train_sizes[0],
-        "S2": S2[0],
-        "K_eff": K_eff[0],
+        "U": U[0].cpu(),
+        "X": X[0].cpu(),
+        "W": W[0].cpu(),
+        "Z": Z[0].cpu(),
+        "A": A[0].cpu(),
+        "A_probs": A_probs[0].cpu(),
+        "Y_obs": Y_obs[0].cpu(),
+        "Y0": Y0[0].cpu(),
+        "Y1": Y1[0].cpu(),
+        "MU0": MU0[0].cpu(),
+        "MU1": MU1[0].cpu(),
+        "d_U": d_U[0].cpu(),
+        "d_X": d_X[0].cpu(),
+        "d_W": d_W[0].cpu(),
+        "d_Z": d_Z[0].cpu(),
+        "seq_lens": seq_lens[0].cpu(),
+        "train_sizes": train_sizes[0].cpu(),
+        "S2": S2[0].cpu(),
+        "K_eff": K_eff[0].cpu(),
     }
+    diagnostics = _to_host((prior.last_diagnostics or [None])[0] or {})
+    mechanisms = diagnostics.get("mechanisms", {})
+
+    # Drop every device-resident reference before the next episode allocates its
+    # own replicate block; on cuda the caching allocator otherwise holds the peak
+    # of episode i while episode i+1 asks for its own.
+    del U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1, S2, batch, prior
+    if cfg.gen_device.startswith("cuda"):
+        torch.cuda.empty_cache()
 
     y_mean, y_std = _frozen_scale(tensors["Y_obs"], cfg.n_max)
     mu0_q = tensors["MU0"].reshape(-1)[cfg.n_max :].float()
     mu1_q = tensors["MU1"].reshape(-1)[cfg.n_max :].float()
     s2_q = tensors["S2"].reshape(-1)[cfg.n_max :].float()
     tau_star = mu1_q - mu0_q
-
-    diagnostics = (prior.last_diagnostics or [None])[0] or {}
-    mechanisms = diagnostics.get("mechanisms", {})
 
     record = {
         "index": index,
@@ -440,6 +474,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="episodes in parallel; each worker holds the full replicate block",
     )
+    p.add_argument(
+        "--gen_device",
+        type=str,
+        default="cpu",
+        help=(
+            "device the generator allocates the n_max + n_q*K replicate block "
+            "on, e.g. cuda:0. Reproducible per-device, not across devices"
+        ),
+    )
     p.add_argument("--min_dim_U", type=int, default=3)
     p.add_argument("--max_dim_U", type=int, default=10)
     p.add_argument("--min_dim_W", type=int, default=3)
@@ -480,7 +523,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_dim_Z=args.max_dim_Z,
         min_dim_X=args.min_dim_X,
         max_dim_X=args.max_dim_X,
+        gen_device=args.gen_device,
     )
+    if args.n_jobs != 1 and cfg.gen_device != "cpu":
+        raise SystemExit(
+            "--n_jobs > 1 with --gen_device cuda would give every loky worker "
+            "its own CUDA context and its own copy of the replicate block. "
+            "Keep --n_jobs 1 on GPU; the GPU is already the parallelism."
+        )
     cli_command = shlex.join(
         [sys.executable, "-m", "posterior_eval.build", *(argv or sys.argv[1:])]
     )
