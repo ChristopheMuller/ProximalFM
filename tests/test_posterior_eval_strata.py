@@ -86,7 +86,7 @@ def test_pooled_metrics_are_the_row_weighted_sum_of_disjoint_subsets():
     p = pooled.compute(prefix="")
     a = left.compute(prefix="")
     b = right.compute(prefix="")
-    n_a, n_b, n_p = a["eval/rows"], b["eval/rows"], p["eval/rows"]
+    n_a, n_b, n_p = a["eval_rows"], b["eval_rows"], p["eval_rows"]
     assert n_a + n_b == n_p
 
     for key in ADDITIVE:
@@ -119,7 +119,7 @@ def test_pit_ks_is_not_additive_and_must_not_be_recombined():
     p = pooled.compute(prefix="")
     a = left.compute(prefix="")
     b = right.compute(prefix="")
-    n_a, n_b, n_p = a["eval/rows"], b["eval/rows"], p["eval/rows"]
+    n_a, n_b, n_p = a["eval_rows"], b["eval_rows"], p["eval_rows"]
 
     recombined = (a["pit_ks"] * n_a + b["pit_ks"] * n_b) / n_p
     assert recombined != pytest.approx(p["pit_ks"], rel=1e-3)
@@ -216,10 +216,10 @@ def test_score_strata_buckets_partition_the_pooled_rows(frozen, monkeypatch):
     monkeypatch.setattr(mod, "score_episode", _stub_score_episode(fake_predictive))
     results = mod.score_strata(object(), frozen, meta=meta, manifest=manifest)
 
-    pooled_rows = results["pooled"]["eval/rows"]
+    pooled_rows = results["pooled"]["eval_rows"]
     for name in manifest["cuts"]:
-        inside = results.get(f"{name}/in", {}).get("eval/rows", 0)
-        outside = results.get(f"{name}/out", {}).get("eval/rows", 0)
+        inside = results.get(f"{name}/in", {}).get("eval_rows", 0)
+        outside = results.get(f"{name}/out", {}).get("eval_rows", 0)
         assert inside + outside == pooled_rows, name
 
 

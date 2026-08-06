@@ -108,7 +108,7 @@ grid before you spend a day blaming the architecture.
 | Key | What it is | Want |
 |---|---|---|
 | `target/cate_mean` | Mean of the standardized MC CEPO target `mu1 − mu0`. | ≈ 0, stable |
-| `target/cate_std` | Its SD. | O(1), stable |
+| `target/cate_std` | Its SD. The denominator the other standardized-scale keys are read against. | O(1), stable |
 | `target/sampled_ite_mean` | Mean of the *sampled* ITE `y1 − y0` (one draw, not the MC mean). | ≈ `target/cate_mean` |
 | `target/ite_minus_cate_mse` | `E[(ITE − CATE)²]`, the irreducible outcome-noise gap between the two estimands. | — |
 | `target/cate_out_of_grid_frac` | Share of targets outside `[--cate_vmin, --cate_vmax]`. `cate_single_noise_aware` only. | ≈ 0 |
@@ -120,6 +120,26 @@ to.
 
 A rising `target/cate_out_of_grid_frac` means the loss is being driven by rows it cannot represent —
 widen the grid rather than tuning anything else.
+
+`target/cate_std` is not a quality metric; it is the scale the other standardized-scale numbers are
+meaningless without. Four ratios use it as the denominator:
+
+- **`loss/cate_mse` / `cate_std²`** — the null-model line. A model that always predicts the batch
+  mean scores exactly `cate_std²`, so the ratio is `1 − R²`.
+- **`cate_std` vs `[--cate_vmin, --cate_vmax]`** — the *leading* indicator for
+  `target/cate_out_of_grid_frac`, which only moves once the grid is already too tight. `O(1)` against
+  the recommended `±5` leaves ~5σ of headroom.
+- **`noise/mean_s` / `cate_std`** — whether the noise-aware deconvolution has anything to act on
+  (see [§ROADMAP D3b](../../ROADMAP.md); on the frozen set at `K=4000` it is 0.008, i.e. negligible,
+  but it grows as `1/√K` and a training run at low `--mc_cate` sits far higher).
+- **`loss/hl_sigma` / `cate_std`** — whether the histogram smoothing is swamping the signal. Sigma is
+  a floor on learned width, so a small target spread against a fixed sigma flattens the sd curve at
+  the floor; that is the `diag/sigma` trap in [§6](#6-the-traps-in-full) seen from the target side.
+
+Secondary use: it is pooled over all query rows of all episodes in the batch, so it mixes
+within-episode heterogeneity with between-episode ATE spread and is **not** a measure of effect
+heterogeneity. What that pooling does buy is a batch-composition alarm — if `loss/cate_mse` jumps on
+the same step `cate_std` jumps, the batch mix changed and there is nothing to debug in the model.
 
 ### `noise/*` — the noise-aware objective
 
@@ -176,7 +196,7 @@ Each of the above also emits `<key>/p25` and `<key>/p75`.
 |---|---|---|
 | `val/point/ate/rmse` | `√ mean_episodes (ATÊ − ATE)²` | ↓ |
 | `val/point/ate/r2` | `1 − MSE_ATE / Var_episodes(ATE)` | ↑ |
-| `val/point/eval/episodes` | episodes accumulated in the pass | constant across passes |
+| `val/point/eval_episodes` | episodes accumulated in the pass | constant across passes |
 | `val/time` | wall-clock seconds for the pass (flat under `val/`, not `val/point/` — a pass diagnostic, not a point-vs-dist metric) | — |
 
 Caveats worth knowing:
@@ -219,7 +239,7 @@ but a different one, and mixing the two makes every width number meaningless.
 Identical definitions to [§4](#4-val-surface--valpoint), same evaluator, same
 median-over-episodes and same homogeneous-episode exclusion — on the frozen in-prior episodes
 instead: `cate/rmse`, `cate/npehe`, `cate/r2`, `cate/r2_shape`, `cate/sign_agreement`,
-`ate/bias_norm` (each with `/p25`, `/p75`), `ate/rmse`, `ate/r2`, `eval/episodes`. No `po/*` — the
+`ate/bias_norm` (each with `/p25`, `/p75`), `ate/rmse`, `ate/r2`, `eval_episodes`. No `po/*` — the
 frozen pass only ever feeds `pred_cate`/`true_cate`.
 
 One key exists here and nowhere else:
@@ -305,7 +325,7 @@ squared error. There is no meaningful per-row version of this ratio; do not cons
 |---|---|---|
 | `out_of_grid_frac` | Share of targets outside `[bin_edges[0], bin_edges[-1]]` | ≈ 0 — read this **before** anything else |
 | `crps_oracle` | The oracle CRPS itself (denominator of `crps_over_oracle`) | — |
-| `eval/episodes`, `eval/rows` | Counts accumulated in the pass | constant across passes |
+| `eval_episodes`, `eval_rows` | Counts accumulated in the pass | constant across passes |
 
 Out-of-grid targets are scored **honestly, not clipped**: CRPS is charged the distance to the nearest
 edge and the PIT is pinned to exactly 0 or 1. Clipping instead would make an unrepresentable target
@@ -447,7 +467,7 @@ key exists solely so there is a quantity that must match `posterior_eval/report.
 `cate/npehe`, `cate/r2`, `cate/r2_shape` and `ate/bias_norm` are computed on a strict subset of
 episodes (those with `Var(τ) ≥ 1e-6`). If the prior's heterogeneity distribution shifts, that subset
 changes size and these four metrics move for reasons that have nothing to do with the model. Their
-episode count is not `eval/episodes`, and it is not logged.
+episode count is not `eval_episodes`, and it is not logged.
 
 ### Why there is no ATE credible interval
 

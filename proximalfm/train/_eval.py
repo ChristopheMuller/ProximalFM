@@ -265,6 +265,6 @@ class CausalEvaluator:
                 metrics[f"{prefix}ate/r2"] = 1.0 if mse_ate < self.eps else 0.0
 
         if include_count:
-            metrics[f"{prefix}eval/episodes"] = count
+            metrics[f"{prefix}eval_episodes"] = count
 
         return metrics

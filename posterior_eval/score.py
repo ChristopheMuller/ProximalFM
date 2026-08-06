@@ -127,8 +127,8 @@ def run(
     print(f"Frozen set: {out}  [content_digest={digest}]")
     print(f"Checkpoint: {ckpt} (step {step}, loss_type={model.loss_type})")
     print(
-        f"  episodes {int(metrics.get('prior_point/eval/episodes', 0))}"
-        f"   rows {int(metrics.get('prior_dist/eval/rows', 0))}"
+        f"  episodes {int(metrics.get('prior_point/eval_episodes', 0))}"
+        f"   rows {int(metrics.get('prior_dist/eval_rows', 0))}"
         f"   n_ctx {int(metrics.get('prior_dist/n_ctx', 0))}"
         f"   grid_scale {metrics.get('prior_dist/grid_scale', float('nan')):.4f}"
     )

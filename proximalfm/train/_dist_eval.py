@@ -347,8 +347,8 @@ class PosteriorEvaluator:
             metrics["pit_ks_episode_band"] = float(band.median())
 
         if include_count:
-            metrics["eval/episodes"] = episodes
-            metrics["eval/rows"] = rows
+            metrics["eval_episodes"] = episodes
+            metrics["eval_rows"] = rows
 
         return {f"{prefix}{k}": v for k, v in metrics.items()}
 

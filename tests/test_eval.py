@@ -73,7 +73,7 @@ def test_update_perfect_prediction(evaluator, batch_size, seq_len):
     assert metrics["po/rmse_y0"] == pytest.approx(0.0, abs=1e-6)
     assert metrics["po/rmse_y1"] == pytest.approx(0.0, abs=1e-6)
     assert metrics["cate/rmse"] == pytest.approx(0.0, abs=1e-6)
-    assert metrics["eval/episodes"] == batch_size
+    assert metrics["eval_episodes"] == batch_size
 
 
 def test_update_without_per_arm_predictions_omits_po_metrics(evaluator):
@@ -150,7 +150,7 @@ def test_update_streaming_accumulation(evaluator):
     # Mean RMSE: ((3.0 * 2) + (5.0 * 2)) / 4 = 4.0
     assert metrics["po/rmse_y0"] == pytest.approx(4.0)
     assert metrics["cate/rmse"] == pytest.approx(4.0)
-    assert metrics["eval/episodes"] == batch_size * 2
+    assert metrics["eval_episodes"] == batch_size * 2
 
 
 def test_extra_metrics_and_prefixes(evaluator):
@@ -176,4 +176,4 @@ def test_extra_metrics_and_prefixes(evaluator):
     # divides by num_episodes in compute(), effectively averaging them.
     assert metrics["val/point/loss/total"] == pytest.approx(1.5)
     assert metrics["val/point/loss/penalty"] == pytest.approx(0.5)
-    assert metrics["val/point/eval/episodes"] == batch_size
+    assert metrics["val/point/eval_episodes"] == batch_size

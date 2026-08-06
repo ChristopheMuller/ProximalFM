@@ -233,7 +233,7 @@ def _print_report(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any]
     print("=" * 78)
     print(
         f"\npooled: {int(pooled.get('episodes', 0))} episodes, "
-        f"{int(pooled.get('eval/rows', 0))} rows"
+        f"{int(pooled.get('eval_rows', 0))} rows"
     )
 
     print("\n--- COMPARABLE across strata (ratios and probabilities) ---")
@@ -247,7 +247,7 @@ def _print_report(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any]
         row = " ".join(_fmt(m.get(k)).rjust(9) for k in COMPARABLE)
         print(
             f"  {name:<26} {int(m.get('episodes', 0)):>5} "
-            f"{int(m.get('eval/rows', 0)):>7} {row}"
+            f"{int(m.get('eval_rows', 0)):>7} {row}"
         )
 
     print("\n--- SCALE-BOUND: do NOT compare between strata ---")

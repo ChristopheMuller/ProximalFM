@@ -79,8 +79,8 @@ def test_calibrated_forecast_recovers_the_closed_forms():
     assert m["prior_dist/crps"] == pytest.approx(1.0 / math.sqrt(math.pi), rel=0.03)
     assert m["prior_dist/crps_over_oracle"] > 1.0
     assert m["prior_dist/out_of_grid_frac"] == 0.0
-    assert m["prior_dist/eval/episodes"] == 16
-    assert m["prior_dist/eval/rows"] == 16 * 512
+    assert m["prior_dist/eval_episodes"] == 16
+    assert m["prior_dist/eval_rows"] == 16 * 512
 
 
 def test_too_narrow_forecast_fails_both_diagnostics():
@@ -246,8 +246,8 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
     cfg, out = frozen
     metrics = score_frozen_set(_FakeCateModel(), out)
 
-    assert metrics["prior_point/eval/episodes"] == cfg.n_datasets
-    assert metrics["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert metrics["prior_point/eval_episodes"] == cfg.n_datasets
+    assert metrics["prior_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
     assert metrics["prior_dist/n_ctx"] == cfg.n_max
     for key in (
         "prior_point/cate/rmse",
@@ -368,7 +368,7 @@ def test_real_model_predict_path(frozen):
     ).eval()
 
     metrics = score_frozen_set(model, out)
-    assert metrics["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert metrics["prior_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
     assert 0.0 <= metrics["prior_dist/cov90"] <= 1.0
     assert metrics["prior_dist/crps"] > 0.0
     assert metrics["prior_dist/mean_sd"] > 0.0
@@ -468,8 +468,8 @@ def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
     sharded = per_rank[0]
 
     # Counts first: the shard split is the thing most likely to lose episodes.
-    assert sharded["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
-    assert sharded["prior_point/eval/episodes"] == cfg.n_datasets
+    assert sharded["prior_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
+    assert sharded["prior_point/eval_episodes"] == cfg.n_datasets
 
     # Weighted sums reduce exactly, so these are equalities, not tolerances --
     # including the driver-accumulated pooled RMSE, which lives outside either
@@ -511,8 +511,8 @@ def test_empty_shard_still_completes(frozen4, tmp_path):
     per_rank = _run_sharded(out, tmp_path, world_size=2, max_episodes=1)
 
     assert per_rank[0] == per_rank[1]
-    assert per_rank[0]["prior_dist/eval/rows"] == cfg.n_q
-    assert per_rank[0]["prior_point/eval/episodes"] == 1
+    assert per_rank[0]["prior_dist/eval_rows"] == cfg.n_q
+    assert per_rank[0]["prior_point/eval_episodes"] == 1
     assert per_rank[0]["prior_point/cate/rmse_pooled"] == pytest.approx(
         single["prior_point/cate/rmse_pooled"], rel=1e-9
     )
