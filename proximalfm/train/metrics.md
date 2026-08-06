@@ -1,12 +1,6 @@
 # Metrics catalogue
 
-Every key ProximalFM logs, what it means, what value to want, and the caveat that makes it
-misleading. Written 2026-08-06 as [EVAL_PLAN.md](../EVAL_PLAN.md) step 8.
-
-This is the *reference*, not the reasoning: [EVAL_PLAN.md](../EVAL_PLAN.md) has the step-by-step
-argument for why the surfaces are split this way, and
-[`_dist_metrics.py`](../proximalfm/train/_dist_metrics.py)'s module docstring is the authority on
-anything `*/dist/*`.
+Every key ProximalFM logs, what it means, what value to want, and the caveat that makes it misleading.
 
 ---
 
