@@ -44,12 +44,12 @@ methods:
     use_W: false
     use_Z: false
 
-  - name: S-TabICL-Oracle
-    cls:   S_Learner
-    base:  tabicl
-    use_W: false
-    use_Z: false
-    is_oracle: true
+  # - name: S-TabICL-Oracle
+  #   cls:   S_Learner
+  #   base:  tabicl
+  #   use_W: false
+  #   use_Z: false
+  #   is_oracle: true
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS
@@ -84,17 +84,17 @@ methods:
     q_clip:       [-10.0, 10.0]
     refit_full_nuisance: false
 
-  - name: KPV
-    cls:         KernelPV
-    tune_kernel_scale: true
-    kernel_scale_min: 0.5
-    kernel_scale_max: 2.0
-    n_kernel_scale_search: 5
-    outputs:
-      - { name: KPV-XW,     strategy: paired }
-      - { name: KPV-X-Wind, strategy: independent }
-      - { name: KPV-X-Wcond, strategy: conditional }
-      - { name: KPV-ATE,    strategy: marginal }
+  # - name: KPV
+  #   cls:         KernelPV
+  #   tune_kernel_scale: true
+  #   kernel_scale_min: 0.5
+  #   kernel_scale_max: 2.0
+  #   n_kernel_scale_search: 5
+  #   outputs:
+  #     - { name: KPV-XW,     strategy: paired }
+  #     - { name: KPV-X-Wind, strategy: independent }
+  #     - { name: KPV-X-Wcond, strategy: conditional }
+  #     - { name: KPV-ATE,    strategy: marginal }
 
   - name: PMMR
     cls:         PMMR
@@ -191,10 +191,18 @@ methods:
 
 models:
   
-  - name:       ProximalFM3
-    checkpoint: mc_run_3_finetune/
-    all: false
+  # - name:       ProximalFM3
+  #   checkpoint: mc_run_3_finetune/
+  #   all: false
 
-  - name:       ProximalFM4
-    checkpoint: mc_run_4/
+  # - name:       ProximalFM4
+  #   checkpoint: mc_run_4/
+  #   all: false
+
+  # - name:       ProximalFM5
+  #   checkpoint: mc_run_5/
+  #   all: false
+
+  - name:       ProximalFM5-last
+    checkpoint: mc_run_5/step-70000.ckpt
     all: false

@@ -4,6 +4,7 @@ checkpoints/*
 runs/*
 .DS_Store
 .venv/
+.claude/
 
 eval_data/*
 results/*
@@ -14,6 +15,9 @@ analysis_prior/cache/*
 analysis_prior/results/*
 wandb/*
 archive/*
+
+docs/latex/
+toy/*
 
 *.pdf
 *.pt
