@@ -89,7 +89,8 @@ Which keys exist depends on `--loss_type`. `loss/total` is the only one common t
 |---|---|---|
 | `loss/total` | all | The scalar actually backpropagated, per step. |
 | `loss/y0`, `loss/y1` | `bins_po` | Per-arm binned cross-entropy. |
-| `loss/cate` | `bins_po`, `hl`, `cate_single*` | The CATE-consistency term, **already multiplied by `--lambda_cate`**. A zero here means the weight is zero, not that the term is satisfied. |
+| `loss/cate_mse` | `bins_po`, `hl`, `cate_single*` | The CATE-consistency term as a plain MSE, **unweighted**: `mean((E_P[tau] - tau_target)^2)` on the head's grid scale. This is the interpretable one — comparable across `--lambda_cate` settings and across runs. |
+| `loss/cate_mse_weighted` | `bins_po`, `hl`, `cate_single*` | The same term **already multiplied by `--lambda_cate`**, i.e. its actual contribution to `loss/total`. A zero here means the weight is zero, not that the term is satisfied. Was called `loss/cate` before 2026-08-06; runs older than that log the weighted value under the old name. |
 | `loss/ate_nll`, `loss/he_crps` | `cate_decomposition` | The ATE-NLL and heterogeneity-CRPS parts, each already multiplied by its lambda. |
 | `loss/y0_hl`, `loss/y1_hl` | `hl` | Per-arm HL-Gaussian NLL. |
 | `loss/cate_dist` | `cate_single*` | The single-head distributional NLL over `tau`. Under `cate_single_noise_aware` this is the deconvolved form; the key does not change between the two, which is deliberate — checkpoints load across them untouched. |

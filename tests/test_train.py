@@ -329,7 +329,10 @@ def test_trainer_micro_batch_cate_single(dummy_args):
 
     assert results, "expected the micro batch to produce metrics"
     assert "loss/cate_dist" in results
-    assert "loss/cate" in results
+    assert "loss/cate_mse" in results
+    assert results["loss/cate_mse_weighted"] == pytest.approx(
+        dummy_args.lambda_cate * results["loss/cate_mse"]
+    )
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
 

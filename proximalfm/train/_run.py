@@ -1431,7 +1431,8 @@ class Trainer:
                     "loss/total": reported_loss_total,
                     "loss/y0": loss_y0.item() / scale,
                     "loss/y1": loss_y1.item() / scale,
-                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse": loss_cate.item() / scale,
                 }
             elif loss_type == "cate_decomposition":
                 micro_results = {
@@ -1444,14 +1445,16 @@ class Trainer:
                     "loss/total": reported_loss_total,
                     "loss/y0_hl": loss_y0.item() / scale,
                     "loss/y1_hl": loss_y1.item() / scale,
-                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse": loss_cate.item() / scale,
                     "loss/hl_sigma": hl_sigma / scale,
                 }
             elif loss_type in ("cate_single", "cate_single_noise_aware"):
                 micro_results = {
                     "loss/total": reported_loss_total,
                     "loss/cate_dist": loss_cate_dist.item() / scale,
-                    "loss/cate": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
+                    "loss/cate_mse": loss_cate.item() / scale,
                     "loss/hl_sigma": hl_sigma / scale,
                 }
 
