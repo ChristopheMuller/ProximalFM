@@ -590,8 +590,9 @@ def build_parser():
         type=nullable_int,
         help="Cap on the number of frozen-set episodes scored per "
         "dist_validate() pass. None (default) scores every episode in "
-        "--dist_eval_dir. A single-process cap for now; becomes a per-rank "
-        "cap once DDP sharding lands (EVAL_PLAN step 6d).",
+        "--dist_eval_dir. A global cap, applied before the DDP round-robin "
+        "sharding, so which episodes get scored does not depend on the world "
+        "size -- only who scores them.",
     )
 
     ###########################################################################
