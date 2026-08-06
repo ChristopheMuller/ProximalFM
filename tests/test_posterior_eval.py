@@ -70,8 +70,8 @@ def test_calibrated_forecast_recovers_the_closed_forms():
 
     # A correct forecast: unit width ratio, nominal coverage, uniform PIT.
     assert m["prior_dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
-    assert m["prior_dist/cov90"] == pytest.approx(0.90, abs=0.02)
-    assert m["prior_dist/cov50"] == pytest.approx(0.50, abs=0.03)
+    assert m["prior_dist/cov90_pooled"] == pytest.approx(0.90, abs=0.02)
+    assert m["prior_dist/cov50_pooled"] == pytest.approx(0.50, abs=0.03)
     # Exact width of the central 90% interval of a standard normal.
     assert m["prior_dist/width90"] == pytest.approx(2 * 1.6448536, abs=0.01)
     assert m["prior_dist/pit_ks"] < m["prior_dist/pit_ks_band"]
@@ -92,7 +92,7 @@ def test_too_narrow_forecast_fails_both_diagnostics():
     # Both, because either alone is ambiguous: a U-shaped PIT is also produced
     # by a biased forecast, and sd/rmse alone says nothing about shape.
     assert m["prior_dist/sd_over_rmse"] == pytest.approx(0.5, abs=0.05)
-    assert m["prior_dist/cov90"] < 0.75
+    assert m["prior_dist/cov90_pooled"] < 0.75
     assert m["prior_dist/pit_ks"] > m["prior_dist/pit_ks_band"]
 
 
@@ -254,7 +254,8 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
         "prior_point/cate/rmse_pooled",
         "prior_point/ate/rmse",
         "prior_dist/crps",
-        "prior_dist/cov90",
+        "prior_dist/cov90_pooled",
+        "prior_dist/cov90/p50",
         "prior_dist/width90",
         "prior_dist/sd_over_rmse",
         "prior_dist/mean_sd",
@@ -369,7 +370,7 @@ def test_real_model_predict_path(frozen):
 
     metrics = score_frozen_set(model, out)
     assert metrics["prior_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
-    assert 0.0 <= metrics["prior_dist/cov90"] <= 1.0
+    assert 0.0 <= metrics["prior_dist/cov90_pooled"] <= 1.0
     assert metrics["prior_dist/crps"] > 0.0
     assert metrics["prior_dist/mean_sd"] > 0.0
 
@@ -477,8 +478,11 @@ def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
     for key in (
         "prior_dist/crps",
         "prior_dist/crps_oracle",
-        "prior_dist/cov50",
-        "prior_dist/cov90",
+        "prior_dist/cov50_pooled",
+        "prior_dist/cov90_pooled",
+        "prior_dist/cov90/p25",
+        "prior_dist/cov90/p50",
+        "prior_dist/cov90/p75",
         "prior_dist/width50",
         "prior_dist/width90",
         "prior_dist/mean_sd",

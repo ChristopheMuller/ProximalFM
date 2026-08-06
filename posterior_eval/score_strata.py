@@ -26,10 +26,14 @@ expected consequence of a harder problem and says nothing about the posterior.
 Treating it as a finding is the single most likely misuse of this module, which
 is why the printed table separates the two blocks.
 
-**Comparable across strata**: ``sd_over_rmse``, ``cov50``/``cov90``,
-``crps_over_oracle``, and ``pit_ks`` -- the last strictly against *its own*
-band, never the pooled one. The band scales as ``1/sqrt(n)``, so a smaller
-stratum earns a wider band and a naive comparison manufactures failures.
+**Comparable across strata**: ``sd_over_rmse``, ``cov50_pooled``/``cov90_pooled``
+and the per-episode ``cov90/p25``--``p75`` spread, ``crps_over_oracle``, and
+``pit_ks`` -- the last strictly against *its own* band, never the pooled one.
+The band scales as ``1/sqrt(n)``, so a smaller stratum earns a wider band and a
+naive comparison manufactures failures. The per-episode coverage quantiles carry
+the same caveat for a different reason: their binomial floor scales with the
+*rows per episode inside the cut*, so a row-level cut that keeps a third of each
+episode's rows widens the IQR on sampling noise alone.
 
 **The headline for A2** is ``sd_over_rmse`` on ``weak_proxy`` against its
 complement. Pooled ~1 with ``weak_proxy`` well below 1 is the failure the
@@ -65,8 +69,10 @@ from proximalfm.train._eval import CausalEvaluator
 #: strata of different intrinsic difficulty.
 COMPARABLE = (
     "sd_over_rmse",
-    "cov50",
-    "cov90",
+    "cov50_pooled",
+    "cov90_pooled",
+    "cov90/p25",
+    "cov90/p75",
     "crps_over_oracle",
     "pit_ks",
     "pit_ks_band",
@@ -238,13 +244,13 @@ def _print_report(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any]
 
     print("\n--- COMPARABLE across strata (ratios and probabilities) ---")
     header = f"  {'bucket':<26} {'eps':>5} {'rows':>7} " + " ".join(
-        f"{k[:9]:>9}" for k in COMPARABLE
+        f"{k[:12]:>12}" for k in COMPARABLE
     )
     print(header)
     print("  " + "-" * (len(header) - 2))
     for name in _report_order(manifest, results):
         m = results[name]
-        row = " ".join(_fmt(m.get(k)).rjust(9) for k in COMPARABLE)
+        row = " ".join(_fmt(m.get(k)).rjust(12) for k in COMPARABLE)
         print(
             f"  {name:<26} {int(m.get('episodes', 0)):>5} "
             f"{int(m.get('eval_rows', 0)):>7} {row}"

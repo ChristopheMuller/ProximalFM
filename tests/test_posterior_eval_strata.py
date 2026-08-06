@@ -32,7 +32,15 @@ from proximalfm.train._dist_eval import PosteriorEvaluator
 # Metrics that are a row-weighted mean of a per-row quantity, hence exactly
 # recoverable from disjoint subsets. Kept explicit rather than derived from the
 # evaluator, so a new non-additive key cannot join the list by accident.
-ADDITIVE = ("crps", "crps_oracle", "mean_var", "mean_sd", "mse_obs", "cov90", "cov50")
+ADDITIVE = (
+    "crps",
+    "crps_oracle",
+    "mean_var",
+    "mean_sd",
+    "mse_obs",
+    "cov90_pooled",
+    "cov50_pooled",
+)
 
 
 def _cfg(**overrides):
@@ -123,6 +131,58 @@ def test_pit_ks_is_not_additive_and_must_not_be_recombined():
 
     recombined = (a["pit_ks"] * n_a + b["pit_ks"] * n_b) / n_p
     assert recombined != pytest.approx(p["pit_ks"], rel=1e-3)
+
+
+def test_per_episode_coverage_quantiles_are_not_additive():
+    """``cov90/p*`` are quantiles over episodes, not row-weighted means.
+
+    The pooled twin ``cov90_pooled`` *is* additive and is covered by
+    :data:`ADDITIVE`. Pinned separately so the two never get conflated: a
+    quantile of a subset's per-episode coverages says nothing about the whole,
+    and row-weighting them is exactly the mistake the pooled key exists to
+    absorb.
+    """
+    rng = np.random.default_rng(2)
+    edges = torch.linspace(-3.0, 3.0, 25)
+    centers = (edges[:-1] + edges[1:]) / 2
+
+    # `_fake_episode`'s softmax-of-noise forecast is so wide that cov90 is 1.0
+    # on every row, which makes any recombination trivially exact. Two
+    # properties are needed instead: forecasts sharp enough to miss, and
+    # *skew across episodes* -- with homogeneous episodes the median is the
+    # common value and coincides with the row-weighted mean.
+    pooled = PosteriorEvaluator()
+    left, right = PosteriorEvaluator(), PosteriorEvaluator()
+
+    for sigma in (0.15, 0.15, 0.2, 0.2, 0.25, 0.3, 1.5, 2.0):
+        n = 60
+        probs = torch.softmax(-(centers[None, :] ** 2) / (2 * sigma**2), dim=-1)
+        probs = probs.repeat(n, 1)
+        y = torch.from_numpy(rng.normal(scale=0.8, size=n)).float()
+        s2 = torch.full((n,), 1e-4)
+        # Split near-centre rows from tail rows, so the two sides have very
+        # different coverage -- the cancellation the per-episode keys exist to
+        # expose.
+        mask = y.abs() < 0.4
+        pooled.update(probs=probs, bin_edges=edges, y=y, s2=s2)
+        left.update(probs=probs[mask], bin_edges=edges, y=y[mask], s2=s2[mask])
+        right.update(probs=probs[~mask], bin_edges=edges, y=y[~mask], s2=s2[~mask])
+
+    p = pooled.compute(prefix="")
+    a = left.compute(prefix="")
+    b = right.compute(prefix="")
+    n_a, n_b, n_p = a["eval_rows"], b["eval_rows"], p["eval_rows"]
+
+    recombined = (a["cov90/p50"] * n_a + b["cov90/p50"] * n_b) / n_p
+    assert recombined != pytest.approx(p["cov90/p50"], rel=1e-2)
+
+    # ...while the pooled key over the same split recombines exactly.
+    pooled_recombined = (a["cov90_pooled"] * n_a + b["cov90_pooled"] * n_b) / n_p
+    assert pooled_recombined == pytest.approx(p["cov90_pooled"], rel=1e-9)
+
+    # And the reason both keys are logged: on this deliberately split set the
+    # pooled coverage sits well above the typical episode's.
+    assert p["cov90_pooled"] > p["cov90/p50"] + 0.1
 
 
 def test_manifest_covers_every_episode_and_records_its_thresholds(frozen):

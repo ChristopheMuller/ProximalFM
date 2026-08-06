@@ -273,8 +273,27 @@ achieved by widening, width alone by being confidently wrong.
 
 | Key | What it is | Want |
 |---|---|---|
-| `cov50`, `cov90` | Empirical coverage of the central 50 % / 90 % interval `[F⁻¹((1−L)/2), F⁻¹((1+L)/2)]` | 0.50 / 0.90 |
+| `cov50_pooled`, `cov90_pooled` | Empirical coverage of the central 50 % / 90 % interval `[F⁻¹((1−L)/2), F⁻¹((1+L)/2)]`, **row-weighted over the whole pass** | 0.50 / 0.90 |
+| `cov50/p25`, `/p50`, `/p75` | Quantiles of the **per-episode** 50 % coverages | p50 ≈ 0.50, IQR ≈ the binomial floor |
+| `cov90/p25`, `/p50`, `/p75` | Same for the 90 % interval | p50 ≈ 0.90, IQR ≈ the binomial floor |
 | `width50`, `width90` | Mean width of that interval | ↓ *at fixed coverage* |
+
+`cov*_pooled` was called `cov50`/`cov90` before 2026-08-06; the bare names no longer exist.
+
+**Pooled coverage cancels, and the per-episode quantiles are what catch it.** Over-covering on half
+the episodes and under-covering on the other half is a perfect `cov90_pooled = 0.90` with `cov90/p25`
+and `cov90/p75` straddling it. This is the coverage-side twin of
+[§6](#pooled-vs-per-episode-ks--pooling-hides-cancellation), which makes the same argument for PIT.
+
+**The IQR has a binomial floor — never read it against zero.** A perfectly calibrated model still
+scores `Binomial(n, L)/n` per episode, so the p25–p75 gap is `≈ 1.35·√(L(1−L)/n)` from sampling alone:
+at `n_q = 128` that is **0.060 for `cov50`** and **0.036 for `cov90`**. Only spread beyond that is
+miscalibration. Unlike `pit_ks`, no band key is emitted — the floor depends only on `n_q` and the
+level, both of which you know. Under a *row-level* strata cut the effective `n` is the rows kept per
+episode, not `n_q`, so the floor widens accordingly.
+
+Only the pooled keys are additive across strata cuts; the quantiles are sample statistics, exactly
+like `pit_ks`. `tests/test_posterior_eval_strata.py` pins both halves of that.
 
 **PIT, pooled and per-episode.**
 
@@ -353,7 +372,7 @@ The reading rule, which is the whole point of the tool:
 
 | Comparable across strata | Not comparable |
 |---|---|
-| `sd_over_rmse`, `cov50`, `cov90`, `crps_over_oracle`, `pit_ks` (vs **its own** band) | `crps`, `mean_sd`, `width50`, `width90`, `cate/rmse` |
+| `sd_over_rmse`, `cov50_pooled`, `cov90_pooled`, `cov90/p25`–`p75`, `crps_over_oracle`, `pit_ks` (vs **its own** band) | `crps`, `mean_sd`, `width50`, `width90`, `cate/rmse` |
 
 Strata differ in intrinsic difficulty *and* in the scale of `tau`, so a worse `crps` under weak
 proxies is the expected consequence of a harder problem and is not a finding. Two further traps:
@@ -409,7 +428,7 @@ is uninterpretable on its own, because narrowing is trivially achievable and loo
 beautifully shaped shrinkage curve at `sd_over_rmse = 0.6` is a model that is confidently wrong. Pair
 them, always, in the same plot if possible.
 
-`cov50`/`cov90` and the PIT are the other half of the diagnosis: `sd_over_rmse` says *whether* the
+`cov50_pooled`/`cov90_pooled` and the PIT are the other half of the diagnosis: `sd_over_rmse` says *whether* the
 scale is wrong, the PIT shape says *how*.
 
 ### `crps_over_oracle` — the difference between converged and grid-limited
@@ -537,7 +556,7 @@ works; `_check_best_metric_config` warns at startup about three configurations t
 - a `prior_dist/*` `best_metric` with no `--dist_eval_dir`;
 - a name whose direction contradicts `--best_metric_mode`. The heuristic is textual: `r2` and
   `sign_agreement` are treated as higher-is-better, and `rmse`, `npehe`, `mse`, `bias`, `loss`,
-  `crps` as lower-is-better. A key matching neither list (e.g. `prior_dist/cov90` or
+  `crps` as lower-is-better. A key matching neither list (e.g. `prior_dist/cov90_pooled` or
   `prior_dist/sd_over_rmse`, both of which have a *target* rather than a direction) gets no warning
   in either mode — and `sd_over_rmse` is genuinely unsuitable as a `best_metric`, since 1.0 is the
   target and both `min` and `max` walk away from it.

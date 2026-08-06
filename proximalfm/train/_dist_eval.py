@@ -85,8 +85,23 @@ class PosteriorEvaluator:
 
     One :meth:`update` per episode. Everything is kept as a weighted sum over
     rows except the PIT values, which are retained because the KS statistic
-    needs the sample, and the per-episode KS statistics, which are the point of
-    reporting a distribution of calibration rather than one pooled number.
+    needs the sample, and the per-episode KS statistics and coverages, which are
+    the point of reporting a distribution of calibration rather than one pooled
+    number.
+
+    Coverage is reported both ways and they answer different questions.
+    ``cov90_pooled`` is the row-weighted fraction over every row in the pass;
+    ``cov90/p25``, ``/p50``, ``/p75`` are quantiles of the *per-episode*
+    coverages. Pooling cancels: over-covering on half the episodes and
+    under-covering on the other half reads as a perfect ``cov90_pooled = 0.90``
+    while ``cov90/p25`` and ``cov90/p75`` straddle it. This is the same failure
+    ``pit_ks_episode_p90`` exists to catch on the PIT side.
+
+    The per-episode spread has a **binomial floor**: even a perfectly calibrated
+    model scores ``Binomial(n, L)/n`` per episode, so the p25--p75 gap is
+    ``~1.35 * sqrt(L(1-L)/n)`` before any miscalibration -- 0.06 for ``cov50``
+    and 0.036 for ``cov90`` at ``n = 128``. Read the IQR against that, never
+    against zero.
 
     Parameters
     ----------
@@ -127,6 +142,7 @@ class PosteriorEvaluator:
         self._pit: List[torch.Tensor] = []
         self._episode_ks: List[float] = []
         self._episode_ks_band: List[float] = []
+        self._episode_cov: Dict[str, List[float]] = {}
 
     @property
     def empty(self) -> bool:
@@ -177,8 +193,19 @@ class PosteriorEvaluator:
             _f64(oracle_discretized_crps(y, bin_edges)).sum().item(),
         )
 
-        for key, value in coverage(probs, bin_edges, y, self.levels).items():
+        cov = coverage(probs, bin_edges, y, self.levels)
+        for key, value in cov.items():
             self._add(key, value * n)
+
+        # Retained as a sample, not a sum: quantiles over episodes are not
+        # recoverable from a row-weighted mean, which is the whole reason the
+        # per-episode keys exist alongside the pooled one. Gated on n >= 2 for
+        # the same reason as the per-episode KS below -- a coverage over one row
+        # is 0 or 1 and would drag the quantiles toward the extremes.
+        if n >= 2:
+            for level in self.levels:
+                tag = f"{round(level * 100)}"
+                self._episode_cov.setdefault(f"cov{tag}", []).append(cov[f"cov{tag}"])
 
         # variance_identity returns means over the episode; scale them back to
         # sums so the pooled ratios below are over rows, not over episodes.
@@ -263,6 +290,7 @@ class PosteriorEvaluator:
         pooled = self._pooled_pit(max(1, self.max_pit // world_size))
         episode_ks = list(self._episode_ks)
         episode_ks_band = list(self._episode_ks_band)
+        episode_cov = {k: list(v) for k, v in self._episode_cov.items()}
 
         if ddp_active:
             if device is None:
@@ -276,13 +304,18 @@ class PosteriorEvaluator:
             episodes = payload[1].item()
             sums = payload[2:].tolist()
 
-            # The three things that do not all-reduce. The PIT sample is needed
-            # as a *sample* (KS is not a sum), and the per-episode statistics
-            # are quantiles over episodes -- a few hundred floats either way.
+            # The things that do not all-reduce. The PIT sample is needed as a
+            # *sample* (KS is not a sum), and the per-episode statistics are
+            # quantiles over episodes -- a few hundred floats either way.
             gathered: List[dict | None] = [None] * world_size
             dist.all_gather_object(
                 gathered,
-                {"pit": pooled.cpu(), "ks": episode_ks, "band": episode_ks_band},
+                {
+                    "pit": pooled.cpu(),
+                    "ks": episode_ks,
+                    "band": episode_ks_band,
+                    "cov": episode_cov,
+                },
             )
             pits = [
                 g["pit"] for g in gathered if g is not None and g["pit"].numel() > 0
@@ -290,6 +323,16 @@ class PosteriorEvaluator:
             pooled = torch.cat(pits) if pits else torch.empty(0)
             episode_ks = [x for g in gathered if g is not None for x in g["ks"]]
             episode_ks_band = [x for g in gathered if g is not None for x in g["band"]]
+            # Concatenated, not summed: the result is the multiset of every
+            # rank's per-episode coverages. Order across ranks is irrelevant --
+            # quantiles are permutation-invariant -- so no sort is needed to
+            # keep this rank-independent.
+            episode_cov = {}
+            for g in gathered:
+                if g is None:
+                    continue
+                for key, values in g.get("cov", {}).items():
+                    episode_cov.setdefault(key, []).extend(values)
 
         if rows <= 0 or episodes <= 0:
             return {}
@@ -306,8 +349,16 @@ class PosteriorEvaluator:
 
         for level in self.levels:
             tag = f"{round(level * 100)}"
-            metrics[f"cov{tag}"] = mean[f"cov{tag}"]
+            metrics[f"cov{tag}_pooled"] = mean[f"cov{tag}"]
             metrics[f"width{tag}"] = mean[f"width{tag}"]
+
+            per_episode = episode_cov.get(f"cov{tag}")
+            if per_episode:
+                sample = torch.tensor(per_episode, dtype=torch.float64)
+                for q, name in ((0.25, "p25"), (0.5, "p50"), (0.75, "p75")):
+                    metrics[f"cov{tag}/{name}"] = float(
+                        sample.quantile(torch.tensor(q, dtype=torch.float64))
+                    )
 
         # The variance identity, pooled over rows. Same algebra as
         # ``_dist_metrics.variance_identity``, applied to the accumulated means:
