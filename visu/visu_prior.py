@@ -4,7 +4,7 @@ Visualize the proximal SCM prior after adding Monte Carlo CATE outputs.
 
 Expected batch output order from PriorDataset.get_batch():
     U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1,
-    d_U, d_X, d_W, d_Z, seq_lens, train_sizes
+    d_U, d_X, d_W, d_Z, seq_lens, train_sizes, S2, K_eff
 
 Definitions used throughout this file:
     ITE  = Y1 - Y0          # one sampled latent-world treatment effect
@@ -67,6 +67,10 @@ dataset = PriorDataset(
     replay_small=False,
     prior_type="mlp_scm",
     mc_cate=mc_cate,
+    # This script plots MU0/MU1 on *every* row, so it needs MC replicates
+    # everywhere. The generator default is now False (query rows only), which
+    # would leave the context rows NaN.
+    mc_targets_on_context=True,
     scm_fixed_hp=scm_fixed_hp,
     device="cpu",
 )
@@ -112,11 +116,11 @@ printed_shapes = False
 for _ in tqdm(range(n_batches), desc="Sampling Batches"):
     batch = next(iterator)
 
-    if len(batch) < 17:
+    if len(batch) < 19:
         raise RuntimeError(
             "Expected batch to contain MU0 and MU1. Your PriorDataset.get_batch() "
-            "should return 17 objects: U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, "
-            "MU0, MU1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes."
+            "should return 19 objects: U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, "
+            "MU0, MU1, d_U, d_X, d_W, d_Z, seq_lens, train_sizes, S2, K_eff."
         )
 
     (
@@ -137,6 +141,8 @@ for _ in tqdm(range(n_batches), desc="Sampling Batches"):
         d_Z,
         seq_lens,
         train_sizes,
+        s2,
+        k_eff,
     ) = batch
 
     if not printed_shapes:

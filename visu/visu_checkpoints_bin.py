@@ -68,6 +68,8 @@ batch = prior.get_batch(batch_size=2)
     d_Z,
     seq_len,
     train_sizes,
+    S2,
+    K_eff,
 ) = batch
 
 # Ensure batch dimension exists

@@ -49,7 +49,27 @@ prior = PriorDataset(
 
 # Fetch batch
 batch = prior.get_batch(batch_size=2)
-U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, d_U, d_X, d_W, d_Z, seq_len, train_sizes = batch
+(
+    U,
+    X,
+    W,
+    Z,
+    A,
+    A_probs,
+    Y_obs,
+    Y0,
+    Y1,
+    MU0,
+    MU1,
+    d_U,
+    d_X,
+    d_W,
+    d_Z,
+    seq_len,
+    train_sizes,
+    S2,
+    K_eff,
+) = batch
 
 # Ensure batch dimension exists
 if len(Y0.shape) == 1:
@@ -166,6 +186,9 @@ for i, checkp in enumerate(all_checkpoints):
             y_train=y_obs_in,
             output_type="mean",
             target=TARGET,
+            d_X=d_X,
+            d_Z=d_Z,
+            d_W=d_W,
         )[0]
 
     # Convert to numpy
