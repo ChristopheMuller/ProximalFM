@@ -1754,7 +1754,8 @@ def _write_dummy_batch(save_dir, batch_idx, B=2, T=6, d=3):
 
     Deliberately avoids SavePriorDataset: these tests only exercise the loader's
     file handling, and running the SCM generator would consume global RNG and
-    shift the stream for every test that runs afterwards.
+    shift the stream for every test that runs afterwards. ``Y_obs`` is filled
+    with ``batch_idx`` so a caller can tell which file an episode came from.
     """
     ones = torch.ones(B, T, d)
     col = torch.ones(B, T)
@@ -1768,7 +1769,7 @@ def _write_dummy_batch(save_dir, batch_idx, B=2, T=6, d=3):
         Z=ones,
         A=col,
         A_probs=col,
-        Y_obs=col,
+        Y_obs=torch.full((B, T), float(batch_idx)),
         Y0=col,
         Y1=col,
         MU0=col,
@@ -1808,6 +1809,34 @@ def test_missing_batch_file_still_returns_the_partial_buffer(tmp_path):
     loader = LoadPriorDataset(tmp_path, batch_size=2 * B, max_batches=2, timeout=0)
     out = next(iter(loader))
     assert out[1].shape[0] == B
+
+
+# 0 is the unchanged single-process path; 4 is the trainer's own default and
+# does not divide num_files evenly, so it also covers an uneven shard split.
+# Each spawned-worker case costs ~10s, so the list stays short on purpose.
+@pytest.mark.parametrize("num_workers", [0, 4])
+def test_dataloader_workers_claim_disjoint_batch_files(tmp_path, num_workers):
+    # An IterableDataset is copied into every worker, so a worker that does not
+    # narrow its own share replays exactly what its siblings do. With the
+    # trainer's default --train_dataloader_num_workers 4 that meant every
+    # pre-generated batch file was consumed once per worker.
+    num_files = 6
+    for i in range(num_files):
+        B = _write_dummy_batch(tmp_path, i)
+
+    loader = LoadPriorDataset(
+        data_dir=str(tmp_path), batch_size=B, max_batches=num_files, timeout=0
+    )
+    dl = torch.utils.data.DataLoader(
+        loader, batch_size=None, num_workers=num_workers, shuffle=False
+    )
+
+    # Y_obs carries the index of the file each episode came from.
+    seen = [int(out[6].flatten()[0].item()) for out in dl]
+
+    assert sorted(seen) == list(
+        range(num_files)
+    ), f"num_workers={num_workers} did not cover every file exactly once: {seen}"
 
 
 def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
