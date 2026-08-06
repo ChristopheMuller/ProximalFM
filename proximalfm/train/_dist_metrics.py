@@ -142,6 +142,19 @@ __all__ = [
 _EPS = 1e-12
 
 
+def _f64(t: torch.Tensor) -> torch.Tensor:
+    """Detach to CPU float64.
+
+    Every reduction in this module accumulates in float64 to keep the pooled
+    sums exact, but MPS has no float64 at all -- ``.double()`` on an MPS tensor
+    raises. The reductions here are all per-episode-sized and end in a Python
+    float anyway, so the transfer is free in practice; this mirrors what
+    ``_eval.CausalEvaluator`` already does (``.cpu()`` on every per-episode
+    value before ``.double()``).
+    """
+    return t.detach().cpu().double()
+
+
 def _check(probs: torch.Tensor, bin_edges: torch.Tensor) -> None:
     """Shape contract shared by every function taking ``(probs, bin_edges)``.
 
@@ -433,8 +446,8 @@ def pit_ks(u: torch.Tensor, alpha: float = 0.05) -> tuple[torch.Tensor, torch.Te
         raise ValueError("pit_ks needs at least 2 PIT values")
 
     n = u.shape[-1]
-    values = u.double().sort(dim=-1).values
-    upper = torch.arange(1, n + 1, device=u.device, dtype=torch.float64) / n
+    values = _f64(u).sort(dim=-1).values
+    upper = torch.arange(1, n + 1, device=values.device, dtype=torch.float64) / n
     lower = upper - 1.0 / n
 
     stat = torch.maximum(upper - values, values - lower).amax(dim=-1)
@@ -481,8 +494,8 @@ def coverage(
         inside = (y.float() >= lo) & (y.float() <= hi)
 
         tag = f"{round(level * 100)}"
-        out[f"cov{tag}"] = inside.double().mean().item()
-        out[f"width{tag}"] = (hi - lo).double().mean().item()
+        out[f"cov{tag}"] = _f64(inside).mean().item()
+        out[f"width{tag}"] = _f64(hi - lo).mean().item()
     return out
 
 
@@ -553,10 +566,10 @@ def variance_identity(
         )
         s2_t = s2_t.expand_as(sq_err)
 
-    mean_var = var.double().mean().item()
-    mean_sd = var.clamp_min(0.0).sqrt().double().mean().item()
-    mse_obs = sq_err.double().mean().item()
-    mean_s2 = s2_t.double().mean().item()
+    mean_var = _f64(var).mean().item()
+    mean_sd = _f64(var.clamp_min(0.0).sqrt()).mean().item()
+    mse_obs = _f64(sq_err).mean().item()
+    mean_s2 = _f64(s2_t).mean().item()
 
     # Clamped at 0: with a good model and a noisy target, sampling error can put
     # the empirical MSE below s^2, and a negative denominator is not a ratio.
@@ -590,4 +603,4 @@ def out_of_grid_fraction(bin_edges: torch.Tensor, y: torch.Tensor) -> float:
     """
     edges = bin_edges.to(device=y.device, dtype=torch.float32)
     outside = (y.float() < edges[0]) | (y.float() > edges[-1])
-    return outside.double().mean().item()
+    return _f64(outside).mean().item()

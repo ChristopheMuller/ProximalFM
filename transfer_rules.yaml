@@ -19,7 +19,7 @@
 # the unfreezing ladder for fitting a new head on a frozen backbone.
 
 transfer_rules:
-  default: "freeze"
+  default: "finetune"
   # Final decoder Linear (d_model*2 -> out_dim): the only layer whose shape changes
   # when the head changes, e.g. bins_po (2*nbins) -> cate_single (nbins).
-  "icl_predictor.decoder.2.": "scratch"
+  "icl_predictor.decoder.2.": "finetune"

@@ -45,6 +45,7 @@ import torch
 import torch.distributed as dist
 
 from proximalfm.train._dist_metrics import (
+    _f64,
     coverage,
     crps,
     oracle_discretized_crps,
@@ -170,10 +171,10 @@ class PosteriorEvaluator:
         if n == 0:
             return
 
-        self._add("crps", crps(probs, bin_edges, y).double().sum().item())
+        self._add("crps", _f64(crps(probs, bin_edges, y)).sum().item())
         self._add(
             "crps_oracle",
-            oracle_discretized_crps(y, bin_edges).double().sum().item(),
+            _f64(oracle_discretized_crps(y, bin_edges)).sum().item(),
         )
 
         for key, value in coverage(probs, bin_edges, y, self.levels).items():
@@ -187,8 +188,8 @@ class PosteriorEvaluator:
 
         self._add("out_of_grid", out_of_grid_fraction(bin_edges, y) * n)
 
-        u = pit(probs, bin_edges, y).flatten()
-        self._pit.append(u.float().cpu())
+        u = pit(probs, bin_edges, y).flatten().float().cpu()
+        self._pit.append(u)
         if u.numel() >= 2:
             stat, band = pit_ks(u, alpha=self.alpha)
             self._episode_ks.append(float(stat))
@@ -550,7 +551,7 @@ def score_episode(
     )
 
     return {
-        "mse": float(sq_err.double().mean()),
+        "mse": float(_f64(sq_err).mean()),
         "rows": int(tau_star.numel()),
         "grid_scale": grid_scale,
     }
