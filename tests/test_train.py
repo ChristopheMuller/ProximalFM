@@ -448,16 +448,16 @@ def test_dist_eval_interval_zero_and_unset_dir_disable_it(mock_wandb_init, tmp_p
 def test_prior_dist_best_metric_without_dist_eval_dir_warns(
     mock_wandb_init, tmp_path, capsys
 ):
-    args = _parse_args(tmp_path, ["--best_metric", "prior/dist/crps"])
+    args = _parse_args(tmp_path, ["--best_metric", "prior_dist/crps"])
     Trainer(args)
     captured = capsys.readouterr()
-    assert "prior/dist/crps" in captured.out
+    assert "prior_dist/crps" in captured.out
     assert "dist_eval_dir is None" in captured.out
 
 
 @pytest.mark.parametrize(
     "best_metric",
-    ["prior/point/cate/npehe", "val/point/cate/npehe", "val/dist/crps"],
+    ["prior_point/cate/npehe", "val/point/cate/npehe", "val/dist/crps"],
 )
 @patch("wandb.init")
 def test_non_prior_dist_best_metric_without_dist_eval_dir_does_not_warn(
@@ -477,7 +477,7 @@ def test_prior_best_metric_with_dist_eval_dir_set_does_not_warn(
         tmp_path,
         [
             "--best_metric",
-            "prior/dist/crps",
+            "prior_dist/crps",
             "--loss_type",
             "cate_single",
             "--dist_eval_dir",
@@ -518,10 +518,10 @@ def test_dist_validate_is_a_noop_when_dir_unset(mock_wandb_init, dummy_args):
 @patch("wandb.init")
 def test_post_step_unchanged_when_dist_eval_dir_unset(mock_wandb_init, dummy_args):
     """The clean no-op: with --dist_eval_dir unset, _post_step never produces
-    a prior/* key, exactly as before this feature existed."""
+    a prior_dist/* key, exactly as before this feature existed."""
     trainer = Trainer(dummy_args)
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
-    assert not any(k.startswith("prior/") for k in results)
+    assert not any(k.startswith(("prior_dist/", "prior_point/")) for k in results)
 
 
 @patch("wandb.init")
@@ -545,7 +545,7 @@ def test_dist_eval_lands_exactly_on_the_gated_steps(
     fired = {}
     for _ in range(5):
         results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
-        fired[trainer.curr_step] = "prior/dist/crps" in results
+        fired[trainer.curr_step] = "prior_dist/crps" in results
 
     # curr_step == 1 always fires (mirrors validate()'s early sanity check),
     # then every multiple of --dist_eval_interval.
@@ -572,16 +572,16 @@ def test_dist_eval_pass_emits_both_prior_surfaces(
 
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
 
-    assert "prior/point/cate/npehe" in results
-    assert "prior/dist/crps" in results
-    assert "prior/time" in results
+    assert "prior_point/cate/npehe" in results
+    assert "prior_dist/crps" in results
+    assert "Charts/prior_eval_time" in results
 
 
 @patch("wandb.init")
 def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
     mock_wandb_init, tmp_path, tiny_frozen_set
 ):
-    """dist_eval_interval coarser than point_val_interval: a prior/* best
+    """dist_eval_interval coarser than point_val_interval: a prior_dist/* best
     metric must not warn (or attempt a comparison) on the steps where only
     point validation ran."""
     args = _parse_args(
@@ -590,7 +590,7 @@ def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
             "--loss_type",
             "cate_single",
             "--best_metric",
-            "prior/dist/crps",
+            "prior_dist/crps",
             "--best_metric_mode",
             "min",
             "--dist_eval_dir",
@@ -725,7 +725,7 @@ def test_dist_eval_gate_does_not_depend_on_rank(
     trainer.master_process = False  # a non-zero rank
 
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
-    assert "prior/dist/crps" in results
+    assert "prior_dist/crps" in results
 
 
 # --------------------------------------------------------------------------
@@ -762,12 +762,12 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
 
     # Both keys, one dict: that is the whole point of the step.
     assert "diag/sigma" in metrics
-    assert "prior/dist/mean_sd" in metrics
+    assert "prior_dist/mean_sd" in metrics
 
     # And in mean_sd's units, not the head's: sigma times the same head ->
     # frozen-space factor the scored grid carried.
     assert metrics["diag/sigma"] == pytest.approx(
-        trainer.get_hl_sigma() * metrics["prior/grid_scale"]
+        trainer.get_hl_sigma() * metrics["prior_dist/grid_scale"]
     )
     # At n_ctx == n_max the factor is 1, so this also pins the plain value.
     assert metrics["diag/sigma"] == pytest.approx(0.2, abs=1e-4)

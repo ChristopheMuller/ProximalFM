@@ -5,7 +5,7 @@ Pure tensor math: torch in, torch out, batched over leading dimensions, no
 and is checked against it in ``tests/test_dist_metrics.py``.
 
 This module is the reference for the ``*/dist/*`` half of the metric namespace
-(``prior/dist/crps``, ``prior/dist/cov90``, ...). Its point-estimate counterpart
+(``prior_dist/crps``, ``prior_dist/cov90``, ...). Its point-estimate counterpart
 is not a module: point metrics (``*/point/*``) are three lines of arithmetic each
 and live fused into the streaming accumulator in
 :class:`proximalfm.train._eval.CausalEvaluator`. There is nothing to factor out of

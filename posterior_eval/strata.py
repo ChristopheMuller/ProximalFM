@@ -2,7 +2,7 @@
 
     uv run python -m posterior_eval.strata --dir data/posterior_eval/frozen_prod_v1
 
-A single pooled ``prior/dist/*`` number hides the failure that matters most.
+A single pooled ``prior_dist/*`` number hides the failure that matters most.
 Under **weak proxies** proximal identification is fragile, and a posterior that
 stays narrow there is not merely inaccurate -- it is confidently wrong exactly
 where the method's assumptions are weakest. The same hiding applies to strong

@@ -36,7 +36,7 @@ The three boundaries are load-bearing, and each is a thing someone will try to "
 |---|---|---|
 | `loss/*`, `target/*`, `noise/*` | every step | — |
 | `val/*` | every `--point_val_interval` steps, and step 1 | `--val_dir` set |
-| `prior/*`, `diag/sigma` | every `--dist_eval_interval` steps, and step 1 | `--dist_eval_dir` set |
+| `prior_point/*` + `prior_dist/*`, `diag/sigma` | every `--dist_eval_interval` steps, and step 1 | `--dist_eval_dir` set |
 
 `--dist_eval_interval` defaults to `-1`, which resolves once at `Trainer.__init__` to
 `--point_val_interval`; `0` disables. Every rank must reach `dist_validate()` on the same steps —
@@ -58,19 +58,19 @@ correlated with `n_ctx`, so scoring in each episode's own moving scale manufactu
 Each entry conditions the ones below it. This is the same order `python -m posterior_eval.score`
 prints its verdict block.
 
-1. **`prior/dist/out_of_grid_frac`** — if this is not ≈ 0, `--cate_vmin`/`--cate_vmax` are too tight
+1. **`prior_dist/out_of_grid_frac`** — if this is not ≈ 0, `--cate_vmin`/`--cate_vmax` are too tight
    and every number below it is scored against targets no forecast on this grid can cover. Fix the
    grid first. (`target/cate_out_of_grid_frac` is the training-side twin.)
-2. **`prior/dist/sd_over_rmse`** — 1.0 is calibrated, below 1 is over-confident. **Never read a width
+2. **`prior_dist/sd_over_rmse`** — 1.0 is calibrated, below 1 is over-confident. **Never read a width
    or a width trend without it.**
-3. **`prior/dist/pit_ks` vs `prior/dist/pit_ks_band`**, then `pit_ks_episode_p90` vs
+3. **`prior_dist/pit_ks` vs `prior_dist/pit_ks_band`**, then `pit_ks_episode_p90` vs
    `pit_ks_episode_band`. The pooled statistic passing while the per-episode tail fails is
    cancellation, not calibration.
-4. **`prior/dist/crps` against `prior/dist/crps_over_oracle`** — as the ratio approaches 1 the
+4. **`prior_dist/crps` against `prior_dist/crps_over_oracle`** — as the ratio approaches 1 the
    remaining CRPS is the bin grid, and the remedy is more `--nbins`, not more steps.
-5. **`diag/sigma` against `prior/dist/mean_sd`** — if the width is sitting on the schedule's floor you
+5. **`diag/sigma` against `prior_dist/mean_sd`** — if the width is sitting on the schedule's floor you
    are measuring the schedule.
-6. **`prior/point/*` against `val/point/*`** — in-prior point accuracy is the guard that a
+6. **`prior_point/*` against `val/point/*`** — in-prior point accuracy is the guard that a
    distributional objective has not traded away the point estimate.
 
 ---
@@ -133,13 +133,13 @@ standardized grid).
 | `noise/frac_fallback` | Share of rows with no replicate variance (`K = 1`, context rows, or data predating `S2`), which fall back to the plain sigma-smoothed NLL. | ≈ 0 |
 | `noise/mean_K` | Mean realized `K_eff` after `--prior_mc_mem_budget` capping. | = `--mcmc_cate` |
 
-**`noise/mean_sd_pred` is not comparable to `prior/dist/mean_sd`.** It is the discrete moment over
+**`noise/mean_sd_pred` is not comparable to `prior_dist/mean_sd`.** It is the discrete moment over
 bin centres; `mean_sd` includes the within-bin `w²/12` term. The two series differ by that term by
 construction. Plotting them together is a mistake the `_dist_metrics` docstring calls out explicitly.
 
 `noise/s_over_sd_pred` is a *series*, not a one-off check, because `sd_pred` shrinks as the posterior
 sharpens: a replicate count that was comfortably sufficient early can become the binding constraint
-later in the same run. Its prior-surface counterpart is `prior/dist/s_over_sd`.
+later in the same run. Its prior-surface counterpart is `prior_dist/s_over_sd`.
 
 ---
 
@@ -194,7 +194,7 @@ Caveats worth knowing:
 
 ---
 
-## 5. Prior surface — `prior/*`
+## 5. Prior surface — `prior_point/*` + `prior_dist/*`
 
 One pass over `--dist_eval_dir`, the frozen set built by `posterior_eval/`. Produced by
 `score_frozen_set` and split in two: point metrics from the same `CausalEvaluator`, distributional
@@ -213,7 +213,7 @@ Scoring is **forward-only, single pass — never `predict_ensemble`**. Averaging
 yields a mixture: strictly wider and differently calibrated. It is a legitimate object to evaluate,
 but a different one, and mixing the two makes every width number meaningless.
 
-### `prior/point/*`
+### `prior_point/*`
 
 Identical definitions to [§4](#4-val-surface--valpoint), same evaluator, same
 median-over-episodes and same homogeneous-episode exclusion — on the frozen in-prior episodes
@@ -225,14 +225,14 @@ One key exists here and nowhere else:
 
 | Key | What it is | Want |
 |---|---|---|
-| `prior/point/cate/rmse_pooled` | `√( Σ_rows (τ̂ − τ*)² / Σ rows )` — pooled over **rows**, accumulated in the driver outside either evaluator | ↓ |
+| `prior_point/cate/rmse_pooled` | `√( Σ_rows (τ̂ − τ*)² / Σ rows )` — pooled over **rows**, accumulated in the driver outside either evaluator | ↓ |
 
 `cate/rmse` is a *median over episodes*; `cate/rmse_pooled` is a mean over rows. They are different
 numbers and neither is wrong. `rmse_pooled` exists because it is exactly what
 `posterior_eval/report.py` prints at `n = n_max`, so a mismatch between the two is a scale bug and
 this is the cheapest place to catch one (`test_pooled_rmse_matches_the_report_path`).
 
-### `prior/dist/*`
+### `prior_dist/*`
 
 Definitions and closed forms are in [`_dist_metrics.py`](../proximalfm/train/_dist_metrics.py). All
 of these read the histogram as a **piecewise-uniform density**, not as point masses at bin centres.
@@ -312,7 +312,7 @@ look merely extreme.
 
 ### Stratified cuts — offline only, **no wandb producer**
 
-ROADMAP A2. The same `prior/dist/*` keys, recomputed per stratum of the frozen set, by
+ROADMAP A2. The same `prior_dist/*` keys, recomputed per stratum of the frozen set, by
 `python -m posterior_eval.score_strata`. Cuts are defined in `posterior_eval/strata.py` and stored as
 a `strata.pt` manifest of per-episode (or per-query-row) membership beside `frozen_meta.pt`; nothing
 about the 365 MB set is duplicated or rebuilt.
@@ -342,15 +342,15 @@ manufactures failures. The headline is `sd_over_rmse` on `weak_proxy` vs its com
 with `weak_proxy` well below 1 is a posterior that fails to widen where proximal identification is
 fragile, which is worse than merely being inaccurate there.
 
-### `prior/*` flat keys
+### Flat keys
 
 | Key | What it is |
 |---|---|
-| `prior/time` | Wall-clock seconds for the pass |
-| `prior/n_ctx` | Context prefix length scored. Equals `n_max` in training; only differs on an `n`-sweep |
-| `prior/grid_scale` | The factor `episode_predictive` applied to the head's own grid to land in the frozen space (`y_std_predict / y_std_frozen`), pooled row-weighted. **Exactly 1.0 at `n_ctx == n_max`**, i.e. on every in-training pass |
+| `Charts/prior_eval_time` | Wall-clock seconds for the pass |
+| `prior_dist/n_ctx` | Context prefix length scored. Equals `n_max` in training; only differs on an `n`-sweep |
+| `prior_dist/grid_scale` | The factor `episode_predictive` applied to the head's own grid to land in the frozen space (`y_std_predict / y_std_frozen`), pooled row-weighted. **Exactly 1.0 at `n_ctx == n_max`**, i.e. on every in-training pass |
 
-`prior/grid_scale` looks redundant today precisely because it is 1. It is published anyway because
+`prior_dist/grid_scale` looks redundant today precisely because it is 1. It is published anyway because
 `diag/sigma` is built from it, and a caller that hardcoded 1.0 would be wrong exactly where an
 `n`-sweep at shorter prefixes gets interesting.
 
@@ -358,11 +358,11 @@ fragile, which is worse than merely being inaccurate there.
 
 | Key | Formula | Emitted |
 |---|---|---|
-| `diag/sigma` | `get_hl_sigma() * prior/grid_scale` | from `dist_validate()`, alongside `prior/dist/mean_sd` |
+| `diag/sigma` | `get_hl_sigma() * prior_dist/grid_scale` | from `dist_validate()`, alongside `prior_dist/mean_sd` |
 
 The same number as `loss/hl_sigma`, put on the width axis. `loss/hl_sigma` is logged from the
 micro-batch path, in head units, at the training cadence — three separate reasons a plot of it
-against `prior/dist/mean_sd` is not a comparison. `diag/sigma` is in `mean_sd`'s units at `mean_sd`'s
+against `prior_dist/mean_sd` is not a comparison. `diag/sigma` is in `mean_sd`'s units at `mean_sd`'s
 cadence. Both keys are kept; `loss/hl_sigma` is correct on the training surface.
 
 ### What is *not* on this surface
@@ -370,7 +370,7 @@ cadence. Both keys are kept; `loss/hl_sigma` is correct on the training surface.
 Step 7 of the plan — the target-noise convolution — **is not built**. There is no
 `convolve_predictive`, no `crps_noise_floor`, and no `--dist_eval_noise_threshold`. What *did* land
 is the part that matters at current noise levels: the `s²` subtraction inside the variance identity,
-which is unconditional, and `prior/dist/s_over_sd`, which is the measured ratio that decides when the
+which is unconditional, and `prior_dist/s_over_sd`, which is the measured ratio that decides when the
 convolution becomes worth building. The induced width inflation is `√(1 + (s/σ)²) − 1`, i.e. under
 2 % below `s_over_sd = 0.2`. Watch that key: it drifts *up* as the posterior sharpens, so a fine-tune
 that succeeds is what eventually makes step 7 necessary.
@@ -405,7 +405,7 @@ It is a diagnostic ratio, not a normalized score. Committing to one bin is the n
 proven infimum over all grid-representable distributions. Read it as "how much of my CRPS is grid,
 not model."
 
-### `diag/sigma` vs `prior/dist/mean_sd` — the schedule floors the width
+### `diag/sigma` vs `prior_dist/mean_sd` — the schedule floors the width
 
 The HL-Gaussian target is a Gaussian of width `sigma` discretized onto the grid, so a head that fits
 it *perfectly* reports `√(sigma² + w²/12)` and no less. `sigma` and the grid's `w/√12` are the two
@@ -418,7 +418,7 @@ emitted on `mean_sd`'s axis at `mean_sd`'s cadence rather than left as `loss/hl_
 
 ### The `w²/12` term — two SD series that are not the same series
 
-`prior/dist/mean_sd` reads the histogram as a density and picks up the within-bin variance `w²/12`.
+`prior_dist/mean_sd` reads the histogram as a density and picks up the within-bin variance `w²/12`.
 `noise/mean_sd_pred` is the discrete moment over bin centres and does not. A head with all its mass
 in one bin reports `w/√12` for the first and 0 for the second.
 
@@ -437,7 +437,7 @@ opposite-direction episode groups and asserting the pooled statistic passes whil
 
 ### Median vs pooled RMSE
 
-`prior/point/cate/rmse` is a median over episodes. `prior/point/cate/rmse_pooled` is a mean over
+`prior_point/cate/rmse` is a median over episodes. `prior_point/cate/rmse_pooled` is a mean over
 rows. Comparing either to a number from elsewhere requires knowing which one you have — the pooled
 key exists solely so there is a quantity that must match `posterior_eval/report.py` exactly.
 
@@ -480,7 +480,7 @@ and `frozen_meta.pt` carries the residual `s²` so what noise remains is subtrac
 ignored.
 
 This changes only when the realistic generator grows replicates — plan step 10, not before. Until
-then, distributional scoring happens on `prior/*` only.
+then, distributional scoring happens on the frozen prior set only.
 
 ---
 
@@ -513,16 +513,16 @@ Default `val/point/cate/npehe`, with `--best_metric_mode min`. Any key from the 
 works; `_check_best_metric_config` warns at startup about three configurations that silently no-op:
 
 - `--save_best` with no `--val_dir`;
-- a `prior/dist/*` `best_metric` with no `--dist_eval_dir`;
+- a `prior_dist/*` `best_metric` with no `--dist_eval_dir`;
 - a name whose direction contradicts `--best_metric_mode`. The heuristic is textual: `r2` and
   `sign_agreement` are treated as higher-is-better, and `rmse`, `npehe`, `mse`, `bias`, `loss`,
-  `crps` as lower-is-better. A key matching neither list (e.g. `prior/dist/cov90` or
-  `prior/dist/sd_over_rmse`, both of which have a *target* rather than a direction) gets no warning
+  `crps` as lower-is-better. A key matching neither list (e.g. `prior_dist/cov90` or
+  `prior_dist/sd_over_rmse`, both of which have a *target* rather than a direction) gets no warning
   in either mode — and `sd_over_rmse` is genuinely unsuitable as a `best_metric`, since 1.0 is the
   target and both `min` and `max` walk away from it.
 
 `_maybe_save_best` only fires on a step where the surface producing the monitored key actually ran,
-so a `prior/*` `best_metric` with `--dist_eval_interval` coarser than `--point_val_interval` does not
+so a `prior_dist/*` `best_metric` with `--dist_eval_interval` coarser than `--point_val_interval` does not
 warn on the in-between validation passes.
 
 ---

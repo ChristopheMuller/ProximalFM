@@ -41,7 +41,7 @@ def _verdict(metrics: Dict[str, float]) -> List[str]:
     """The three readings that are easy to get backwards, spelled out."""
     lines = []
 
-    oog = metrics.get("prior/dist/out_of_grid_frac")
+    oog = metrics.get("prior_dist/out_of_grid_frac")
     if oog is not None and oog > 1e-3:
         lines.append(
             f"  ! out_of_grid_frac = {oog:.4f}: the CATE grid "
@@ -49,7 +49,7 @@ def _verdict(metrics: Dict[str, float]) -> List[str]:
             "scored against targets no forecast on this grid can cover."
         )
 
-    sdr = metrics.get("prior/dist/sd_over_rmse")
+    sdr = metrics.get("prior_dist/sd_over_rmse")
     if sdr is not None and sdr == sdr:
         if sdr < 0.9:
             lines.append(
@@ -61,13 +61,13 @@ def _verdict(metrics: Dict[str, float]) -> List[str]:
         else:
             lines.append(f"  sd_over_rmse = {sdr:.3f}: calibrated width.")
 
-    ks, band = metrics.get("prior/dist/pit_ks"), metrics.get("prior/dist/pit_ks_band")
+    ks, band = metrics.get("prior_dist/pit_ks"), metrics.get("prior_dist/pit_ks_band")
     if ks is not None and band is not None:
         inside = "inside" if ks < band else "OUTSIDE"
         lines.append(f"  pooled PIT-KS {ks:.4f} vs band {band:.4f}: {inside}.")
 
-    p90 = metrics.get("prior/dist/pit_ks_episode_p90")
-    ep_band = metrics.get("prior/dist/pit_ks_episode_band")
+    p90 = metrics.get("prior_dist/pit_ks_episode_p90")
+    ep_band = metrics.get("prior_dist/pit_ks_episode_band")
     if p90 is not None and ep_band is not None:
         if p90 >= ep_band and ks is not None and band is not None and ks < band:
             lines.append(
@@ -81,14 +81,14 @@ def _verdict(metrics: Dict[str, float]) -> List[str]:
                 f"{'inside' if p90 < ep_band else 'OUTSIDE'}."
             )
 
-    ratio = metrics.get("prior/dist/crps_over_oracle")
+    ratio = metrics.get("prior_dist/crps_over_oracle")
     if ratio is not None and ratio == ratio and ratio < 1.5:
         lines.append(
             f"  crps_over_oracle = {ratio:.2f}: close to the bin-resolution "
             "ceiling -- the remedy is more --nbins, not more steps."
         )
 
-    s_over_sd = metrics.get("prior/dist/s_over_sd")
+    s_over_sd = metrics.get("prior_dist/s_over_sd")
     if s_over_sd is not None and s_over_sd == s_over_sd:
         note = "negligible" if s_over_sd < 0.2 else "worth correcting (step 7)"
         lines.append(f"  s/sd = {s_over_sd:.4f}: target noise {note}.")
@@ -127,13 +127,13 @@ def run(
     print(f"Frozen set: {out}  [content_digest={digest}]")
     print(f"Checkpoint: {ckpt} (step {step}, loss_type={model.loss_type})")
     print(
-        f"  episodes {int(metrics.get('prior/point/eval/episodes', 0))}"
-        f"   rows {int(metrics.get('prior/dist/eval/rows', 0))}"
-        f"   n_ctx {int(metrics.get('prior/n_ctx', 0))}"
-        f"   grid_scale {metrics.get('prior/grid_scale', float('nan')):.4f}"
+        f"  episodes {int(metrics.get('prior_point/eval/episodes', 0))}"
+        f"   rows {int(metrics.get('prior_dist/eval/rows', 0))}"
+        f"   n_ctx {int(metrics.get('prior_dist/n_ctx', 0))}"
+        f"   grid_scale {metrics.get('prior_dist/grid_scale', float('nan')):.4f}"
     )
     print()
-    for group in ("prior/point/", "prior/dist/"):
+    for group in ("prior_point/", "prior_dist/"):
         keys = sorted(k for k in metrics if k.startswith(group))
         if not keys:
             continue

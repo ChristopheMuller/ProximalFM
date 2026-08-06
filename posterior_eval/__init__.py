@@ -17,7 +17,7 @@ The modules, in the order you use them:
 ``report``
     The ``s/sigma_post`` read-off: is ``K`` large enough for *this* checkpoint.
 ``score``
-    Pooled ``prior/point/*`` + ``prior/dist/*`` for a checkpoint.
+    Pooled ``prior_point/*`` + ``prior_dist/*`` for a checkpoint.
 ``strata`` / ``score_strata``
     The stratified cuts (ROADMAP A2): a ``strata.pt`` membership manifest, and
     the per-cut scoring pass. Offline only, by design -- see

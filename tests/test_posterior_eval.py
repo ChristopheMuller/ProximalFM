@@ -69,18 +69,18 @@ def test_calibrated_forecast_recovers_the_closed_forms():
     m = ev.compute()
 
     # A correct forecast: unit width ratio, nominal coverage, uniform PIT.
-    assert m["prior/dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
-    assert m["prior/dist/cov90"] == pytest.approx(0.90, abs=0.02)
-    assert m["prior/dist/cov50"] == pytest.approx(0.50, abs=0.03)
+    assert m["prior_dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
+    assert m["prior_dist/cov90"] == pytest.approx(0.90, abs=0.02)
+    assert m["prior_dist/cov50"] == pytest.approx(0.50, abs=0.03)
     # Exact width of the central 90% interval of a standard normal.
-    assert m["prior/dist/width90"] == pytest.approx(2 * 1.6448536, abs=0.01)
-    assert m["prior/dist/pit_ks"] < m["prior/dist/pit_ks_band"]
+    assert m["prior_dist/width90"] == pytest.approx(2 * 1.6448536, abs=0.01)
+    assert m["prior_dist/pit_ks"] < m["prior_dist/pit_ks_band"]
     # CRPS of N(0,1) against its own draws: sigma / sqrt(pi).
-    assert m["prior/dist/crps"] == pytest.approx(1.0 / math.sqrt(math.pi), rel=0.03)
-    assert m["prior/dist/crps_over_oracle"] > 1.0
-    assert m["prior/dist/out_of_grid_frac"] == 0.0
-    assert m["prior/dist/eval/episodes"] == 16
-    assert m["prior/dist/eval/rows"] == 16 * 512
+    assert m["prior_dist/crps"] == pytest.approx(1.0 / math.sqrt(math.pi), rel=0.03)
+    assert m["prior_dist/crps_over_oracle"] > 1.0
+    assert m["prior_dist/out_of_grid_frac"] == 0.0
+    assert m["prior_dist/eval/episodes"] == 16
+    assert m["prior_dist/eval/rows"] == 16 * 512
 
 
 def test_too_narrow_forecast_fails_both_diagnostics():
@@ -91,9 +91,9 @@ def test_too_narrow_forecast_fails_both_diagnostics():
 
     # Both, because either alone is ambiguous: a U-shaped PIT is also produced
     # by a biased forecast, and sd/rmse alone says nothing about shape.
-    assert m["prior/dist/sd_over_rmse"] == pytest.approx(0.5, abs=0.05)
-    assert m["prior/dist/cov90"] < 0.75
-    assert m["prior/dist/pit_ks"] > m["prior/dist/pit_ks_band"]
+    assert m["prior_dist/sd_over_rmse"] == pytest.approx(0.5, abs=0.05)
+    assert m["prior_dist/cov90"] < 0.75
+    assert m["prior_dist/pit_ks"] > m["prior_dist/pit_ks_band"]
 
 
 def test_s2_subtraction_restores_the_ratio_on_a_noisy_target():
@@ -114,12 +114,12 @@ def test_s2_subtraction_restores_the_ratio_on_a_noisy_target():
         with_s2.update(probs=probs, bin_edges=edges, y=y, s2=torch.full((512,), s2))
         without_s2.update(probs=probs, bin_edges=edges, y=y)
 
-    assert with_s2.compute()["prior/dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
+    assert with_s2.compute()["prior_dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
     # Uncorrected, the same posterior reads as 1/sqrt(1.25) = 0.894.
-    assert without_s2.compute()["prior/dist/sd_over_rmse"] == pytest.approx(
+    assert without_s2.compute()["prior_dist/sd_over_rmse"] == pytest.approx(
         1.0 / math.sqrt(1.25), abs=0.05
     )
-    assert with_s2.compute()["prior/dist/s_over_sd"] == pytest.approx(0.5, abs=0.05)
+    assert with_s2.compute()["prior_dist/s_over_sd"] == pytest.approx(0.5, abs=0.05)
 
 
 def _episode_with_pit(edges, u_target, sigma=1.0):
@@ -162,10 +162,10 @@ def test_per_episode_ks_catches_what_pooling_cancels():
     m = ev.compute()
 
     # Pooled: the two tilts cancel and the set looks calibrated.
-    assert m["prior/dist/pit_ks"] < m["prior/dist/pit_ks_band"]
+    assert m["prior_dist/pit_ks"] < m["prior_dist/pit_ks_band"]
     # Per-episode: every episode is outside its own band.
-    assert m["prior/dist/pit_ks_episode_median"] > m["prior/dist/pit_ks_episode_band"]
-    assert m["prior/dist/pit_ks_episode_p90"] > m["prior/dist/pit_ks_episode_band"]
+    assert m["prior_dist/pit_ks_episode_median"] > m["prior_dist/pit_ks_episode_band"]
+    assert m["prior_dist/pit_ks_episode_p90"] > m["prior_dist/pit_ks_episode_band"]
 
 
 def test_empty_evaluator_computes_to_nothing():
@@ -181,9 +181,9 @@ def test_out_of_grid_targets_are_counted_not_clipped():
     y = torch.tensor([0.0, 0.1, 5.0, -5.0])
     ev.update(probs=probs, bin_edges=edges, y=y)
     m = ev.compute()
-    assert m["prior/dist/out_of_grid_frac"] == pytest.approx(0.5)
+    assert m["prior_dist/out_of_grid_frac"] == pytest.approx(0.5)
     # The two far targets are charged their distance to the edge (~4 each).
-    assert m["prior/dist/crps"] > 1.5
+    assert m["prior_dist/crps"] > 1.5
 
 
 # --------------------------------------------------------------------------
@@ -246,27 +246,27 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
     cfg, out = frozen
     metrics = score_frozen_set(_FakeCateModel(), out)
 
-    assert metrics["prior/point/eval/episodes"] == cfg.n_datasets
-    assert metrics["prior/dist/eval/rows"] == cfg.n_datasets * cfg.n_q
-    assert metrics["prior/n_ctx"] == cfg.n_max
+    assert metrics["prior_point/eval/episodes"] == cfg.n_datasets
+    assert metrics["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert metrics["prior_dist/n_ctx"] == cfg.n_max
     for key in (
-        "prior/point/cate/rmse",
-        "prior/point/cate/rmse_pooled",
-        "prior/point/ate/rmse",
-        "prior/dist/crps",
-        "prior/dist/cov90",
-        "prior/dist/width90",
-        "prior/dist/sd_over_rmse",
-        "prior/dist/mean_sd",
-        "prior/dist/crps_over_oracle",
-        "prior/dist/out_of_grid_frac",
-        "prior/dist/pit_ks",
-        "prior/dist/pit_ks_episode_p90",
-        "prior/dist/s_over_sd",
+        "prior_point/cate/rmse",
+        "prior_point/cate/rmse_pooled",
+        "prior_point/ate/rmse",
+        "prior_dist/crps",
+        "prior_dist/cov90",
+        "prior_dist/width90",
+        "prior_dist/sd_over_rmse",
+        "prior_dist/mean_sd",
+        "prior_dist/crps_over_oracle",
+        "prior_dist/out_of_grid_frac",
+        "prior_dist/pit_ks",
+        "prior_dist/pit_ks_episode_p90",
+        "prior_dist/s_over_sd",
     ):
         assert key in metrics, key
     # No per-arm predictions exist for a single-CATE head (EVAL_PLAN step 2).
-    assert not any(k.startswith("prior/point/po/") for k in metrics)
+    assert not any(k.startswith("prior_point/po/") for k in metrics)
 
 
 def test_pooled_rmse_matches_the_report_path(frozen):
@@ -285,7 +285,7 @@ def test_pooled_rmse_matches_the_report_path(frozen):
         rows += cfg.n_q
 
     metrics = score_frozen_set(model, out)
-    assert metrics["prior/point/cate/rmse_pooled"] == pytest.approx(
+    assert metrics["prior_point/cate/rmse_pooled"] == pytest.approx(
         math.sqrt(sq_sum / rows), rel=1e-5
     )
 
@@ -317,7 +317,7 @@ def test_grid_is_rescaled_into_the_frozen_space(frozen):
 
 
 def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
-    """``prior/grid_scale`` converts head units into the frozen space, and the
+    """``prior_dist/grid_scale`` converts head units into the frozen space, and the
     trainer multiplies its sigma schedule by it (EVAL_PLAN step 6e). A caller
     that hardcoded 1.0 would be right at n_max and wrong on every sweep prefix,
     so pin both ends."""
@@ -325,10 +325,10 @@ def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
     model = _FakeCateModel()
 
     at_n_max = score_frozen_set(model, out)
-    assert at_n_max["prior/grid_scale"] == pytest.approx(1.0, abs=1e-5)
+    assert at_n_max["prior_dist/grid_scale"] == pytest.approx(1.0, abs=1e-5)
 
     short = score_frozen_set(model, out, n_ctx=16)
-    assert short["prior/grid_scale"] != pytest.approx(1.0, abs=1e-3)
+    assert short["prior_dist/grid_scale"] != pytest.approx(1.0, abs=1e-3)
 
     # It must be the factor on the grid that was actually scored, not a
     # separately recomputed one -- averaged over episodes, which all carry the
@@ -340,7 +340,7 @@ def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
             model, batch, meta["episodes"][i], n_ctx=16, n_max=cfg.n_max
         )
         ratios.append(float(edges[-1] / model.cate_bin_edges[-1]))
-    assert short["prior/grid_scale"] == pytest.approx(
+    assert short["prior_dist/grid_scale"] == pytest.approx(
         sum(ratios) / len(ratios), rel=1e-6
     )
 
@@ -368,10 +368,10 @@ def test_real_model_predict_path(frozen):
     ).eval()
 
     metrics = score_frozen_set(model, out)
-    assert metrics["prior/dist/eval/rows"] == cfg.n_datasets * cfg.n_q
-    assert 0.0 <= metrics["prior/dist/cov90"] <= 1.0
-    assert metrics["prior/dist/crps"] > 0.0
-    assert metrics["prior/dist/mean_sd"] > 0.0
+    assert metrics["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert 0.0 <= metrics["prior_dist/cov90"] <= 1.0
+    assert metrics["prior_dist/crps"] > 0.0
+    assert metrics["prior_dist/mean_sd"] > 0.0
 
 
 def test_two_head_checkpoints_are_refused(frozen):
@@ -468,38 +468,38 @@ def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
     sharded = per_rank[0]
 
     # Counts first: the shard split is the thing most likely to lose episodes.
-    assert sharded["prior/dist/eval/rows"] == cfg.n_datasets * cfg.n_q
-    assert sharded["prior/point/eval/episodes"] == cfg.n_datasets
+    assert sharded["prior_dist/eval/rows"] == cfg.n_datasets * cfg.n_q
+    assert sharded["prior_point/eval/episodes"] == cfg.n_datasets
 
     # Weighted sums reduce exactly, so these are equalities, not tolerances --
     # including the driver-accumulated pooled RMSE, which lives outside either
     # evaluator and has its own reduce.
     for key in (
-        "prior/dist/crps",
-        "prior/dist/crps_oracle",
-        "prior/dist/cov50",
-        "prior/dist/cov90",
-        "prior/dist/width50",
-        "prior/dist/width90",
-        "prior/dist/mean_sd",
-        "prior/dist/sd_over_rmse",
-        "prior/dist/out_of_grid_frac",
-        "prior/point/cate/rmse_pooled",
-        "prior/grid_scale",
-        "prior/point/ate/rmse",
+        "prior_dist/crps",
+        "prior_dist/crps_oracle",
+        "prior_dist/cov50",
+        "prior_dist/cov90",
+        "prior_dist/width50",
+        "prior_dist/width90",
+        "prior_dist/mean_sd",
+        "prior_dist/sd_over_rmse",
+        "prior_dist/out_of_grid_frac",
+        "prior_point/cate/rmse_pooled",
+        "prior_dist/grid_scale",
+        "prior_point/ate/rmse",
     ):
         assert sharded[key] == pytest.approx(single[key], rel=1e-9), key
 
     # Per-episode statistics are gathered, so the *set* is the same and the
     # quantiles over it are exact too.
-    for key in ("prior/dist/pit_ks_episode_median", "prior/dist/pit_ks_episode_p90"):
+    for key in ("prior_dist/pit_ks_episode_median", "prior_dist/pit_ks_episode_p90"):
         assert sharded[key] == pytest.approx(single[key], rel=1e-9), key
 
     # The pooled PIT is subsampled per rank before the gather, so the pooled KS
     # is the same statistic on a possibly different sample. Compare as a
     # distribution, not for equality.
-    assert sharded["prior/dist/pit_ks"] == pytest.approx(
-        single["prior/dist/pit_ks"], abs=0.05
+    assert sharded["prior_dist/pit_ks"] == pytest.approx(
+        single["prior_dist/pit_ks"], abs=0.05
     )
 
 
@@ -511,11 +511,11 @@ def test_empty_shard_still_completes(frozen4, tmp_path):
     per_rank = _run_sharded(out, tmp_path, world_size=2, max_episodes=1)
 
     assert per_rank[0] == per_rank[1]
-    assert per_rank[0]["prior/dist/eval/rows"] == cfg.n_q
-    assert per_rank[0]["prior/point/eval/episodes"] == 1
-    assert per_rank[0]["prior/point/cate/rmse_pooled"] == pytest.approx(
-        single["prior/point/cate/rmse_pooled"], rel=1e-9
+    assert per_rank[0]["prior_dist/eval/rows"] == cfg.n_q
+    assert per_rank[0]["prior_point/eval/episodes"] == 1
+    assert per_rank[0]["prior_point/cate/rmse_pooled"] == pytest.approx(
+        single["prior_point/cate/rmse_pooled"], rel=1e-9
     )
-    assert per_rank[0]["prior/dist/crps"] == pytest.approx(
-        single["prior/dist/crps"], rel=1e-9
+    assert per_rank[0]["prior_dist/crps"] == pytest.approx(
+        single["prior_dist/crps"], rel=1e-9
     )

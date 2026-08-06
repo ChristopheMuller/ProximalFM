@@ -1,6 +1,6 @@
 """Streaming distributional evaluation of the CATE posterior (EVAL_PLAN step 5).
 
-This is the ``prior/*`` surface: point **and** distributional metrics on the
+This is the ``prior_point/*`` + ``prior_dist/*`` surface: point **and** distributional metrics on the
 frozen high-``K`` set built by ``posterior_eval/``. It is the only surface where
 a distribution can be scored honestly, because it is the only one carrying a
 low-noise ``tau_star`` -- see EVAL_PLAN.md's table and ``_dist_metrics``'
@@ -234,7 +234,7 @@ class PosteriorEvaluator:
     def compute(
         self,
         *,
-        prefix: str = "prior/dist/",
+        prefix: str = "prior_dist/",
         include_count: bool = True,
         sync_ddp: bool = False,
         device: str | torch.device | None = None,
@@ -377,7 +377,7 @@ def require_single_cate_head(model) -> None:
             "distribution over tau. The posterior of a difference is not "
             "identified by its two marginals -- any dependence between the arms "
             "is unconstrained -- so there is nothing here to score. Point "
-            "metrics (prior/point/*) remain available; distributional ones need "
+            "metrics (prior_point/*) remain available; distributional ones need "
             "a cate_single* checkpoint."
         )
     raise UnsupportedLossTypeError(
@@ -493,7 +493,7 @@ def score_episode(
     scored grid rather than recomputed from ``y_train``, so it is by
     construction the factor actually used. Callers that hold a quantity in head
     units -- the trainer's ``sigma`` schedule is the one that matters -- need it
-    to put that quantity on the same axis as ``prior/dist/mean_sd``.
+    to put that quantity on the same axis as ``prior_dist/mean_sd``.
 
     ``dist_evaluators``/``point_evaluators`` fan the *same* forward pass out to
     additional accumulators, each with an optional boolean row mask: the
@@ -588,7 +588,7 @@ def score_frozen_set(
     world_size: int = 1,
     sync_ddp: bool = False,
 ) -> Dict[str, float]:
-    """Score a whole frozen set; returns the merged ``prior/*`` metric dict.
+    """Score a whole frozen set; returns the merged ``prior_point/*`` + ``prior_dist/*`` metric dict.
 
     ``out`` is the frozen set's *root* (the directory holding both ``val/`` and
     ``frozen_meta.pt``), because the sidecar is not optional: without it there
@@ -661,7 +661,7 @@ def score_frozen_set(
 
     metrics = dict(
         point_eval.compute(
-            prefix="prior/point/",
+            prefix="prior_point/",
             include_count=True,
             sync_ddp=sync_ddp,
             device=device,
@@ -669,20 +669,20 @@ def score_frozen_set(
     )
     metrics.update(
         dist_eval.compute(
-            prefix="prior/dist/",
+            prefix="prior_dist/",
             include_count=True,
             sync_ddp=sync_ddp,
             device=device,
         )
     )
     if rows:
-        metrics["prior/point/cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
+        metrics["prior_point/cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
         # Head units -> frozen space. Exactly 1.0 at n_ctx == n_max (the two
         # scales are then the same rows under the same formula), so this only
         # departs from 1 on an n-sweep prefix. Published because the trainer
         # needs it to express its sigma schedule in mean_sd's units, and a
         # caller that silently assumed 1.0 would be wrong precisely where the
         # sweep is interesting.
-        metrics["prior/grid_scale"] = scale_sum / rows
-    metrics["prior/n_ctx"] = float(n_ctx)
+        metrics["prior_dist/grid_scale"] = scale_sum / rows
+    metrics["prior_dist/n_ctx"] = float(n_ctx)
     return metrics

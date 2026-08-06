@@ -607,12 +607,12 @@ class Trainer:
                 "validation never runs, so no best_model.ckpt will be saved."
             )
 
-        if self.best_metric.startswith("prior/dist/") and (
+        if self.best_metric.startswith("prior_dist/") and (
             getattr(self.config, "dist_eval_dir", None) is None
         ):
             print(
                 f"[save_best] Warning: best_metric '{self.best_metric}' is on the "
-                "prior/dist/* surface but dist_eval_dir is None; distributional "
+                "prior_dist/* surface but dist_eval_dir is None; distributional "
                 "evaluation never runs, so this metric will never appear in "
                 "validation results."
             )
@@ -772,7 +772,7 @@ class Trainer:
         Advances ``curr_step`` by exactly one and preserves the per-step cadence
         of checkpointing (``save_temp_every`` / ``save_perm_every``) and
         validation (``point_val_interval``, and ``dist_eval_interval`` for the
-        ``prior/*`` surface). Returns the (possibly augmented) results.
+        ``prior_point/*` + `prior_dist/*`` surface). Returns the (possibly augmented) results.
         """
         self.curr_step += 1
 
@@ -805,7 +805,7 @@ class Trainer:
         if ran_point_val:
             surface_results.update(self.point_validate())
 
-        # Distributional (prior/*) evaluation runs on ALL processes: the
+        # Distributional (prior_dist/*) evaluation runs on ALL processes: the
         # episodes are sharded round-robin and the metrics are all-reduced
         # (EVAL_PLAN step 6d), so every rank must enter dist_validate() or the
         # collectives inside it deadlock. The gate below is deliberately built
@@ -825,10 +825,12 @@ class Trainer:
             # Saving is master-only (like the step checkpoints); point
             # results are already DDP-synced so every rank would agree on the
             # value. Only compare on a step where the surface that produces
-            # the monitored metric actually ran -- otherwise a prior/*
+            # the monitored metric actually ran -- otherwise a prior_dist/*
             # best_metric would warn on every plain validation pass whenever
             # dist_eval_interval and point_val_interval don't coincide.
-            monitors_dist_surface = self.best_metric.startswith("prior/")
+            monitors_dist_surface = self.best_metric.startswith(
+                ("prior_dist/", "prior_point/")
+            )
             surface_ran = ran_dist_val if monitors_dist_surface else ran_point_val
             if self.master_process and self.save_best and surface_ran:
                 self._maybe_save_best(surface_results)
@@ -1674,7 +1676,7 @@ class Trainer:
         Mirrors :meth:`point_validate`'s shape -- one pass, metrics computed
         once at the end, ``model.eval()``/``model.train()`` around it -- but scores
         ``--dist_eval_dir`` via :func:`score_frozen_set` instead, emitting both
-        ``prior/point/*`` and ``prior/dist/*``.
+        ``prior_point/*`` and ``prior_dist/*``.
 
         Runs on every rank (EVAL_PLAN step 6d): episode ``i`` is scored by rank
         ``i % world_size`` and the accumulators are all-reduced, so the result
@@ -1701,9 +1703,11 @@ class Trainer:
             )
 
         # Time (seconds) taken to pass over the (possibly capped) frozen set.
-        # Flat under prior/, matching val/time's treatment: a pass diagnostic,
-        # not a point-vs-dist metric.
-        metrics["prior/time"] = dist_timer.elapsed
+        # Filed under Charts/ rather than with the metrics: it is a pass
+        # diagnostic (how expensive the eval is), not a statement about the
+        # posterior, and it would otherwise be the only wall-clock key sitting
+        # among prior_dist/*'s calibration numbers.
+        metrics["Charts/prior_eval_time"] = dist_timer.elapsed
 
         # The sigma schedule on the width axis (EVAL_PLAN step 6e). sigma is a
         # hard floor on learned width -- the HL-Gaussian target is a Gaussian of
@@ -1714,10 +1718,10 @@ class Trainer:
         #
         # loss/hl_sigma already logs the value, but from the micro-batch path,
         # in head units, at the training cadence -- three reasons a plot of it
-        # against prior/dist/mean_sd is not a comparison. This emits the same
+        # against prior_dist/mean_sd is not a comparison. This emits the same
         # number in mean_sd's units at mean_sd's cadence, and leaves
         # loss/hl_sigma alone: it is correct on the training surface.
-        grid_scale = metrics.get("prior/grid_scale")
+        grid_scale = metrics.get("prior_dist/grid_scale")
         if grid_scale is not None:
             metrics["diag/sigma"] = self.get_hl_sigma() * grid_scale
 
