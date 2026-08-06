@@ -115,10 +115,29 @@ class Trainer:
         self.dist_eval_dir = getattr(self.config, "dist_eval_dir", None)
         self._dist_eval_meta = None
         if self.dist_eval_dir is not None:
-            from posterior_eval.build_prior_frozen_set import load_frozen_meta
+            from posterior_eval.build_prior_frozen_set import (
+                frozen_content_digest,
+                load_frozen_meta,
+            )
 
             self._dist_eval_meta = load_frozen_meta(Path(self.dist_eval_dir))
             require_single_cate_head(self.raw_model)
+
+            # `--dist_eval_dir` is already in the wandb config (wandb.init gets
+            # the whole namespace), but it is a *path* -- a name a human chose
+            # and could reuse. Log the set's content digest beside it so two
+            # runs that both say "frozen_prod_v1" are visibly the same set, or
+            # visibly not.
+            self.logger.update_config(
+                {
+                    "dist_eval_content_digest": frozen_content_digest(
+                        self._dist_eval_meta
+                    ),
+                    "dist_eval_n_datasets": self._dist_eval_meta["global"].get(
+                        "n_datasets"
+                    ),
+                }
+            )
 
     def configure_ddp(self):
         """Set up distributed training and system configuration."""

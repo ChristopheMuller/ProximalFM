@@ -41,7 +41,11 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
-from posterior_eval.build_prior_frozen_set import Y_STD_FLOOR, load_frozen_meta
+from posterior_eval.build_prior_frozen_set import (
+    Y_STD_FLOOR,
+    frozen_content_digest,
+    load_frozen_meta,
+)
 from posterior_eval.report import iter_episodes
 
 # Agreement tolerance for group 3. The sidecar stores what the generator
@@ -69,6 +73,17 @@ class Check:
     @property
     def ok(self) -> bool:
         return not self.failures
+
+
+def _recompute_from_config(g: Dict[str, Any]) -> Optional[str]:
+    """Digest of ``g``'s config alone, ignoring any digest stored in it.
+
+    The point of verifying is to catch a stored value that disagrees with the
+    config beside it, so the stored value must not be consulted here.
+    """
+    return frozen_content_digest(
+        {"global": {k: v for k, v in g.items() if k != "content_digest"}}
+    )
 
 
 def _quantiles(t: torch.Tensor, qs: Sequence[float]) -> List[float]:
@@ -131,6 +146,31 @@ def verify(
         )
     if [r["index"] for r in records] != list(range(len(records))):
         structure.fail("episode indices are not 0..N-1 in order")
+
+    # The digest is what names this set in a wandb config; if the sidecar's
+    # stored value disagrees with what its own config hashes to, the identity
+    # every logged number is pinned to is wrong, and comparisons across runs
+    # are silently meaningless. Cheap to check, so check it.
+    stored_digest = g.get("content_digest")
+    recomputed = _recompute_from_config(g)
+    if stored_digest is None and recomputed is None:
+        structure.fail(
+            "content_digest is neither stored nor recomputable: this set has no "
+            "stable identity, so nothing that scores it can be pinned to it."
+        )
+    elif stored_digest is None:
+        structure.note(
+            f"content_digest={recomputed} (recomputed; set predates the field)"
+        )
+    elif recomputed is not None and recomputed != stored_digest:
+        structure.fail(
+            f"content_digest mismatch: sidecar says {stored_digest}, its own "
+            f"config hashes to {recomputed}. The sidecar was edited, or "
+            "FROZEN_META_VERSION moved -- either way this set's identity does "
+            "not match what runs logged against it."
+        )
+    else:
+        structure.note(f"content_digest={stored_digest}")
 
     structure.note(f"built on gen_device={g.get('gen_device', 'cpu')}")
     structure.note(f"git_rev={g.get('git_rev')}")

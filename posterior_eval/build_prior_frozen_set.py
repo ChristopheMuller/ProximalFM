@@ -51,10 +51,18 @@ from proximalfm.prior._genload import write_batch_file
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 # Bump when a change would make an existing frozen_meta.pt *wrong* rather than
-# merely differently labelled.
+# merely differently labelled. Part of ``content_digest``, so bumping it makes
+# every existing set read as a different set rather than silently comparable.
 FROZEN_META_VERSION = 1
 
 DEFAULT_N_GRID = (32, 64, 128, 256, 512, 1024)
+
+#: ``BuildConfig`` fields excluded from :meth:`BuildConfig.content_digest`.
+#: ``n_datasets`` is how many episodes were asked for, not what an episode looks
+#: like: ``episode_seed`` hashes ``(seed, index)``, so raising it leaves episodes
+#: ``0..N-1`` bit-identical and a 1000-episode set is a prefix of a 1200-episode
+#: one. Every other field changes episode content and so must move the digest.
+_NON_GENERATIVE_FIELDS = frozenset({"n_datasets"})
 
 # The trainer's context-standardisation floor (proximalfm/train/_run.py). The
 # frozen comparison space must use this, not predict()'s looser 1e-5 clamp.
@@ -119,6 +127,38 @@ class BuildConfig:
         d["seq_len"] = self.seq_len
         d["n_grid"] = self.n_grid()
         return d
+
+    def generative_dict(self) -> Dict[str, Any]:
+        """The fields that determine what an episode *contains*.
+
+        Excludes ``n_datasets`` -- see :data:`_NON_GENERATIVE_FIELDS`.
+        """
+        return {
+            k: v for k, v in self.to_dict().items() if k not in _NON_GENERATIVE_FIELDS
+        }
+
+    def content_digest(self) -> str:
+        """Short stable hash naming this set by its content, not its directory.
+
+        A directory name is chosen by a human and can be reused; this cannot.
+        Two things depend on it:
+
+        - :func:`build` refuses to write into an existing set whose digest
+          differs, so a named set cannot be silently mutated in place.
+        - the trainer logs it beside ``--dist_eval_dir`` (see
+          ``proximalfm/train/_run.py``), so two curves that both claim
+          ``frozen_prod_v1`` are visibly different sets rather than an
+          unexplained regression.
+
+        Built from canonical JSON rather than :func:`hash`, which is salted per
+        process for strings and so is not stable across runs. ``gen_device``
+        participates: determinism is per-device, so a ``cuda:0`` set is not
+        bit-identical to a cpu rebuild of the same config and must not share an
+        identity with it.
+        """
+        payload = {"format_version": FROZEN_META_VERSION, **self.generative_dict()}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 class MonteCarloBudgetError(RuntimeError):
@@ -384,6 +424,74 @@ def _git_rev() -> Optional[str]:
         return None
 
 
+class FrozenSetConflictError(RuntimeError):
+    """Raised when a build would overwrite an existing set with different content."""
+
+
+def _check_no_silent_mutation(
+    out: Path, cfg: BuildConfig, datasets_per_file: int
+) -> None:
+    """Refuse to rewrite an existing set in place with different content.
+
+    The failure this prevents: rebuilding a *named* directory (say
+    ``frozen_prod_v1``) with a different ``n_q``/``K``/seed instead of choosing a
+    new name. Runs before and after log the same ``--dist_eval_dir`` string, so
+    their curves look comparable and are not -- and the old set, hours of GPU
+    time, is gone. Detection after the fact is impossible: the rewritten sidecar
+    is perfectly self-consistent. Only refusing up front works.
+
+    Appending is *not* a conflict: ``n_datasets`` is outside the digest, so
+    raising it re-emits episodes ``0..N-1`` bit-identically and extends the set.
+    Lowering it is refused, because the surplus ``batch_*.pt`` files would stay
+    on disk and be loaded as episodes the sidecar does not describe.
+    """
+    meta_path = out / "frozen_meta.pt"
+    if not meta_path.exists():
+        return
+
+    prev = load_frozen_meta(out)
+    prev_g = prev.get("global", {})
+    # Recomputes for sets built before the field existed, so those are compared
+    # properly rather than blanket-refused.
+    prev_digest = frozen_content_digest(prev)
+    new_digest = cfg.content_digest()
+
+    if prev_digest is None:
+        raise FrozenSetConflictError(
+            f"{out} already holds a frozen set whose config cannot be read back "
+            "into a BuildConfig, so this build cannot prove it would produce "
+            "the same episodes. Build into a new --out, or pass --force."
+        )
+    if prev_digest != new_digest:
+        raise FrozenSetConflictError(
+            f"{out} already holds a *different* frozen set:\n"
+            f"  on disk:   content_digest={prev_digest}  "
+            f"n_q={prev_g.get('n_q')} K={prev_g.get('mc_cate')} "
+            f"n_max={prev_g.get('n_max')} seed={prev_g.get('seed')} "
+            f"gen_device={prev_g.get('gen_device')}\n"
+            f"  requested: content_digest={new_digest}  "
+            f"n_q={cfg.n_q} K={cfg.mc_cate} n_max={cfg.n_max} seed={cfg.seed} "
+            f"gen_device={cfg.gen_device}\n"
+            "Overwriting would make every run that logged this path "
+            "incomparable, with nothing on disk to reveal it. Choose a new "
+            "--out, or pass --force if the old set is genuinely disposable."
+        )
+    if cfg.n_datasets < prev_g.get("n_datasets", 0):
+        raise FrozenSetConflictError(
+            f"{out} holds {prev_g['n_datasets']} episodes and this build "
+            f"requests {cfg.n_datasets}. The surplus batch files would remain "
+            "on disk and be read as episodes the sidecar does not describe. "
+            "Pass --force to rebuild from scratch, or just score a prefix with "
+            "--dist_eval_max_episodes."
+        )
+    if datasets_per_file != prev_g.get("datasets_per_file", datasets_per_file):
+        raise FrozenSetConflictError(
+            f"{out} was packed at datasets_per_file="
+            f"{prev_g['datasets_per_file']}, this build uses {datasets_per_file}. "
+            "Re-packing leaves stale batch files. Pass --force to rebuild."
+        )
+
+
 def build(
     cfg: BuildConfig,
     out: Path,
@@ -391,9 +499,12 @@ def build(
     n_jobs: int = 1,
     cli_command: Optional[str] = None,
     progress: bool = True,
+    force: bool = False,
 ) -> Path:
     """Generate the frozen set into ``out``; returns the ``val/`` directory."""
     out = Path(out)
+    if not force:
+        _check_no_silent_mutation(out, cfg, datasets_per_file)
     val_dir = out / "val"
     val_dir.mkdir(parents=True, exist_ok=True)
     _write_metadata(val_dir, cfg)
@@ -418,6 +529,7 @@ def build(
         "format_version": FROZEN_META_VERSION,
         "global": {
             **cfg.to_dict(),
+            "content_digest": cfg.content_digest(),
             "datasets_per_file": datasets_per_file,
             "cli_command": cli_command,
             "git_rev": _git_rev(),
@@ -434,6 +546,32 @@ def build(
 def load_frozen_meta(out: Path) -> Dict[str, Any]:
     """Read the sidecar of a frozen set built by :func:`build`."""
     return torch.load(Path(out) / "frozen_meta.pt", weights_only=False)
+
+
+def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
+    """The content digest of the set described by ``meta``.
+
+    Prefers the stored value, and *recomputes* it from the sidecar's own config
+    when absent -- which is what sets built before the field existed carry. The
+    stored field is therefore a cache, not the source of truth, so a legacy set
+    still has a stable identity and never needed rewriting to acquire one.
+
+    Returns ``None`` only when the global block cannot be turned back into a
+    :class:`BuildConfig` at all (a field renamed since). That is "unknown", not
+    "different": callers should degrade to the directory name, not treat it as
+    a mismatch.
+    """
+    g = meta.get("global", {})
+    stored = g.get("content_digest")
+    if stored is not None:
+        return stored
+    fields = set(BuildConfig.__dataclass_fields__)
+    try:
+        return BuildConfig(
+            **{k: v for k, v in g.items() if k in fields}
+        ).content_digest()
+    except TypeError:
+        return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -492,6 +630,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_dim_X", type=int, default=5)
     p.add_argument("--max_dim_X", type=int, default=20)
     p.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "overwrite an existing set at --out even if its content_digest "
+            "differs. Without this, rebuilding a named set with a different "
+            "config is refused, because runs that logged the old path would "
+            "silently become incomparable"
+        ),
+    )
+    p.add_argument(
         "--report",
         action="store_true",
         help="print the s/sigma_post table after building (section 2.1)",
@@ -535,17 +683,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         [sys.executable, "-m", "posterior_eval.build", *(argv or sys.argv[1:])]
     )
 
-    val_dir = build(
-        cfg,
-        args.out,
-        datasets_per_file=args.datasets_per_file,
-        n_jobs=args.n_jobs,
-        cli_command=cli_command,
-    )
+    try:
+        val_dir = build(
+            cfg,
+            args.out,
+            datasets_per_file=args.datasets_per_file,
+            n_jobs=args.n_jobs,
+            cli_command=cli_command,
+            force=args.force,
+        )
+    except FrozenSetConflictError as exc:
+        raise SystemExit(str(exc))
     print(
         f"Frozen set written to {val_dir} ({cfg.n_datasets} episodes, K={cfg.mc_cate})"
     )
     print(f"Sidecar: {Path(args.out) / 'frozen_meta.pt'}")
+    print(f"content_digest: {cfg.content_digest()}")
 
     if args.report:
         from posterior_eval.report import report

@@ -47,7 +47,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from tqdm import tqdm
 
-from posterior_eval.build_prior_frozen_set import load_frozen_meta
+from posterior_eval.build_prior_frozen_set import (
+    frozen_content_digest,
+    load_frozen_meta,
+)
 from posterior_eval.report import load_model
 from posterior_eval.strata import MIN_EPISODES, load_manifest
 from proximalfm.train._dist_eval import (
@@ -386,6 +389,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     print(f"\ncheckpoint: {args.ckpt}" + (f" (step {step})" if step else ""))
+    # Names the set by content, not by a reusable directory name (ROADMAP A4) --
+    # these tables get quoted into the roadmap and the paper.
+    print(f"frozen set: {args.dir}  [content_digest={frozen_content_digest(meta)}]")
     _print_report(results, manifest)
 
     if args.json_out:

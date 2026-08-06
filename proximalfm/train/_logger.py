@@ -47,6 +47,17 @@ class ExperimentLogger:
         with open(id_path, "w") as f:
             f.write(self.run.id)
 
+    def update_config(self, config_dict: dict):
+        """Add keys to the run's config after ``wandb.init``.
+
+        For provenance that is only known once something has been loaded -- the
+        frozen eval set's ``content_digest``, say, which is read from a sidecar
+        after the logger already exists. ``allow_val_change`` because a resumed
+        run re-sets the same keys.
+        """
+        if self.use_wandb and self.run is not None:
+            self.run.config.update(config_dict, allow_val_change=True)
+
     def log(self, metrics_dict: dict, step: int):
         """Logs metrics to wandb if initialized."""
         if self.use_wandb and self.run is not None:

@@ -14,9 +14,11 @@ import torch
 
 from posterior_eval.build_prior_frozen_set import (
     BuildConfig,
+    FrozenSetConflictError,
     MonteCarloBudgetError,
     build,
     episode_seed,
+    frozen_content_digest,
     load_frozen_meta,
 )
 from proximalfm.prior._genload import LoadPriorDataset
@@ -194,3 +196,95 @@ def test_the_set_has_a_uniform_and_usable_noise_estimate(frozen):
     assert s2.isfinite().all()
     assert (s2 > 0).all()
     assert s2.numel() == cfg.n_datasets * cfg.n_q
+
+
+# --- content digest / silent-mutation guard (ROADMAP A4) --------------------
+#
+# The digest is the identity a wandb curve is pinned to, so what matters is not
+# that it exists but that it moves exactly when episode *content* moves --
+# never on a cosmetic change, always on a generative one -- and that the build
+# refuses to reuse a directory whose digest disagrees.
+
+
+def test_digest_is_stable_and_ignores_the_appendable_axis():
+    cfg = _cfg()
+    assert cfg.content_digest() == _cfg().content_digest()
+    # n_datasets is appendable: episodes 0..N-1 are bit-identical, so a longer
+    # set is the same set. If this ever fails, extending a set stops being
+    # possible without orphaning every run that scored the shorter one.
+    assert _cfg(n_datasets=64).content_digest() == cfg.content_digest()
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"n_q": 16},
+        {"mc_cate": 32},
+        {"n_max": 64},
+        {"seed": 1},
+        {"max_dim_X": 21},
+        # Determinism is per-device, so a cuda set is not a cpu set even at an
+        # identical config -- it must not inherit the same identity.
+        {"gen_device": "cuda:0"},
+    ],
+)
+def test_digest_moves_when_episode_content_moves(override):
+    assert _cfg(**override).content_digest() != _cfg().content_digest()
+
+
+def test_appending_episodes_to_an_existing_set_is_allowed(tmp_path):
+    out = tmp_path / "set"
+    build(_cfg(n_datasets=2), out, datasets_per_file=2, progress=False)
+    build(_cfg(n_datasets=4), out, datasets_per_file=2, progress=False)
+    assert load_frozen_meta(out)["global"]["n_datasets"] == 4
+
+
+def test_rebuilding_a_set_with_a_different_config_is_refused(tmp_path):
+    # The failure this guards: same --out, different K, so every run that
+    # logged the path keeps claiming a set that no longer exists. Nothing on
+    # disk would reveal it afterwards -- the rewritten sidecar is perfectly
+    # self-consistent -- so refusing up front is the only defence.
+    out = tmp_path / "set"
+    build(_cfg(), out, datasets_per_file=2, progress=False)
+    with pytest.raises(FrozenSetConflictError, match="already holds a"):
+        build(_cfg(mc_cate=32), out, datasets_per_file=2, progress=False)
+    # The original survives untouched.
+    assert load_frozen_meta(out)["global"]["mc_cate"] == _cfg().mc_cate
+
+
+def test_shrinking_a_set_is_refused_because_it_orphans_batch_files(tmp_path):
+    out = tmp_path / "set"
+    build(_cfg(n_datasets=4), out, datasets_per_file=2, progress=False)
+    with pytest.raises(FrozenSetConflictError, match="surplus batch files"):
+        build(_cfg(n_datasets=2), out, datasets_per_file=2, progress=False)
+
+
+def test_force_overrides_the_guard(tmp_path):
+    out = tmp_path / "set"
+    build(_cfg(), out, datasets_per_file=2, progress=False)
+    build(_cfg(mc_cate=32), out, datasets_per_file=2, progress=False, force=True)
+    g = load_frozen_meta(out)["global"]
+    assert g["mc_cate"] == 32
+    assert g["content_digest"] == _cfg(mc_cate=32).content_digest()
+
+
+def test_verify_recomputes_the_stored_digest(tmp_path):
+    # verify.py is what runs after a set is copied between machines, so it is
+    # where a sidecar whose digest no longer matches its own config surfaces.
+    from posterior_eval.verify import _recompute_from_config
+
+    out = tmp_path / "set"
+    build(_cfg(), out, datasets_per_file=2, progress=False)
+    g = load_frozen_meta(out)["global"]
+    assert _recompute_from_config(g) == g["content_digest"]
+
+
+def test_a_legacy_sidecar_still_has_an_identity(tmp_path):
+    # The stored field is a cache, not the source of truth: sets built before
+    # it existed (frozen_prod_v1 among them) must still resolve to the same
+    # digest, or adopting this would have meant rewriting production sidecars.
+    out = tmp_path / "set"
+    build(_cfg(), out, datasets_per_file=2, progress=False)
+    meta = load_frozen_meta(out)
+    expected = meta["global"].pop("content_digest")
+    assert frozen_content_digest(meta) == expected

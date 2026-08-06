@@ -114,8 +114,17 @@ def run(
         max_episodes=max_episodes,
     )
 
+    from posterior_eval.build_prior_frozen_set import (
+        frozen_content_digest,
+        load_frozen_meta,
+    )
+
+    digest = frozen_content_digest(load_frozen_meta(Path(out))) or "n/a"
+
     print()
-    print(f"Frozen set: {out}")
+    # The digest, not the path, is what makes this table quotable later: a
+    # directory name can be reused, the digest cannot (ROADMAP A4).
+    print(f"Frozen set: {out}  [content_digest={digest}]")
     print(f"Checkpoint: {ckpt} (step {step}, loss_type={model.loss_type})")
     print(
         f"  episodes {int(metrics.get('prior/point/eval/episodes', 0))}"
