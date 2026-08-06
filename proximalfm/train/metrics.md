@@ -310,6 +310,38 @@ Out-of-grid targets are scored **honestly, not clipped**: CRPS is charged the di
 edge and the PIT is pinned to exactly 0 or 1. Clipping instead would make an unrepresentable target
 look merely extreme.
 
+### Stratified cuts — offline only, **no wandb producer**
+
+ROADMAP A2. The same `prior/dist/*` keys, recomputed per stratum of the frozen set, by
+`python -m posterior_eval.score_strata`. Cuts are defined in `posterior_eval/strata.py` and stored as
+a `strata.pt` manifest of per-episode (or per-query-row) membership beside `frozen_meta.pt`; nothing
+about the 365 MB set is duplicated or rebuilt.
+
+**These keys are never logged.** Like `val/dist/*` they have no producer in the training loop — but
+for a different and much weaker reason: `val/dist/*` is absent because it would be *wrong*
+([§7](#7-why-valdist-does-not-exist)), whereas this is absent because ~20 keys × 7 cuts × 2 sides is
+not a dashboard. It is a milestone-checkpoint tool. If a stratum curve later earns a place in wandb,
+that is a deliberate key budget, not a default.
+
+Why it is cheap: `PosteriorEvaluator` accumulates row-weighted **sums**, so a stratum's metrics are
+exactly what a separate pass over only that stratum's rows would produce. Every cut is scored from
+one forward pass per episode, fanned out through `score_episode`'s `dist_evaluators` argument.
+`tests/test_posterior_eval_strata.py` pins this to `rel=1e-9`.
+
+The reading rule, which is the whole point of the tool:
+
+| Comparable across strata | Not comparable |
+|---|---|
+| `sd_over_rmse`, `cov50`, `cov90`, `crps_over_oracle`, `pit_ks` (vs **its own** band) | `crps`, `mean_sd`, `width50`, `width90`, `cate/rmse` |
+
+Strata differ in intrinsic difficulty *and* in the scale of `tau`, so a worse `crps` under weak
+proxies is the expected consequence of a harder problem and is not a finding. Two further traps:
+compare a cut against **its complement**, never against the pool that contains it; and `pit_ks_band`
+scales as `1/√n`, so a smaller stratum earns a wider band and reading it against the pooled band
+manufactures failures. The headline is `sd_over_rmse` on `weak_proxy` vs its complement — pooled ≈ 1
+with `weak_proxy` well below 1 is a posterior that fails to widen where proximal identification is
+fragile, which is worse than merely being inaccurate there.
+
 ### `prior/*` flat keys
 
 | Key | What it is |

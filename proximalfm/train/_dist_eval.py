@@ -476,6 +476,8 @@ def score_episode(
     device: str = "cpu",
     dist_evaluator: Optional[PosteriorEvaluator] = None,
     point_evaluator: Optional[CausalEvaluator] = None,
+    dist_evaluators: Sequence[Tuple[PosteriorEvaluator, Optional[torch.Tensor]]] = (),
+    point_evaluators: Sequence[Tuple[CausalEvaluator, Optional[torch.Tensor]]] = (),
 ) -> Dict[str, float]:
     """Score one episode into the given evaluators.
 
@@ -491,6 +493,16 @@ def score_episode(
     construction the factor actually used. Callers that hold a quantity in head
     units -- the trainer's ``sigma`` schedule is the one that matters -- need it
     to put that quantity on the same axis as ``prior/dist/mean_sd``.
+
+    ``dist_evaluators``/``point_evaluators`` fan the *same* forward pass out to
+    additional accumulators, each with an optional boolean row mask: the
+    stratified evaluation of ROADMAP A2 scores every cut without predicting
+    more than once, because :class:`PosteriorEvaluator` accumulates row-weighted
+    sums and is therefore exactly additive over disjoint row subsets. A ``None``
+    mask means every row. Both default to empty, so the training path is
+    unchanged. Masks selecting no rows are skipped -- an evaluator must not see
+    an empty update, or its per-episode KS list falls out of step with its
+    episode count.
     """
     probs, edges = episode_predictive(
         model, batch, record, n_ctx=n_ctx, n_max=n_max, device=device
@@ -502,6 +514,17 @@ def score_episode(
     if dist_evaluator is not None:
         dist_evaluator.update(probs=probs, bin_edges=edges, y=tau_star, s2=s2)
 
+    for evaluator, mask in dist_evaluators:
+        if mask is None:
+            evaluator.update(probs=probs, bin_edges=edges, y=tau_star, s2=s2)
+            continue
+        rows = mask.to(probs.device).reshape(-1)
+        if not bool(rows.any()):
+            continue
+        evaluator.update(
+            probs=probs[rows], bin_edges=edges, y=tau_star[rows], s2=s2[rows]
+        )
+
     mean, _ = predictive_mean_var(probs, edges)
     sq_err = (mean - tau_star) ** 2
 
@@ -509,6 +532,16 @@ def score_episode(
         point_evaluator.update(
             pred_cate=mean.reshape(1, -1),
             true_cate=tau_star.reshape(1, -1),
+        )
+
+    for evaluator, mask in point_evaluators:
+        rows = None if mask is None else mask.to(mean.device).reshape(-1)
+        if rows is not None and not bool(rows.any()):
+            continue
+        sel = slice(None) if rows is None else rows
+        evaluator.update(
+            pred_cate=mean[sel].reshape(1, -1),
+            true_cate=tau_star[sel].reshape(1, -1),
         )
 
     head_edges = model.cate_bin_edges.to(edges.device).float()
