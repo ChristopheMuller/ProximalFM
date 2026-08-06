@@ -45,7 +45,9 @@ echo "  n_max/n_q/K = ${N_MAX}/${N_Q}/${K}   (rows per episode: $((N_MAX + N_Q *
 echo "  seed        = ${SEED}"
 echo
 
-uv run python -m posterior_eval.build \
+source .venv/bin/activate
+
+python -m posterior_eval.build \
   --out "${OUT}" \
   --gen_device "${DEVICE}" \
   --n_datasets "${N_DATASETS}" \
