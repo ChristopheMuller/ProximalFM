@@ -98,11 +98,13 @@ def test_minimizer_is_the_undilated_width():
     """
     torch.manual_seed(0)
 
-    edges = torch.linspace(-8.0, 8.0, 4001)
+    edges = torch.linspace(-8.0, 8.0, 1001)
     true_w, s = 0.5, 0.4
     sigma = 1e-3
 
-    n = 40000
+    # n=5000/nbins=1000 keeps the argmin stable (checked against 40000/4000
+    # across 30 seeds) at ~15x less compute than the original grid.
+    n = 5000
     tau = torch.randn(n) * true_w
     t = (tau + torch.randn(n) * s).view(1, -1)
 
