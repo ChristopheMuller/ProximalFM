@@ -707,8 +707,11 @@ class Trainer:
                 # Consider a checkpoint temporary if its step is not divisible by save_perm_every
                 if step % self.config.save_perm_every != 0:
                     temp_checkpoints.append((step, ckpt))
-            except:
-                continue  # Ignore files that don't match the format
+            except (ValueError, IndexError):
+                # Not a "step-<N>.ckpt" name: _checkpoint_step's split/int raises
+                # IndexError or ValueError. Anything else -- and in particular
+                # KeyboardInterrupt / SystemExit -- must propagate.
+                continue
 
         # Sort temporary checkpoints by step number (ascending)
         temp_checkpoints.sort(key=lambda x: x[0])
