@@ -63,8 +63,8 @@ prints its verdict block.
    grid first. (`target/cate_out_of_grid_frac` is the training-side twin.)
 2. **`prior_dist/sd_over_rmse`** — 1.0 is calibrated, below 1 is over-confident. **Never read a width
    or a width trend without it.**
-3. **`prior_dist/pit_ks` vs `prior_dist/pit_ks_band`**, then `pit_ks_episode_p90` vs
-   `pit_ks_episode_band`. The pooled statistic passing while the per-episode tail fails is
+3. **`prior_dist/pit_ks_pooled` vs `prior_dist/pit_ks_pooled_band`**, then `pit_ks/p90` vs
+   `pit_ks/band`. The pooled statistic passing while the per-episode tail fails is
    cancellation, not calibration.
 4. **`prior_dist/crps` against `prior_dist/crps_over_oracle`** — as the ratio approaches 1 the
    remaining CRPS is the bin grid, and the remedy is more `--nbins`, not more steps.
@@ -161,6 +161,29 @@ construction. Plotting them together is a mistake the `_dist_metrics` docstring 
 `noise/s_over_sd_pred` is a *series*, not a one-off check, because `sd_pred` shrinks as the posterior
 sharpens: a replicate count that was comfortably sufficient early can become the binding constraint
 later in the same run. Its prior-surface counterpart is `prior_dist/s_over_sd`.
+
+**`noise/s_over_sd_pred` and `prior_dist/s_over_sd` answer the same question on different data and
+are not the same number.** Four differences, in decreasing order of size:
+
+1. **`K`, and it dominates.** The training key measures the *training batch*, whose targets carry
+   `--mc_cate` replicates; the prior key measures the *frozen set*, built at `K = 4000`. Since
+   `s ∝ 1/√K`, a run at `--mc_cate 64` sits `√(4000/64) ≈ 7.9×` higher on the numerator alone. This
+   is why `prior_dist/s_over_sd ≈ 0.008` can be negligible while the training-side ratio is the
+   binding reason `cate_single_noise_aware` exists at all.
+2. **Different functional.** `noise/s_over_sd_pred = E[√s²] / E[√Var]` — a ratio of mean *SDs*.
+   `prior_dist/s_over_sd = √(E[s²]) / √(E[Var])` — a ratio of root mean *variances*. By Jensen these
+   disagree whenever the per-row spread is heterogeneous, which it always is.
+3. **Different denominator by the `w²/12` term**, the same trap as `mean_sd_pred` vs `mean_sd`: the
+   training key's `var_pred` is the discrete moment over bin centres, the prior key's `mean_var`
+   includes the within-bin term. The prior-side denominator is therefore strictly larger.
+4. **Different rows and a dilution.** The prior key covers query rows only, every one with a real
+   `s²`. The training key covers whatever rows the loss sees, and rows with no replicate variance
+   enter `mean_s` as **zeros** rather than being excluded — so a large `noise/frac_fallback` drags
+   `noise/mean_s` down and makes the ratio look safer than it is. Read the two keys together.
+
+Scale is *not* on the list: both are standardized, the training side per-episode and the prior side
+against the frozen `y_context_std`. Same `s²` definition on both (`Var_k(y1 − y0)/K`, paired), just
+computed at a different `K` and normalized differently.
 
 ---
 
@@ -265,7 +288,7 @@ Everything is pooled over rows (row-weighted sums), except the PIT-derived keys.
 |---|---|---|---|
 | `crps` | `∫ (F(t) − 1{t ≥ y})² dt`, exact closed form | ↓ | Proper, so it ranks models — but it mixes calibration and sharpness and therefore never *diagnoses* one. Reduces to \|error\| for a point forecast, so it is on the scale of an absolute error. |
 | `sd_over_rmse` | `√( E[Var P] / (MSE_obs − s²) )` | **1.0** | `< 1` is over-confidence. See [§6](#6-the-traps-in-full). |
-| `pit_ks` | KS distance of `u = F(y)` from `Uniform(0,1)` | `< pit_ks_band` | Shrinks with `n`, so the bare value is not comparable across evaluation sets — always read it against the band. |
+| `pit_ks_pooled` | KS distance of `u = F(y)` from `Uniform(0,1)` | `< pit_ks_pooled_band` | Shrinks with `n`, so the bare value is not comparable across evaluation sets — always read it against the band. |
 | `crps_over_oracle` | `crps / oracle_discretized_crps` | ↓, **but see below** | Once it approaches 1 the remaining CRPS is the *bin grid*, not the model. |
 
 **Coverage and width.** Reported in pairs, and to be read in pairs: coverage alone is trivially
@@ -280,6 +303,33 @@ achieved by widening, width alone by being confidently wrong.
 
 `cov*_pooled` was called `cov50`/`cov90` before 2026-08-06; the bare names no longer exist.
 
+**Both are means over rows, not over episodes.** `coverage()` reduces over every element it is handed
+and `PosteriorEvaluator.update` accumulates `value * n_rows`, so the pass-level number is a
+row-weighted mean — an episode with more query rows counts more. On a frozen set with a constant
+`n_q` (`frozen_prod_v1`: 128) row-weighted and episode-weighted coincide, but under a *row-level*
+strata cut they do not. Note the asymmetry: coverage also gets per-episode quantiles, **width does
+not** — there is only the pooled number.
+
+**The interval is central (equal-tailed), so it is contiguous by construction — it is not an HPD
+region.** It is defined by two quantiles of the CDF, `[F⁻¹((1−L)/2), F⁻¹((1+L)/2)]`, evaluated by
+`predictive_quantile` as the exact inverse of the piecewise-linear `F`. That makes `hi − lo` a single
+well-defined number for *any* histogram, including a multimodal one. What it is not is the *shortest*
+interval carrying mass `L`: for a bimodal posterior the central interval spans the low-density gap
+between the modes, and `width{L}` correspondingly overstates how much of the axis the posterior
+actually occupies. The highest-density region is the object that can break into disjoint pieces —
+that is precisely why it is not what is reported: it needs a threshold search, its "width" is a total
+measure rather than an interval, and it is a nuisance to accumulate and compare across episodes. The
+central interval is monotone in `L`, exact, and its coverage is unambiguous. The cost is the
+multimodal case, and `width90 / width50` is the free diagnostic for it: a Gaussian gives 3.29/1.35 =
+2.44, and a materially larger ratio means heavy tails or separated modes.
+
+**A width floor comes with the sigma schedule and the grid.** `sigma` and `w/√12` floor `mean_sd`
+(see [§6](#diagsigma-vs-prior_distmean_sd--the-schedule-floors-the-width)) and therefore floor the
+widths too — early in a run with a large `--hl_start_sigma`, a flat `width50`/`width90` is the
+schedule, not the model. Check `diag/sigma` before reading any width trend. A nonzero
+`out_of_grid_frac` pushes the other way: truncated tails shrink the width while hurting coverage, so
+the pair moves in opposite directions for a reason that is not calibration.
+
 **Pooled coverage cancels, and the per-episode quantiles are what catch it.** Over-covering on half
 the episodes and under-covering on the other half is a perfect `cov90_pooled = 0.90` with `cov90/p25`
 and `cov90/p75` straddling it. This is the coverage-side twin of
@@ -288,22 +338,22 @@ and `cov90/p75` straddling it. This is the coverage-side twin of
 **The IQR has a binomial floor — never read it against zero.** A perfectly calibrated model still
 scores `Binomial(n, L)/n` per episode, so the p25–p75 gap is `≈ 1.35·√(L(1−L)/n)` from sampling alone:
 at `n_q = 128` that is **0.060 for `cov50`** and **0.036 for `cov90`**. Only spread beyond that is
-miscalibration. Unlike `pit_ks`, no band key is emitted — the floor depends only on `n_q` and the
+miscalibration. Unlike `pit_ks_pooled`, no band key is emitted — the floor depends only on `n_q` and the
 level, both of which you know. Under a *row-level* strata cut the effective `n` is the rows kept per
 episode, not `n_q`, so the floor widens accordingly.
 
 Only the pooled keys are additive across strata cuts; the quantiles are sample statistics, exactly
-like `pit_ks`. `tests/test_posterior_eval_strata.py` pins both halves of that.
+like `pit_ks_pooled`. `tests/test_posterior_eval_strata.py` pins both halves of that.
 
 **PIT, pooled and per-episode.**
 
 | Key | What it is | Want |
 |---|---|---|
-| `pit_ks` | KS statistic of the pooled PIT sample | `< pit_ks_band` |
-| `pit_ks_band` | Asymptotic Kolmogorov critical value at α = 0.05, `√(−½ ln(α/2)) / √n` | — |
-| `pit_ks_episode_median` | Median of the per-episode KS statistics | `< pit_ks_episode_band` |
-| `pit_ks_episode_p90` | Their 90th percentile | `< pit_ks_episode_band` |
-| `pit_ks_episode_band` | Median of the per-episode bands | — |
+| `pit_ks_pooled` | KS statistic of the pooled PIT sample | `< pit_ks_pooled_band` |
+| `pit_ks_pooled_band` | Asymptotic Kolmogorov critical value at α = 0.05, `√(−½ ln(α/2)) / √n` | — |
+| `pit_ks/p50` | Median of the per-episode KS statistics | `< pit_ks/band` |
+| `pit_ks/p90` | Their 90th percentile | `< pit_ks/band` |
+| `pit_ks/band` | Median of the per-episode bands | — |
 
 PIT *shape* reads the failure mode, and the KS statistic alone does not: U-shaped (mass at 0 and 1)
 is too narrow, dome-shaped is too wide, tilted is biased.
@@ -314,7 +364,7 @@ as marginal.
 
 The pooled PIT sample is capped at `max_pit` (200 000) by uniform subsampling *at compute time*, so
 it stays an unbiased draw across all episodes rather than a prefix. Under DDP the cap is applied per
-rank as `max_pit // world_size` before the gather, which means **the pooled `pit_ks` is not bitwise
+rank as `max_pit // world_size` before the gather, which means **the pooled `pit_ks_pooled` is not bitwise
 reproducible across world sizes** — it is the same statistic on a different subsample. The
 per-episode keys are exact.
 
@@ -325,18 +375,49 @@ the rest are there to debug it.
 |---|---|
 | `mean_var` | `E[Var P]`, the mean predicted variance (includes the `w²/12` within-bin term) |
 | `mean_sd` | `E[SD P]`, the mean predicted SD |
-| `mse_obs` | `E[(μ_P − y)²]`, the observed MSE against the frozen target |
+| `mse_obs` | `E[(μ_P − τ*)²]`, the uncorrected MSE of the predictive **mean** against the frozen target |
 | `mean_s2` | `E[s²]`, the mean per-row sampling variance of that target, from the sidecar's `s2_std` |
 | `mse_corrected` (internal) | `max(mse_obs − mean_s2, 0)` — clamped, because with a good model and a noisy target the empirical MSE can fall below `s²` and a negative denominator is not a ratio |
 | `var_ratio` | `mean_var / mse_corrected`; 1 when calibrated |
 | `sd_over_rmse` | `√var_ratio` — the form to report, because it is in SD units, so 0.8 reads directly as "intervals 20 % too narrow" |
 | `s_over_sd` | `√(mean_s2) / √(mean_var)` — the gate on whether the target noise is worth correcting at all |
 
+**`mse_obs` is not an outcome MSE, and "obs" does not mean "observational".** No observed `Y` enters
+this path at any point. The `y` argument of `variance_identity` is bound to `record["tau_star_std"]` —
+the frozen set's high-`K` Monte-Carlo CEPO target — over the episode's **query rows only** (`probs`
+has shape `(n_q, B)`; context rows are the conditioning and are never scored). So it is
+`mean_rows (E_P[tau] − τ*)²`: a CATE prediction against a CATE target, not an ITE and not an outcome.
+The contrast the name draws is `mse_obs` (raw) vs `mse_corrected` (after subtracting the residual MC
+noise `mean_s2`) — *uncorrected*, not *observational*. Scoring against an ITE draw instead is exactly
+the [§7](#7-why-valdist-does-not-exist) error, and it would inflate this denominator by
+`target/ite_minus_cate_mse`.
+
+**`mse_obs` equals `prior_point/cate/rmse_pooled²`.** Both are the row-weighted mean of the same
+`(μ_P − τ*)²` over the same rows — one accumulated inside `PosteriorEvaluator`, the other in the
+driver at `score_episode`. They must agree to float precision; a gap means a shard reduction is
+wrong. That makes `sd_over_rmse` readable in one line: the width the model *claims* (`mean_var`)
+against the error it *makes* (`rmse_pooled²`, denoised).
+
+**The ratio is recomputed from pooled sums, not averaged.** Only the four linear pieces (`mean_var`,
+`mean_sd`, `mse_obs`, `mean_s2`) are accumulated row-weighted and all-reduced; `var_ratio` and
+`sd_over_rmse` are formed once at the end. It is a **ratio of means, never a mean of ratios** — the
+latter is unbounded and dominated by easy episodes with a near-zero denominator. Note also that
+`sd_over_rmse = √(E[Var]/…)` is *not* `E[SD]/RMSE`: by Jensen `mean_sd ≤ √mean_var`, so do not
+reconstruct one from the other.
+
 The `s²` subtraction is **unconditional**, and its sign matters: omit it and the denominator is
 inflated, making the model read as *more* over-confident than it is.
 
 `var_ratio` is a **global** identity, not a per-row one — `Var P` is not an estimate of that row's
-squared error. There is no meaningful per-row version of this ratio; do not construct one.
+squared error. There is no meaningful per-row version of this ratio; do not construct one. It is also
+**necessary but not sufficient**: one scalar over the whole pass, so a model 2× too wide on half the
+rows and 2× too narrow on the other half scores exactly 1.0. That is the same cancellation as pooled
+`pit_ks_pooled`, with the same companions — PIT *shape* says how the scale is wrong, the per-episode
+coverage quantiles say whether it is wrong in opposite directions in different places.
+
+A `nan` here means `mse_corrected` collapsed to ≈ 0, i.e. `mse_obs ≤ mean_s2`. At `K = 4000`
+(`s_over_sd ≈ 0.008`) that is not a plausible model outcome — suspect a raw-vs-head unit mixup in
+`s2_std` first.
 
 **Health and bookkeeping.**
 
@@ -372,11 +453,11 @@ The reading rule, which is the whole point of the tool:
 
 | Comparable across strata | Not comparable |
 |---|---|
-| `sd_over_rmse`, `cov50_pooled`, `cov90_pooled`, `cov90/p25`–`p75`, `crps_over_oracle`, `pit_ks` (vs **its own** band) | `crps`, `mean_sd`, `width50`, `width90`, `cate/rmse` |
+| `sd_over_rmse`, `cov50_pooled`, `cov90_pooled`, `cov90/p25`–`p75`, `crps_over_oracle`, `pit_ks_pooled` (vs **its own** band) | `crps`, `mean_sd`, `width50`, `width90`, `cate/rmse` |
 
 Strata differ in intrinsic difficulty *and* in the scale of `tau`, so a worse `crps` under weak
 proxies is the expected consequence of a harder problem and is not a finding. Two further traps:
-compare a cut against **its complement**, never against the pool that contains it; and `pit_ks_band`
+compare a cut against **its complement**, never against the pool that contains it; and `pit_ks_pooled_band`
 scales as `1/√n`, so a smaller stratum earns a wider band and reading it against the pooled band
 manufactures failures. The headline is `sd_over_rmse` on `weak_proxy` vs its complement — pooled ≈ 1
 with `weak_proxy` well below 1 is a posterior that fails to widen where proximal identification is
@@ -469,9 +550,9 @@ compared.
 ### Pooled vs per-episode KS — pooling hides cancellation
 
 Over-confident on half the episodes and under-confident on the other half is **uniform overall**. The
-pooled `pit_ks` passes its band and the posterior is badly miscalibrated everywhere.
+`pit_ks_pooled` passes its band and the posterior is badly miscalibrated everywhere.
 
-`pit_ks_episode_p90 ≥ pit_ks_episode_band` while `pit_ks < pit_ks_band` is precisely that signature.
+`pit_ks/p90 ≥ pit_ks/band` while `pit_ks_pooled < pit_ks_pooled_band` is precisely that signature.
 `posterior_eval.score` prints it as an explicit warning; there is a test constructing two
 opposite-direction episode groups and asserting the pooled statistic passes while the p90 fails.
 
