@@ -1167,24 +1167,58 @@ class SavePriorDataset:
             )
 
 
+#: Spellings ``str2bool`` accepts, case-insensitive and whitespace-stripped.
+STR2BOOL_TRUE = ("true", "t", "yes", "y", "1")
+STR2BOOL_FALSE = ("false", "f", "no", "n", "0")
+
+
+def str2bool(value):
+    """argparse ``type`` for boolean flags.
+
+    Rejects anything it does not recognise. The previous implementation was
+    ``value.lower() == "true"``, which silently mapped every unrecognised
+    spelling to ``False``: ``--mc_targets_on_context 1``,
+    ``--replay_small yes`` and ``--log_seq_len Ture`` all turned the flag
+    *off* while looking like they turned it on. These flags change what gets
+    written to disk (``mc_targets_on_context`` decides whether MU0/MU1 exist
+    on the context prefix at all), so a typo that reads as success is
+    expensive -- it is only visible in the generated data.
+
+    Raises
+    ------
+    argparse.ArgumentTypeError
+        If ``value`` is not one of :data:`STR2BOOL_TRUE` /
+        :data:`STR2BOOL_FALSE`.
+    """
+    if isinstance(value, bool):
+        return value
+
+    normalized = str(value).strip().lower()
+    if normalized in STR2BOOL_TRUE:
+        return True
+    if normalized in STR2BOOL_FALSE:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"expected a boolean, got {value!r} (accepted, case-insensitively: "
+        f"{', '.join(STR2BOOL_TRUE + STR2BOOL_FALSE)})"
+    )
+
+
+def train_size_type(value):
+    """Custom type function to handle both int and float train sizes."""
+    value = float(value)
+    if 0 < value < 1:
+        return value
+    elif value.is_integer():
+        return int(value)
+    else:
+        raise argparse.ArgumentTypeError(
+            "Train size must be either an integer (absolute position) "
+            "or a float between 0 and 1 (ratio of sequence length)."
+        )
+
+
 if __name__ == "__main__":
-
-    def str2bool(value):
-        return value.lower() == "true"
-
-    def train_size_type(value):
-        """Custom type function to handle both int and float train sizes."""
-        value = float(value)
-        if 0 < value < 1:
-            return value
-        elif value.is_integer():
-            return int(value)
-        else:
-            raise argparse.ArgumentTypeError(
-                "Train size must be either an integer (absolute position) "
-                "or a float between 0 and 1 (ratio of sequence length)."
-            )
-
     parser = argparse.ArgumentParser(description="Generate training prior datasets")
     parser.add_argument(
         "--save_dir",

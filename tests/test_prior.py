@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import json
 import math
@@ -15,6 +16,8 @@ from proximalfm.prior._genload import (
     LoadPriorDataset,
     PriorBatchTimeout,
     write_batch_file,
+    str2bool,
+    train_size_type,
     dense2sparse,
     sparse2dense,
     sparse2dense_blocks,
@@ -1776,3 +1779,71 @@ def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
     assert S2.shape == out[9].shape
     assert (S2 == 0).all()
     assert (K_eff == 0).all()
+
+
+# ---------------------------------------------------------------------------
+# CLI argument types
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["true", "True", "TRUE", " true ", "t", "yes", "1"])
+def test_str2bool_accepts_truthy_spellings(value):
+    assert str2bool(value) is True
+
+
+@pytest.mark.parametrize(
+    "value", ["false", "False", "FALSE", " false ", "f", "no", "0"]
+)
+def test_str2bool_accepts_falsy_spellings(value):
+    assert str2bool(value) is False
+
+
+@pytest.mark.parametrize("value", ["Ture", "y3s", "", "maybe", "2", "none"])
+def test_str2bool_rejects_anything_else(value):
+    # `value.lower() == "true"` mapped every unrecognised spelling to False, so
+    # a typo silently turned the flag off while reading as if it turned it on.
+    # These flags decide what lands on disk, so the mistake only surfaced in
+    # the generated data.
+    with pytest.raises(argparse.ArgumentTypeError, match="expected a boolean"):
+        str2bool(value)
+
+
+def test_str2bool_error_lists_the_accepted_spellings():
+    with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+        str2bool("nope")
+
+    message = str(excinfo.value)
+    assert "true" in message and "false" in message
+
+
+def test_str2bool_is_idempotent_on_bools():
+    # argparse defaults are already bool and must survive a re-parse.
+    assert str2bool(True) is True
+    assert str2bool(False) is False
+
+
+def test_str2bool_is_wired_into_the_generator_cli():
+    # The regression this guards is a *flag* silently reading as False, so the
+    # parser has to be the thing under test, not just the helper.
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mc_targets_on_context", type=str2bool, default=False)
+
+    assert parser.parse_args(["--mc_targets_on_context", "yes"]).mc_targets_on_context
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--mc_targets_on_context", "Ture"])
+
+
+@pytest.mark.parametrize(
+    "value, expected", [("0.5", 0.5), ("128", 128), ("128.0", 128), ("0.9", 0.9)]
+)
+def test_train_size_type_accepts_ratios_and_positions(value, expected):
+    got = train_size_type(value)
+    assert got == expected
+    assert isinstance(got, type(expected))
+
+
+@pytest.mark.parametrize("value", ["1.5", "-0.5", "2.25"])
+def test_train_size_type_rejects_out_of_range_floats(value):
+    with pytest.raises(argparse.ArgumentTypeError, match="Train size"):
+        train_size_type(value)
