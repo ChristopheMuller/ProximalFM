@@ -16,6 +16,12 @@ DEFAULT_FIXED_HP = {
     "prior_mc_mem_budget": 500_000_000,
     "enforce_completeness_heuristic": True,
     "completeness_max_attempts": 50,
+    # Hard ceiling on generate_dataset's resample loop. Well above
+    # completeness_max_attempts -- which only relaxes the *proximal* check, so
+    # it cannot terminate a draw that keeps failing the basic one -- leaving an
+    # unlucky draw all its retries while a degenerate one raises rather than
+    # resampling forever.
+    "max_generation_attempts": 500,
     "dim_U_distribution": "triangular",
     "confounding_dim_control": True,
     "proxy_edge_subsampling": True,

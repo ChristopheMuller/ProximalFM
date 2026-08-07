@@ -113,6 +113,10 @@ FIXED_GROUPS: List[Tuple[str, List[str]]] = [
 #:   ``dim_U_distribution`` and ``enforce_completeness_heuristic``.
 #: - **No statistical content.** ``prior_mc_mem_budget`` caps chunk size on the
 #:   MC-CATE pass; it cannot change the distribution being sampled.
+#:   ``max_generation_attempts`` likewise only bounds the resample loop so a
+#:   degenerate draw raises instead of hanging -- it is set far above what any
+#:   reachable draw needs, and when it does fire generation fails rather than
+#:   yielding a differently-distributed dataset.
 REMOVED_FIXED_HP = {
     # dead branch: tree SCM
     "mix_probs",
@@ -129,6 +133,7 @@ REMOVED_FIXED_HP = {
     "corrupt_U",
     # implementation-only
     "prior_mc_mem_budget",
+    "max_generation_attempts",
 }
 
 #: Structural parameters, grouped and ordered for the table. Unlike the two
@@ -197,6 +202,7 @@ NOTES: Dict[str, str] = {
     "prior_mc_mem_budget": "memory cap on the MC-CATE pass",
     "enforce_completeness_heuristic": "accept/reject on $\\min(d_W, d_Z) \\ge d_U$",
     "completeness_max_attempts": "resample budget before giving up",
+    "max_generation_attempts": "hard resample ceiling before raising",
     "dim_U_distribution": "sampling law for $d_U$",
     "confounding_dim_control": "subsample/augment $U$'s inputs to $f_Y$, $f_A$ to a target share",
     "proxy_edge_subsampling": "make the direct $W \\to Y$ / $Z \\to A$ edges per-column optional",

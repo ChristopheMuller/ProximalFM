@@ -1776,3 +1776,90 @@ def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
     assert S2.shape == out[9].shape
     assert (S2 == 0).all()
     assert (K_eff == 0).all()
+
+
+# ---------------------------------------------------------------------------
+# generate_dataset's resample loop terminates
+# ---------------------------------------------------------------------------
+
+
+def _prior_whose_blocks_always_collapse(monkeypatch):
+    """A prior for which the *basic* validity check can never pass.
+
+    Constant-column filtering is forced to zero every block's active width, the
+    one condition ``completeness_max_attempts`` does not relax -- so without a
+    hard ceiling ``generate_dataset`` has no exit from its resample loop.
+    Patched rather than provoked with a pathological ``seq_len``, which breaks
+    the mechanisms (a one-row propensity has no std) long before the check.
+    """
+    prior = _make_mc_split_prior(mc_targets_on_context=True, seq_len=32, K=2)
+    _seed(0)
+    params = _capture_params(prior)
+
+    calls = []
+
+    def all_columns_constant(X, d, max_d):
+        calls.append(1)
+        return torch.zeros_like(X), torch.zeros_like(d)
+
+    monkeypatch.setattr(
+        SCMPrior,
+        "filter_constant_features_and_pad",
+        staticmethod(all_columns_constant),
+    )
+    return prior, params, calls
+
+
+def test_generate_dataset_raises_rather_than_resampling_forever(monkeypatch):
+    prior, params, _ = _prior_whose_blocks_always_collapse(monkeypatch)
+
+    _seed(1)
+    with pytest.raises(RuntimeError, match="Failed to generate a valid dataset"):
+        prior.generate_dataset({**params, "max_generation_attempts": 3})
+
+
+def test_generate_dataset_failure_names_the_offending_dimensions(monkeypatch):
+    # The point of the exception is to be actionable where a hang was not.
+    prior, params, _ = _prior_whose_blocks_always_collapse(monkeypatch)
+
+    _seed(2)
+    with pytest.raises(RuntimeError) as excinfo:
+        prior.generate_dataset({**params, "max_generation_attempts": 2})
+
+    message = str(excinfo.value)
+    assert "d_X=0" in message
+    assert f"seq_len={params['seq_len']}" in message
+    assert "max_generation_attempts" in message
+
+
+def test_generate_dataset_honours_the_configured_ceiling(monkeypatch):
+    # The ceiling is a knob read from params, not a hard-coded constant.
+    prior, params, calls = _prior_whose_blocks_always_collapse(monkeypatch)
+
+    _seed(3)
+    with pytest.raises(RuntimeError):
+        prior.generate_dataset({**params, "max_generation_attempts": 4})
+
+    # Four blocks (U, X, W, Z) filtered per attempt, four attempts.
+    assert len(calls) == 4 * 4
+
+
+def test_max_generation_attempts_must_be_positive():
+    # Validated up front: a ceiling of 0 would otherwise mean "raise before the
+    # first attempt", which reads as a silent generation failure.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, seq_len=32, K=2)
+    _seed(4)
+    params = _capture_params(prior)
+
+    with pytest.raises(ValueError, match="max_generation_attempts"):
+        prior.generate_dataset({**params, "max_generation_attempts": 0})
+
+
+def test_default_fixed_hp_ships_a_generation_ceiling():
+    # A default of None/absent would restore the unbounded loop for every
+    # caller that does not pass the knob explicitly.
+    assert DEFAULT_FIXED_HP["max_generation_attempts"] >= 1
+    assert (
+        DEFAULT_FIXED_HP["max_generation_attempts"]
+        > DEFAULT_FIXED_HP["completeness_max_attempts"]
+    )

@@ -808,6 +808,16 @@ class SCMPrior(Prior):
             count after :meth:`_cap_mc_samples`, which may be below the
             requested ``mc_cate``. ``diagnostics`` is ``None`` unless the
             ``collect_mechanism_diagnostics`` fixed HP is set.
+
+        Raises
+        ------
+        RuntimeError
+            If no attempt within ``max_generation_attempts`` produced a dataset
+            whose observed ``X``/``W``/``Z`` blocks all keep at least one
+            non-constant column. Rejection is how the generator enforces both
+            validity checks, and the completeness one is relaxed after
+            ``completeness_max_attempts``; this basic one is not, so it needs
+            its own ceiling to guarantee termination.
         """
 
         if params["prior_type"] == "mlp_scm":
@@ -849,6 +859,12 @@ class SCMPrior(Prior):
 
         # Counts resamples triggered by the completeness check below.
         attempt = 0
+        # Hard ceiling on that resampling, so the loop always terminates -- see
+        # the RuntimeError at the bottom of the loop for why the completeness
+        # ceiling alone is not enough.
+        max_attempts = int(params.get("max_generation_attempts", 500))
+        if max_attempts < 1:
+            raise ValueError("max_generation_attempts must be >= 1")
 
         while True:
             attempt += 1
@@ -1306,6 +1322,28 @@ class SCMPrior(Prior):
                     S2,
                     K_eff,
                     diagnostics,
+                )
+
+            # ``give_up`` relaxes only ``proximal_ok``; ``basic_ok`` is a hard
+            # requirement, so a params draw whose observed blocks collapse to
+            # constant columns on every attempt has no exit from this loop and
+            # would resample forever, silently and at full N-row cost. Bound it.
+            # The ceiling sits well above ``completeness_max_attempts`` so a draw
+            # that is merely unlucky still gets its retries; reaching it means
+            # the sampled hyperparameters cannot produce a usable dataset, which
+            # is worth an exception rather than a hang.
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    f"Failed to generate a valid dataset in {attempt} attempts: "
+                    "at least one observed block collapsed to constant columns "
+                    f"every time (active dims d_X={int(d_X)}, d_W={int(d_W)}, "
+                    f"d_Z={int(d_Z)}; requested dim_X={params['dim_X']}, "
+                    f"dim_W={params['dim_W']}, dim_Z={params['dim_Z']}, "
+                    f"seq_len={T}). Raise the max_generation_attempts fixed "
+                    "hyperparameter if this is merely unlucky; otherwise the "
+                    "sampled hyperparameters are degenerate (a saturating "
+                    "activation collapsing a mechanism's output is the usual "
+                    "cause)."
                 )
 
     def sample_A(
