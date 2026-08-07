@@ -969,6 +969,11 @@ class Trainer:
         train/test split position, required for efficient batch processing during
         gradient accumulation.
 
+        Both reductions here end in a Python value, so pass **CPU** tensors:
+        ``run_micro_batch`` fetches the whole metadata block in one transfer for
+        exactly this reason, and handing this method accelerator tensors puts
+        four device synchronisations back on the critical path.
+
         Parameters
         ----------
         micro_seq_len : Tensor
@@ -1030,6 +1035,10 @@ class Trainer:
         (``micro_d_X.max()`` etc.), removing padding the micro batch doesn't
         need. ``micro_A`` and the Y-family tensors share the truncated
         sequence length but are not feature-truncated.
+
+        ``micro_d_X``/``micro_d_W``/``micro_d_Z`` are only ever read as Python
+        ints, so pass the **CPU** copies ``run_micro_batch`` already fetched;
+        accelerator tensors would cost three device synchronisations here.
 
         Returns the same ten tensors, in the same order as the input args.
         """
@@ -1137,7 +1146,35 @@ class Trainer:
             micro_K_eff,
         ) = micro_batch
 
-        seq_len, train_size = self.validate_micro_batch(micro_seq_len, micro_train_size)
+        # Per-dataset metadata drives Python-level control flow -- the shape
+        # checks in validate_micro_batch and the slice widths in
+        # align_micro_batch -- so every read of it is a device synchronisation
+        # when the prior generates on the accelerator (`--prior_device cuda:N`,
+        # which is what DDP configures). That is seven stalls (two
+        # `torch.unique`, two indexing `.item()`s, three `.max().item()`s)
+        # before a single kernel of real work has been queued.
+        #
+        # One stacked transfer brings all of it across at once; the two helpers
+        # below then read CPU tensors and cost nothing. The originals are kept
+        # for the `.to(device)` moves further down, which the model needs.
+        # `reshape(-1)` normalises the shapes -- the prior emits `d_*` as (B, 1)
+        # and seq_len/train_size as (B,) -- and `.long()` normalises the dtype,
+        # which `torch.stack` requires to agree. The prior writes all five as
+        # int64, but the on-disk format has a second writer
+        # (`synthetic/build_proximal_datasets.py`) that has drifted before, and
+        # `.long()` on an int64 tensor is free.
+        cpu_meta = torch.stack(
+            [
+                micro_seq_len.reshape(-1).long(),
+                micro_train_size.reshape(-1).long(),
+                micro_d_X.reshape(-1).long(),
+                micro_d_W.reshape(-1).long(),
+                micro_d_Z.reshape(-1).long(),
+            ]
+        ).cpu()
+        cpu_seq_len, cpu_train_size, cpu_d_X, cpu_d_W, cpu_d_Z = cpu_meta.unbind(0)
+
+        seq_len, train_size = self.validate_micro_batch(cpu_seq_len, cpu_train_size)
 
         (
             micro_X,
@@ -1161,9 +1198,9 @@ class Trainer:
             micro_MU0,
             micro_MU1,
             micro_S2,
-            micro_d_X,
-            micro_d_W,
-            micro_d_Z,
+            cpu_d_X,
+            cpu_d_W,
+            cpu_d_Z,
             seq_len,
         )
 
