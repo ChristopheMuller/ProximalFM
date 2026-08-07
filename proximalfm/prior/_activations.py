@@ -295,10 +295,15 @@ class RandomChoiceActivation(nn.Module):
 
 
 class RandomChoiceFactory:
-    """Factory class for creating RandomChoice activations"""
+    """Factory class for creating RandomChoice activations.
+
+    ``act_classes`` is copied on construction. The factory is built from the
+    very list it is then appended to, so holding a reference would make its
+    choice pool contain the factory itself -- see :func:`get_activations`.
+    """
 
     def __init__(self, act_classes):
-        self.act_classes = act_classes
+        self.act_classes = list(act_classes)
 
     def __call__(self):
         return RandomChoiceActivation(self.act_classes)
@@ -324,7 +329,8 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
         If True, adds RandomChoiceFactory instances to allow different activation
         functions in each layer.
     """
-    # Start with a set of simple activations
+    # Start with a set of simple activations. Copied below before any in-place
+    # extension, so this list is never aliased into the returned pool.
     simple_activations = [
         nn.Tanh,
         nn.LeakyReLU,
@@ -345,17 +351,26 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
         SquareActivation,
         AbsActivation,
     ]
-    activations = simple_activations
+    activations = list(simple_activations)
     if random:
         # Add random activation and sample it more often
-        activations += [RandomFunctionActivation] * 10
+        activations = activations + [RandomFunctionActivation] * 10
 
     if scale:
         # Create scaled versions using StdRandomScaleFactory
         activations = [StdRandomScaleFactory(act) for act in activations]
 
     if diverse:
-        # Add possibility to have different activation functions in each layer
-        activations += [RandomChoiceFactory(activations)] * len(activations)
+        # Add possibility to have different activation functions in each layer.
+        # The factory's pool must be a *snapshot* taken before the extension:
+        # ``activations += [RandomChoiceFactory(activations)] * n`` extends the
+        # very list the factory holds, so half its choices become the factory
+        # itself. A RandomChoiceActivation would then pick another one with
+        # probability 1/2 and nest recursively (measured: mean depth ~1, max 6
+        # over 200 draws), which is not what "a different activation in each
+        # layer" means -- and each discarded nesting level still constructs a
+        # full activation, up to a 256-frequency RandomFunctionActivation.
+        base = list(activations)
+        activations = base + [RandomChoiceFactory(base)] * len(base)
 
     return activations

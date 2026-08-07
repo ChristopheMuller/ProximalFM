@@ -1577,26 +1577,61 @@ def test_s2_is_zero_without_replicates():
     assert (K_eff == 1).all()
 
 
-def test_s2_scales_as_one_over_k():
-    # The defining property of a Monte Carlo mean's sampling variance. Held on
-    # one fixed mechanism (same params, same seed) so only K varies -- across
-    # independently drawn mechanisms the comparison would be meaningless.
-    prior = _make_mc_split_prior(mc_targets_on_context=True, K=8)
+def test_mc_mean_var_scales_as_one_over_k():
+    # The defining property of a Monte Carlo mean's sampling variance, pinned on
+    # the estimator itself: same replicate distribution, K varied, so the ratio
+    # is not confounded by anything.
+    #
+    # This replaces an end-to-end version that re-generated the dataset at two
+    # values of K "holding the mechanism fixed". It did not: `sample_eps` draws
+    # N = T_ctx + T_q*K rows, so from `f_U` onward the weights and every
+    # realisation differ between the two runs. It compared two independent
+    # mechanisms, and the ratio ranged over four orders of magnitude across
+    # seeds -- it passed on a seed lottery, not on the property.
+    _seed(0)
+    reps = torch.randn(256, 4096)
+
+    means = {
+        K: float(_dataset_mod._mc_mean_var(reps[:, :K], K).mean()) for K in (8, 64)
+    }
+
+    ratio = means[8] / means[64]
+    # Both endpoints are noisy estimates of the same Var_k, so this is a band
+    # around 8 -- it catches a wrong normalisation (dividing by K^2, or not at
+    # all), not a few percent of bias.
+    assert 4.0 < ratio < 16.0
+
+
+def test_s2_is_the_replicate_variance_over_k_the_generator_actually_used():
+    # The end-to-end half of the property above: whatever replicates `f_y`
+    # produced, S2 must be exactly their unbiased variance divided by the
+    # realised K. Asserted on the estimator's own arguments, so it is
+    # deterministic and independent of which mechanism was drawn.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, K=16)
     _seed(0)
     params = _capture_params(prior)
 
-    means = {}
-    for K in (8, 64):
-        _seed(11)
-        out = prior.generate_dataset({**params, "mc_cate": K})
-        means[K] = float(out[15].mean())
-        assert int(out[16]) == K
+    seen = {}
+    real = _dataset_mod._mc_mean_var
 
-    ratio = means[8] / means[64]
-    # 8x more replicates. Both endpoints are themselves noisy estimates, so this
-    # is a wide band around 8 -- it catches a wrong normalisation (e.g. dividing
-    # by K^2 or not at all), not a few percent of bias.
-    assert 4.0 < ratio < 16.0
+    def spy(replicates, K):
+        seen["replicates"] = replicates.clone()
+        seen["K"] = K
+        return real(replicates, K)
+
+    _dataset_mod._mc_mean_var = spy
+    try:
+        _seed(11)
+        out = prior.generate_dataset(params)
+    finally:
+        _dataset_mod._mc_mean_var = real
+
+    S2, K_eff = out[15], int(out[16])
+
+    assert seen["K"] == K_eff
+    assert seen["replicates"].shape[1] == K_eff
+    expected = seen["replicates"].var(dim=1, unbiased=True) / K_eff
+    torch.testing.assert_close(S2, expected)
 
 
 def test_s2_is_the_paired_variance_not_the_sum_of_arm_variances():
