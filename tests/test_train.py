@@ -1,4 +1,5 @@
 import math
+import os
 
 import pytest
 from proximalfm.train._train_config import build_parser
@@ -822,3 +823,16 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
     )
     # At n_ctx == n_max the factor is 1, so this also pins the plain value.
     assert metrics["diag/sigma"] == pytest.approx(0.2, abs=1e-4)
+
+
+def test_atomic_checkpoint_save(dummy_args):
+    trainer = Trainer(dummy_args)
+    ckpt_name = "test_atomic.ckpt"
+    with patch("os.replace", wraps=os.replace) as mock_replace:
+        trainer.save_checkpoint(ckpt_name)
+        target_path = os.path.join(dummy_args.checkpoint_dir, ckpt_name)
+        tmp_path_expected = f"{target_path}.tmp"
+        mock_replace.assert_called_once_with(tmp_path_expected, target_path)
+    assert os.path.exists(target_path)
+    loaded = torch.load(target_path, weights_only=False)
+    assert "state_dict" in loaded
