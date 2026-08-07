@@ -126,13 +126,29 @@ class XSampler:
             return torch.normal(0.0, 1.0, (self.seq_len,), device=self.device).float()
 
     def sample_multinomial(self):
-        """Generate categorical features."""
+        """Generate categorical features.
+
+        The column is standardised, and two draws make that standardisation
+        degenerate: every sample landing in the same category (``std == 0``,
+        reachable whenever ``torch.rand`` gives one category almost all the
+        mass), and ``seq_len == 1`` (no unbiased ``std`` at all, hence NaN).
+        Both would emit an all-NaN column, which then flows into a mechanism's
+        exogenous-noise input -- and ``MLPSCM`` only ``nan_to_num``s its
+        *output*, so ``process_features`` sees the NaN first.
+
+        Clamped rather than offset by an epsilon: ``std.clamp(min=1e-8)``
+        leaves every non-degenerate draw bit-identical, where ``std + 1e-8``
+        would perturb them all. A degenerate draw yields the constant-zero
+        column (``x - mean`` is already 0), which is the right answer for a
+        noise input carrying no information.
+        """
         n_categories = random.randint(2, 20)
         probs = torch.rand(n_categories, device=self.device)
         x = torch.multinomial(probs, self.seq_len, replacement=True)
         x = x.float()
         std, mean = torch.std_mean(x)
-        return (x - mean) / std
+        scale = torch.nan_to_num(std, nan=0.0).clamp(min=1e-8)
+        return (x - mean) / scale
 
     def sample_zipf(self):
         """Generate Zipf-distributed features."""

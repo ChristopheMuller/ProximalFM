@@ -1781,6 +1781,49 @@ def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
     assert (K_eff == 0).all()
 
 
+# sample_train_size type handling
+# ---------------------------------------------------------------------------
+
+
+def test_sample_train_size_accepts_matching_int_bounds():
+    _seed(0)
+    train_size = SCMPrior.sample_train_size(10, 50, seq_len=100)
+    assert isinstance(train_size, (int, np.integer))
+    assert 10 <= train_size < 50
+
+
+def test_sample_train_size_accepts_matching_float_bounds():
+    _seed(0)
+    train_size = SCMPrior.sample_train_size(0.1, 0.9, seq_len=100)
+    assert isinstance(train_size, int)
+    assert 10 <= train_size <= 90
+
+
+@pytest.mark.parametrize("bounds", [(0.1, 50), (10, 0.9)])
+def test_sample_train_size_rejects_mixed_bounds(bounds):
+    # The float branch used to test `min_train_size` twice, so a (float, int)
+    # pair fell through to the *ratio* branch and returned
+    # int(seq_len * uniform(0.1, 50)) -- a train_size far past the end of the
+    # sequence, silently. Only (int, float) reached the guard.
+    with pytest.raises(ValueError, match="must both be int"):
+        SCMPrior.sample_train_size(*bounds, seq_len=100)
+
+
+def test_sample_train_size_error_names_both_types():
+    with pytest.raises(ValueError) as excinfo:
+        SCMPrior.sample_train_size(0.1, 50, seq_len=100)
+
+    message = str(excinfo.value)
+    assert "float" in message and "int" in message
+
+
+def test_validate_train_size_range_is_the_first_line_of_defence():
+    # sample_train_size's guard is a backstop: the constructor rejects mixed
+    # bounds up front, which is why the fall-through went unnoticed.
+    with pytest.raises(ValueError):
+        SCMPrior.validate_train_size_range(0.1, 50)
+
+
 # ---------------------------------------------------------------------------
 # CLI defaults
 # ---------------------------------------------------------------------------
