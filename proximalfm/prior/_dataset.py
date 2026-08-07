@@ -375,11 +375,16 @@ class Prior:
         """
         if isinstance(min_train_size, int) and isinstance(max_train_size, int):
             train_size = np.random.randint(min_train_size, max_train_size)
-        elif isinstance(min_train_size, float) and isinstance(min_train_size, float):
+        elif isinstance(min_train_size, float) and isinstance(max_train_size, float):
             train_size = np.random.uniform(min_train_size, max_train_size)
             train_size = int(seq_len * train_size)
         else:
-            raise ValueError("Invalid training size range.")
+            raise ValueError(
+                "Invalid training size range: min_train_size and max_train_size "
+                "must both be int (absolute positions) or both be float (ratios "
+                f"of seq_len); got {type(min_train_size).__name__} and "
+                f"{type(max_train_size).__name__}."
+            )
         return train_size
 
     @staticmethod
