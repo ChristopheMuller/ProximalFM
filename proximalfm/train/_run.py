@@ -745,26 +745,55 @@ class Trainer:
                 except Exception as e:
                     print(f"Error removing checkpoint {ckpt_path}: {e}")
 
-    def _shuffle_batch_rows(self, batch):
-        """Permute the datasets within a batch to decorrelate group ordering.
+    def _batch_row_permutation(self, batch):
+        """A permutation of the datasets within a batch, or ``None``.
 
-        Only applied when the entire batch shares a single ``seq_len`` and
-        ``train_size`` (the ``seq_len_per_gp=False`` case). In that case any
-        permutation is safe. Otherwise — nested tensors, or pre-generated
-        batches loaded from disk whose rows carry heterogeneous metadata — the
-        original ordering is kept untouched, since ``run_batch`` relies on
-        consecutive rows being homogeneous within a micro-batch
-        (``validate_micro_batch``) and a random shuffle could mix sequence
-        lengths / train sizes and trigger a ValueError.
+        Shuffling decorrelates group ordering across the micro batches of a
+        step. It is only safe when the entire batch shares a single ``seq_len``
+        and ``train_size`` (the ``seq_len_per_gp=False`` case). Otherwise —
+        nested tensors, or pre-generated batches loaded from disk whose rows
+        carry heterogeneous metadata — ``None`` keeps the original ordering,
+        since ``run_batch`` relies on consecutive rows being homogeneous within
+        a micro-batch (``validate_micro_batch``) and a random shuffle could mix
+        sequence lengths / train sizes and trigger a ValueError.
+
+        The permutation is returned rather than applied. Applying it here meant
+        ``[t[perm] for t in batch]``, i.e. a second full copy of all 19 tensors
+        — including the ``(B, T, d)`` ones — resident for the whole step, purely
+        to reorder the dataset axis. ``run_batch`` instead indexes one micro
+        batch at a time, so the extra allocation is bounded by
+        ``micro_batch_size`` rather than ``batch_size``.
         """
         if any(t.is_nested for t in batch):
-            return batch
+            return None
         # batch[15] = seq_lens, batch[16] = train_sizes (per-dataset metadata).
         seq_lens, train_sizes = batch[15], batch[16]
         if seq_lens.unique().numel() > 1 or train_sizes.unique().numel() > 1:
-            return batch
-        perm = torch.randperm(batch[0].shape[0], device=batch[0].device)
-        return [t[perm] for t in batch]
+            return None
+        return torch.randperm(batch[0].shape[0], device=batch[0].device)
+
+    @staticmethod
+    def _iter_micro_batches(batch, micro_batch_size, row_perm=None):
+        """Yield micro batches of ``batch``, optionally reordered by ``row_perm``.
+
+        Without a permutation this is ``torch.split``, which returns *views*: no
+        copy, no extra memory. With one, each micro batch is materialized only
+        when it is reached, so the advanced-indexing copy is bounded by
+        ``micro_batch_size`` instead of holding a duplicate of the whole batch
+        for the length of the step.
+
+        A generator rather than a list for exactly that reason -- building the
+        list would allocate every micro batch up front and give back the full
+        copy this exists to avoid.
+        """
+        if row_perm is None:
+            for micro_batch in zip(
+                *[torch.split(t, micro_batch_size, dim=0) for t in batch]
+            ):
+                yield micro_batch
+            return
+        for idx in torch.split(row_perm, micro_batch_size):
+            yield tuple(t[idx] for t in batch)
 
     def _post_step(self, results, prior_time, train_time):
         """Per-step bookkeeping after one ``run_batch``.
@@ -923,11 +952,11 @@ class Trainer:
                         reached_end = True
                         break
 
-                    batch = self._shuffle_batch_rows(block[bi])
+                    row_perm = self._batch_row_permutation(block[bi])
 
                     try:
                         with Timer() as train_timer:
-                            results = self.run_batch(batch)
+                            results = self.run_batch(block[bi], row_perm=row_perm)
                     except RuntimeError as e:
                         if not is_oom_error(e):
                             raise
@@ -1486,7 +1515,7 @@ class Trainer:
 
         return micro_results
 
-    def run_batch(self, batch):
+    def run_batch(self, batch, row_perm=None):
         """Train the model on one batch of datasets (a single optimizer step).
 
         Splits the batch into micro-batches for gradient accumulation, padding
@@ -1498,6 +1527,13 @@ class Trainer:
         batch : tuple
             The 19-tensor prior batch tuple. Entries may be nested tensors when
             sequence lengths vary across datasets.
+
+        row_perm : Tensor, optional
+            A permutation of the dataset axis, from
+            :meth:`_batch_row_permutation`, applied one micro batch at a time so
+            that only ``micro_batch_size`` rows are ever copied. ``None`` (the
+            default, and what the validation path passes) keeps the batch order,
+            in which case the micro batches are views and cost nothing.
 
         Returns
         -------
@@ -1519,10 +1555,9 @@ class Trainer:
         num_micro_batches = math.ceil(
             self.config.batch_size / self.config.micro_batch_size
         )
-        micro_batches = [
-            torch.split(t, self.config.micro_batch_size, dim=0) for t in batch
-        ]
-        micro_batches = list(zip(*micro_batches))
+        micro_batches = self._iter_micro_batches(
+            batch, self.config.micro_batch_size, row_perm
+        )
 
         # Dynamically build up results dictated by loss routing mode
         results = {}
@@ -1598,16 +1633,19 @@ class Trainer:
 
         seq_lens = batch[15]  # shape (B,)
         train_sizes = batch[16]  # shape (B,)
+        # Group datasets that share a (seq_len, train_size) so each micro batch
+        # is homogeneous. Passed to _iter_micro_batches as a reordering rather
+        # than applied here, for the same reason as the training shuffle: a
+        # whole reordered copy of the batch, to visit it one micro batch at a
+        # time.
         sort_idx = torch.argsort(seq_lens * (train_sizes.max() + 1) + train_sizes)
-        batch = [t[sort_idx] for t in batch]
 
         actual_batch_size = batch[0].shape[0]
         num_micro_batches = math.ceil(actual_batch_size / self.val_micro_batch_size)
 
-        micro_batches = [
-            torch.split(t, self.val_micro_batch_size, dim=0) for t in batch
-        ]
-        micro_batches = list(zip(*micro_batches))
+        micro_batches = self._iter_micro_batches(
+            batch, self.val_micro_batch_size, sort_idx
+        )
 
         total_valid_samples = 0
 
