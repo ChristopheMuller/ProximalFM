@@ -22,4 +22,8 @@ The modules, in the order you use them:
     The stratified cuts (ROADMAP A2): a ``strata.pt`` membership manifest, and
     the per-cut scoring pass. Offline only, by design -- see
     ``proximalfm/train/metrics.md`` §5.
+``sweep``
+    The ``n``-sweep (ROADMAP A6): the same metrics at nested context prefixes,
+    the log-log contraction fit, and the small-``n``-vs-CATE-prior comparison.
+    Offline only for the same reason as ``score_strata``.
 """
