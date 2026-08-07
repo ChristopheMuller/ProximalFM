@@ -1649,12 +1649,36 @@ class Trainer:
             for k in results:
                 results[k] *= correction
 
-        # Clip the gradient
-        if self.config.gradient_clipping > 0:
-            self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.config.gradient_clipping
+        # Clip the gradient. The norm is computed either way -- with
+        # ``max_norm=inf`` the call measures and scales by 1 -- because it is
+        # also the guard below, and one extra reduction per step is cheap next
+        # to a silently dead model.
+        max_norm = (
+            self.config.gradient_clipping
+            if self.config.gradient_clipping > 0
+            else float("inf")
+        )
+        self.scaler.unscale_(self.optimizer)
+        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
+
+        # A finite loss does not imply finite gradients, and clipping does not
+        # rescue a NaN -- ``clip_grad_norm_`` multiplies by a NaN scale and
+        # leaves every gradient NaN. On CUDA + AMP ``GradScaler`` would catch
+        # this and skip the step; ``configure_amp`` disables the scaler off
+        # CUDA, so on MPS/CPU nothing does. Skip the step explicitly instead,
+        # in lockstep across ranks (the all-reduced norms can differ in the last
+        # bit, so ranks must not decide independently).
+        if not self._ddp_all_valid(bool(torch.isfinite(grad_norm))):
+            warnings.warn(
+                f"Non-finite gradient norm at step {self.curr_step}; skipping "
+                "the optimizer step. Repeated hits mean the run is diverging, "
+                "not that one batch was unlucky.",
+                RuntimeWarning,
+                stacklevel=2,
             )
+            self.optimizer.zero_grad(set_to_none=True)
+            self.scheduler.step()
+            return results
 
         # Update parameters
         self.scaler.step(self.optimizer)

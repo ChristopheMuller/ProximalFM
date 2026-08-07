@@ -407,6 +407,54 @@ def test_noise_aware_falls_back_when_the_variance_is_missing(dummy_args):
         assert math.isfinite(value), f"{key} is not finite: {value}"
 
 
+def test_non_finite_loss_skips_the_micro_batch(dummy_args):
+    """An inf/NaN loss must never reach backward().
+
+    One inf turns every parameter NaN, and from then on the whole logged
+    surface -- prior_dist/*, prior_point/*, val/point/* -- reads nan with no
+    trace of which step did it.
+    """
+    dummy_args.loss_type = "cate_single_noise_aware"
+    trainer = Trainer(dummy_args)
+
+    batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=4))
+
+    with patch.object(
+        _run, "compute_cate_noise_aware_nll", return_value=torch.tensor(float("inf"))
+    ):
+        with pytest.warns(RuntimeWarning, match="Non-finite"):
+            results = trainer.run_micro_batch(batch, 0, 1, is_train=True)
+
+    assert results is None
+    assert all(p.grad is None for p in trainer.model.parameters())
+    for param in trainer.model.parameters():
+        assert torch.isfinite(param).all()
+
+
+def test_non_finite_gradient_skips_the_optimizer_step(dummy_args):
+    """A finite loss can still produce NaN gradients, and clipping does not help.
+
+    ``clip_grad_norm_`` multiplies by a NaN scale and leaves the gradients NaN.
+    On CUDA + AMP ``GradScaler`` would skip the step; the scaler is disabled off
+    CUDA, so the explicit guard is the only thing standing between one bad batch
+    and a permanently dead model.
+    """
+    dummy_args.loss_type = "cate_single_noise_aware"
+    trainer = Trainer(dummy_args)
+
+    batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=4))
+    before = [p.detach().clone() for p in trainer.model.parameters()]
+
+    with patch.object(
+        _run.nn.utils, "clip_grad_norm_", return_value=torch.tensor(float("nan"))
+    ):
+        with pytest.warns(RuntimeWarning, match="Non-finite gradient norm"):
+            trainer.run_batch(batch)
+
+    for param, original in zip(trainer.model.parameters(), before):
+        assert torch.equal(param, original), "the optimizer stepped anyway"
+
+
 def test_cate_single_checkpoint_loads_into_the_noise_aware_head(dummy_args):
     """The two loss types share a head, so weights transfer with no surgery.
 
