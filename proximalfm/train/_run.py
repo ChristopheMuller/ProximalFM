@@ -596,7 +596,9 @@ class Trainer:
         }
         if extra:
             checkpoint.update(extra)
-        torch.save(checkpoint, checkpoint_path)
+        tmp_path = f"{checkpoint_path}.tmp"
+        torch.save(checkpoint, tmp_path)
+        os.replace(tmp_path, checkpoint_path)
 
     def _check_best_metric_config(self):
         """Warn (once, on master) about best-model configs that silently no-op.
