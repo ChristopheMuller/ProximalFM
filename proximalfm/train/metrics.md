@@ -463,6 +463,52 @@ manufactures failures. The headline is `sd_over_rmse` on `weak_proxy` vs its com
 with `weak_proxy` well below 1 is a posterior that fails to widen where proximal identification is
 fragile, which is worse than merely being inaccurate there.
 
+### The `n`-sweep — offline only, **no wandb producer**
+
+ROADMAP A6. The same `prior_dist/*` keys at nested context prefixes, by
+`python -m posterior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
+per metric is a table, not a dashboard. The set needs no rebuild — prefix `n` is the first `n`
+context rows of an episode that already exists, and `prior_dist/grid_scale` (above) is what puts
+every prefix on one scale.
+
+Reported per `n` beyond the standard keys:
+
+| Key | What it is |
+|---|---|
+| `mean_sd_geo` | Geometric mean over episodes of the per-episode mean sd, **frozen units**. The geometric mean, not the row-weighted one, because episodes differ in `tau` scale by orders of magnitude and the pooled mean is whatever the largest-scale episodes do |
+| `mean_sd_head_geo` | Same, divided by each episode's `grid_scale`, i.e. in the model's **own** units |
+| `rmse_pooled` | `√(mse_obs − mean_s2)` — the target-noise-corrected error, i.e. the *denominator of `sd_over_rmse`*, not `prior_point/cate/rmse_pooled` |
+| `sd_floor` | `√(σ² + w²/12) × grid_scale`. **`σ` comes from `--hl_sigma` (head units, = `loss/hl_sigma` at that step); a checkpoint does not carry it.** Omit the flag and this is the grid term alone, typically ~1e-3 and two orders of magnitude under the real floor — at which point a schedule-pinned flat width curve is indistinguishable from a converged one (C2). `sd_floor_is_grid_only` flags it |
+| `within_frac` | `E[Var per row] / Var(mixture)` — what the model still does not know, over the total. Runs **1 at the prior limit → 0 as context accumulates**. This is the key that discriminates the prior limit |
+| `between_sd` | `√Var(row means)` — the complement: variation the model has resolved |
+| `mixture_sd` | Sd of the pooled mixture, by the law of total variance — **not** the mean of the per-row sds. At the shortest prefix it should approach `prior.tau_sd` |
+| `prior_ks`, `prior_w1` | Distance from the pooled mixture's CDF to the empirical CDF of `tau_star_std`. **Marginal calibration, not a prior-limit check** — see below |
+
+Three traps, all specific to this pass:
+
+- **`prior_ks` is not evidence about the prior limit.** Averaging a calibrated posterior over the
+  data-generating distribution returns the prior marginal *at every* `n` — an identity, not a
+  property of short prefixes. So small everywhere is correct, including at `n_max`, and it says
+  nothing about whether the width responds to context. It is close kin to the pooled PIT. The
+  statistic that does discriminate is `within_frac`: flat across the sweep means the model has
+  learned a *marginal*, not a posterior, however well the CDFs overlay.
+
+- **Two width curves, one claim each.** `grid_scale` is 1 at `n_ctx == n_max` and *systematically
+  below it* at short prefixes, because a context sd from few rows of a heavy-tailed `y`
+  under-estimates. So the frozen-unit width shrinks at small `n` for a reason that has nothing to do
+  with the head. Frozen units are what the posterior *claims* (and the only units commensurable with
+  the RMSE, hence with `sd_over_rmse`); head units are what the head *learned*. `β(sd) − β(sd_head)`
+  is the size of the standardization effect, and it is not noise.
+- **Do not fit through either end.** The upper end lands on `sd_floor` (that is C2, not convergence)
+  and the lower end plateaus at the prior — which is the *other* question, not an input to it.
+  `fit_window` drops prefixes within `3×` the floor automatically; the small-`n` plateau is left in
+  and excluded by hand with `--fit_min` once the table shows where it starts.
+
+The done-when is a pair, never a single number: `mean_sd` falls monotonically **while**
+`sd_over_rmse` stays ≈ 1, i.e. `β(sd) ≈ β(rmse)`. A width contracting faster than the error is a
+posterior getting over-confident with context; a width that does not move at all is a point estimate
+wearing a histogram.
+
 ### Flat keys
 
 | Key | What it is |
