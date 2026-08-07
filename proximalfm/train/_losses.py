@@ -12,6 +12,11 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 
+#: Floor applied to a probability before taking its log. Deliberately well
+#: inside the normal float32 range rather than at ``finfo.tiny``: subnormals are
+#: flushed to zero on some backends (MPS), turning the log into ``-inf``.
+_LOG_FLOOR = 1e-30
+
 
 def compute_crps_loss(
     logits: torch.Tensor, y_target: torch.Tensor, bin_edges: torch.Tensor
@@ -243,8 +248,13 @@ def compute_cate_noise_aware_nll(
 
     # clamp_min before log: bins many sigmas from the target underflow to exactly
     # zero, and -inf there would poison the logsumexp even though those bins
-    # contribute nothing.
-    log_kernel = torch.log(mass.clamp_min(1e-38)) - torch.log(bin_width)
+    # contribute nothing. The floor must stay in the *normal* float32 range:
+    # a subnormal floor (1e-38 < finfo.tiny = 1.175e-38) is flushed to zero by
+    # backends that do not honour denormals -- MPS returns log(1e-38) = -inf --
+    # and a target far outside the grid, where *every* bin underflows, then
+    # makes the whole row -inf and the loss +inf, which NaNs the weights on the
+    # next backward pass.
+    log_kernel = torch.log(mass.clamp_min(_LOG_FLOOR)) - torch.log(bin_width)
     log_probs = F.log_softmax(logits.float(), dim=-1)
 
     nll = -torch.logsumexp(log_probs + log_kernel, dim=-1)

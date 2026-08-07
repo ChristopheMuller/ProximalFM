@@ -12,6 +12,7 @@ import pytest
 import torch
 
 from proximalfm.train._losses import (
+    _LOG_FLOOR,
     compute_cate_distribution_loss,
     compute_cate_noise_aware_nll,
     gaussian_bin_mass,
@@ -186,6 +187,33 @@ def test_target_outside_the_grid_stays_finite(bin_edges):
 
     assert torch.isfinite(loss)
     assert loss.item() > 0
+
+
+def test_log_floor_is_a_normal_float32():
+    """The clamp floor must not be subnormal.
+
+    A subnormal floor is flushed to zero by backends that do not honour
+    denormals -- MPS returns ``log(1e-38) == -inf`` -- and a target outside the
+    grid, where every bin underflows, then makes the whole row ``-inf`` and the
+    loss ``+inf``, which NaNs every parameter on the next backward pass.
+    """
+    assert _LOG_FLOOR >= torch.finfo(torch.float32).tiny
+    assert torch.isfinite(torch.log(torch.tensor(_LOG_FLOOR, dtype=torch.float32)))
+
+
+@pytest.mark.skipif(
+    not torch.backends.mps.is_available(), reason="requires an MPS device"
+)
+def test_target_outside_the_grid_stays_finite_on_mps(bin_edges):
+    edges = bin_edges.to("mps")
+    t = torch.tensor([[50.0]], device="mps")
+    logits = gaussian_logits(bin_edges, 0.0, 0.5).view(1, 1, -1).to("mps")
+
+    loss = compute_cate_noise_aware_nll(
+        logits, t, edges, target_var=torch.zeros_like(t), sigma=0.05
+    )
+
+    assert torch.isfinite(loss)
 
 
 def test_gradients_flow_to_logits(bin_edges):

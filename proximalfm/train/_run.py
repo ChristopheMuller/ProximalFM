@@ -1442,6 +1442,22 @@ class Trainer:
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
+        # A non-finite loss is never recoverable by backward: one inf/NaN turns
+        # every parameter NaN, and from then on every logged metric -- including
+        # the whole prior_dist/* and prior_point/* surface -- reads nan with no
+        # trace of which step did it. Skip the micro batch instead, in lockstep
+        # across ranks, and warn loudly.
+        if not self._ddp_all_valid(bool(torch.isfinite(total_loss))):
+            warnings.warn(
+                f"Non-finite {loss_type} loss at step {self.curr_step}; "
+                "skipping this micro batch. If this repeats, check "
+                "target/cate_out_of_grid_frac -- a target far outside "
+                "[--cate_vmin, --cate_vmax] is the usual cause.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
+
         # Optimization step
         if is_train:
             scaled_loss = total_loss / num_micro_batches
