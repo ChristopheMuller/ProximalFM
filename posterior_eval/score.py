@@ -14,7 +14,7 @@ Read the table in this order, because each entry conditions the next:
    number below is scored against targets no forecast on this grid can cover.
 2. ``sd_over_rmse`` -- 1.0 is calibrated, below 1 over-confident. Never read a
    width without it.
-3. ``pit_ks`` vs its band, and then ``pit_ks_episode_p90`` vs the per-episode
+3. ``pit_ks_pooled`` vs its band, and then ``pit_ks/p90`` vs the per-episode
    band: the pooled statistic passing while the per-episode tail fails is
    cancellation, not calibration.
 4. ``crps`` only against ``crps_over_oracle`` -- as that ratio approaches 1 the
@@ -61,13 +61,15 @@ def _verdict(metrics: Dict[str, float]) -> List[str]:
         else:
             lines.append(f"  sd_over_rmse = {sdr:.3f}: calibrated width.")
 
-    ks, band = metrics.get("prior_dist/pit_ks"), metrics.get("prior_dist/pit_ks_band")
+    ks, band = metrics.get("prior_dist/pit_ks_pooled"), metrics.get(
+        "prior_dist/pit_ks_pooled_band"
+    )
     if ks is not None and band is not None:
         inside = "inside" if ks < band else "OUTSIDE"
         lines.append(f"  pooled PIT-KS {ks:.4f} vs band {band:.4f}: {inside}.")
 
-    p90 = metrics.get("prior_dist/pit_ks_episode_p90")
-    ep_band = metrics.get("prior_dist/pit_ks_episode_band")
+    p90 = metrics.get("prior_dist/pit_ks/p90")
+    ep_band = metrics.get("prior_dist/pit_ks/band")
     if p90 is not None and ep_band is not None:
         if p90 >= ep_band and ks is not None and band is not None and ks < band:
             lines.append(

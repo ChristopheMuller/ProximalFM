@@ -25,7 +25,7 @@ every width number meaningless.
 
 *Per-episode KS beside the pooled one.* Pooling hides cancellation:
 over-confident on half the episodes and under-confident on the other half is
-uniform overall. ``pit_ks_episode_p90`` is the number that catches it.
+uniform overall. ``pit_ks/p90`` is the number that catches it.
 
 The class mirrors :class:`proximalfm.train._eval.CausalEvaluator`'s
 ``reset``/``update``/``compute`` shape so the trainer wiring (step 6) is
@@ -95,7 +95,7 @@ class PosteriorEvaluator:
     coverages. Pooling cancels: over-covering on half the episodes and
     under-covering on the other half reads as a perfect ``cov90_pooled = 0.90``
     while ``cov90/p25`` and ``cov90/p75`` straddle it. This is the same failure
-    ``pit_ks_episode_p90`` exists to catch on the PIT side.
+    ``pit_ks/p90`` exists to catch on the PIT side.
 
     The per-episode spread has a **binomial floor**: even a perfectly calibrated
     model scores ``Binomial(n, L)/n`` per episode, so the p25--p75 gap is
@@ -385,17 +385,17 @@ class PosteriorEvaluator:
 
         if pooled.numel() >= 2:
             stat, band = pit_ks(pooled, alpha=self.alpha)
-            metrics["pit_ks"] = float(stat)
-            metrics["pit_ks_band"] = float(band)
+            metrics["pit_ks_pooled"] = float(stat)
+            metrics["pit_ks_pooled_band"] = float(band)
 
         if episode_ks:
             eps_ks = torch.tensor(episode_ks, dtype=torch.float64)
-            metrics["pit_ks_episode_median"] = float(eps_ks.median())
-            metrics["pit_ks_episode_p90"] = float(
+            metrics["pit_ks/p50"] = float(eps_ks.median())
+            metrics["pit_ks/p90"] = float(
                 eps_ks.quantile(torch.tensor(0.9, dtype=torch.float64))
             )
             band = torch.tensor(episode_ks_band, dtype=torch.float64)
-            metrics["pit_ks_episode_band"] = float(band.median())
+            metrics["pit_ks/band"] = float(band.median())
 
         if include_count:
             metrics["eval_episodes"] = episodes

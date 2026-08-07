@@ -60,7 +60,7 @@ from posterior_eval.build_prior_frozen_set import load_frozen_meta
 #: differently labelled -- e.g. a cut keeping its name but changing definition.
 STRATA_FORMAT_VERSION = 1
 
-#: Below this many episodes a stratum's ``pit_ks_episode_p90`` is noise: it is
+#: Below this many episodes a stratum's ``pit_ks/p90`` is noise: it is
 #: the 90th percentile of a per-episode statistic, so it needs episodes, not
 #: rows. Cuts under it are still scored, with a warning attached.
 MIN_EPISODES = 100
@@ -408,8 +408,8 @@ def build_manifest(
         if selected < MIN_EPISODES:
             warnings.warn(
                 f"cut {cut.name!r} selects {selected} episodes (< {MIN_EPISODES}); "
-                "its pit_ks_episode_p90 will be dominated by noise and its "
-                "pit_ks band will be wide. Read it as indicative only.",
+                "its pit_ks/p90 will be dominated by noise and its "
+                "pit_ks_pooled band will be wide. Read it as indicative only.",
                 RuntimeWarning,
             )
 

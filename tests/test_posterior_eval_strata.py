@@ -7,7 +7,7 @@ scored in one pass over the data instead of one pass per cut. The first test
 here pins it; if it ever fails, ``score_strata`` is silently reporting numbers
 that no subset of the data actually has.
 
-The complementary fact is pinned too: ``pit_ks`` is a *sample statistic*, not a
+The complementary fact is pinned too: ``pit_ks_pooled`` is a *sample statistic*, not a
 sum, so it is deliberately NOT additive. Losing that distinction would be the
 easy way to "fix" a future additivity failure by averaging something that
 cannot be averaged.
@@ -103,7 +103,7 @@ def test_pooled_metrics_are_the_row_weighted_sum_of_disjoint_subsets():
 
 
 def test_pit_ks_is_not_additive_and_must_not_be_recombined():
-    """``pit_ks`` is a sample statistic; recombining it by row weight is wrong.
+    """``pit_ks_pooled`` is a sample statistic; recombining it by row weight is wrong.
 
     Pinned deliberately: if a future change makes the additivity test fail, the
     tempting fix is to average everything, and this is the key that would
@@ -129,8 +129,8 @@ def test_pit_ks_is_not_additive_and_must_not_be_recombined():
     b = right.compute(prefix="")
     n_a, n_b, n_p = a["eval_rows"], b["eval_rows"], p["eval_rows"]
 
-    recombined = (a["pit_ks"] * n_a + b["pit_ks"] * n_b) / n_p
-    assert recombined != pytest.approx(p["pit_ks"], rel=1e-3)
+    recombined = (a["pit_ks_pooled"] * n_a + b["pit_ks_pooled"] * n_b) / n_p
+    assert recombined != pytest.approx(p["pit_ks_pooled"], rel=1e-3)
 
 
 def test_per_episode_coverage_quantiles_are_not_additive():

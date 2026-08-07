@@ -74,7 +74,7 @@ def test_calibrated_forecast_recovers_the_closed_forms():
     assert m["prior_dist/cov50_pooled"] == pytest.approx(0.50, abs=0.03)
     # Exact width of the central 90% interval of a standard normal.
     assert m["prior_dist/width90"] == pytest.approx(2 * 1.6448536, abs=0.01)
-    assert m["prior_dist/pit_ks"] < m["prior_dist/pit_ks_band"]
+    assert m["prior_dist/pit_ks_pooled"] < m["prior_dist/pit_ks_pooled_band"]
     # CRPS of N(0,1) against its own draws: sigma / sqrt(pi).
     assert m["prior_dist/crps"] == pytest.approx(1.0 / math.sqrt(math.pi), rel=0.03)
     assert m["prior_dist/crps_over_oracle"] > 1.0
@@ -93,7 +93,7 @@ def test_too_narrow_forecast_fails_both_diagnostics():
     # by a biased forecast, and sd/rmse alone says nothing about shape.
     assert m["prior_dist/sd_over_rmse"] == pytest.approx(0.5, abs=0.05)
     assert m["prior_dist/cov90_pooled"] < 0.75
-    assert m["prior_dist/pit_ks"] > m["prior_dist/pit_ks_band"]
+    assert m["prior_dist/pit_ks_pooled"] > m["prior_dist/pit_ks_pooled_band"]
 
 
 def test_s2_subtraction_restores_the_ratio_on_a_noisy_target():
@@ -162,10 +162,10 @@ def test_per_episode_ks_catches_what_pooling_cancels():
     m = ev.compute()
 
     # Pooled: the two tilts cancel and the set looks calibrated.
-    assert m["prior_dist/pit_ks"] < m["prior_dist/pit_ks_band"]
+    assert m["prior_dist/pit_ks_pooled"] < m["prior_dist/pit_ks_pooled_band"]
     # Per-episode: every episode is outside its own band.
-    assert m["prior_dist/pit_ks_episode_median"] > m["prior_dist/pit_ks_episode_band"]
-    assert m["prior_dist/pit_ks_episode_p90"] > m["prior_dist/pit_ks_episode_band"]
+    assert m["prior_dist/pit_ks/p50"] > m["prior_dist/pit_ks/band"]
+    assert m["prior_dist/pit_ks/p90"] > m["prior_dist/pit_ks/band"]
 
 
 def test_empty_evaluator_computes_to_nothing():
@@ -261,8 +261,8 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
         "prior_dist/mean_sd",
         "prior_dist/crps_over_oracle",
         "prior_dist/out_of_grid_frac",
-        "prior_dist/pit_ks",
-        "prior_dist/pit_ks_episode_p90",
+        "prior_dist/pit_ks_pooled",
+        "prior_dist/pit_ks/p90",
         "prior_dist/s_over_sd",
     ):
         assert key in metrics, key
@@ -496,14 +496,14 @@ def test_sharded_metrics_match_the_single_process_ones(frozen4, tmp_path):
 
     # Per-episode statistics are gathered, so the *set* is the same and the
     # quantiles over it are exact too.
-    for key in ("prior_dist/pit_ks_episode_median", "prior_dist/pit_ks_episode_p90"):
+    for key in ("prior_dist/pit_ks/p50", "prior_dist/pit_ks/p90"):
         assert sharded[key] == pytest.approx(single[key], rel=1e-9), key
 
     # The pooled PIT is subsampled per rank before the gather, so the pooled KS
     # is the same statistic on a possibly different sample. Compare as a
     # distribution, not for equality.
-    assert sharded["prior_dist/pit_ks"] == pytest.approx(
-        single["prior_dist/pit_ks"], abs=0.05
+    assert sharded["prior_dist/pit_ks_pooled"] == pytest.approx(
+        single["prior_dist/pit_ks_pooled"], abs=0.05
     )
 
 

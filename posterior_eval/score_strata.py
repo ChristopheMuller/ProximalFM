@@ -28,7 +28,7 @@ is why the printed table separates the two blocks.
 
 **Comparable across strata**: ``sd_over_rmse``, ``cov50_pooled``/``cov90_pooled``
 and the per-episode ``cov90/p25``--``p75`` spread, ``crps_over_oracle``, and
-``pit_ks`` -- the last strictly against *its own* band, never the pooled one.
+``pit_ks_pooled`` -- the last strictly against *its own* band, never the pooled one.
 The band scales as ``1/sqrt(n)``, so a smaller stratum earns a wider band and a
 naive comparison manufactures failures. The per-episode coverage quantiles carry
 the same caveat for a different reason: their binomial floor scales with the
@@ -74,8 +74,8 @@ COMPARABLE = (
     "cov90/p25",
     "cov90/p75",
     "crps_over_oracle",
-    "pit_ks",
-    "pit_ks_band",
+    "pit_ks_pooled",
+    "pit_ks_pooled_band",
 )
 
 #: Metrics on the scale of ``tau``, hence NOT comparable between strata.
@@ -337,7 +337,7 @@ def _print_verdict(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any
     ]
     if small:
         print(
-            f"\n  ! under {MIN_EPISODES} episodes, read pit_ks against its own "
+            f"\n  ! under {MIN_EPISODES} episodes, read pit_ks_pooled against its own "
             f"(wider) band only: {', '.join(sorted(small))}"
         )
     print()
