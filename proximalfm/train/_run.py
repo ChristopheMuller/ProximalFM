@@ -54,6 +54,14 @@ warnings.filterwarnings(
 )
 
 
+# Metrics that are already a whole step's worth and must not be divided by the
+# micro-batch count in ``Trainer._resolve_metrics``. ``loss/total`` is reported
+# from the *already* scaled loss (``total_loss / num_micro_batches``), so the
+# accumulated sum over micro batches is the step's loss; dividing again would
+# under-report it by ``num_micro_batches``.
+_UNSCALED_METRICS = frozenset({"loss/total"})
+
+
 class Trainer:
     """This class handles the complete training lifecycle for ProximalFM."""
 
@@ -1393,9 +1401,9 @@ class Trainer:
         if is_train:
             scaled_loss = total_loss / num_micro_batches
             self.scaler.scale(scaled_loss).backward()
-            reported_loss_total = scaled_loss.item()
+            reported_loss_total = scaled_loss
         else:
-            reported_loss_total = total_loss.item()
+            reported_loss_total = total_loss
 
         # Evaluation & Metric extraction block
         with torch.no_grad():
@@ -1425,37 +1433,42 @@ class Trainer:
             # metrics are reported per micro batch as-is (scale=1 is a no-op).
             scale = num_micro_batches if is_train else 1
 
-            # Dictionary structure routes cleanly back to log aggregation
+            # Dictionary structure routes cleanly back to log aggregation.
+            # Values stay on the accelerator here and are divided by `scale` in
+            # tensor space; `_resolve_metrics` below turns the whole dict into
+            # Python floats in a single transfer. Calling `.item()` per key
+            # instead would cost one device synchronisation per logged metric
+            # per micro batch (~16 of them on the noise-aware path).
             if loss_type == "bins_po":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/y0": loss_y0.item() / scale,
-                    "loss/y1": loss_y1.item() / scale,
-                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
-                    "loss/cate_mse": loss_cate.item() / scale,
+                    "loss/y0": loss_y0,
+                    "loss/y1": loss_y1,
+                    "loss/cate_mse_weighted": lambda_cate * loss_cate,
+                    "loss/cate_mse": loss_cate,
                 }
             elif loss_type == "cate_decomposition":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/ate_nll": (lambda_ate * loss_ate_nll).item() / scale,
-                    "loss/he_crps": (lambda_he * loss_he_crps).item() / scale,
+                    "loss/ate_nll": lambda_ate * loss_ate_nll,
+                    "loss/he_crps": lambda_he * loss_he_crps,
                 }
             elif loss_type == "hl":
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/y0_hl": loss_y0.item() / scale,
-                    "loss/y1_hl": loss_y1.item() / scale,
-                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
-                    "loss/cate_mse": loss_cate.item() / scale,
-                    "loss/hl_sigma": hl_sigma / scale,
+                    "loss/y0_hl": loss_y0,
+                    "loss/y1_hl": loss_y1,
+                    "loss/cate_mse_weighted": lambda_cate * loss_cate,
+                    "loss/cate_mse": loss_cate,
+                    "loss/hl_sigma": hl_sigma,
                 }
             elif loss_type in ("cate_single", "cate_single_noise_aware"):
                 micro_results = {
                     "loss/total": reported_loss_total,
-                    "loss/cate_dist": loss_cate_dist.item() / scale,
-                    "loss/cate_mse_weighted": (lambda_cate * loss_cate).item() / scale,
-                    "loss/cate_mse": loss_cate.item() / scale,
-                    "loss/hl_sigma": hl_sigma / scale,
+                    "loss/cate_dist": loss_cate_dist,
+                    "loss/cate_mse_weighted": lambda_cate * loss_cate,
+                    "loss/cate_mse": loss_cate,
+                    "loss/hl_sigma": hl_sigma,
                 }
 
                 if loss_type == "cate_single_noise_aware":
@@ -1466,7 +1479,6 @@ class Trainer:
                             probs_cate,
                             pred_cate_std,
                             micro_K_eff,
-                            scale=scale,
                         )
                     )
             else:
@@ -1474,17 +1486,16 @@ class Trainer:
 
             micro_results.update(
                 {
-                    "target/cate_mean": true_cate_std.mean().item() / scale,
-                    "target/cate_std": true_cate_std.std(unbiased=False).item() / scale,
-                    "target/sampled_ite_mean": sampled_ite_std.mean().item() / scale,
+                    "target/cate_mean": true_cate_std.mean(),
+                    "target/cate_std": true_cate_std.std(unbiased=False),
+                    "target/sampled_ite_mean": sampled_ite_std.mean(),
                     "target/ite_minus_cate_mse": torch.mean(
                         (sampled_ite_std - true_cate_std) ** 2
-                    ).item()
-                    / scale,
+                    ),
                 }
             )
 
-        return micro_results
+        return self._resolve_metrics(micro_results, scale)
 
     def run_batch(self, batch):
         """Train the model on one batch of datasets (a single optimizer step).
@@ -1732,6 +1743,49 @@ class Trainer:
 
         return metrics
 
+    def _resolve_metrics(self, metrics: dict, scale: int) -> dict[str, float]:
+        """Materialize a metric dict of 0-d tensors with a single device sync.
+
+        ``Tensor.item()`` blocks until the accelerator has drained every queued
+        kernel, so reading one metric at a time costs one synchronisation per
+        logged key per micro batch -- on the noise-aware path that is ~16 stalls
+        for what is, in total, 16 floats. Stacking them into one tensor turns
+        that into a single transfer.
+
+        The ``/ scale`` division that spreads a training metric over the step's
+        micro batches stays *here*, on the Python float, rather than moving into
+        the tensor expressions: dividing an fp32 tensor and then converting is
+        not the same rounding as converting and then dividing, and this way the
+        logged values are bit-identical to the per-key ``.item() / scale`` it
+        replaces. Entries in :data:`_UNSCALED_METRICS` are already per-step
+        quantities and are passed through undivided, as before.
+
+        Non-tensor entries (``loss/hl_sigma``, which comes from the schedule
+        rather than the graph) need no transfer. Key order is preserved, so the
+        tqdm postfix keeps its familiar layout.
+        """
+        tensor_keys = [k for k, v in metrics.items() if torch.is_tensor(v)]
+
+        resolved: dict[str, float] = {}
+        if tensor_keys:
+            # `.to(device)` is a no-op for everything produced by the loss, but
+            # `noise/mean_K` derives from K_eff, which is never moved off the
+            # prior's device; stacking has to agree on one device regardless.
+            device = self.config.device
+            stacked = torch.stack(
+                [
+                    metrics[key].detach().float().reshape(()).to(device)
+                    for key in tensor_keys
+                ]
+            )
+            resolved = dict(zip(tensor_keys, stacked.cpu().tolist()))
+
+        out: dict[str, float] = {}
+        for key, value in metrics.items():
+            value = resolved[key] if key in resolved else float(value)
+            out[key] = value if key in _UNSCALED_METRICS else value / scale
+        return out
+
     @torch.no_grad()
     def _target_noise_metrics(
         self,
@@ -1740,7 +1794,6 @@ class Trainer:
         probs_cate,
         pred_cate_std,
         micro_K_eff,
-        scale: int,
     ) -> dict:
         """Diagnostics for the noise-aware CATE objective.
 
@@ -1751,6 +1804,11 @@ class Trainer:
         count that was comfortably sufficient early can quietly become the
         binding constraint later in a run. Hence a logged series, not a one-off
         check.
+
+        Values are returned as unmaterialized 0-d tensors; the caller merges
+        them with the rest of the micro batch's metrics and applies both the
+        transfer and the ``/ scale`` division once, in
+        :meth:`Trainer._resolve_metrics`.
         """
         centers = self.raw_model.cate_bin_centers.float()
         probs = probs_cate.float()
@@ -1777,14 +1835,16 @@ class Trainer:
             ((true_cate_std < edges[0]) | (true_cate_std > edges[-1])).float().mean()
         )
 
+        # Returned as unmaterialized 0-d tensors: the caller merges them into
+        # the rest of the micro batch's metrics and resolves everything in one
+        # transfer (see `_resolve_metrics`).
         return {
-            "noise/mean_s": mean_s.item() / scale,
-            "noise/mean_sd_pred": mean_sd_pred.item() / scale,
-            "noise/s_over_sd_pred": (mean_s / mean_sd_pred.clamp_min(1e-12)).item()
-            / scale,
-            "noise/frac_fallback": frac_fallback.item() / scale,
-            "noise/mean_K": micro_K_eff.float().mean().item() / scale,
-            "target/cate_out_of_grid_frac": out_of_grid.item() / scale,
+            "noise/mean_s": mean_s,
+            "noise/mean_sd_pred": mean_sd_pred,
+            "noise/s_over_sd_pred": mean_s / mean_sd_pred.clamp_min(1e-12),
+            "noise/frac_fallback": frac_fallback,
+            "noise/mean_K": micro_K_eff.float().mean(),
+            "target/cate_out_of_grid_frac": out_of_grid,
         }
 
     def get_hl_sigma(self) -> float:
