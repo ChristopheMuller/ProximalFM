@@ -2,7 +2,10 @@ import contextlib
 import json
 import math
 import random
+import subprocess
+import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -1776,3 +1779,65 @@ def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
     assert S2.shape == out[9].shape
     assert (S2 == 0).all()
     assert (K_eff == 0).all()
+
+
+# ---------------------------------------------------------------------------
+# CLI defaults
+# ---------------------------------------------------------------------------
+
+
+def test_cli_prior_type_defaults_to_mlp_scm(tmp_path):
+    # The CLI defaulted to "mix_scm" while SCMPrior itself defaults to
+    # "mlp_scm", so `python -m proximalfm.prior` with no --prior_type sent ~30%
+    # of datasets through the unmaintained TreeSCM branch -- visible only in
+    # the generated data. Driven through the real argparse (metadata.json is
+    # written from the parsed args), with num_batches=0 so nothing is generated.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "proximalfm.prior",
+            "--save_dir",
+            str(tmp_path),
+            "--num_batches",
+            "0",
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    assert metadata["prior_type"] == "mlp_scm"
+
+
+def test_cli_prior_type_still_accepts_the_tree_branches(tmp_path):
+    # Changing the default must not remove the choice; tree_scm/mix_scm stay
+    # reachable for anyone who explicitly asks.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "proximalfm.prior",
+            "--save_dir",
+            str(tmp_path),
+            "--num_batches",
+            "0",
+            "--prior_type",
+            "mix_scm",
+        ],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    assert metadata["prior_type"] == "mix_scm"
+
+
+def test_scm_prior_and_cli_agree_on_the_default_prior_type():
+    # The two defaults drifting apart is the actual defect; pin them together.
+    assert SCMPrior().prior_type == "mlp_scm"
+    assert PriorDataset().prior_type == "mlp_scm"
