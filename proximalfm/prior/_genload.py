@@ -1290,9 +1290,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--prior_type",
         type=str,
-        default="mix_scm",
+        default="mlp_scm",
         choices=["mlp_scm", "tree_scm", "mix_scm"],
-        help="Type of prior to use",
+        help="Type of prior to use (default: mlp_scm, matching SCMPrior's own "
+        "default). 'tree_scm' and 'mix_scm' route some or all mechanisms "
+        "through TreeSCM, which is unmaintained: 'mix_scm' silently sends ~30%% "
+        "of datasets down it.",
     )
     parser.add_argument(
         "--mc_cate",
