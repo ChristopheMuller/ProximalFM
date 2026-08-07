@@ -46,6 +46,30 @@ have since changed, by pointing ``--config`` at it (explicit flags still win):
 
     python synthetic/build_proximal_datasets.py \
         --config synthetic/proximal_val_v1/config.yaml --name proximal_val_v2
+
+Replicate mode (``--mc_cate K`` with ``K > 1``)
+----------------------------------------------
+
+Without it, a set carries only realized potential outcomes: ``Y1 - Y0`` is a draw
+of the *ITE*, and ``MU0``/``MU1`` are written as those same draws (which is what
+``LoadPriorDataset`` already substitutes for MU-less files, so the point
+validation surface is unchanged). Such a set supports ``val/point/*`` and
+nothing more.
+
+With ``K > 1`` each query row is replicated through the latent and noise draw,
+``MU0``/``MU1`` become Monte Carlo estimates of ``E[Y_a | X]`` and ``S2`` their
+paired sampling variance -- see the estimand section of
+``realistic_proximal_mechanisms``. The build then also writes a
+``frozen_meta.pt`` sidecar next to ``val/``, which is what makes the set
+scorable distributionally; a set without one cannot be, and fails loudly rather
+than silently scoring a posterior against sampled ITEs.
+
+    python synthetic/build_proximal_datasets.py \
+        --name proximal_dist_v1 --n_datasets 480 --seq_len 2048 \
+        --prop_train 0.75 --mc_cate 1000 --seed 20260807
+
+Memory scales as ``N = n_ctx + n_q*K`` rows per dataset (one dataset at a time,
+not the whole batch), and an unaffordable ``K`` raises rather than being capped.
 """
 
 from __future__ import annotations
@@ -61,30 +85,28 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import torch
 import yaml
 
+from proximalfm.prior._genload import write_batch_file
+
 from realistic_proximal_mechanisms import (
     N_MECHANISMS,
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
+from realistic_sidecar import (
+    RealisticBuildConfig,
+    check_no_silent_mutation,
+    episode_records,
+    write_sidecar,
+)
 
 Tensor = torch.Tensor
 
-
-# -----------------------------------------------------------------------------
-# Sparse helper (must match proximalfm.prior._genload.sparse2dense exactly, as
-# that is the function LoadPriorDataset uses to reconstruct the val tensors).
-# -----------------------------------------------------------------------------
-
-
-def dense2sparse(dense: Tensor, row_lengths: Tensor, dtype=torch.float32) -> Tensor:
-    """Drop padding columns: keep the first ``row_lengths[i]`` entries of row i."""
-    assert dense.dim() == 2, "dense must be 2D"
-    num_rows, num_cols = dense.shape
-    assert row_lengths.shape[0] == num_rows
-    assert (row_lengths <= num_cols).all()
-    idx = torch.arange(num_cols, device=dense.device)
-    mask = idx.unsqueeze(0) < row_lengths.unsqueeze(1)
-    return dense[mask].to(dtype)
+# Field order of RealisticProximalGenerator.get_batch. Indices 0..14 are the
+# original 15; the Monte Carlo fields are appended last.
+POOL_FIELDS = (
+    "U X W Z A A_probs Y_obs Y0 Y1 d_U d_X d_W d_Z seq_lens train_sizes "
+    "MU0 MU1 S2 K_eff"
+).split()
 
 
 # -----------------------------------------------------------------------------
@@ -121,14 +143,16 @@ def generate_pool(
 
     Returns
     -------
-    pool : tuple of stacked tensors, in the same 15-object order as
-        ``RealisticProximalGenerator.get_batch``.
+    pool : tuple of stacked tensors, in the same order as
+        ``RealisticProximalGenerator.get_batch`` (19 fields).
     mech_ids : LongTensor [n_datasets] recording which mechanism made each set.
+    seeds : LongTensor [n_datasets] holding each dataset's generator seed.
     """
     alloc = allocate_per_mechanism(n_datasets, mechanisms)
 
     chunks: List[Tuple[Tensor, ...]] = []
     mech_id_list: List[Tensor] = []
+    seed_list: List[Tensor] = []
     for mech_id in mechanisms:
         k = alloc[mech_id]
         if k == 0:
@@ -141,22 +165,29 @@ def generate_pool(
         )
         chunks.append(batch)
         mech_id_list.append(torch.full((k,), mech_id, dtype=torch.long))
+        # Mirrors the per-dataset seed get_batch derives internally, so the
+        # sidecar can record which draw produced each episode.
+        seed_list.append(
+            int(gen.cfg.seed) + 100_000 * mech_id + torch.arange(k, dtype=torch.long)
+        )
 
     if not chunks:
         raise ValueError("No datasets generated (check --n_datasets / --mechanisms).")
 
-    # Concatenate each of the 15 tensors across mechanism chunks (dim 0 = dataset).
+    # Concatenate each field across mechanism chunks (dim 0 = dataset).
     n_fields = len(chunks[0])
     pool = tuple(torch.cat([c[f] for c in chunks], dim=0) for f in range(n_fields))
     mech_ids = torch.cat(mech_id_list, dim=0)
+    seeds = torch.cat(seed_list, dim=0)
 
     if shuffle:
         g = torch.Generator().manual_seed(int(gen.cfg.seed) + 7)
         perm = torch.randperm(mech_ids.shape[0], generator=g)
         pool = tuple(t[perm] for t in pool)
         mech_ids = mech_ids[perm]
+        seeds = seeds[perm]
 
-    return pool, mech_ids
+    return pool, mech_ids, seeds
 
 
 # -----------------------------------------------------------------------------
@@ -164,64 +195,42 @@ def generate_pool(
 # -----------------------------------------------------------------------------
 
 
-def _save_val_batch(pool: Tuple[Tensor, ...], idx: range, batch_file: Path) -> None:
-    """Sparse-encode datasets ``idx`` and write one batch_*.pt (raw, unscaled)."""
-    (
-        U,
-        X,
-        W,
-        Z,
-        A,
-        A_probs,
-        Y_obs,
-        Y0,
-        Y1,
-        d_U,
-        d_X,
-        d_W,
-        d_Z,
-        seq_lens,
-        train_sizes,
-    ) = pool
+def _save_val_batch(pool: Tuple[Tensor, ...], idx: range, out_dir: Path, file_idx: int):
+    """Write datasets ``idx`` as one ``batch_*.pt`` through the canonical writer.
 
+    ``proximalfm.prior._genload.write_batch_file`` is the single writer of this
+    format; this module used to carry a second copy of it, which is how the
+    ``MU0``/``MU1``/``S2``/``K_eff`` fields went missing from every realistic set
+    without anything failing.
+
+    The writer stores whatever shape it is handed and does not move tensors off
+    the accelerator, so the trailing-singleton squeeze and the ``.cpu()`` that
+    the old copy folded in have to happen here instead.
+    """
+    p = dict(zip(POOL_FIELDS, pool))
     sl = slice(idx.start, idx.stop)
-    U_b, X_b, W_b, Z_b = U[sl], X[sl], W[sl], Z[sl]
-    d_U_b, d_X_b, d_W_b, d_Z_b = d_U[sl], d_X[sl], d_W[sl], d_Z[sl]
-    B, T, _ = X_b.shape
 
-    # Sparse encode covariates/proxies (non-nested path expected by LoadPriorDataset).
-    U_sp = dense2sparse(U_b.reshape(-1, U_b.shape[-1]), d_U_b.repeat_interleave(T))
-    X_sp = dense2sparse(X_b.reshape(-1, X_b.shape[-1]), d_X_b.repeat_interleave(T))
-    W_sp = dense2sparse(W_b.reshape(-1, W_b.shape[-1]), d_W_b.repeat_interleave(T))
-    Z_sp = dense2sparse(Z_b.reshape(-1, Z_b.shape[-1]), d_Z_b.repeat_interleave(T))
+    def block(name: str) -> Tensor:
+        # write_batch_file uses .view(), which refuses a non-contiguous input.
+        return p[name][sl].cpu().contiguous()
 
-    def _btt(t: Tensor) -> Tensor:
-        t = t[sl].cpu()
+    def col(name: str) -> Tensor:
+        t = p[name][sl].cpu()
         if t.dim() == 3 and t.shape[-1] == 1:
             t = t.squeeze(-1)
-        return t
+        return t.contiguous()
 
-    payload = {
-        "U": U_sp,
-        "X": X_sp,
-        "W": W_sp,
-        "Z": Z_sp,
-        "A": _btt(A),
-        "A_probs": _btt(A_probs),
-        "Y_obs": _btt(Y_obs),
-        "Y0": _btt(Y0),
-        "Y1": _btt(Y1),
-        "d_U": d_U_b.cpu(),
-        "d_X": d_X_b.cpu(),
-        "d_W": d_W_b.cpu(),
-        "d_Z": d_Z_b.cpu(),
-        "seq_lens": seq_lens[sl].cpu(),
-        "train_sizes": train_sizes[sl].cpu(),
-        "batch_size": B,
+    fields = {
+        **{k: block(k) for k in ("U", "X", "W", "Z")},
+        **{
+            k: col(k) for k in ("A", "A_probs", "Y_obs", "Y0", "Y1", "MU0", "MU1", "S2")
+        },
+        **{
+            k: p[k][sl].cpu()
+            for k in ("d_U", "d_X", "d_W", "d_Z", "seq_lens", "train_sizes", "K_eff")
+        },
     }
-    tmp = batch_file.with_suffix(".pt.tmp")
-    torch.save(payload, tmp)
-    tmp.replace(batch_file)
+    write_batch_file(out_dir, file_idx, seq_len_per_gp=False, **fields)
 
 
 def save_validation(
@@ -252,8 +261,7 @@ def save_validation(
     n_files = 0
     for file_idx, start in enumerate(range(0, B, datasets_per_file)):
         stop = min(start + datasets_per_file, B)
-        batch_file = out_dir / f"batch_{file_idx:06d}.pt"
-        _save_val_batch(pool, range(start, stop), batch_file)
+        _save_val_batch(pool, range(start, stop), out_dir, file_idx)
         n_files += 1
 
     # metadata.json mirrors SavePriorDataset.save_metadata (read by LoadPriorDataset).
@@ -276,6 +284,10 @@ def save_validation(
         "min_train_size": cfg.train_size,
         "max_train_size": cfg.train_size,
         "replay_small": False,
+        # Written by SavePriorDataset and printed by LoadPriorDataset.__repr__;
+        # the hand-rolled copy of this metadata used to omit both.
+        "mc_cate": cfg.mc_cate,
+        "mc_targets_on_context": False,
         "cli_command": cli_command,
     }
     with open(out_dir / "metadata.json", "w") as f:
@@ -361,6 +373,32 @@ def build(args: argparse.Namespace) -> None:
     # Record the exact CLI invocation that produced this dataset (for provenance).
     cli_command = shlex.join([Path(sys.argv[0]).name, *sys.argv[1:]])
 
+    # Refuse to rewrite a differently-configured set in place, *before* spending
+    # the generation time. Only replicate-bearing sets carry a sidecar, so only
+    # they have an identity to conflict on.
+    sidecar_cfg = None
+    if args.mc_cate > 1:
+        sidecar_cfg = RealisticBuildConfig(
+            n_datasets=args.n_datasets,
+            seq_len=args.seq_len,
+            prop_train=args.prop_train,
+            mc_cate=args.mc_cate,
+            seed=args.seed,
+            mechanisms=list(mechanisms),
+            min_dim_U=args.min_dim_U,
+            max_dim_U=args.max_dim_U,
+            min_dim_X=args.min_dim_X,
+            max_dim_X=args.max_dim_X,
+            min_dim_W=args.min_dim_W,
+            max_dim_W=args.max_dim_W,
+            min_dim_Z=args.min_dim_Z,
+            max_dim_Z=args.max_dim_Z,
+            dim_U_distribution=args.dim_U_distribution,
+            shuffle=not args.no_shuffle,
+        )
+        if root.exists():
+            check_no_silent_mutation(root, sidecar_cfg, force=args.force)
+
     # RealisticProximalGenerator requires a save_dir and mkdir's it on init, but
     # we never use its file-saving path (we call get_batch and save ourselves).
     # Point it at a throwaway temp dir so no empty scratch folder pollutes root.
@@ -379,6 +417,8 @@ def build(args: argparse.Namespace) -> None:
             min_dim_Z=args.min_dim_Z,
             max_dim_Z=args.max_dim_Z,
             dim_U_distribution=args.dim_U_distribution,
+            mc_cate=args.mc_cate,
+            mc_mem_budget=args.mc_mem_budget,
             seed=args.seed,
             device="cpu",
         )
@@ -389,7 +429,7 @@ def build(args: argparse.Namespace) -> None:
             f"across {len(mechanisms)} mechanisms (seed={args.seed})…"
         )
 
-        pool, mech_ids = generate_pool(
+        pool, mech_ids, seeds = generate_pool(
             gen,
             n_datasets=args.n_datasets,
             seq_len=args.seq_len,
@@ -406,6 +446,19 @@ def build(args: argparse.Namespace) -> None:
         f"             trainer:   --val_dir {val_dir}\n"
         f"             benchmark: data: {{source: load, val_dir: {val_dir}}}"
     )
+
+    if sidecar_cfg is not None:
+        n_max = int(pool[POOL_FIELDS.index("train_sizes")][0].item())
+        records = episode_records(pool, POOL_FIELDS, mech_ids, seeds, n_max)
+        digest = write_sidecar(
+            root, sidecar_cfg, records, n_max, dpf, cli_command=cli_command
+        )
+        print(
+            f"  [sidecar]   {root / 'frozen_meta.pt'}  "
+            f"(content_digest={digest}, n_max={n_max}, K={args.mc_cate})\n"
+            f"             score it:  uv run python -m posterior_eval.score "
+            f"--out {root} --ckpt <ckpt>"
+        )
 
     write_manifest(root, args, mech_ids, n_val_files, dpf, cli_command)
     print(f"  [manifest]  {root / 'manifest.json'}")
@@ -477,6 +530,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--no_shuffle",
         action="store_true",
         help="Keep datasets grouped by mechanism instead of interleaving.",
+    )
+
+    # Monte Carlo CATE targets
+    p.add_argument(
+        "--mc_cate",
+        type=int,
+        default=1,
+        help="Monte Carlo replicates per query row. 1 (default) = no "
+        "replication: MU0/MU1 are the realized potential outcomes, the set "
+        "supports val/point only, and no sidecar is written. K > 1 turns on "
+        "replicate mode and writes frozen_meta.pt, making the set scorable "
+        "distributionally. Production target: 1000.",
+    )
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="Discard an existing replicate set at the same path instead of "
+        "refusing to overwrite it.",
+    )
+    p.add_argument(
+        "--mc_mem_budget",
+        type=int,
+        default=2_000_000_000,
+        help="Element budget for the transient N-row replicate block of one "
+        "dataset (N = n_ctx + n_q*mc_cate). Exceeding it raises rather than "
+        "silently capping K, which would make the target noise vary across "
+        "datasets and machines.",
     )
 
     # Dimension ranges

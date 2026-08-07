@@ -17,6 +17,7 @@ wandb/*
 archive/*
 
 docs/latex/
+docs/notes/
 toy/*
 
 *.pdf

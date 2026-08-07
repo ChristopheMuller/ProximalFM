@@ -129,8 +129,7 @@ meaningless without. Four ratios use it as the denominator:
 - **`cate_std` vs `[--cate_vmin, --cate_vmax]`** — the *leading* indicator for
   `target/cate_out_of_grid_frac`, which only moves once the grid is already too tight. `O(1)` against
   the recommended `±5` leaves ~5σ of headroom.
-- **`noise/mean_s` / `cate_std`** — whether the noise-aware deconvolution has anything to act on
-  (see [§ROADMAP D3b](../../ROADMAP.md); on the frozen set at `K=4000` it is 0.008, i.e. negligible,
+- **`noise/mean_s` / `cate_std`** — whether the noise-aware deconvolution has anything to act on; on the frozen set at `K=4000` it is 0.008, i.e. negligible,
   but it grows as `1/√K` and a training run at low `--mc_cate` sits far higher).
 - **`loss/hl_sigma` / `cate_std`** — whether the histogram smoothing is swamping the signal. Sigma is
   a floor on learned width, so a small target spread against a fixed sigma flattens the sd curve at

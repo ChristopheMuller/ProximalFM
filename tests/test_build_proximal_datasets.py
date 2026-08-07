@@ -50,7 +50,7 @@ def pool_and_cfg(tmp_path_factory):
         device="cpu",
     )
     gen = RealisticProximalGenerator(cfg)
-    pool, _ = bpd.generate_pool(
+    pool, _mech_ids, _seeds = bpd.generate_pool(
         gen,
         n_datasets=N_DATASETS,
         seq_len=SEQ_LEN,
@@ -62,6 +62,8 @@ def pool_and_cfg(tmp_path_factory):
 
 def direct_build(pool):
     """Standardized benchmark dict straight from the in-memory pool."""
+    # Indices 0..14 are the original 15 fields; MU0/MU1/S2/K_eff follow and are
+    # not part of the benchmark view.
     (
         U,
         X,
@@ -78,7 +80,7 @@ def direct_build(pool):
         d_Z,
         seq_lens,
         train_sizes,
-    ) = pool
+    ) = pool[:15]
     return build_benchmark_dict(
         U=U,
         X=X,

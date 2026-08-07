@@ -116,6 +116,10 @@ def verify(
 
     n_max, n_q, K = g["n_max"], g["n_q"], g["mc_cate"]
     T = n_max + n_q
+    # Realistic replicate sets (synthetic/) share this schema so the evaluator
+    # needs no branch, but they carry hand-written mechanisms rather than
+    # sampled prior hyperparameters -- group 6 differs, nothing else does.
+    is_realistic = g.get("set_kind") == "realistic"
 
     batch_files = sorted(p for p in val_dir.iterdir() if p.name.startswith("batch_"))
     tmp_files = [p for p in val_dir.iterdir() if p.name.endswith(".tmp")]
@@ -381,7 +385,25 @@ def verify(
     for k, vals in dims.items():
         strata.note(f"{k}: {len(vals)} distinct values, range {min(vals)}..{max(vals)}")
     varying = [k for k, v in hp_keys.items() if len(v) > 1]
-    if not hp_keys:
+    if is_realistic:
+        # Realistic sets have no sampled prior hyperparameters -- their
+        # mechanisms are hand-written, and the natural cut is mechanism_id.
+        mech_counts: Dict[int, int] = {}
+        for r in records:
+            m = r.get("mechanism_id")
+            if m is not None:
+                mech_counts[int(m)] = mech_counts.get(int(m), 0) + 1
+        if not mech_counts:
+            strata.fail(
+                "no per-episode mechanism_id in the sidecar: there is nothing to "
+                "stratify a realistic set on"
+            )
+        else:
+            spread = f"{min(mech_counts.values())}..{max(mech_counts.values())}"
+            strata.note(
+                f"{len(mech_counts)} mechanisms represented, " f"{spread} episodes each"
+            )
+    elif not hp_keys:
         strata.fail(
             "no per-episode sampled_hp in the sidecar: A2's stratified cuts have "
             "nothing to cut on (was collect_mechanism_diagnostics set?)"
