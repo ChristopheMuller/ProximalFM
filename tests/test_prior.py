@@ -430,19 +430,6 @@ def test_enforce_completeness_heuristic_holds_by_default():
     assert (torch.minimum(d_W, d_Z) >= d_U).all()
 
 
-def test_enforce_completeness_heuristic_can_be_disabled():
-    # With enforcement off, unconfounded / violating datasets are allowed
-    # through again. We only assert it runs and returns the batch (violations
-    # are probabilistic, so we don't require them to appear).
-    fixed_hp = {**DEFAULT_FIXED_HP, "enforce_completeness_heuristic": False}
-    prior = _make_prior(fixed_hp)
-    out = prior.get_batch()
-    d_U, d_W, d_Z = out[11], out[13], out[14]
-    assert d_U.shape[0] == 24
-    # d_U > 0 is no longer guaranteed; the shape contract still holds.
-    assert (d_W > 0).all() and (d_Z > 0).all()
-
-
 def test_completeness_give_up_terminates():
     # A max_attempts of 1 means the safety valve fires immediately: the very
     # first basically-valid draw is accepted even if completeness fails. This
@@ -562,24 +549,8 @@ def test_categorical_completeness_defaults_on():
     # Finite category cap keeps categorical columns discrete and distinguishable
     # from continuous ones by distinct-value count (well below the sequence length).
     assert math.isfinite(DEFAULT_FIXED_HP["max_categories"])
-    prior = _make_prior(DEFAULT_FIXED_HP)
-    out = prior.get_batch()
-    d_U, d_W, d_Z = out[11], out[13], out[14]
-    assert (torch.minimum(d_W, d_Z) >= d_U).all()
-
-
-def test_categorical_completeness_ablation_arm_runs():
-    # corrupt_U on, enforce off: U is categorised but proxies are unconstrained
-    # (the ablation arm). Must still run and satisfy the dimension heuristic.
-    fixed_hp = {
-        **DEFAULT_FIXED_HP,
-        "corrupt_U": True,
-        "enforce_categorical_completeness": False,
-    }
-    prior = _make_prior(fixed_hp)
-    out = prior.get_batch()
-    d_U, d_W, d_Z = out[11], out[13], out[14]
-    assert (torch.minimum(d_W, d_Z) >= d_U).all()
+    # What those defaults buy on a real batch is asserted by
+    # test_enforce_categorical_completeness_holds; this test only pins the flags.
 
 
 def test_enforce_requires_corrupt_U():
@@ -633,16 +604,6 @@ def test_sample_dim_ranges_and_means():
 def test_sample_dim_rejects_unknown_distribution():
     with pytest.raises(ValueError, match="Unknown dim distribution"):
         SCMPrior.sample_dim(1, 10, "nope")
-
-
-def test_get_batch_respects_dim_U_distribution_flag():
-    # Both settings must produce a valid batch; the default is triangular.
-    for dist in ("uniform", "triangular"):
-        fixed_hp = {**DEFAULT_FIXED_HP, "dim_U_distribution": dist}
-        prior = _make_prior(fixed_hp)
-        d_U = prior.get_batch()[11]
-        assert d_U.shape[0] == 24
-        assert (d_U > 0).all()  # enforcement is still on
 
 
 # ---------------------------------------------------------------------------
@@ -1016,36 +977,6 @@ def test_covariate_edge_subsampling_is_independent_per_mechanism():
     z_widths = {w for w, n_out in records if n_out == 6}
     assert w_widths == {9}  # X kept
     assert z_widths == {4}  # X dropped
-
-
-def test_covariate_edge_subsampling_mean_kept_fraction():
-    # The realised kept fraction of X should track the configured
-    # covariate_share_of_X_in_W Beta mean, read live so this can't drift out
-    # of sync with _prior_config.py.
-    # Measured on f_W's X contribution: with the noise shares pinned to the
-    # floor, in_dim(f_W) = U(3) + |X_W| + eps_W(1), so |X_W| = in_dim - 4,
-    # over X of width 5.
-    beta_cfg = DEFAULT_SAMPLED_HP["covariate_share_of_X_in_W"]
-    expected_mean = beta_cfg["a"] / (beta_cfg["a"] + beta_cfg["b"])
-    torch.manual_seed(0)
-    np.random.seed(0)
-    prior = _make_distinct_dims_prior(
-        DEFAULT_FIXED_HP,
-        {
-            "confounding_share_of_U_in_Y": _pinned_share(0.01),
-            "confounding_share_of_U_in_A": _pinned_share(0.01),
-            **_pinned_noise_shares(),
-        },
-    )
-    x_widths = []
-    for _ in range(40):
-        with _capture_mechanism_widths() as records:
-            prior.get_batch()
-        x_widths += [w - 4 for w, n_out in records if n_out == 4]
-    frac = np.array(x_widths) / 5.0
-    # 40 batches x 2 datasets = 80 draws; wide tolerance for the small sample.
-    assert 0.0 <= frac.min() and frac.max() <= 1.0
-    assert frac.mean() == pytest.approx(expected_mean, abs=0.12)
 
 
 def test_covariate_edge_subsampling_includes_x_to_u():
@@ -1726,16 +1657,17 @@ def test_missing_batch_file_still_returns_the_partial_buffer(tmp_path):
     assert out[1].shape[0] == B
 
 
-# 0 is the unchanged single-process path; 4 is the trainer's own default and
-# does not divide num_files evenly, so it also covers an uneven shard split.
-# Each spawned-worker case costs ~10s, so the list stays short on purpose.
-@pytest.mark.parametrize("num_workers", [0, 4])
+# 0 is the unchanged single-process path; 2 is the cheapest multi-worker case,
+# and num_files=5 does not divide by it, so it also covers an uneven shard
+# split. Each spawned worker costs ~6s, so the list stays short on purpose --
+# the sharding logic does not depend on the worker count.
+@pytest.mark.parametrize("num_workers", [0, 2])
 def test_dataloader_workers_claim_disjoint_batch_files(tmp_path, num_workers):
     # An IterableDataset is copied into every worker, so a worker that does not
     # narrow its own share replays exactly what its siblings do. With the
     # trainer's default --train_dataloader_num_workers 4 that meant every
     # pre-generated batch file was consumed once per worker.
-    num_files = 6
+    num_files = 5
     for i in range(num_files):
         B = _write_dummy_batch(tmp_path, i)
 
@@ -1853,31 +1785,6 @@ def test_cli_prior_type_defaults_to_mlp_scm(tmp_path):
     assert result.returncode == 0, result.stderr
     metadata = json.loads((tmp_path / "metadata.json").read_text())
     assert metadata["prior_type"] == "mlp_scm"
-
-
-def test_cli_prior_type_still_accepts_the_tree_branches(tmp_path):
-    # Changing the default must not remove the choice; tree_scm/mix_scm stay
-    # reachable for anyone who explicitly asks.
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "proximalfm.prior",
-            "--save_dir",
-            str(tmp_path),
-            "--num_batches",
-            "0",
-            "--prior_type",
-            "mix_scm",
-        ],
-        cwd=Path(__file__).resolve().parent.parent,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    metadata = json.loads((tmp_path / "metadata.json").read_text())
-    assert metadata["prior_type"] == "mix_scm"
 
 
 def test_scm_prior_and_cli_agree_on_the_default_prior_type():

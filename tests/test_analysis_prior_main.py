@@ -258,9 +258,23 @@ def test_single_spec_rejects_explicit_comparison_analysis(tmp_path, dummy_compar
         )
 
 
-def test_single_spec_all_skips_comparison_analyses(tmp_path, dummy_comparison, capsys):
+def test_single_spec_all_skips_comparison_analyses(
+    tmp_path, dummy_comparison, monkeypatch, capsys
+):
     # 'all' includes cmp_test via the registry, but a single spec cannot feed a
-    # comparison -- it must be skipped with a note, not crash the run.
+    # comparison -- it must be skipped with a note, not crash the run. The
+    # registry is narrowed to one plain analysis plus the dummy comparison:
+    # running every registered analysis would only re-test each of them.
+    from analysis_prior.analyses import base as analyses_base
+
+    monkeypatch.setattr(
+        analyses_base,
+        "_REGISTRY",
+        {
+            "dimensions": analyses_base._REGISTRY["dimensions"],
+            "cmp_test": analyses_base._REGISTRY["cmp_test"],
+        },
+    )
     argv = [
         "--spec",
         "smoke",
