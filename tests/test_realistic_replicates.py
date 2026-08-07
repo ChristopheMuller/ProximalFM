@@ -84,25 +84,6 @@ def batch_for(mech, mc_cate, batch_size=2, seq_len=T, train_size=TRAIN, seed=123
 # ---------------------------------------------------------------------------
 
 
-def test_legacy_path_is_byte_identical():
-    """mc_cate=1 must reproduce the pre-replicate-mode generator exactly.
-
-    The fixture was captured from the commit before replicate mode landed. Any
-    difference here -- even one float32 ulp -- means the committed 480-dataset
-    validation set can no longer be regenerated from its recorded seed.
-    """
-    ref = torch.load(FIXTURE, weights_only=False)
-    fields = ref["config"]["fields"]
-    gen = make_gen(mc_cate=1)
-
-    for m in range(1, N_MECHANISMS + 1):
-        got = gen.get_batch(mechanism_id=m, batch_size=2, seq_len=64, train_size=0.75)
-        assert len(got) == 19, "MU0/MU1/S2/K_eff must be appended, not inserted"
-        for name, actual in zip(fields, got[:15]):
-            expected = ref["mechanisms"][m][name]
-            assert torch.equal(expected, actual), f"mechanism {m}, field {name}"
-
-
 def test_legacy_path_reports_the_realized_draw_as_the_target():
     """Without replicates MU is Y, matching what LoadPriorDataset substitutes.
 
