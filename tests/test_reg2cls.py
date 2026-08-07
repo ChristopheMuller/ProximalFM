@@ -486,6 +486,43 @@ def test_multiclass_assigner_requires_at_least_two_classes():
         MulticlassAssigner(1)
 
 
+@pytest.mark.parametrize("mode", MulticlassAssigner.MODES)
+def test_multiclass_assigner_supports_every_advertised_mode(mode):
+    torch.manual_seed(0)
+    out = MulticlassAssigner(4, mode=mode)(torch.randn(200))
+
+    assert out.shape == (200,)
+    assert out.min().item() >= 0
+    assert out.max().item() <= 3
+
+
+def test_multiclass_assigner_rejects_an_unknown_mode_at_construction():
+    # `forward` dispatched on `mode` with no fallback, so an unknown one left
+    # `boundaries` unbound and surfaced as an UnboundLocalError from the
+    # *next* statement -- a traceback that points at the wrong line and says
+    # nothing about the mode. Fail at construction instead.
+    with pytest.raises(ValueError, match="Unknown MulticlassAssigner mode"):
+        MulticlassAssigner(3, mode="quantile")
+
+
+def test_multiclass_assigner_rejects_a_mode_assigned_after_construction():
+    # The constructor guard cannot catch this one, and it is the path that
+    # produced the UnboundLocalError.
+    assigner = MulticlassAssigner(3, mode="rank")
+    assigner.mode = "quantile"
+
+    with pytest.raises(ValueError, match="Unknown MulticlassAssigner mode"):
+        assigner(torch.randn(50))
+
+
+def test_multiclass_assigner_mode_error_lists_the_valid_modes():
+    with pytest.raises(ValueError) as excinfo:
+        MulticlassAssigner(3, mode="")
+
+    message = str(excinfo.value)
+    assert all(mode in message for mode in MulticlassAssigner.MODES)
+
+
 # ---------------------------------------------------------------------------
 # Guard: the target-side reg-to-cls transforms were removed
 # ---------------------------------------------------------------------------

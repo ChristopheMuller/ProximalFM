@@ -263,7 +263,15 @@ class MulticlassAssigner(nn.Module):
 
     ordered_prob : float, default=0.2
         Probability of keeping the natural class order.
+
+    Raises
+    ------
+    ValueError
+        If ``num_classes < 2``, or ``mode`` is not one of :attr:`MODES`.
     """
+
+    #: The boundary-sampling strategies :meth:`forward` implements.
+    MODES = ("rank", "value")
 
     def __init__(self, num_classes: int, mode: str = "rank", ordered_prob: float = 0.2):
         """Initialize the MulticlassAssigner."""
@@ -271,6 +279,11 @@ class MulticlassAssigner(nn.Module):
         if num_classes < 2:
             raise ValueError(
                 "The number of classes must be at least 2 for MulticlassAssigner."
+            )
+        if mode not in self.MODES:
+            raise ValueError(
+                f"Unknown MulticlassAssigner mode {mode!r} "
+                f"(expected one of {self.MODES})."
             )
 
         self.num_classes = num_classes
@@ -302,6 +315,15 @@ class MulticlassAssigner(nn.Module):
             boundaries = input[boundary_indices]
         elif self.mode == "value":
             boundaries = torch.randn(self.num_classes - 1, device=device)
+        else:
+            # Unreachable via __init__, which validates `mode`; reachable by
+            # assigning to `.mode` afterwards. Without this branch `boundaries`
+            # is simply never bound and the next line raises UnboundLocalError,
+            # which says nothing about what went wrong.
+            raise ValueError(
+                f"Unknown MulticlassAssigner mode {self.mode!r} "
+                f"(expected one of {self.MODES})."
+            )
 
         # Compare input tensor with boundaries and sum across the boundary dimension to get classes
         classes = (input.unsqueeze(-1) > boundaries.unsqueeze(0)).sum(dim=1)
