@@ -1204,21 +1204,37 @@ class Trainer:
             seq_len,
         )
 
-        # Move to device
+        # Move to device.
+        #
+        # non_blocking lets the thirteen copies below be queued and overlap
+        # instead of the host waiting out each one in turn. It is only an actual
+        # async copy for pinned host memory -- which is exactly the case
+        # configure_prior/configure_validation_prior set up (`pin_memory` when
+        # the prior lives on the CPU and training is on CUDA) -- and degrades to
+        # a plain synchronous copy everywhere else, so it is safe to pass
+        # unconditionally.
+        #
+        # Two things make it safe here. Every consumer is another op on the same
+        # stream, so stream ordering already serialises them against the copy
+        # (and the one host-side read downstream -- the single-arm predicate --
+        # goes through `bool()`, which synchronises). And the source tensors stay
+        # alive well past the copy: `run_batch` holds the whole padded batch the
+        # micro batches are views of. An async copy whose pinned source is freed
+        # or overwritten early is the way this goes wrong.
         device = self.config.device
-        micro_X = micro_X.to(device)
-        micro_W = micro_W.to(device)
-        micro_Z = micro_Z.to(device)
-        micro_A = micro_A.to(device)
-        micro_Y_obs = micro_Y_obs.to(device)
-        micro_Y0 = micro_Y0.to(device)
-        micro_Y1 = micro_Y1.to(device)
-        micro_MU0 = micro_MU0.to(device)
-        micro_MU1 = micro_MU1.to(device)
-        micro_S2 = micro_S2.to(device)
-        micro_d_X = micro_d_X.to(device)
-        micro_d_W = micro_d_W.to(device)
-        micro_d_Z = micro_d_Z.to(device)
+        micro_X = micro_X.to(device, non_blocking=True)
+        micro_W = micro_W.to(device, non_blocking=True)
+        micro_Z = micro_Z.to(device, non_blocking=True)
+        micro_A = micro_A.to(device, non_blocking=True)
+        micro_Y_obs = micro_Y_obs.to(device, non_blocking=True)
+        micro_Y0 = micro_Y0.to(device, non_blocking=True)
+        micro_Y1 = micro_Y1.to(device, non_blocking=True)
+        micro_MU0 = micro_MU0.to(device, non_blocking=True)
+        micro_MU1 = micro_MU1.to(device, non_blocking=True)
+        micro_S2 = micro_S2.to(device, non_blocking=True)
+        micro_d_X = micro_d_X.to(device, non_blocking=True)
+        micro_d_W = micro_d_W.to(device, non_blocking=True)
+        micro_d_Z = micro_d_Z.to(device, non_blocking=True)
 
         # 2. Standardize targets based ONLY on the observed training context
         y_train_obs = micro_Y_obs[:, :train_size]
