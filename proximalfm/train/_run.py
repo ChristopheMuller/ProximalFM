@@ -1072,20 +1072,32 @@ class Trainer:
             micro_S2,
         )
 
-    def _ddp_all_valid(self, local_valid: bool) -> bool:
+    def _ddp_all_valid(self, local_valid) -> bool:
         """AND ``local_valid`` across all DDP ranks (no-op outside DDP).
 
         Every rank must skip the same micro batch together, or ranks that
         disagree on whether a step happened diverge and hang on the next
         collective (e.g. gradient all-reduce).
+
+        ``local_valid`` may be a bool or a 0-d bool tensor. Passing the tensor
+        is the cheaper form: it is copied into the payload on-device, so the
+        only host synchronisation is the single ``.item()`` at the end, rather
+        than one to materialise the predicate and another to read the result.
         """
-        if not self.ddp:
-            return local_valid
-        valid_tensor = torch.tensor(
-            [1 if local_valid else 0],
-            device=self.config.device,
-            dtype=torch.int32,
-        )
+        if torch.is_tensor(local_valid):
+            if not self.ddp:
+                return bool(local_valid)
+            valid_tensor = local_valid.reshape(1).to(
+                device=self.config.device, dtype=torch.int32
+            )
+        else:
+            if not self.ddp:
+                return local_valid
+            valid_tensor = torch.tensor(
+                [1 if local_valid else 0],
+                device=self.config.device,
+                dtype=torch.int32,
+            )
         torch.distributed.all_reduce(valid_tensor, op=torch.distributed.ReduceOp.MIN)
         return bool(valid_tensor.item())
 
@@ -1218,11 +1230,20 @@ class Trainer:
         n0 = (A_train == 0).sum(dim=1)  # (B,)
         n1 = (A_train == 1).sum(dim=1)  # (B,)
 
-        # A single-arm context (all-0 or all-1 treatment) makes the CATE
-        # target undefined for this episode; skip it everywhere in the DDP
-        # group rather than only where it happened to occur.
-        if not self._ddp_all_valid(not ((n0 == 0).any() or (n1 == 0).any())):
-            return None
+        # Two conditions make a micro batch unusable: a single-arm context
+        # (all-0 or all-1 treatment), which leaves the CATE target undefined,
+        # and NaN logits. Both must be agreed on across the whole DDP group --
+        # ranks that disagree about whether a step happened diverge and hang on
+        # the next collective -- and both are resolved together, in one
+        # all-reduce after the forward.
+        #
+        # Checking the arms first would let an all-one-arm micro batch skip the
+        # forward, but it costs a second collective (and a second host
+        # synchronisation outside DDP) on *every* micro batch to save a forward
+        # on the rare bad one: the prior draws a single-arm context in well
+        # under 1% of episodes. The wasted forward is never backpropagated, so
+        # the gradient, the metrics and the skip decision are unchanged.
+        single_arm = (n0 == 0).any() | (n1 == 0).any()
 
         with self.amp_ctx:
             # Model predicts logits of shape (B, test_size, nbins * 2)
@@ -1237,7 +1258,7 @@ class Trainer:
                 micro_d_W,
             )
 
-            if not self._ddp_all_valid(not pred_logits.isnan().any()):
+            if not self._ddp_all_valid(~(single_arm | pred_logits.isnan().any())):
                 return None
 
             # Loss configuration routing
