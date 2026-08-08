@@ -90,14 +90,14 @@ class BuildConfig:
     mc_cate: int
     seed: int
     prior_mc_mem_budget: int
-    min_dim_U: int = 3
+    min_dim_U: int = 1
     max_dim_U: int = 10
-    min_dim_W: int = 3
+    min_dim_W: int = 1
     max_dim_W: int = 10
-    min_dim_Z: int = 3
+    min_dim_Z: int = 1
     max_dim_Z: int = 10
-    min_dim_X: int = 5
-    max_dim_X: int = 20
+    min_dim_X: int = 1
+    max_dim_X: int = 10
     prior_type: str = "mlp_scm"
     # Generation device. The mechanisms are pure torch and device-agnostic (only
     # the scalar hyperparameter draws go through numpy), so "cuda:0" moves the
@@ -654,14 +654,14 @@ def build_parser() -> argparse.ArgumentParser:
             "on, e.g. cuda:0. Reproducible per-device, not across devices"
         ),
     )
-    p.add_argument("--min_dim_U", type=int, default=3)
+    p.add_argument("--min_dim_U", type=int, default=1)
     p.add_argument("--max_dim_U", type=int, default=10)
-    p.add_argument("--min_dim_W", type=int, default=3)
+    p.add_argument("--min_dim_W", type=int, default=1)
     p.add_argument("--max_dim_W", type=int, default=10)
-    p.add_argument("--min_dim_Z", type=int, default=3)
+    p.add_argument("--min_dim_Z", type=int, default=1)
     p.add_argument("--max_dim_Z", type=int, default=10)
-    p.add_argument("--min_dim_X", type=int, default=5)
-    p.add_argument("--max_dim_X", type=int, default=20)
+    p.add_argument("--min_dim_X", type=int, default=1)
+    p.add_argument("--max_dim_X", type=int, default=10)
     p.add_argument(
         "--force",
         action="store_true",
