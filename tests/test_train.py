@@ -508,12 +508,10 @@ def test_cate_single_checkpoint_loads_into_the_noise_aware_head(dummy_args):
 
 
 @patch("wandb.init")
-def test_dist_eval_interval_minus_one_resolves_to_point_val_interval(
-    mock_wandb_init, tmp_path
-):
+def test_prior_eval_interval_overrides_default(mock_wandb_init, tmp_path):
     args = _parse_args(
         tmp_path,
-        ["--point_val_interval", "37", "--prior_eval_interval", "-1"],
+        ["--prior_eval_interval", "37"],
     )
     trainer = Trainer(args)
     assert trainer.prior_eval_interval == 37
@@ -664,9 +662,8 @@ def test_dist_eval_pass_emits_both_prior_surfaces(
 def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
     mock_wandb_init, tmp_path, tiny_frozen_set
 ):
-    """prior_eval_interval coarser than point_val_interval: a prior_dist/* best
-    metric must not warn (or attempt a comparison) on the steps where only
-    point validation ran."""
+    """a prior_dist/* best metric must not warn (or attempt a comparison) on
+    steps where prior eval was idle."""
     args = _parse_args(
         tmp_path,
         [
@@ -942,13 +939,13 @@ def test_val_dist_lands_exactly_on_the_gated_steps(
 
 
 @patch("wandb.init")
-def test_val_dist_interval_minus_one_follows_point_val_interval(
+def test_val_eval_interval_overrides_default(
     mock_wandb_init, tmp_path, tiny_replicate_set
 ):
     args = _val_eval_args(
         tmp_path,
         tiny_replicate_set,
-        ["--val_eval_interval", "-1", "--point_val_interval", "7"],
+        ["--val_eval_interval", "7"],
     )
     assert Trainer(args).val_eval_interval == 7
 

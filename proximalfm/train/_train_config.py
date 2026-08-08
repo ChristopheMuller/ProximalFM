@@ -539,19 +539,6 @@ def build_parser():
     )
 
     ###########################################################################
-    ###### Validation #########################################################
-    ###########################################################################
-    parser.add_argument(
-        "--point_val_interval",
-        default=50,
-        type=int,
-        help="Default interval (steps) for the validation passes below. Each "
-        "of --prior_eval_interval / --val_eval_interval resolves to this when "
-        "left at -1; set one of those directly to run it on a different "
-        "cadence.",
-    )
-
-    ###########################################################################
     ###### Prior evaluation (point + distributional) ###########################
     ###########################################################################
     parser.add_argument(
@@ -566,11 +553,9 @@ def build_parser():
     )
     parser.add_argument(
         "--prior_eval_interval",
-        default=-1,
+        default=50,
         type=int,
-        help="Steps between validation passes against --prior_eval_dir. 0 "
-        "disables prior evaluation entirely; -1 (default) resolves to "
-        "--point_val_interval.",
+        help="Steps between validation passes against --prior_eval_dir. 0 disables prior evaluation entirely.",
     )
     parser.add_argument(
         "--prior_eval_max_episodes",
@@ -602,11 +587,9 @@ def build_parser():
     )
     parser.add_argument(
         "--val_eval_interval",
-        default=-1,
+        default=50,
         type=int,
-        help="Steps between validation passes against --val_eval_dir. 0 "
-        "disables val evaluation entirely; -1 (default) resolves to "
-        "--point_val_interval.",
+        help="Steps between validation passes against --val_eval_dir. 0 disables val evaluation entirely.",
     )
     parser.add_argument(
         "--val_eval_max_episodes",

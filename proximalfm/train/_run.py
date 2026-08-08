@@ -94,20 +94,8 @@ class Trainer:
         self._check_best_metric_config()
         self._load_best_metric_value()
 
-        # Resolved once here rather than re-read from config at every step:
-        # -1 tracks point_val_interval, 0 disables.
-        prior_eval_interval = getattr(self.config, "prior_eval_interval", -1)
-        self.prior_eval_interval = (
-            self.config.point_val_interval
-            if prior_eval_interval == -1
-            else prior_eval_interval
-        )
-        val_eval_interval = getattr(self.config, "val_eval_interval", -1)
-        self.val_eval_interval = (
-            self.config.point_val_interval
-            if val_eval_interval == -1
-            else val_eval_interval
-        )
+        self.prior_eval_interval = getattr(self.config, "prior_eval_interval", 50)
+        self.val_eval_interval = getattr(self.config, "val_eval_interval", 50)
 
         # `--prior_eval_dir`: load the frozen-set sidecar once, here, rather
         # than on every prior_validate() pass -- it carries the per-episode

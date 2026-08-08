@@ -44,8 +44,7 @@ The boundaries are load-bearing, and each is a thing someone will try to "fix":
 | `val_point/*` + `val_dist/*` | every `--val_eval_interval` steps, and step 1 | `--val_eval_dir` set |
 | `prior_point/*` + `prior_dist/*`, `diag/sigma` | every `--prior_eval_interval` steps, and step 1 | `--prior_eval_dir` set |
 
-`--prior_eval_interval` and `--val_eval_interval` both default to `-1`, which resolves once at
-`Trainer.__init__` to `--point_val_interval`; `0` disables. Every rank must reach `prior_validate()`
+`--prior_eval_interval` and `--val_eval_interval` both default to `50`; `0` disables. Every rank must reach `prior_validate()`
 and `val_validate()` on the same steps — the episodes are sharded round-robin and the metrics
 all-reduced, so a rank that skips one deadlocks the group. Both gates are therefore built only from
 values every rank agrees on.
@@ -758,7 +757,7 @@ silently no-op:
   target and both `min` and `max` walk away from it.
 
 `_maybe_save_best` only fires on a step where the surface producing the monitored key actually ran,
-so a `prior_dist/*` `best_metric` with `--prior_eval_interval` coarser than `--point_val_interval` does not
+so a `prior_dist/*` `best_metric` evaluated less frequently does not
 warn on the in-between validation passes.
 
 ---

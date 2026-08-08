@@ -291,7 +291,7 @@ uv run python -m proximalfm.train \
 | Flag | Default | Meaning |
 |---|---|---|
 | `--val_eval_dir` | `None` | **Root** of a replicate-bearing set (holds both `val/` and `frozen_meta.pt`). Drives both `val_point/*` and `val_dist/*` from one pass, mirroring how `--prior_eval_dir` drives `prior_point/*` + `prior_dist/*`. |
-| `--val_eval_interval` | `-1` | Steps between val passes; `-1` follows `--point_val_interval`, `0` disables. |
+| `--val_eval_interval` | `50` | Steps between val passes; `0` disables. |
 | `--val_eval_max_episodes` | `None` | Cap on episodes scored per pass, applied before DDP sharding. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
 | `--best_metric` | `val_point/cate/npehe` | Metric key to monitor (e.g. `val_point/cate/rmse`, `val_dist/crps`, `prior_dist/crps`). |
