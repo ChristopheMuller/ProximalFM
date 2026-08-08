@@ -97,12 +97,25 @@ import yaml
 
 from proximalfm.prior._genload import write_batch_file
 
-from realistic_proximal_mechanisms import (
+# The two invocation styles put *different* directories on sys.path:
+# `python synt_eval/build_proximal_datasets.py` adds synt_eval/ (siblings are
+# top-level names, the repo root is absent), while
+# `python -m synt_eval.build_proximal_datasets` adds the cwd (the repo root, so
+# only the package-absolute spelling resolves). `proximalfm` is unaffected --
+# it is an installed package -- but `synt_eval` is not installed, so put the
+# repo root on the path and import package-absolutely. Both spellings then work,
+# and there is exactly one module object either way (two would give two distinct
+# RealisticGeneratorConfig classes and break isinstance across the boundary).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from synt_eval.realistic_proximal_mechanisms import (  # noqa: E402
     N_MECHANISMS,
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
-from realistic_sidecar import (
+from synt_eval.realistic_sidecar import (  # noqa: E402
     RealisticBuildConfig,
     check_no_silent_mutation,
     episode_records,
@@ -470,8 +483,8 @@ def build(args: argparse.Namespace) -> None:
             f"  [sidecar]   {root / 'frozen_meta.pt'}  "
             f"(content_digest={digest}, n_max={n_max}, K={args.mc_cate})\n"
             f"             trainer:   --synt_eval_dir {root}\n"
-            f"             score it:  uv run python -m prior_eval.score "
-            f"--out {root} --ckpt <ckpt>"
+            f"             score it:  python -m prior_eval.score "
+            f"--dir {root} --ckpt <ckpt>"
         )
     else:
         print(

@@ -15,10 +15,8 @@ import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
-
-import build_proximal_datasets as bpd  # noqa: E402
-from realistic_proximal_mechanisms import (  # noqa: E402
+import synt_eval.build_proximal_datasets as bpd
+from synt_eval.realistic_proximal_mechanisms import (
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )

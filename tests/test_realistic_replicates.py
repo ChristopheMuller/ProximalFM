@@ -21,16 +21,14 @@ from pathlib import Path
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
-
-from build_proximal_datasets import POOL_FIELDS, build, parse_args  # noqa: E402
-from realistic_proximal_mechanisms import (  # noqa: E402
+from synt_eval.build_proximal_datasets import POOL_FIELDS, build, parse_args
+from synt_eval.realistic_proximal_mechanisms import (
     N_MECHANISMS,
     MonteCarloBudgetError,
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
-from realistic_sidecar import (  # noqa: E402
+from synt_eval.realistic_sidecar import (
     RealisticBuildConfig,
     RealisticSetConflictError,
     load_realistic_meta,
@@ -415,7 +413,7 @@ def test_a_sidecar_without_a_stored_digest_still_has_an_identity(toy_set):
 
 def test_rebuilding_a_set_with_a_different_config_is_refused(toy_set, tmp_path):
     out, args = toy_set
-    from realistic_sidecar import check_no_silent_mutation
+    from synt_eval.realistic_sidecar import check_no_silent_mutation
 
     cfg = RealisticBuildConfig(
         n_datasets=args.n_datasets,

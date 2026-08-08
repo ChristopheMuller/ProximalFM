@@ -88,11 +88,8 @@ def tiny_replicate_set(tmp_path_factory):
     ``frozen_meta.pt`` sidecar -- the two things that make a realistic set
     scorable distributionally at all (ROADMAP B1-B3).
     """
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
-    from build_proximal_datasets import build as build_realistic
-    from build_proximal_datasets import parse_args as parse_realistic_args
+    from synt_eval.build_proximal_datasets import build as build_realistic
+    from synt_eval.build_proximal_datasets import parse_args as parse_realistic_args
 
     root = tmp_path_factory.mktemp("val_eval_set")
     build_realistic(
