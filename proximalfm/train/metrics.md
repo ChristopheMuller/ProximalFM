@@ -44,10 +44,10 @@ The boundaries are load-bearing, and each is a thing someone will try to "fix":
 | `synt_point/*` + `synt_dist/*` | every `--synt_eval_interval` steps, and step 1 | `--synt_eval_dir` set |
 | `prior_point/*` + `prior_dist/*`, `diag/sigma` | every `--prior_eval_interval` steps, and step 1 | `--prior_eval_dir` set |
 
-`--prior_eval_interval` and `--synt_eval_interval` both default to `50`; `0` disables. Every rank must reach `prior_validate()`
-and `synt_validate()` on the same steps — the episodes are sharded round-robin and the metrics
-all-reduced, so a rank that skips one deadlocks the group. Both gates are therefore built only from
-values every rank agrees on.
+`--prior_eval_interval` and `--synt_eval_interval` both default to `50`; `0` disables. Training is
+single-process (DDP was removed); `prior_validate()` and `synt_validate()` are two calls into one
+`Trainer._validate_surface(surface)`, so the two surfaces share their loading, scoring and logging
+path by construction.
 
 ### Scale
 
