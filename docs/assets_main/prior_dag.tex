@@ -3,115 +3,93 @@ x=0.018cm,
 y=-0.018cm,
 line cap=round,
 line join=round,
-% -----------------------------------------------------------------------------
-% Refined Color Palette
-% -----------------------------------------------------------------------------
-plate color/.style={draw=black!45, fill=gray!3, line width=0.5pt, rounded corners=3pt},
-observed color/.style={draw=cyan!50!blue!80!black, fill=cyan!5, line width=0.8pt},
-outcome color/.style={draw=blue!80!black, fill=blue!4, line width=0.8pt},
-latent color/.style={draw=red!70!black, fill=red!3, line width=0.8pt, dashed, dash pattern=on 2.5pt off 1.8pt},
-op color/.style={draw=teal!80!black, fill=teal!5, line width=0.6pt, rounded corners=2pt},
-out color/.style={draw=blue!80!black, fill=blue!3, line width=0.8pt, rounded corners=2pt},
-% -----------------------------------------------------------------------------
-% Style Definitions
-% -----------------------------------------------------------------------------
-plate/.style={plate color},
-observed/.style={observed color},
-outcome/.style={outcome color},
-latent/.style={latent color},
-edge/.style={draw=black!75, line width=0.6pt, -{Latex[length=1.8mm,width=1.3mm]}},
-latent edge/.style={edge, draw=red!70!black, dashed, dash pattern=on 2.5pt off 1.8pt},
-operation/.style={op color},
-output/.style={out color},
+plate outer/.style={draw=black!35, fill=black!2!white, line width=0.6pt, rounded corners=6pt},
+plate inner/.style={draw=teal!50!black!40, fill=teal!2!gray!2!white, line width=0.6pt, dashed, dash pattern=on 3pt off 2pt, rounded corners=5pt},
+plate tag outer/.style={draw=black!25, fill=white, font=\fontsize{7}{8}\selectfont\bfseries, text=black!75, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
+plate tag inner/.style={draw=teal!40, fill=white, font=\fontsize{7}{8}\selectfont\bfseries, text=teal!60!black, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
+observed/.style={draw=cyan!50!blue!80!black, fill=cyan!6!blue!3, line width=0.85pt},
+outcome/.style={draw=blue!85!black, fill=blue!5!white, line width=0.85pt},
+latent/.style={draw=red!75!black, fill=red!4!white, line width=0.85pt, dashed, dash pattern=on 2.5pt off 1.8pt},
+edge/.style={draw=black!75, line width=0.65pt, -{Latex[length=2.0mm,width=1.4mm]}},
+latent edge/.style={edge, draw=red!75!black, dashed, dash pattern=on 2.5pt off 1.8pt},
+pipeline edge/.style={draw=teal!80!black, line width=0.7pt, -{Latex[length=2.0mm,width=1.4mm]}},
+operation/.style={draw=teal!75!black, fill=teal!4!white, line width=0.7pt, rounded corners=4pt},
+output/.style={draw=blue!80!black, fill=blue!3!white, line width=0.8pt, rounded corners=4pt},
 node label/.style={font=\large\itshape, inner sep=0pt, text=black!90},
-mechanism/.style={font=\scriptsize\color{teal!40!black}, inner sep=0pt},
+mechanism/.style={font=\scriptsize\bfseries\color{teal!55!black}, fill=white, fill opacity=0.9, text opacity=1, inner sep=1.2pt, rounded corners=2pt},
 small text/.style={font=\scriptsize, inner sep=0pt, text=black!85},
-tiny text/.style={font=\fontsize{7}{8.5}\selectfont, inner sep=0pt, text=black!60},
+tiny text/.style={font=\fontsize{7}{8.5}\selectfont, inner sep=0pt, text=black!65},
 output math/.style={font=\footnotesize, inner sep=0pt, text=black!90},
 every node/.style={text=black}
 ]
 
-% -----------------------------------------------------------------------------
-% Plates (with soft background fills)
-% -----------------------------------------------------------------------------
-\draw[plate] (18,18) rectangle (350,368);
-\draw[plate] (42,108) rectangle (326,340);
-\node[tiny text, anchor=south east] at (338,360) {\textbf{units} $i=1,\ldots,T$};
-\node[tiny text, anchor=south east] at (314,332) {\textbf{replicates} $k=1,\ldots,K$};
+\draw[plate outer] (18,18) rectangle (350,368);
+\draw[plate inner] (42,108) rectangle (326,340);
 
-% -----------------------------------------------------------------------------
-% Causal edges (drawn behind nodes)
-% -----------------------------------------------------------------------------
+\node[plate tag outer, anchor=south east] at (342,362) {units $i=1,\ldots,T$};
+\node[plate tag inner, anchor=south east] at (318,334) {replicates $k=1,\ldots,K$};
+
 \draw[edge] (184,81) -- (184,123);
-\node[mechanism, anchor=west] at (193,102) {$f_U$};
-\draw[edge] (164,73)
-.. controls (96,95) and (76,160) .. (95,185);
-\draw[edge] (204,73)
-.. controls (272,95) and (292,160) .. (273,185);
-\draw[edge] (158,68)
-.. controls (62,100) and (55,225) .. (109,261);
-\draw[edge] (210,68)
-.. controls (306,100) and (313,225) .. (259,260);
+\draw[edge] (164,73) .. controls (96,95) and (76,160) .. (95,185);
+\draw[edge] (204,73) .. controls (272,95) and (292,160) .. (273,185);
+\draw[edge] (158,68) .. controls (62,100) and (55,225) .. (109,261);
+\draw[edge] (210,68) .. controls (306,100) and (313,225) .. (259,260);
+
 \draw[latent edge] (170,157) -- (115,192);
 \draw[latent edge] (198,157) -- (253,192);
-\draw[latent edge] (176,160)
-.. controls (158,195) and (140,230) .. (130,257);
-\draw[latent edge] (192,160)
-.. controls (212,195) and (230,230) .. (238,252);
+\draw[latent edge] (176,160) .. controls (158,195) and (140,230) .. (130,257);
+\draw[latent edge] (192,160) .. controls (212,195) and (230,230) .. (238,252);
+
 \draw[edge] (106,229) -- (121,258);
 \draw[edge] (262,229) -- (247,254);
 
-% -----------------------------------------------------------------------------
-% Variables (Nodes)
-% -----------------------------------------------------------------------------
 \draw[observed] (184,60) circle[radius=21];
 \node[node label] at (184,60) {$X$};
+
 \draw[latent] (184,143) circle[radius=19];
 \node[node label] at (184,143) {$U$};
+
 \draw[observed] (101,208) circle[radius=19];
 \node[node label] at (101,208) {$Z$};
+
 \draw[observed] (267,208) circle[radius=19];
 \node[node label] at (267,208) {$W$};
+
 \draw[observed] (127,276) circle[radius=19];
 \node[node label] at (127,276) {$A$};
+
 \draw[outcome] (241,276) ellipse[x radius=33,y radius=23];
-\node[small text] at (241,271) {$Y(0)$};
-\node[small text] at (241,287) {$Y(1)$};
+\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (241,269) {$Y(0)$};
+\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (241,284) {$Y(1)$};
+\draw[draw=blue!30, line width=0.4pt] (216,276.5) -- (266,276.5);
 
-% Structural mechanism labels
-\node[mechanism, anchor=west] at (68,184) {$f_Z$};
-\node[mechanism, anchor=west] at (291,184) {$f_W$};
-\node[mechanism, anchor=west] at (91,308) {$f_A$};
-\node[mechanism, anchor=west] at (278,308) {$f_Y$};
+\node[mechanism] at (184,102) {$f_U$};
+\node[mechanism] at (76,135) {$f_Z$};
+\node[mechanism] at (292,135) {$f_W$};
+\node[mechanism] at (56,195) {$f_A$};
+\node[mechanism] at (312,195) {$f_Y$};
 
-% -----------------------------------------------------------------------------
-% Upper branch: Observational Context (Draw One Replicate)
-% -----------------------------------------------------------------------------
-\draw[operation] (414,95) rectangle (580,145);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,113) {draw one replicate};
-\node[small text] at (497,130) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+\draw[operation] (410,95) rectangle (580,145);
+\node[font=\scriptsize\bfseries\color{teal!60!black}] at (495,112) {Draw One Replicate};
+\node[small text] at (495,130) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
 
-\draw[output] (608,85) rectangle (880,155);
-\node[output math] at (744,117) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
-\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,142) {observational context};
+\draw[output] (610,85) rectangle (880,155);
+\node[output math] at (745,116) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
+\node[font=\fontsize{7}{8}\selectfont\bfseries\color{blue!70!black}] at (745,138) {observational context};
 
-% Arrow starting from replicates inner box border (x=326) and crossing the outer box cleanly
-\draw[edge] (326,120) -- (414,120);
-\draw[edge] (580,120) -- (608,120);
+\draw[pipeline edge] (326,120) -- node[above, font=\fontsize{6.5}{7.5}\selectfont, color=teal!70!black, inner sep=1pt] {subsample} (410,120);
+\draw[pipeline edge] (580,120) -- (610,120);
 
-% -----------------------------------------------------------------------------
-% Lower branch: Target Construction (Average Over)
-% -----------------------------------------------------------------------------
-\draw[operation] (426,260) rectangle (568,310);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (497,278) {average over};
-\node[small text] at (497,295) {$k=1,\ldots,K$};
+\draw[operation] (410,260) rectangle (580,310);
+\node[font=\scriptsize\bfseries\color{teal!60!black}] at (495,275) {Average over};
+\node[small text] at (495,295) {$k=1,\ldots,K$};
 
-\draw[output] (624,251) rectangle (864,319);
-\node[output math] at (744,279) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
-\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (744,301) {training targets ($\approx$ CEPOs)};
+\draw[output] (610,251) rectangle (880,319);
+\node[output math] at (745,277) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
+\node[font=\fontsize{7}{8}\selectfont\bfseries\color{blue!70!black}] at (745,300) {training targets ($\approx$ CEPOs)};
 
-% Curved connecting arrow from Y(0), Y(1)
-\draw[edge] (274,272) .. controls (325,258) and (375,268) .. (426,285);
-\draw[edge] (568,285) -- (624,285);
+\draw[pipeline edge] (274,276) .. controls (330,285) and (370,285) .. node[above, font=\fontsize{6.5}{7.5}\selectfont, color=teal!70!black, inner sep=1pt, pos=0.5] {integrate noise} (410,285);
+\draw[pipeline edge] (580,285) -- (610,285);
 
 \end{tikzpicture}
+
