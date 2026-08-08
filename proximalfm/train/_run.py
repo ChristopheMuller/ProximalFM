@@ -944,19 +944,21 @@ class Trainer:
                 logits_y0 = pred_logits[..., :nbins]
                 logits_y1 = pred_logits[..., nbins:]
 
+                probs_y0 = F.softmax(logits_y0, dim=-1)
+                probs_y1 = F.softmax(logits_y1, dim=-1)
+
                 loss_y0 = compute_crps_loss(
                     logits_y0,
                     y_test_0_std,
                     self.model.bin_edges,
+                    probs=probs_y0,
                 )
                 loss_y1 = compute_crps_loss(
                     logits_y1,
                     y_test_1_std,
                     self.model.bin_edges,
+                    probs=probs_y1,
                 )
-
-                probs_y0 = F.softmax(logits_y0, dim=-1)
-                probs_y1 = F.softmax(logits_y1, dim=-1)
 
                 mean_pred_y0_std = torch.sum(probs_y0 * self.model.bin_centers, dim=-1)
                 mean_pred_y1_std = torch.sum(probs_y1 * self.model.bin_centers, dim=-1)
@@ -975,6 +977,8 @@ class Trainer:
                 ate_logvar = pred_logits[..., 1]
                 he_logits = pred_logits[..., 2:]
 
+                probs_he = F.softmax(he_logits, dim=-1)
+
                 true_ate_std = true_cate_std.mean(dim=1, keepdim=True)
                 true_he_std = true_cate_std - true_ate_std
 
@@ -985,6 +989,7 @@ class Trainer:
                     he_logits,
                     true_he_std,
                     self.model.bin_edges,
+                    probs=probs_he,
                 )
 
                 lambda_ate = getattr(self.config, "lambda_ate", 1.0)
@@ -992,7 +997,6 @@ class Trainer:
 
                 total_loss = (lambda_ate * loss_ate_nll) + (lambda_he * loss_he_crps)
 
-                probs_he = F.softmax(he_logits, dim=-1)
                 mean_he_pred_std = torch.sum(probs_he * self.model.bin_centers, dim=-1)
 
                 pred_cate_std = ate_mu + mean_he_pred_std

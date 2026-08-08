@@ -19,7 +19,10 @@ _LOG_FLOOR = 1e-30
 
 
 def compute_crps_loss(
-    logits: torch.Tensor, y_target: torch.Tensor, bin_edges: torch.Tensor
+    logits: torch.Tensor,
+    y_target: torch.Tensor,
+    bin_edges: torch.Tensor,
+    probs: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Ranked Probability Score (discrete CRPS).
 
@@ -27,9 +30,9 @@ def compute_crps_loss(
     between bins. Computed as the MSE between the predicted CDF and the ideal
     step-function CDF of the target.
     """
-    pred_cdf = torch.cumsum(F.softmax(logits, dim=-1), dim=-1)
-    # bin_edges[1:] are the upper edges: the step CDF is 1 from the bin
-    # containing the target onwards.
+    if probs is None:
+        probs = F.softmax(logits, dim=-1)
+    pred_cdf = torch.cumsum(probs, dim=-1)
     target_cdf = (bin_edges[1:].view(1, 1, -1) >= y_target.unsqueeze(-1)).float()
 
     return torch.mean((pred_cdf - target_cdf) ** 2, dim=-1).mean()
@@ -74,7 +77,6 @@ def gaussian_bin_mass(
     center_fp32 = center.float()
     bin_edges_fp32 = bin_edges.to(device=center.device, dtype=torch.float32)
 
-    # Broadcast edges against center: center (...) -> (..., 1), edges (nbins,).
     edge_shape = (1,) * center_fp32.ndim + (-1,)
     lower_edges = bin_edges_fp32[:-1].view(edge_shape)
     upper_edges = bin_edges_fp32[1:].view(edge_shape)
@@ -104,6 +106,7 @@ def compute_hl_gaussian_cross_entropy_loss(
     bin_edges: torch.Tensor,
     sigma: float,
     eps: float = 1e-8,
+    log_probs: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Histogram Loss with Gaussian soft targets.
@@ -126,6 +129,8 @@ def compute_hl_gaussian_cross_entropy_loss(
             Standard deviation of the Gaussian target on the standardized target scale.
         eps:
             Numerical stability constant.
+        log_probs:
+            Optional precomputed log_softmax probabilities.
 
     Returns:
         Scalar tensor.
@@ -136,16 +141,14 @@ def compute_hl_gaussian_cross_entropy_loss(
             f"{logits.shape[:-1]} except for the last dimension."
         )
 
-    # Compute target probabilities in fp32 for numerical stability,
-    # especially under AMP.
     logits_fp32 = logits.float()
 
     p = gaussian_bin_mass(bin_edges, y_target, sigma)
 
-    # Truncated-and-renormalized Gaussian over the available bin support.
     p = p / (p.sum(dim=-1, keepdim=True) + eps)
 
-    log_probs = F.log_softmax(logits_fp32, dim=-1)
+    if log_probs is None:
+        log_probs = F.log_softmax(logits_fp32, dim=-1)
 
     loss = -torch.sum(p * log_probs, dim=-1)
 
@@ -157,6 +160,7 @@ def compute_cate_distribution_loss(
     cate_target: torch.Tensor,
     bin_edges: torch.Tensor,
     sigma: float,
+    log_probs: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Distributional term for the single-histogram CATE head ("cate_single").
 
@@ -165,7 +169,7 @@ def compute_cate_distribution_loss(
     Monte Carlo error in the target.
     """
     return compute_hl_gaussian_cross_entropy_loss(
-        logits, cate_target, bin_edges, sigma=sigma
+        logits, cate_target, bin_edges, sigma=sigma, log_probs=log_probs
     )
 
 
@@ -175,6 +179,7 @@ def compute_cate_noise_aware_nll(
     bin_edges: torch.Tensor,
     target_var: torch.Tensor,
     sigma: float,
+    log_probs: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Noise-aware NLL for the CATE head: ``-log[(P * N(0, s^2 + sigma^2))(t)]``.
 
@@ -223,6 +228,9 @@ def compute_cate_noise_aware_nll(
     sigma : float
         Smoothing scale from the training schedule.
 
+    log_probs : Tensor, optional
+        Precomputed log_softmax probabilities.
+
     Returns
     -------
     Tensor
@@ -242,20 +250,11 @@ def compute_cate_noise_aware_nll(
 
     mass = gaussian_bin_mass(bin_edges, cate_target, kernel_sd)
 
-    # Density, not mass: divide by the bin width so the result integrates to one
-    # in t. The grid is uniform, so this is a single scalar.
     bin_width = (bin_edges[1] - bin_edges[0]).to(mass.device, torch.float32)
 
-    # clamp_min before log: bins many sigmas from the target underflow to exactly
-    # zero, and -inf there would poison the logsumexp even though those bins
-    # contribute nothing. The floor must stay in the *normal* float32 range:
-    # a subnormal floor (1e-38 < finfo.tiny = 1.175e-38) is flushed to zero by
-    # backends that do not honour denormals -- MPS returns log(1e-38) = -inf --
-    # and a target far outside the grid, where *every* bin underflows, then
-    # makes the whole row -inf and the loss +inf, which NaNs the weights on the
-    # next backward pass.
     log_kernel = torch.log(mass.clamp_min(_LOG_FLOOR)) - torch.log(bin_width)
-    log_probs = F.log_softmax(logits.float(), dim=-1)
+    if log_probs is None:
+        log_probs = F.log_softmax(logits.float(), dim=-1)
 
     nll = -torch.logsumexp(log_probs + log_kernel, dim=-1)
 
