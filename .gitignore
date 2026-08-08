@@ -29,3 +29,5 @@ toy/*
 *.csv
 *.png
 *.yaml
+
+.wandb_api_key
