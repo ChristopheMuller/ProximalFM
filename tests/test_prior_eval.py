@@ -311,6 +311,52 @@ def test_grid_is_rescaled_into_the_frozen_space(frozen):
     torch.testing.assert_close(edges_s, model.cate_bin_edges * ratio)
 
 
+def test_padded_feature_columns_are_trimmed_before_predict(frozen):
+    """``episode_predictive`` hands the model each episode's *own* width.
+
+    ``LoadPriorDataset`` densifies a batch file to the widest ``d`` in it, so an
+    episode arrives padded with columns the model masks out only after paying a
+    full embedding token for each. Scoring is one episode per call, so the
+    padding is pure cost; dropping it is exact (the trimmed columns are the ones
+    the mask discards) and measurably cheaper. Pin that the trim happens, since
+    a regression here is invisible in the metrics -- it only shows up as a
+    slower validation pass.
+    """
+    cfg, out = frozen
+    meta = load_frozen_meta(out)
+
+    seen = {}
+
+    class _WidthRecordingModel(_FakeCateModel):
+        def predict(self, *, X, Z, W, d_X, d_Z, d_W, **kwargs):
+            seen["X"] = (X.shape[-1], int(d_X.reshape(-1)[0]))
+            seen["Z"] = (Z.shape[-1], int(d_Z.reshape(-1)[0]))
+            seen["W"] = (W.shape[-1], int(d_W.reshape(-1)[0]))
+            return super().predict(X=X, **kwargs)
+
+    model = _WidthRecordingModel()
+    for i, batch in enumerate(iter_frozen_episodes(out / "val")):
+        # A padded arrival is the precondition; without one the assertion below
+        # would pass vacuously.
+        padded = any(
+            t.shape[-1] > int(d.reshape(-1)[0])
+            for t, d in (
+                (batch[1], batch[12]),
+                (batch[3], batch[14]),
+                (batch[2], batch[13]),
+            )
+        )
+        episode_predictive(
+            model, batch, meta["episodes"][i], n_ctx=cfg.n_max, n_max=cfg.n_max
+        )
+        for name, (width, true_d) in seen.items():
+            assert (
+                width == true_d
+            ), f"{name} reached predict padded: {width} != {true_d}"
+        if padded:
+            break
+
+
 def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
     """``prior_dist/grid_scale`` converts head units into the frozen space, and the
     trainer multiplies its sigma schedule by it (EVAL_PLAN step 6e). A caller
