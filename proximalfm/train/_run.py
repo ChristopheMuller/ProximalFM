@@ -53,31 +53,22 @@ warnings.filterwarnings(
 )
 
 
-# Metrics that are already a whole step's worth and must not be divided by the
-# micro-batch count in ``Trainer._resolve_metrics``. ``loss/total`` is reported
-# from the *already* scaled loss (``total_loss / num_micro_batches``), so the
-# accumulated sum over micro batches is the step's loss; dividing again would
-# under-report it by ``num_micro_batches``.
 _UNSCALED_METRICS = frozenset({"loss/total"})
 
 
 class Trainer:
-    """This class handles the complete training lifecycle for ProximalFM."""
+    """Handles the complete training lifecycle for ProximalFM."""
 
     def __init__(self, config):
         self.config = config
-
         self.loss_type = getattr(self.config, "loss_type", "bins_po")
 
-        # HL-Gaussian sigma schedule.
         self.hl_start_sigma = getattr(self.config, "hl_start_sigma", 0.3)
         self.hl_warmup_sigma_steps = getattr(self.config, "hl_warmup_sigma_steps", 1000)
         self.hl_linear_decay_steps = getattr(self.config, "hl_linear_decay_steps", 5000)
         self.hl_final_sigma = getattr(self.config, "hl_final_sigma", 0.01)
 
         self.configure_ddp()
-
-        # Initialize the dedicated logger
         self.logger = ExperimentLogger(self.config, self.master_process)
 
         self.build_model()
@@ -97,14 +88,6 @@ class Trainer:
         self.prior_eval_interval = getattr(self.config, "prior_eval_interval", 50)
         self.synt_eval_interval = getattr(self.config, "synt_eval_interval", 50)
 
-        # `--prior_eval_dir`: load the frozen-set sidecar once, here, rather
-        # than on every prior_validate() pass -- it carries the per-episode
-        # tau_star_std/s2_std and it is the expensive part (EVAL_PLAN step
-        # 6c). Loaded on every rank (not just master) and left unguarded by
-        # try/except, so a missing or malformed sidecar fails loudly at
-        # construction instead of hundreds of steps into training. Likewise
-        # for an unsupported loss_type: the posterior of a difference is not
-        # identified by two marginals (bins_po/hl), so that is fatal here too.
         self.prior_eval_dir = getattr(self.config, "prior_eval_dir", None)
         self._prior_eval_meta = None
         if self.prior_eval_dir is not None:
@@ -115,12 +98,6 @@ class Trainer:
 
             self._prior_eval_meta = load_frozen_meta(Path(self.prior_eval_dir))
             require_single_cate_head(self.raw_model)
-
-            # `--prior_eval_dir` is already in the wandb config (wandb.init gets
-            # the whole namespace), but it is a *path* -- a name a human chose
-            # and could reuse. Log the set's content digest beside it so two
-            # runs that both say "frozen_prod_v1" are visibly the same set, or
-            # visibly not.
             self.logger.update_config(
                 {
                     "prior_eval_content_digest": frozen_content_digest(
@@ -132,14 +109,6 @@ class Trainer:
                 }
             )
 
-        # `--synt_eval_dir`: the same treatment for the realistic replicate set
-        # (ROADMAP B4). One directory drives both synt_point/* and synt_dist/*
-        # from a single per-episode pass -- exactly how --prior_eval_dir drives
-        # both prior_point/* and prior_dist/*, and for the same reason: the
-        # sidecar's *absence* is the gate that stops anyone scoring a posterior
-        # (or, now, a point estimate) against a set whose targets are sampled
-        # ITEs rather than a Monte Carlo CEPO. The load stays unguarded, so a
-        # set built without --mc_cate raises FileNotFoundError at construction.
         self.synt_eval_dir = getattr(self.config, "synt_eval_dir", None)
         self._synt_eval_meta = None
         if self.synt_eval_dir is not None:
@@ -150,7 +119,6 @@ class Trainer:
 
             self._synt_eval_meta = load_frozen_meta(Path(self.synt_eval_dir))
             require_single_cate_head(self.raw_model)
-
             self.logger.update_config(
                 {
                     "synt_eval_content_digest": frozen_content_digest(
@@ -163,7 +131,7 @@ class Trainer:
             )
 
     def configure_ddp(self):
-        """Set up distributed training and system configuration."""
+        """Set up distributed training configuration."""
         self.ddp = int(os.environ.get("RANK", -1)) != -1
 
         if self.ddp:
@@ -208,7 +176,6 @@ class Trainer:
 
     def build_model(self):
         """Build and initialize the ProximalFM model."""
-
         transfer_rules = load_transfer_rules(
             getattr(self.config, "transfer_rules", "transfer_rules.yaml")
         )
@@ -267,9 +234,6 @@ class Trainer:
             clean_old_state_dict = {}
             for k, v in old_state_dict.items():
                 clean_key = k
-                # Strip DDP's "module." prefix, then torch.compile's
-                # "_orig_mod." prefix -- in that order, since a DDP-wrapped
-                # compiled model nests them as "module._orig_mod.".
                 if clean_key.startswith("module."):
                     clean_key = clean_key[7:]
                 if clean_key.startswith("_orig_mod."):
@@ -277,10 +241,6 @@ class Trainer:
 
                 clean_old_state_dict[clean_key] = v
 
-            # 1. Filter weights based on the transfer rules using the clean state dict.
-            # Buffers (bin grids) are derived from the config, never learned: restoring
-            # them from the checkpoint would let a stale vmin/vmax override the grid the
-            # current run was configured with.
             buffer_names = set(dict(model.named_buffers()).keys())
             for name, weight in clean_old_state_dict.items():
                 if name in buffer_names:
@@ -292,12 +252,10 @@ class Trainer:
                     state = get_parameter_state(name, transfer_rules)
                     if state in ["finetune", "freeze"]:
                         filtered_state_dict[name] = weight
-                        # Track the count of weights successfully mapped over
                         loaded_params_count += weight.numel()
 
-            # 2. Load the allowed weights (strict=False leaves "scratch" weights as random)
             model.load_state_dict(filtered_state_dict, strict=False)
-        # 3. Apply freezing logic
+
         for name, param in model.named_parameters():
             state = get_parameter_state(name, transfer_rules)
             if state == "freeze":
@@ -311,7 +269,6 @@ class Trainer:
                 p.numel() for p in model.parameters() if not p.requires_grad
             )
 
-            # Calculate what percentage of the architecture came from the checkpoint
             pct_loaded = (
                 (loaded_params_count / total_model_params * 100)
                 if total_model_params > 0
@@ -325,7 +282,6 @@ class Trainer:
                 f"parameters loaded from checkpoint ({pct_loaded:.2f}%)."
             )
 
-            # Route summary logging through the new Logger class
             self.logger.log_summary(
                 {
                     "trainable_params": num_params,
@@ -342,7 +298,6 @@ class Trainer:
             if self.master_process:
                 print("Model compiled successfully.")
 
-        # Wrap model into DDP container if using distributed training
         if self.ddp:
             self.model = DDP(
                 model, device_ids=[self.ddp_local_rank], broadcast_buffers=False
@@ -353,7 +308,7 @@ class Trainer:
             self.raw_model = model
 
     def configure_prior(self):
-        """Set up a tabular dataset generator for proximal synthetic data."""
+        """Set up dataset generator for proximal synthetic data."""
         c = self.config
         if c.prior_dir is None:
             dataset = PriorDataset(
@@ -389,7 +344,6 @@ class Trainer:
                 n_jobs=1,
             )
         else:
-            # Load pre-generated prior data from disk
             dataset = LoadPriorDataset(
                 data_dir=c.prior_dir,
                 batch_size=c.batch_size,
@@ -403,10 +357,6 @@ class Trainer:
         if self.master_process:
             print(dataset)
 
-        # pin_memory only accelerates CPU->CUDA host transfers. It is a no-op (and
-        # warns) when the prior is already generated on an accelerator, and is
-        # unsupported on MPS, so only pin when the prior comes from the CPU and the
-        # training device is CUDA.
         prior_on_cpu = "cpu" in getattr(self.config, "prior_device", "cpu")
         pin_to_cuda = prior_on_cpu and "cuda" in str(self.config.device)
         self.dataloader = DataLoader(
@@ -424,7 +374,6 @@ class Trainer:
 
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
-
         self.optimizer = optim.AdamW(
             params=self.raw_model.parameters(),
             lr=self.config.lr,
@@ -433,7 +382,7 @@ class Trainer:
         self.scheduler = get_scheduler(config=self.config, optimizer=self.optimizer)
 
     def configure_amp(self):
-        """Configure automatic mixed precision (AMP) for training."""
+        """Configure automatic mixed precision (AMP)."""
         self.amp = self.config.amp and "cuda" in self.config.device
         dtype_str = getattr(self.config, "dtype", "bfloat16")
 
@@ -455,7 +404,7 @@ class Trainer:
 
     @staticmethod
     def _list_step_checkpoints(ckpt_dir: str) -> list[str]:
-        """Filenames in ``ckpt_dir`` matching the ``step-<N>.ckpt`` pattern."""
+        """Return list of step checkpoint filenames in directory."""
         return [
             f
             for f in os.listdir(ckpt_dir)
@@ -464,7 +413,7 @@ class Trainer:
 
     @staticmethod
     def _checkpoint_step(filename: str) -> int:
-        """Parse ``<N>`` out of a ``step-<N>.ckpt`` filename."""
+        """Parse step index from checkpoint filename."""
         return int(filename.split("-")[1].split(".")[0])
 
     def get_latest_checkpoint(self):
@@ -522,18 +471,7 @@ class Trainer:
         print(f"Resuming optimizer state at step {self.curr_step}")
 
     def save_checkpoint(self, name: str, extra: dict | None = None):
-        """Save model and training state to checkpoint file.
-
-        Parameters
-        ----------
-        name : str
-            Filename for the checkpoint
-        extra : dict, optional
-            Additional key/value pairs to store in the checkpoint (e.g. the
-            monitored metric value for the best-model checkpoint). Values must be
-            ``weights_only``-loadable primitives (numbers, strings, tensors).
-        """
-
+        """Save model and training state to checkpoint file."""
         os.makedirs(self.config.checkpoint_dir, exist_ok=True)
         checkpoint_path = os.path.join(self.config.checkpoint_dir, name)
         checkpoint = {
@@ -552,18 +490,7 @@ class Trainer:
     def _monitored_surface_ran(
         self, *, ran_prior_eval: bool, ran_synt_eval: bool
     ) -> bool:
-        """Did the pass that produces ``best_metric`` run on this step?
-
-        Two passes now emit into one merged dict on their own intervals, so the
-        comparison has to be gated on the *right* one. Getting this wrong is not
-        loud: ``_maybe_save_best`` would warn "metric not found" on every step
-        where the monitored pass happened not to run, and the real improvement
-        on the steps where it did would be judged against a stale best.
-        ``prior_point/*`` and ``synt_point/*`` are each a side effect of their
-        surface's single per-episode pass (``prior_validate`` /
-        ``synt_validate``), not a separate one, so they share that pass's
-        gate.
-        """
+        """Check if the evaluation pass producing best_metric ran on this step."""
         by_prefix = (
             ("prior_dist/", ran_prior_eval),
             ("prior_point/", ran_prior_eval),
@@ -576,13 +503,7 @@ class Trainer:
         return False
 
     def _check_best_metric_config(self):
-        """Warn (once, on master) about best-model configs that silently no-op.
-
-        Catches the two common footguns: (a) ``save_best`` requested but no
-        validation surface configured, so no best model can ever be saved; and
-        (b) a ``best_metric`` whose name implies a direction opposite to the
-        chosen ``best_metric_mode`` (e.g. an R2 tracked with ``min``).
-        """
+        """Warn on master process about invalid best_metric configurations."""
         if not self.save_best or not self.master_process:
             return
 
@@ -628,11 +549,7 @@ class Trainer:
             )
 
     def _load_best_metric_value(self):
-        """Recover the best-so-far metric from an existing ``best_model.ckpt``.
-
-        Lets best-model tracking survive a resume: if a best checkpoint already
-        exists we only overwrite it when a genuinely better metric is seen.
-        """
+        """Recover best metric value from existing best_model.ckpt."""
         if not self.save_best or not self.master_process:
             return
         if not getattr(self.config, "checkpoint_dir", None):
@@ -655,16 +572,9 @@ class Trainer:
             print(f"Could not read best metric from {best_path}: {e}")
 
     def _maybe_save_best(self, val_results: dict):
-        """Save ``best_model.ckpt`` if the monitored metric improved.
-
-        Called on the master process only, right after a validation pass. The
-        file is overwritten in place so only the single best checkpoint is kept.
-        """
+        """Save best_model.ckpt if monitored metric improved."""
         metric = val_results.get(self.best_metric, None)
         if metric is None:
-            # Metric absent this pass (e.g. all-homogeneous episodes for an R2
-            # metric, or a mistyped best_metric). Nothing to compare against;
-            # skip, but warn once so a permanent typo isn't silently ignored.
             if not self._warned_missing_metric:
                 available = ", ".join(sorted(val_results)) or "(none)"
                 print(
@@ -705,7 +615,7 @@ class Trainer:
         )
 
     def manage_checkpoint(self):
-        """Manage temporary checkpoints by deleting the oldest when limit is exceeded."""
+        """Manage temporary checkpoints by removing oldest when limit is exceeded."""
         ckpt_dir = self.config.checkpoint_dir
         if ckpt_dir:
             os.makedirs(ckpt_dir, exist_ok=True)
@@ -717,19 +627,13 @@ class Trainer:
         for ckpt in checkpoints:
             try:
                 step = self._checkpoint_step(ckpt)
-                # Consider a checkpoint temporary if its step is not divisible by save_perm_every
                 if step % self.config.save_perm_every != 0:
                     temp_checkpoints.append((step, ckpt))
             except (ValueError, IndexError):
-                # Not a "step-<N>.ckpt" name: _checkpoint_step's split/int raises
-                # IndexError or ValueError. Anything else -- and in particular
-                # KeyboardInterrupt / SystemExit -- must propagate.
                 continue
 
-        # Sort temporary checkpoints by step number (ascending)
         temp_checkpoints.sort(key=lambda x: x[0])
 
-        # Remove oldest temporary checkpoints if limit is exceeded
         num_to_delete = len(temp_checkpoints) - limit
         if num_to_delete > 0:
             for step, ckpt_name in temp_checkpoints[:num_to_delete]:
@@ -740,27 +644,9 @@ class Trainer:
                     print(f"Error removing checkpoint {ckpt_path}: {e}")
 
     def _batch_row_permutation(self, batch):
-        """A permutation of the datasets within a batch, or ``None``.
-
-        Shuffling decorrelates group ordering across the micro batches of a
-        step. It is only safe when the entire batch shares a single ``seq_len``
-        and ``train_size`` (the ``seq_len_per_gp=False`` case). Otherwise —
-        nested tensors, or pre-generated batches loaded from disk whose rows
-        carry heterogeneous metadata — ``None`` keeps the original ordering,
-        since ``run_batch`` relies on consecutive rows being homogeneous within
-        a micro-batch (``validate_micro_batch``) and a random shuffle could mix
-        sequence lengths / train sizes and trigger a ValueError.
-
-        The permutation is returned rather than applied. Applying it here meant
-        ``[t[perm] for t in batch]``, i.e. a second full copy of all 19 tensors
-        — including the ``(B, T, d)`` ones — resident for the whole step, purely
-        to reorder the dataset axis. ``run_batch`` instead indexes one micro
-        batch at a time, so the extra allocation is bounded by
-        ``micro_batch_size`` rather than ``batch_size``.
-        """
+        """Return dataset row permutation or None if batch has heterogeneous sequence lengths."""
         if any(t.is_nested for t in batch):
             return None
-        # batch[15] = seq_lens, batch[16] = train_sizes (per-dataset metadata).
         seq_lens, train_sizes = batch[15], batch[16]
         if seq_lens.unique().numel() > 1 or train_sizes.unique().numel() > 1:
             return None
@@ -768,18 +654,7 @@ class Trainer:
 
     @staticmethod
     def _iter_micro_batches(batch, micro_batch_size, row_perm=None):
-        """Yield micro batches of ``batch``, optionally reordered by ``row_perm``.
-
-        Without a permutation this is ``torch.split``, which returns *views*: no
-        copy, no extra memory. With one, each micro batch is materialized only
-        when it is reached, so the advanced-indexing copy is bounded by
-        ``micro_batch_size`` instead of holding a duplicate of the whole batch
-        for the length of the step.
-
-        A generator rather than a list for exactly that reason -- building the
-        list would allocate every micro batch up front and give back the full
-        copy this exists to avoid.
-        """
+        """Yield micro batches from batch, optionally reordered by row_perm."""
         if row_perm is None:
             for micro_batch in zip(
                 *[torch.split(t, micro_batch_size, dim=0) for t in batch]
@@ -790,21 +665,12 @@ class Trainer:
             yield tuple(t[idx] for t in batch)
 
     def _post_step(self, results, prior_time, train_time):
-        """Per-step bookkeeping after one ``run_batch``.
-
-        Advances ``curr_step`` by exactly one and preserves the per-step cadence
-        of checkpointing (``save_temp_every`` / ``save_perm_every``) and the two
-        validation passes -- ``prior_eval_interval`` for `prior_point/*` +
-        `prior_dist/*`, ``synt_eval_interval`` for `synt_point/*` + `synt_dist/*`.
-        Returns the (possibly augmented) results.
-        """
+        """Perform per-step bookkeeping and trigger validation passes."""
         self.curr_step += 1
 
         if self.master_process:
-            # Add timing information to results
             results.update({"prior_time": prior_time, "train_time": train_time})
 
-            # Save checkpoints
             is_temp_save = self.curr_step % self.config.save_temp_every == 0
             is_perm_save = self.curr_step % self.config.save_perm_every == 0
 
@@ -812,7 +678,6 @@ class Trainer:
                 ckpt_name = f"step-{self.curr_step}.ckpt"
                 self.save_checkpoint(name=ckpt_name)
 
-                # Manage checkpoint limit only for temporary checkpoints
                 if (
                     is_temp_save
                     and not is_perm_save
@@ -822,12 +687,6 @@ class Trainer:
 
         surface_results = {}
 
-        # The prior evaluation pass (prior_point/* + prior_dist/*) runs on ALL
-        # processes: the
-        # episodes are sharded round-robin and the metrics are all-reduced
-        # (EVAL_PLAN step 6d), so every rank must enter prior_validate() or the
-        # collectives inside it deadlock. The gate below is deliberately built
-        # only from values every rank agrees on.
         ran_prior_eval = (
             self.prior_eval_dir is not None
             and self.prior_eval_interval > 0
@@ -836,8 +695,6 @@ class Trainer:
         if ran_prior_eval:
             surface_results.update(self.prior_validate())
 
-        # Same contract for the realistic replicate set's pass (synt_point/* +
-        # synt_dist/*): all ranks, gated only on values every rank agrees on.
         ran_synt_eval = (
             self.synt_eval_dir is not None
             and self.synt_eval_interval > 0
@@ -849,13 +706,6 @@ class Trainer:
         if surface_results:
             results.update(surface_results)
 
-            # Overwrite best_model.ckpt if the monitored metric improved.
-            # Saving is master-only (like the step checkpoints); results are
-            # already DDP-synced so every rank would agree on the value. Only
-            # compare on a step where the surface that produces the monitored
-            # metric actually ran -- otherwise a best_metric would warn on
-            # every step where prior_eval_interval and synt_eval_interval don't
-            # coincide.
             surface_ran = self._monitored_surface_ran(
                 ran_prior_eval=ran_prior_eval,
                 ran_synt_eval=ran_synt_eval,
@@ -863,26 +713,13 @@ class Trainer:
             if self.master_process and self.save_best and surface_ran:
                 self._maybe_save_best(surface_results)
 
-        # Route training logs through the new Logger class
         results["lr"] = self.scheduler.get_last_lr()[0]
         self.logger.log(results, step=self.curr_step)
         return results
 
     @ddp_cleanup
     def train(self):
-        """Main training loop.
-
-        Amortizes prior generation by alternating between two phases:
-
-        1. Generate a resident in-memory ``block`` of ``gen_block_size`` datasets
-           (= ``ceil(gen_block_size / batch_size)`` generated batches) up front.
-        2. Train ``gen_reuse_passes`` (K) passes over that block, reshuffling
-           between every pass, before freeing it and regenerating a fresh one.
-
-        The reuse factor is therefore exactly K. ``curr_step``, checkpointing and
-        validation all still advance per training step (one ``run_batch`` call),
-        not per block.
-        """
+        """Execute the main training loop across configured steps."""
 
         if self.master_process:
             step_progress = tqdm(
@@ -893,12 +730,10 @@ class Trainer:
             )
 
         dataloader = iter(self.dataloader)
-        # A block is gen_block_size datasets, drawn as whole generated batches.
         num_batches_per_block = max(
             1, math.ceil(self.config.gen_block_size / self.config.batch_size)
         )
 
-        # Outer loop: generate a fresh block, then reuse it for K passes.
         while self.curr_step < self.config.max_steps:
             with Timer() as gen_timer:
                 block = []
@@ -991,34 +826,7 @@ class Trainer:
             step_progress.close()
 
     def validate_micro_batch(self, micro_seq_len, micro_train_size):
-        """Validate consistent sequence length and train size within a micro batch.
-
-        Ensures all datasets in a micro batch share the same sequence length and
-        train/test split position, required for efficient batch processing during
-        gradient accumulation.
-
-        Parameters
-        ----------
-        micro_seq_len : Tensor
-            Sequence lengths for each dataset, shape ``(micro_batch_size,)``.
-
-        micro_train_size : Tensor
-            Training sizes (split positions) for each dataset, shape
-            ``(micro_batch_size,)``.
-
-        Returns
-        -------
-        seq_len : int
-            The common sequence length for the micro batch.
-
-        train_size : int
-            The common train size for the micro batch.
-
-        Raises
-        ------
-        ValueError
-            If sequence lengths or train sizes are inconsistent.
-        """
+        """Validate consistent sequence length and train size within a micro batch."""
         if len(torch.unique(micro_seq_len)) > 1:
             raise ValueError(
                 "All datasets in the micro batch must have the same sequence length."
@@ -1051,17 +859,7 @@ class Trainer:
         micro_d_Z,
         seq_len,
     ):
-        """Truncate micro batch tensors to required dimensions.
-
-        Truncates sequence length to the validated ``seq_len`` and each of
-        X/W/Z's feature dimension to its own max active width
-        (``micro_d_X.max()`` etc.), removing padding the micro batch doesn't
-        need. ``micro_A`` and the Y-family tensors share the truncated
-        sequence length but are not feature-truncated.
-
-        Returns the same ten tensors, in the same order as the input args.
-        """
-        # Truncate sequence length
+        """Truncate micro batch tensors to required sequence length and active feature dimensions."""
         if micro_X.shape[1] > seq_len:
             micro_X = micro_X[:, :seq_len]
             micro_W = micro_W[:, :seq_len]
@@ -1074,7 +872,6 @@ class Trainer:
             micro_MU1 = micro_MU1[:, :seq_len]
             micro_S2 = micro_S2[:, :seq_len]
 
-        # Truncate feature dimensions
         max_X = micro_d_X.max().item()
         if micro_X.shape[-1] > max_X:
             micro_X = micro_X[..., :max_X]
@@ -1101,12 +898,7 @@ class Trainer:
         )
 
     def _ddp_all_valid(self, local_valid: bool) -> bool:
-        """AND ``local_valid`` across all DDP ranks (no-op outside DDP).
-
-        Every rank must skip the same micro batch together, or ranks that
-        disagree on whether a step happened diverge and hang on the next
-        collective (e.g. gradient all-reduce).
-        """
+        """Synchronize micro batch validity across DDP ranks."""
         if not self.ddp:
             return local_valid
         valid_tensor = torch.tensor(
@@ -1118,26 +910,7 @@ class Trainer:
         return bool(valid_tensor.item())
 
     def run_micro_batch(self, micro_batch, micro_batch_idx, num_micro_batches):
-        """Process a micro batch for gradient accumulation.
-
-        Parameters
-        ----------
-        micro_batch : tuple
-            The 19-tensor prior batch tuple, sliced along the dataset dimension.
-
-        micro_batch_idx : int
-            Index of the current micro batch (unused; kept for call-site clarity).
-
-        num_micro_batches : int
-            Total number of micro batches. Losses and reported metrics are divided
-            by it so that the accumulated batch sums to one step.
-
-        Returns
-        -------
-        dict or None
-            Per-micro-batch loss/target metrics, or ``None`` when the micro batch
-            was skipped (a single-arm context, or NaN logits).
-        """
+        """Process a single micro batch for gradient accumulation."""
         (
             micro_U,
             micro_X,
@@ -1190,22 +963,6 @@ class Trainer:
             seq_len,
         )
 
-        # Move to device.
-        #
-        # non_blocking lets the thirteen copies below be queued and overlap
-        # instead of the host waiting out each one in turn. It is only an actual
-        # async copy for pinned host memory -- which is exactly the case
-        # configure_prior sets up (`pin_memory` when the prior lives on the CPU
-        # and training is on CUDA) -- and degrades to a plain synchronous copy
-        # everywhere else, so it is safe to pass unconditionally.
-        #
-        # Two things make it safe here. Every consumer is another op on the same
-        # stream, so stream ordering already serialises them against the copy
-        # (and the one host-side read downstream -- the single-arm predicate --
-        # goes through `bool()`, which synchronises). And the source tensors stay
-        # alive well past the copy: `run_batch` holds the whole padded batch the
-        # micro batches are views of. An async copy whose pinned source is freed
-        # or overwritten early is the way this goes wrong.
         device = self.config.device
         micro_X = micro_X.to(device, non_blocking=True)
         micro_W = micro_W.to(device, non_blocking=True)
@@ -1221,20 +978,17 @@ class Trainer:
         micro_d_W = micro_d_W.to(device, non_blocking=True)
         micro_d_Z = micro_d_Z.to(device, non_blocking=True)
 
-        # 2. Standardize targets based ONLY on the observed training context
         y_train_obs = micro_Y_obs[:, :train_size]
         y_context_mean = y_train_obs.mean(dim=1, keepdim=True)
         y_context_std = y_train_obs.std(dim=1, unbiased=False, keepdim=True).clamp(
             min=1e-3
         )
 
-        # Test targets for loss.
         y_test_0_sampled = micro_Y0[:, train_size:]
         y_test_1_sampled = micro_Y1[:, train_size:]
         mu_test_0 = micro_MU0[:, train_size:]
         mu_test_1 = micro_MU1[:, train_size:]
 
-        # Scale all targets using ONLY the observed training context.
         y_test_0_std = (mu_test_0 - y_context_mean) / y_context_std
         y_test_1_std = (mu_test_1 - y_context_mean) / y_context_std
         true_cate_std = y_test_1_std - y_test_0_std
@@ -1243,27 +997,16 @@ class Trainer:
         sampled_y_test_1_std = (y_test_1_sampled - y_context_mean) / y_context_std
         sampled_ite_std = sampled_y_test_1_std - sampled_y_test_0_std
 
-        # Monte Carlo noise on the CATE target, converted into the head's units.
-        # S2 is a variance in raw y^2; the head lives on the cate_vmin/cate_vmax
-        # grid in standardized-y space, so it scales by 1 / y_context_std^2 --
-        # a *per-episode* factor. Skipping this division would leave the
-        # convolution wrong by a random factor per episode, silently.
-        # y_context_std is (B, 1) and broadcasts over the (B, n_q) query rows.
         target_var_std = micro_S2[:, train_size:] / (y_context_std**2)
 
-        # Squeeze A down to (B, T) to match y_train_obs
         A_train = micro_A[:, :train_size].squeeze(-1)
-        n0 = (A_train == 0).sum(dim=1)  # (B,)
-        n1 = (A_train == 1).sum(dim=1)  # (B,)
+        n0 = (A_train == 0).sum(dim=1)
+        n1 = (A_train == 1).sum(dim=1)
 
-        # A single-arm context (all-0 or all-1 treatment) makes the CATE
-        # target undefined for this episode; skip it everywhere in the DDP
-        # group rather than only where it happened to occur.
         if not self._ddp_all_valid(not ((n0 == 0).any() or (n1 == 0).any())):
             return None
 
         with self.amp_ctx:
-            # Model predicts logits of shape (B, test_size, nbins * 2)
             pred_logits = self.model(
                 micro_X,
                 micro_Z,
@@ -1278,7 +1021,6 @@ class Trainer:
             if not self._ddp_all_valid(not pred_logits.isnan().any()):
                 return None
 
-            # Loss configuration routing
             loss_type = self.loss_type
 
             if loss_type == "bins_po":
@@ -1317,15 +1059,11 @@ class Trainer:
                 total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
 
             elif loss_type == "cate_decomposition":
-                # Network outputs: [ATE_mean, ATE_logvar, HE_bin_0, ..., HE_bin_N]
                 ate_mu = pred_logits[..., 0]
                 ate_logvar = pred_logits[..., 1]
                 he_logits = pred_logits[..., 2:]
 
-                # ATE is estimated via the average testing ITE per episode/batch element
                 true_ate_std = true_cate_std.mean(dim=1, keepdim=True)
-
-                # Heterogeneous effect is the residual structural shift isolated from ATE
                 true_he_std = true_cate_std - true_ate_std
 
                 loss_ate_nll = (
@@ -1347,7 +1085,6 @@ class Trainer:
                     probs_he * self.raw_model.bin_centers, dim=-1
                 )
 
-                # CATE prediction synthesizes the additive ATE and HE predictions
                 pred_cate_std = ate_mu + mean_he_pred_std
 
             elif loss_type == "hl":
@@ -1390,7 +1127,6 @@ class Trainer:
                 total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
 
             elif loss_type in ("cate_single", "cate_single_noise_aware"):
-                # A single histogram over tau, so no slicing: out_dim == nbins.
                 hl_sigma = self.get_hl_sigma()
 
                 if loss_type == "cate_single_noise_aware":
@@ -1419,19 +1155,11 @@ class Trainer:
 
                 lambda_cate = getattr(self.config, "lambda_cate", 0.0)
 
-                # The MSE guard needs no adjustment for the convolution:
-                # mean(P * N) == mean(P), so it constrains the same quantity
-                # under either objective.
                 total_loss = loss_cate_dist + (lambda_cate * loss_cate)
 
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
-        # A non-finite loss is never recoverable by backward: one inf/NaN turns
-        # every parameter NaN, and from then on every logged metric -- including
-        # the whole prior_dist/* and prior_point/* surface -- reads nan with no
-        # trace of which step did it. Skip the micro batch instead, in lockstep
-        # across ranks, and warn loudly.
         if not self._ddp_all_valid(bool(torch.isfinite(total_loss))):
             warnings.warn(
                 f"Non-finite {loss_type} loss at step {self.curr_step}; "
@@ -1443,26 +1171,13 @@ class Trainer:
             )
             return None
 
-        # Optimization step
         scaled_loss = total_loss / num_micro_batches
         self.scaler.scale(scaled_loss).backward()
         reported_loss_total = scaled_loss
 
-        # Evaluation & Metric extraction block. Point metrics live on the
-        # synt_point/val_dist surfaces (score_frozen_set over --synt_eval_dir),
-        # not here: this micro batch is always a training draw, at a batch size
-        # chosen for throughput rather than estimator variance.
         with torch.no_grad():
-            # Metrics are accumulated over num_micro_batches to sum to one
-            # step's worth once every micro batch has been added in.
             scale = num_micro_batches
 
-            # Dictionary structure routes cleanly back to log aggregation.
-            # Values stay on the accelerator here and are divided by `scale` in
-            # tensor space; `_resolve_metrics` below turns the whole dict into
-            # Python floats in a single transfer. Calling `.item()` per key
-            # instead would cost one device synchronisation per logged metric
-            # per micro batch (~16 of them on the noise-aware path).
             if loss_type == "bins_po":
                 micro_results = {
                     "loss/total": reported_loss_total,
@@ -1522,42 +1237,12 @@ class Trainer:
         return self._resolve_metrics(micro_results, scale)
 
     def run_batch(self, batch, row_perm=None):
-        """Train the model on one batch of datasets (a single optimizer step).
-
-        Splits the batch into micro-batches for gradient accumulation, padding
-        nested tensors first. Micro-batches that OOM are skipped, and the logged
-        metrics are rescaled so a partial batch still reports per-batch values.
-
-        Parameters
-        ----------
-        batch : tuple
-            The 19-tensor prior batch tuple. Entries may be nested tensors when
-            sequence lengths vary across datasets.
-
-        row_perm : Tensor, optional
-            A permutation of the dataset axis, from
-            :meth:`_batch_row_permutation`, applied one micro batch at a time so
-            that only ``micro_batch_size`` rows are ever copied. ``None`` (the
-            default, and what the validation path passes) keeps the batch order,
-            in which case the micro batches are views and cost nothing.
-
-        Returns
-        -------
-        dict
-            Loss and target metrics for the step, summed over micro-batches.
-
-        Raises
-        ------
-        RuntimeError
-            If more than 10% of micro-batches fail due to OOM errors.
-        """
+        """Train the model on one batch of datasets for a single optimizer step."""
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        # Pad nested tensors to the same size
         batch = [t.to_padded_tensor(padding=0.0) if t.is_nested else t for t in batch]
 
-        # Split the batch into micro-batches along the first dimension
         num_micro_batches = math.ceil(
             self.config.batch_size / self.config.micro_batch_size
         )
@@ -1698,33 +1383,11 @@ class Trainer:
         return self._validate_surface("synt")
 
     def _resolve_metrics(self, metrics: dict, scale: int) -> dict[str, float]:
-        """Materialize a metric dict of 0-d tensors with a single device sync.
-
-        ``Tensor.item()`` blocks until the accelerator has drained every queued
-        kernel, so reading one metric at a time costs one synchronisation per
-        logged key per micro batch -- on the noise-aware path that is ~16 stalls
-        for what is, in total, 16 floats. Stacking them into one tensor turns
-        that into a single transfer.
-
-        The ``/ scale`` division that spreads a training metric over the step's
-        micro batches stays *here*, on the Python float, rather than moving into
-        the tensor expressions: dividing an fp32 tensor and then converting is
-        not the same rounding as converting and then dividing, and this way the
-        logged values are bit-identical to the per-key ``.item() / scale`` it
-        replaces. Entries in :data:`_UNSCALED_METRICS` are already per-step
-        quantities and are passed through undivided, as before.
-
-        Non-tensor entries (``loss/hl_sigma``, which comes from the schedule
-        rather than the graph) need no transfer. Key order is preserved, so the
-        tqdm postfix keeps its familiar layout.
-        """
+        """Materialize metric dict of 0-d tensors into floats with a single device transfer."""
         tensor_keys = [k for k, v in metrics.items() if torch.is_tensor(v)]
 
         resolved: dict[str, float] = {}
         if tensor_keys:
-            # `.to(device)` is a no-op for everything produced by the loss, but
-            # `noise/mean_K` derives from K_eff, which is never moved off the
-            # prior's device; stacking has to agree on one device regardless.
             device = self.config.device
             stacked = torch.stack(
                 [
@@ -1749,21 +1412,7 @@ class Trainer:
         pred_cate_std,
         micro_K_eff,
     ) -> dict:
-        """Diagnostics for the noise-aware CATE objective.
-
-        ``s / sd_pred`` is the one to watch. It sets how much the noise
-        correction is worth at all -- below ~0.2 the induced width inflation is
-        under 2% and the correction is barely detectable -- but it is *not* a
-        constant: ``sd_pred`` shrinks as the posterior sharpens, so a replicate
-        count that was comfortably sufficient early can quietly become the
-        binding constraint later in a run. Hence a logged series, not a one-off
-        check.
-
-        Values are returned as unmaterialized 0-d tensors; the caller merges
-        them with the rest of the micro batch's metrics and applies both the
-        transfer and the ``/ scale`` division once, in
-        :meth:`Trainer._resolve_metrics`.
-        """
+        """Diagnostics for the noise-aware CATE objective."""
         centers = self.raw_model.cate_bin_centers.float()
         probs = probs_cate.float()
         mean = pred_cate_std.float().unsqueeze(-1)
@@ -1775,23 +1424,13 @@ class Trainer:
         mean_s = torch.sqrt(s2).mean()
         mean_sd_pred = torch.sqrt(var_pred.clamp_min(0.0)).mean()
 
-        # Rows the convolution cannot act on: no replicate variance available
-        # (K = 1, context rows, or data predating target-noise tracking). They
-        # fall back to the plain sigma-smoothed NLL, which is correct but is not
-        # the objective this loss_type exists for -- so surface the share.
         frac_fallback = (~(s2 > 0)).float().mean()
 
-        # Targets past the grid ends get essentially no likelihood under any
-        # prediction, so a non-trivial share here means cate_vmin/cate_vmax are
-        # too tight and the loss is being driven by rows it cannot represent.
         edges = self.raw_model.cate_bin_edges
         out_of_grid = (
             ((true_cate_std < edges[0]) | (true_cate_std > edges[-1])).float().mean()
         )
 
-        # Returned as unmaterialized 0-d tensors: the caller merges them into
-        # the rest of the micro batch's metrics and resolves everything in one
-        # transfer (see `_resolve_metrics`).
         return {
             "noise/mean_s": mean_s,
             "noise/mean_sd_pred": mean_sd_pred,
@@ -1802,16 +1441,7 @@ class Trainer:
         }
 
     def get_hl_sigma(self) -> float:
-        """
-        Returns the current sigma for HL-Gaussian loss.
-
-        Schedule:
-        - use start_sigma for warmup_sigma_steps
-        - linearly decay to final_sigma over linear_decay_steps
-        - then stay at final_sigma
-
-        If start_sigma == final_sigma, this returns a constant sigma.
-        """
+        """Return the current sigma for HL-Gaussian loss schedule."""
         start_sigma = float(self.hl_start_sigma)
         final_sigma = float(self.hl_final_sigma)
         warmup_steps = int(self.hl_warmup_sigma_steps)
@@ -1844,11 +1474,9 @@ if __name__ == "__main__":
     config = parser.parse_args()
 
     try:
-        # Set the start method for subprocesses to 'spawn'
         set_start_method("spawn")
     except RuntimeError:
-        pass  # Ignore the error if the context has already been set
+        pass
 
-    # Create trainer and start training
     trainer = Trainer(config)
     trainer.train()
