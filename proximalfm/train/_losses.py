@@ -78,9 +78,7 @@ def gaussian_bin_mass(
     bin_edges_fp32 = bin_edges.to(device=center.device, dtype=torch.float32)
 
     edge_shape = (1,) * center_fp32.ndim + (-1,)
-    lower_edges = bin_edges_fp32[:-1].view(edge_shape)
-    upper_edges = bin_edges_fp32[1:].view(edge_shape)
-
+    edges = bin_edges_fp32.view(edge_shape)
     mu = center_fp32.unsqueeze(-1)
 
     if isinstance(sigma, torch.Tensor):
@@ -94,10 +92,9 @@ def gaussian_bin_mass(
 
     normalizer = math.sqrt(2.0) * scale
 
-    cdf_upper = 0.5 * (1.0 + torch.erf((upper_edges - mu) / normalizer))
-    cdf_lower = 0.5 * (1.0 + torch.erf((lower_edges - mu) / normalizer))
+    cdf_all = 0.5 * (1.0 + torch.erf((edges - mu) / normalizer))
 
-    return (cdf_upper - cdf_lower).clamp_min(0.0)
+    return (cdf_all[..., 1:] - cdf_all[..., :-1]).clamp_min(0.0)
 
 
 def compute_hl_gaussian_cross_entropy_loss(
