@@ -3,9 +3,9 @@
 Point **and** distributional metrics on a set carrying a low-noise ``tau_star``
 and a ``frozen_meta.pt`` sidecar. Two such sets exist, and ``score_frozen_set``
 namespaces them by caller-supplied prefix: the frozen high-``K`` prior set built
-by ``posterior_eval/`` (``prior_point/*`` + ``prior_dist/*``) and the realistic
-replicate set built by ``synthetic/build_proximal_datasets.py --mc_cate K``
-(``val_point/*`` + ``val_dist/*``, both from the same pass -- point metrics are a
+by ``prior_eval/`` (``prior_point/*`` + ``prior_dist/*``) and the realistic
+replicate set built by ``synt_eval/build_proximal_datasets.py --mc_cate K``
+(``synt_point/*`` + ``synt_dist/*``, both from the same pass -- point metrics are a
 side effect of the per-episode forward pass that produces the distributional
 ones, not a second, separately-gated one).
 
@@ -463,7 +463,7 @@ def episode_predictive(
 
     Uses the first ``n_ctx`` context rows plus every query row (the layout of
     the frozen set: rows ``[0, n_max)`` are context, ``[n_max, T)`` are the
-    replicated queries), exactly as ``posterior_eval/report.py`` does.
+    replicated queries), exactly as ``prior_eval/report.py`` does.
 
     ``predict`` de-standardizes with the context statistics of the rows it was
     handed, so its grid is ``cate_bin_edges * y_std_predict`` in raw-``y`` units.
@@ -547,7 +547,7 @@ def score_episode(
     Returns the per-episode pooled squared error and row count, which the
     driver accumulates into ``cate/rmse_pooled``. That key exists for one
     reason: ``CausalEvaluator.cate/rmse`` is a *median over episodes*, so it is
-    not the quantity ``posterior_eval/report.py`` prints, and the cheapest place
+    not the quantity ``prior_eval/report.py`` prints, and the cheapest place
     to catch a scale bug is a number that must match it exactly.
 
     Also returns ``grid_scale``, the factor :func:`episode_predictive` applied
@@ -666,7 +666,7 @@ def score_frozen_set(
     ``prefix_point``/``prefix_dist`` namespace the two returned surfaces. The
     defaults are the prior set's, so every existing caller is unchanged. The
     trainer's *realistic* replicate pass (ROADMAP B4) passes
-    ``prefix_point="val_point/"``, ``prefix_dist="val_dist/"`` -- both metric
+    ``prefix_point="synt_point/"``, ``prefix_dist="synt_dist/"`` -- both metric
     kinds from this one call, since point metrics are a side effect of the same
     per-episode forward pass that produces the distributional ones
     (``score_episode``'s ``CausalEvaluator`` fan-out), not a second pass.
@@ -683,7 +683,7 @@ def score_frozen_set(
     shard (``max_episodes < world_size``); it must still reach the reductions
     below, so nothing here returns early on an empty local pass.
     """
-    from posterior_eval.build_prior_frozen_set import load_frozen_meta
+    from prior_eval.build_prior_frozen_set import load_frozen_meta
 
     out = Path(out)
     if meta is None:

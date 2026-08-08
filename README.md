@@ -231,7 +231,7 @@ cate_estimates = model.predict(
 
 ## 3. Fixed Datasets: Validation & Benchmark
 
-ProximalFM trains on an *infinite* synthetic stream, so model selection and method comparison need a **fixed, reproducible** set of datasets, **different from the prior**. The committed recipe [`synthetic/validation_data/config.yaml`](synthetic/validation_data/config.yaml) defines one such set: 480 realistic proximal datasets (2048 rows each, spread evenly across the 12 mechanisms of [`synthetic/realistic_proximal_mechanisms.py`](synthetic/realistic_proximal_mechanisms.py)). This data is useful for both: tuning and choosing a model, and comparing this model with other methods.
+ProximalFM trains on an *infinite* synthetic stream, so model selection and method comparison need a **fixed, reproducible** set of datasets, **different from the prior**. The committed recipe [`synt_eval/validation_data/config.yaml`](synt_eval/validation_data/config.yaml) defines one such set: 480 realistic proximal datasets (2048 rows each, spread evenly across the 12 mechanisms of [`synt_eval/realistic_proximal_mechanisms.py`](synt_eval/realistic_proximal_mechanisms.py)). This data is useful for both: tuning and choosing a model, and comparing this model with other methods.
 
 <details>
 <summary><b>Full guide — rebuild the datasets, validate during training, run the benchmark</b></summary>
@@ -239,13 +239,13 @@ ProximalFM trains on an *infinite* synthetic stream, so model selection and meth
 ### Step 1 — Rebuild the datasets locally
 
 ```bash
-uv run synthetic/build_proximal_datasets.py --config synthetic/validation_data/config.yaml
+uv run synt_eval/build_proximal_datasets.py --config synt_eval/validation_data/config.yaml
 ```
 
 This regenerates the exact same tensors on any machine (the build is deterministic in `--seed`; the config pins every parameter, including defaults). It writes:
 
 ```
-synthetic/validation_data/
+synt_eval/validation_data/
 ├── config.yaml      # fully-resolved build recipe (the committed file)
 ├── manifest.json    # what was built: per-mechanism counts, seed, exact CLI
 └── val/             # THE data: raw sparse batch_*.pt + metadata.json
@@ -256,23 +256,23 @@ synthetic/validation_data/
 Explicit flags override the config, which is how you build a **held-out test batch** with the same characteristics but never-seen DGP draws:
 
 ```bash
-uv run synthetic/build_proximal_datasets.py \
-    --config synthetic/validation_data/config.yaml \
+uv run synt_eval/build_proximal_datasets.py \
+    --config synt_eval/validation_data/config.yaml \
     --name test_data --seed 9999
 ```
 
 ### Step 2 — Use it as validation during training
 
 The trainer's validation surface needs a **replicate-bearing** set — one built with `--mc_cate K`,
-`K > 1` — because `val_point/*` and `val_dist/*` both come from `score_frozen_set`'s per-episode pass
+`K > 1` — because `synt_point/*` and `synt_dist/*` both come from `score_frozen_set`'s per-episode pass
 over `frozen_meta.pt`, and only a replicate build writes that sidecar. The committed
-`synthetic/validation_data` (built with the default `--mc_cate 1`) has no sidecar and is not usable
+`synt_eval/validation_data` (built with the default `--mc_cate 1`) has no sidecar and is not usable
 here; it exists for the benchmark harness (Step 3), which is point-only and reads `val/` directly.
 Build a replicate set instead:
 
 ```bash
-uv run synthetic/build_proximal_datasets.py \
-    --config synthetic/validation_data/config.yaml \
+uv run synt_eval/build_proximal_datasets.py \
+    --config synt_eval/validation_data/config.yaml \
     --name validation_data_dist --mc_cate 200
 ```
 
@@ -281,24 +281,24 @@ Then point the trainer at its **root**:
 ```bash
 uv run python -m proximalfm.train \
     <your usual training flags> \
-    --val_eval_dir synthetic/validation_data_dist \
-    --val_eval_interval 50 \
+    --synt_eval_dir synt_eval/validation_data_dist \
+    --synt_eval_interval 50 \
     --save_best true \
-    --best_metric val_point/cate/npehe \
+    --best_metric synt_point/cate/npehe \
     --best_metric_mode min
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--val_eval_dir` | `None` | **Root** of a replicate-bearing set (holds both `val/` and `frozen_meta.pt`). Drives both `val_point/*` and `val_dist/*` from one pass, mirroring how `--prior_eval_dir` drives `prior_point/*` + `prior_dist/*`. |
-| `--val_eval_interval` | `50` | Steps between val passes; `0` disables. |
-| `--val_eval_max_episodes` | `None` | Cap on episodes scored per pass, applied before DDP sharding. |
+| `--synt_eval_dir` | `None` | **Root** of a replicate-bearing set (holds both `val/` and `frozen_meta.pt`). Drives both `synt_point/*` and `synt_dist/*` from one pass, mirroring how `--prior_eval_dir` drives `prior_point/*` + `prior_dist/*`. |
+| `--synt_eval_interval` | `50` | Steps between val passes; `0` disables. |
+| `--synt_eval_max_episodes` | `None` | Cap on episodes scored per pass, applied before DDP sharding. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
-| `--best_metric` | `val_point/cate/npehe` | Metric key to monitor (e.g. `val_point/cate/rmse`, `val_dist/crps`, `prior_dist/crps`). |
+| `--best_metric` | `synt_point/cate/npehe` | Metric key to monitor (e.g. `synt_point/cate/rmse`, `synt_dist/crps`, `prior_dist/crps`). |
 | `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |
 
 A set built **without** `--mc_cate` has no Monte-Carlo CATE target, so both metric kinds — point or
-distributional — would be scored against sampled ITEs; `--val_eval_dir` refuses such a set outright
+distributional — would be scored against sampled ITEs; `--synt_eval_dir` refuses such a set outright
 (no `frozen_meta.pt`, `FileNotFoundError` at construction) rather than silently reporting an inflated
 number. See [`proximalfm/train/metrics.md`](proximalfm/train/metrics.md) §7.
 
@@ -309,8 +309,8 @@ number. See [`proximalfm/train/metrics.md`](proximalfm/train/metrics.md) §7.
 ```yaml
 data:
   source: load                                  # never regenerates
-  val_dir: synthetic/validation_data/val        # the batch_*.pt directory from Step 1
-  output_dir: synthetic/validation_data/bench # where preds/, results/, data.pt cache go
+  val_dir: synt_eval/validation_data/val        # the batch_*.pt directory from Step 1
+  output_dir: synt_eval/validation_data/bench # where preds/, results/, data.pt cache go
 ```
 
 Run it (after Step 1) with:

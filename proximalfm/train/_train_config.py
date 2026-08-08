@@ -518,10 +518,10 @@ def build_parser():
     )
     parser.add_argument(
         "--best_metric",
-        default="val_point/cate/npehe",
+        default="synt_point/cate/npehe",
         type=str,
         help="Validation metric key to monitor for best-model checkpointing "
-        "(e.g. 'val_point/cate/rmse', 'val_dist/crps', 'prior_dist/crps'). "
+        "(e.g. 'synt_point/cate/rmse', 'synt_dist/crps', 'prior_dist/crps'). "
         "See CausalEvaluator and PosteriorEvaluator for available keys.",
     )
     parser.add_argument(
@@ -547,7 +547,7 @@ def build_parser():
         type=str,
         help="Root directory of the frozen posterior-eval set (holds both the "
         "val/-format episodes and frozen_meta.pt; see "
-        "posterior_eval/build_prior_frozen_set.py). Drives BOTH the "
+        "prior_eval/build_prior_frozen_set.py). Drives BOTH the "
         "prior_point/* and prior_dist/* surfaces from one pass. None disables "
         "the prior evaluation surface entirely.",
     )
@@ -572,13 +572,13 @@ def build_parser():
     ###### Val evaluation (point + distributional) ############################
     ###########################################################################
     parser.add_argument(
-        "--val_eval_dir",
+        "--synt_eval_dir",
         default=None,
         type=str,
         help="Root directory of a replicate-bearing realistic set, built by "
-        "synthetic/build_proximal_datasets.py with --mc_cate K (K > 1) -- the "
+        "synt_eval/build_proximal_datasets.py with --mc_cate K (K > 1) -- the "
         "set's ROOT, holding both val/ and frozen_meta.pt. Drives BOTH the "
-        "val_point/* and val_dist/* surfaces from one pass, mirroring how "
+        "synt_point/* and synt_dist/* surfaces from one pass, mirroring how "
         "--prior_eval_dir drives prior_point/* + prior_dist/*. A set built "
         "without --mc_cate has no frozen_meta.pt and is refused: its targets "
         "are sampled ITEs, and scoring against those -- point or "
@@ -586,17 +586,17 @@ def build_parser():
         "rather than erroring.",
     )
     parser.add_argument(
-        "--val_eval_interval",
+        "--synt_eval_interval",
         default=50,
         type=int,
-        help="Steps between validation passes against --val_eval_dir. 0 disables val evaluation entirely.",
+        help="Steps between validation passes against --synt_eval_dir. 0 disables val evaluation entirely.",
     )
     parser.add_argument(
-        "--val_eval_max_episodes",
+        "--synt_eval_max_episodes",
         default=None,
         type=nullable_int,
-        help="Cap on the number of episodes scored per val_validate() "
-        "pass. None (default) scores every episode in --val_eval_dir. Applied "
+        help="Cap on the number of episodes scored per synt_validate() "
+        "pass. None (default) scores every episode in --synt_eval_dir. Applied "
         "before the DDP round-robin sharding, like --prior_eval_max_episodes.",
     )
 

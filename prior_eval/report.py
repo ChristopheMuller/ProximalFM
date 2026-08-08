@@ -268,7 +268,7 @@ def report(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        prog="python -m posterior_eval.report",
+        prog="python -m prior_eval.report",
         description="Report s/sigma_post for a frozen posterior-evaluation set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

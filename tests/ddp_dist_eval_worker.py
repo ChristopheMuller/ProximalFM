@@ -1,6 +1,6 @@
 """One rank of the sharded ``score_frozen_set`` pass (EVAL_PLAN step 6d).
 
-Not a test module -- ``tests/test_posterior_eval.py`` launches ``world_size``
+Not a test module -- ``tests/test_prior_eval.py`` launches ``world_size``
 copies of this script as separate processes, one per rank, with the usual
 ``RANK``/``WORLD_SIZE``/``MASTER_ADDR``/``MASTER_PORT`` environment.
 
@@ -24,7 +24,7 @@ import torch.distributed as dist
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_posterior_eval import _FakeCateModel  # noqa: E402
+from test_prior_eval import _FakeCateModel  # noqa: E402
 
 from proximalfm.train._dist_eval import score_frozen_set  # noqa: E402
 

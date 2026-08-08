@@ -195,7 +195,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     Loading resolves in this order:
       1. ``data.val_dir`` set and no cached ``data.pt`` (or --force): build the
          standardized dict from the raw val-format directory (``batch_*.pt``,
-         as written by synthetic/build_proximal_datasets.py) and cache it as
+         as written by synt_eval/build_proximal_datasets.py) and cache it as
          ``data.pt`` in the run's output dir (bench_plots.py reads it there).
       2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
          standardized dict from a single real-world CSV (e.g. a Causal

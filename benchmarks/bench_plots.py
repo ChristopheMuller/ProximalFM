@@ -519,7 +519,7 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Path to a benchmark output directory (containing data.pt, preds/ and "
-            "a results/ sub-folder), e.g. synthetic/validation_data/bench. "
+            "a results/ sub-folder), e.g. synt_eval/validation_data/bench. "
             "Overrides --exp for experiments stored elsewhere."
         ),
     )

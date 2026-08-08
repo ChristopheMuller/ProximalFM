@@ -5,8 +5,8 @@
 # ── Data ──────────────────────────────────────────────────────────────────────
 data:
   source: load
-  val_dir: synthetic/validation_data/val
-  output_dir: synthetic/validation_data/bench
+  val_dir: synt_eval/validation_data/val
+  output_dir: synt_eval/validation_data/bench
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 run:

@@ -20,7 +20,7 @@ realistic_proximal_mechanisms.py):
           val_dir: <out_root>/<name>/val
 
   * TRAINING-VALIDATION — needs `--mc_cate K` (`K > 1`); see below. Point the
-    trainer at the build's *root* with `--val_eval_dir <out_root>/<name>`.
+    trainer at the build's *root* with `--synt_eval_dir <out_root>/<name>`.
 
 Datasets are spread as evenly as possible across the 12 realistic mechanisms.
 The whole build is reproducible from `--seed`: generate a "validation batch" and
@@ -30,12 +30,12 @@ convention, two different `--name`s / output folders).
 Example
 -------
     # Validation batch (seen during training to tune the model)
-    python synthetic/build_proximal_datasets.py \
+    python synt_eval/build_proximal_datasets.py \
         --name proximal_val_v1 --n_datasets 240 --seq_len 2048 \
         --prop_train 0.75 --seed 123
 
     # Test batch (held out; only used for final comparison)
-    python synthetic/build_proximal_datasets.py \
+    python synt_eval/build_proximal_datasets.py \
         --name proximal_test_v1 --n_datasets 240 --seq_len 2048 \
         --prop_train 0.75 --seed 9999
 
@@ -43,7 +43,7 @@ Each build also writes a fully-resolved ``config.yaml`` (all settings, including
 those left at their defaults). Re-run an earlier build exactly, even if defaults
 have since changed, by pointing ``--config`` at it (explicit flags still win):
 
-    python synthetic/build_proximal_datasets.py \
+    python synt_eval/build_proximal_datasets.py \
         --config synthetic/proximal_val_v1/config.yaml --name proximal_val_v2
 
 Replicate mode (``--mc_cate K`` with ``K > 1``)
@@ -52,7 +52,7 @@ Replicate mode (``--mc_cate K`` with ``K > 1``)
 Without it (the default, ``K=1``), a set carries only realized potential
 outcomes: ``Y1 - Y0`` is a draw of the *ITE*, and ``MU0``/``MU1`` are written as
 those same draws. No sidecar is written. Such a set is usable by the benchmark
-harness, but **not** by the trainer: `--val_eval_dir` requires `frozen_meta.pt`
+harness, but **not** by the trainer: `--synt_eval_dir` requires `frozen_meta.pt`
 and refuses a set without one, rather than silently scoring point or
 distributional metrics against sampled ITEs.
 
@@ -61,12 +61,12 @@ With ``K > 1`` each query row is replicated through the latent and noise draw,
 paired sampling variance -- see the estimand section of
 ``realistic_proximal_mechanisms``. The build then also writes the
 ``frozen_meta.pt`` sidecar, which is what makes the set usable for training
-validation at all: the trainer's `--val_eval_dir` scores it once and emits both
-``val_point/*`` and ``val_dist/*`` from that single pass::
+validation at all: the trainer's `--synt_eval_dir` scores it once and emits both
+``synt_point/*`` and ``synt_dist/*`` from that single pass::
 
-    --val_eval_dir <out_root>/<name>  # the ROOT, not its val/
+    --synt_eval_dir <out_root>/<name>  # the ROOT, not its val/
 
-    python synthetic/build_proximal_datasets.py \
+    python synt_eval/build_proximal_datasets.py \
         --name proximal_dist_v1 --n_datasets 480 --seq_len 2048 \
         --prop_train 0.75 --mc_cate 1000 --seed 20260807
 
@@ -457,8 +457,8 @@ def build(args: argparse.Namespace) -> None:
         print(
             f"  [sidecar]   {root / 'frozen_meta.pt'}  "
             f"(content_digest={digest}, n_max={n_max}, K={args.mc_cate})\n"
-            f"             trainer:   --val_eval_dir {root}\n"
-            f"             score it:  uv run python -m posterior_eval.score "
+            f"             trainer:   --synt_eval_dir {root}\n"
+            f"             score it:  uv run python -m prior_eval.score "
             f"--out {root} --ckpt <ckpt>"
         )
     else:
@@ -546,7 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Monte Carlo replicates per query row. 1 (default) = no "
         "replication: MU0/MU1 are the realized potential outcomes, the set "
-        "supports val_point/* only, and no sidecar is written. K > 1 turns on "
+        "supports synt_point/* only, and no sidecar is written. K > 1 turns on "
         "replicate mode and writes frozen_meta.pt, making the set scorable "
         "distributionally. Production target: 1000.",
     )

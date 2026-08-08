@@ -19,8 +19,8 @@ import numpy as np
 import pytest
 import torch
 
-from posterior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
-from posterior_eval.strata import (
+from prior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
+from prior_eval.strata import (
     MIN_EPISODES,
     ManifestMismatchError,
     build_manifest,
@@ -231,7 +231,7 @@ def test_load_manifest_refuses_a_stale_format_version(frozen):
 def test_missing_manifest_points_at_the_command_that_builds_it(tmp_path):
     out = tmp_path / "empty"
     out.mkdir()
-    with pytest.raises(FileNotFoundError, match="posterior_eval.strata"):
+    with pytest.raises(FileNotFoundError, match="prior_eval.strata"):
         load_manifest(out)
 
 
@@ -261,7 +261,7 @@ def test_score_strata_buckets_partition_the_pooled_rows(frozen, monkeypatch):
     Uses a stub model so the test pins the bucketing logic rather than a
     checkpoint's behaviour.
     """
-    from posterior_eval import score_strata as mod
+    from prior_eval import score_strata as mod
 
     meta = load_frozen_meta(frozen)
     manifest = build_manifest(frozen)
@@ -284,7 +284,7 @@ def test_score_strata_buckets_partition_the_pooled_rows(frozen, monkeypatch):
 
 
 def _verdict_text(weak_in, weak_out, capsys):
-    from posterior_eval import score_strata as mod
+    from prior_eval import score_strata as mod
 
     results = {
         "pooled": {"sd_over_rmse": (weak_in + weak_out) / 2, "episodes": 1000},

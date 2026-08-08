@@ -27,13 +27,13 @@
 
 set -euo pipefail
 
-OUT=${OUT:-data/posterior_eval/frozen_prod_v1}
-DEVICE=${DEVICE:-cuda:0}
+OUT=${OUT:-data/prior_eval/frozen_prod_v1_small}
+DEVICE=${DEVICE:-cpu}
 
-N_DATASETS=${N_DATASETS:-1000}
-N_MAX=${N_MAX:-2048}
+N_DATASETS=${N_DATASETS:-200}
+N_MAX=${N_MAX:-1024}
 N_Q=${N_Q:-128}
-K=${K:-4000}
+K=${K:-1000}
 SEED=${SEED:-20260806}
 MEM_BUDGET=${MEM_BUDGET:-8000000000}
 
@@ -47,7 +47,7 @@ echo
 
 source .venv/bin/activate
 
-python -m posterior_eval.build \
+python -m prior_eval.build \
   --out "${OUT}" \
   --gen_device "${DEVICE}" \
   --n_datasets "${N_DATASETS}" \
@@ -61,5 +61,5 @@ python -m posterior_eval.build \
 
 echo
 echo "Done. Next:"
-echo "  uv run python -m posterior_eval.score --dir ${OUT} --ckpt <ckpt>"
+echo "  uv run python -m prior_eval.score --dir ${OUT} --ckpt <ckpt>"
 echo "  training: --prior_eval_dir ${OUT}  (the ROOT, not its val/)"

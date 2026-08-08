@@ -1,11 +1,11 @@
 """ROADMAP A2 -- score a checkpoint on each stratified cut of a frozen set.
 
-    uv run python -m posterior_eval.score_strata \\
-        --dir data/posterior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
+    uv run python -m prior_eval.score_strata \\
+        --dir data/prior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
 
-Offline sibling of :mod:`posterior_eval.score`, which reports one pooled number
+Offline sibling of :mod:`prior_eval.score`, which reports one pooled number
 per metric. This reports the same metrics per **cut** defined in
-:mod:`posterior_eval.strata`, each scored both *inside* and *outside* the cut.
+:mod:`prior_eval.strata`, each scored both *inside* and *outside* the cut.
 
 One pass over the data, whatever the number of cuts:
 :class:`~proximalfm.train._dist_eval.PosteriorEvaluator` accumulates row-weighted
@@ -51,12 +51,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from tqdm import tqdm
 
-from posterior_eval.build_prior_frozen_set import (
+from prior_eval.build_prior_frozen_set import (
     frozen_content_digest,
     load_frozen_meta,
 )
-from posterior_eval.report import load_model
-from posterior_eval.strata import MIN_EPISODES, load_manifest
+from prior_eval.report import load_model
+from prior_eval.strata import MIN_EPISODES, load_manifest
 from proximalfm.train._dist_eval import (
     PosteriorEvaluator,
     UnsupportedLossTypeError,
@@ -345,7 +345,7 @@ def _print_verdict(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m posterior_eval.score_strata",
+        prog="python -m prior_eval.score_strata",
         description="Score a checkpoint per stratified cut of a frozen set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

@@ -8,7 +8,7 @@ Two kinds of check, and both are needed:
   exists so that ``tau_star`` is low-noise, and the scale plumbing between
   ``predict``'s moving context statistics and the sidecar's frozen one is the
   cheapest thing in the stack to get silently wrong. The pooled RMSE is
-  therefore asserted equal to ``posterior_eval/report.py``'s, which computes the
+  therefore asserted equal to ``prior_eval/report.py``'s, which computes the
   same quantity by an independent path.
 """
 
@@ -23,8 +23,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from posterior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
-from posterior_eval.report import _cate_rmse_at_prefix
+from prior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
+from prior_eval.report import _cate_rmse_at_prefix
 from proximalfm.train._dist_eval import (
     PosteriorEvaluator,
     UnsupportedLossTypeError,
@@ -272,7 +272,7 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
 
 def test_pooled_rmse_matches_the_report_path(frozen):
     """The one cross-check that would catch a frozen-scale bug: the same
-    quantity computed by ``posterior_eval/report.py``'s independent path."""
+    quantity computed by ``prior_eval/report.py``'s independent path."""
     cfg, out = frozen
     model = _FakeCateModel()
     meta = load_frozen_meta(out)
@@ -547,15 +547,15 @@ def test_suppressing_the_point_surface_is_ddp_safe(frozen4, tmp_path):
     """
     cfg, out = frozen4
     single = score_frozen_set(
-        _FakeCateModel(), out, prefix_point=None, prefix_dist="val_dist/"
+        _FakeCateModel(), out, prefix_point=None, prefix_dist="synt_dist/"
     )
     per_rank = _run_sharded(
-        out, tmp_path, world_size=2, prefix_dist="val_dist/", skip_point=True
+        out, tmp_path, world_size=2, prefix_dist="synt_dist/", skip_point=True
     )
 
     assert per_rank[0] == per_rank[1], "ranks disagree; a reduction was skipped"
-    assert per_rank[0]["val_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
+    assert per_rank[0]["synt_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
     assert not any(k.startswith("prior_") for k in per_rank[0])
-    assert per_rank[0]["val_dist/crps"] == pytest.approx(
-        single["val_dist/crps"], rel=1e-9
+    assert per_rank[0]["synt_dist/crps"] == pytest.approx(
+        single["synt_dist/crps"], rel=1e-9
     )

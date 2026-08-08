@@ -3,7 +3,7 @@
 The load-bearing test here is ``test_legacy_path_is_byte_identical``: replicate
 mode had to be threaded through twelve hand-written mechanisms without moving a
 single RNG draw on the ``mc_cate=1`` path, or the committed
-``synthetic/validation_data`` set -- and every ``val/point`` number ever logged
+``synt_eval/validation_data`` set -- and every ``val/point`` number ever logged
 against it -- would silently stop being reproducible.
 
 The other sharp checks are the two mechanisms whose Monte Carlo target has a
@@ -21,7 +21,7 @@ from pathlib import Path
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synthetic"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
 
 from build_proximal_datasets import POOL_FIELDS, build, parse_args  # noqa: E402
 from realistic_proximal_mechanisms import (  # noqa: E402
@@ -90,7 +90,7 @@ def test_legacy_path_reports_the_realized_draw_as_the_target():
     Writing NaN instead would be more honest about there being no CATE target,
     but ``_genload`` only falls back to Y0/Y1 when the *keys are absent* -- so
     NaN values would flow into ``true_cate`` and silently destroy
-    ``val_point/cate/npehe``, the default ``--best_metric``.
+    ``synt_point/cate/npehe``, the default ``--best_metric``.
     """
     _, p = batch_for(mech=1, mc_cate=1)
     assert torch.equal(p["MU0"], p["Y0"])
@@ -321,7 +321,7 @@ def test_score_frozen_set_reads_a_realistic_set_unchanged(toy_set):
     The namespace is the *caller's* choice, not a property of the set -- which
     is what lets the trainer score a prior set and a realistic set in the same
     step without their keys colliding (ROADMAP B4). The trainer's own
-    ``val_validate()`` passes an explicit ``prefix_point="val_point/"``
+    ``synt_validate()`` passes an explicit ``prefix_point="synt_point/"``
     rather than ``None`` (both metric kinds come from one pass over the
     replicate set); this test exercises ``prefix_point=None`` directly as a
     general capability of the function -- a caller that wants the
@@ -329,22 +329,22 @@ def test_score_frozen_set_reads_a_realistic_set_unchanged(toy_set):
     """
     from proximalfm.train._dist_eval import score_frozen_set
 
-    from test_posterior_eval import _FakeCateModel  # noqa: F401
+    from test_prior_eval import _FakeCateModel  # noqa: F401
 
     out, args = toy_set
     n_q = args.seq_len - int(round(args.prop_train * args.seq_len))
 
     metrics = score_frozen_set(
-        _FakeCateModel(), out, prefix_point=None, prefix_dist="val_dist/"
+        _FakeCateModel(), out, prefix_point=None, prefix_dist="synt_dist/"
     )
-    assert metrics["val_dist/eval_rows"] == args.n_datasets * n_q
-    assert metrics["val_dist/grid_scale"] == pytest.approx(1.0, abs=1e-5)
+    assert metrics["synt_dist/eval_rows"] == args.n_datasets * n_q
+    assert metrics["synt_dist/grid_scale"] == pytest.approx(1.0, abs=1e-5)
     # prefix_point=None suppresses the point surface entirely.
     assert not any("cate/rmse_pooled" in k for k in metrics)
 
     # Default prefixes are the prior set's, so every pre-B4 caller is unchanged.
     default = score_frozen_set(_FakeCateModel(), out)
-    assert default["prior_dist/eval_rows"] == metrics["val_dist/eval_rows"]
+    assert default["prior_dist/eval_rows"] == metrics["synt_dist/eval_rows"]
     assert "prior_point/cate/rmse_pooled" in default
 
 
@@ -353,7 +353,7 @@ def test_the_point_surface_scores_against_mu_not_the_sampled_ite(toy_set):
 
     ``LoadPriorDataset`` substitutes ``Y0``/``Y1`` only when ``MU0``/``MU1``
     are *absent*, and the trainer reads MU on query rows only. So a replicate
-    set's ``val_point/cate/npehe`` is scored against the CEPO estimate rather
+    set's ``synt_point/cate/npehe`` is scored against the CEPO estimate rather
     than the sampled ITE -- which is why it stops estimating
     ``PEHE^2 + Var(noise)``.
 

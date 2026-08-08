@@ -87,7 +87,7 @@ class Trainer:
         self.load_checkpoint()
 
         self.save_best = getattr(self.config, "save_best", True)
-        self.best_metric = getattr(self.config, "best_metric", "val_point/cate/npehe")
+        self.best_metric = getattr(self.config, "best_metric", "synt_point/cate/npehe")
         self.best_metric_mode = getattr(self.config, "best_metric_mode", "min")
         self.best_metric_value = None
         self._warned_missing_metric = False
@@ -95,7 +95,7 @@ class Trainer:
         self._load_best_metric_value()
 
         self.prior_eval_interval = getattr(self.config, "prior_eval_interval", 50)
-        self.val_eval_interval = getattr(self.config, "val_eval_interval", 50)
+        self.synt_eval_interval = getattr(self.config, "synt_eval_interval", 50)
 
         # `--prior_eval_dir`: load the frozen-set sidecar once, here, rather
         # than on every prior_validate() pass -- it carries the per-episode
@@ -108,7 +108,7 @@ class Trainer:
         self.prior_eval_dir = getattr(self.config, "prior_eval_dir", None)
         self._prior_eval_meta = None
         if self.prior_eval_dir is not None:
-            from posterior_eval.build_prior_frozen_set import (
+            from prior_eval.build_prior_frozen_set import (
                 frozen_content_digest,
                 load_frozen_meta,
             )
@@ -132,31 +132,31 @@ class Trainer:
                 }
             )
 
-        # `--val_eval_dir`: the same treatment for the realistic replicate set
-        # (ROADMAP B4). One directory drives both val_point/* and val_dist/*
+        # `--synt_eval_dir`: the same treatment for the realistic replicate set
+        # (ROADMAP B4). One directory drives both synt_point/* and synt_dist/*
         # from a single per-episode pass -- exactly how --prior_eval_dir drives
         # both prior_point/* and prior_dist/*, and for the same reason: the
         # sidecar's *absence* is the gate that stops anyone scoring a posterior
         # (or, now, a point estimate) against a set whose targets are sampled
         # ITEs rather than a Monte Carlo CEPO. The load stays unguarded, so a
         # set built without --mc_cate raises FileNotFoundError at construction.
-        self.val_eval_dir = getattr(self.config, "val_eval_dir", None)
-        self._val_eval_meta = None
-        if self.val_eval_dir is not None:
-            from posterior_eval.build_prior_frozen_set import (
+        self.synt_eval_dir = getattr(self.config, "synt_eval_dir", None)
+        self._synt_eval_meta = None
+        if self.synt_eval_dir is not None:
+            from prior_eval.build_prior_frozen_set import (
                 frozen_content_digest,
                 load_frozen_meta,
             )
 
-            self._val_eval_meta = load_frozen_meta(Path(self.val_eval_dir))
+            self._synt_eval_meta = load_frozen_meta(Path(self.synt_eval_dir))
             require_single_cate_head(self.raw_model)
 
             self.logger.update_config(
                 {
-                    "val_eval_content_digest": frozen_content_digest(
-                        self._val_eval_meta
+                    "synt_eval_content_digest": frozen_content_digest(
+                        self._synt_eval_meta
                     ),
-                    "val_eval_n_datasets": self._val_eval_meta["global"].get(
+                    "synt_eval_n_datasets": self._synt_eval_meta["global"].get(
                         "n_datasets"
                     ),
                 }
@@ -550,7 +550,7 @@ class Trainer:
         os.replace(tmp_path, checkpoint_path)
 
     def _monitored_surface_ran(
-        self, *, ran_prior_eval: bool, ran_val_eval: bool
+        self, *, ran_prior_eval: bool, ran_synt_eval: bool
     ) -> bool:
         """Did the pass that produces ``best_metric`` run on this step?
 
@@ -559,16 +559,16 @@ class Trainer:
         loud: ``_maybe_save_best`` would warn "metric not found" on every step
         where the monitored pass happened not to run, and the real improvement
         on the steps where it did would be judged against a stale best.
-        ``prior_point/*`` and ``val_point/*`` are each a side effect of their
+        ``prior_point/*`` and ``synt_point/*`` are each a side effect of their
         surface's single per-episode pass (``prior_validate`` /
-        ``val_validate``), not a separate one, so they share that pass's
+        ``synt_validate``), not a separate one, so they share that pass's
         gate.
         """
         by_prefix = (
             ("prior_dist/", ran_prior_eval),
             ("prior_point/", ran_prior_eval),
-            ("val_dist/", ran_val_eval),
-            ("val_point/", ran_val_eval),
+            ("synt_dist/", ran_synt_eval),
+            ("synt_point/", ran_synt_eval),
         )
         for prefix, ran in by_prefix:
             if self.best_metric.startswith(prefix):
@@ -588,19 +588,19 @@ class Trainer:
 
         if (
             getattr(self.config, "prior_eval_dir", None) is None
-            and getattr(self.config, "val_eval_dir", None) is None
+            and getattr(self.config, "synt_eval_dir", None) is None
         ):
             print(
                 "[save_best] Warning: save_best is enabled but neither "
-                "prior_eval_dir nor val_eval_dir is set; no validation pass "
+                "prior_eval_dir nor synt_eval_dir is set; no validation pass "
                 "ever runs, so no best_model.ckpt will be saved."
             )
 
         for prefix, flag in (
             ("prior_dist/", "prior_eval_dir"),
             ("prior_point/", "prior_eval_dir"),
-            ("val_dist/", "val_eval_dir"),
-            ("val_point/", "val_eval_dir"),
+            ("synt_dist/", "synt_eval_dir"),
+            ("synt_point/", "synt_eval_dir"),
         ):
             if self.best_metric.startswith(prefix) and (
                 getattr(self.config, flag, None) is None
@@ -795,7 +795,7 @@ class Trainer:
         Advances ``curr_step`` by exactly one and preserves the per-step cadence
         of checkpointing (``save_temp_every`` / ``save_perm_every``) and the two
         validation passes -- ``prior_eval_interval`` for `prior_point/*` +
-        `prior_dist/*`, ``val_eval_interval`` for `val_point/*` + `val_dist/*`.
+        `prior_dist/*`, ``synt_eval_interval`` for `synt_point/*` + `synt_dist/*`.
         Returns the (possibly augmented) results.
         """
         self.curr_step += 1
@@ -836,15 +836,15 @@ class Trainer:
         if ran_prior_eval:
             surface_results.update(self.prior_validate())
 
-        # Same contract for the realistic replicate set's pass (val_point/* +
-        # val_dist/*): all ranks, gated only on values every rank agrees on.
-        ran_val_eval = (
-            self.val_eval_dir is not None
-            and self.val_eval_interval > 0
-            and (self.curr_step % self.val_eval_interval == 0 or self.curr_step == 1)
+        # Same contract for the realistic replicate set's pass (synt_point/* +
+        # synt_dist/*): all ranks, gated only on values every rank agrees on.
+        ran_synt_eval = (
+            self.synt_eval_dir is not None
+            and self.synt_eval_interval > 0
+            and (self.curr_step % self.synt_eval_interval == 0 or self.curr_step == 1)
         )
-        if ran_val_eval:
-            surface_results.update(self.val_validate())
+        if ran_synt_eval:
+            surface_results.update(self.synt_validate())
 
         if surface_results:
             results.update(surface_results)
@@ -854,11 +854,11 @@ class Trainer:
             # already DDP-synced so every rank would agree on the value. Only
             # compare on a step where the surface that produces the monitored
             # metric actually ran -- otherwise a best_metric would warn on
-            # every step where prior_eval_interval and val_eval_interval don't
+            # every step where prior_eval_interval and synt_eval_interval don't
             # coincide.
             surface_ran = self._monitored_surface_ran(
                 ran_prior_eval=ran_prior_eval,
-                ran_val_eval=ran_val_eval,
+                ran_synt_eval=ran_synt_eval,
             )
             if self.master_process and self.save_best and surface_ran:
                 self._maybe_save_best(surface_results)
@@ -1449,7 +1449,7 @@ class Trainer:
         reported_loss_total = scaled_loss
 
         # Evaluation & Metric extraction block. Point metrics live on the
-        # val_point/val_dist surfaces (score_frozen_set over --val_eval_dir),
+        # synt_point/val_dist surfaces (score_frozen_set over --synt_eval_dir),
         # not here: this micro batch is always a training draw, at a batch size
         # chosen for throughput rather than estimator variance.
         with torch.no_grad():
@@ -1694,8 +1694,8 @@ class Trainer:
         return self._validate_surface("prior")
 
     @torch.inference_mode()
-    def val_validate(self):
-        return self._validate_surface("val")
+    def synt_validate(self):
+        return self._validate_surface("synt")
 
     def _resolve_metrics(self, metrics: dict, scale: int) -> dict[str, float]:
         """Materialize a metric dict of 0-d tensors with a single device sync.

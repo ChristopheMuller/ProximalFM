@@ -12,8 +12,8 @@ them except the metric *functions*.
 | Surface | Prefix | Data | Question | Kinds |
 |---|---|---|---|---|
 | **Train** | `loss/`, `target/`, `noise/` | on-the-fly prior | is the optimization healthy? | loss & batch diagnostics **only** |
-| **Val** | `val_point/`, `val_dist/` | `synthetic/` realistic mechanisms (out-of-prior) | does it generalize off the prior? | point, **and** distributional on a replicate set |
-| **Prior** | `prior_point/`, `prior_dist/` | `posterior_eval/` frozen high-`K` set (in-prior) | is the posterior any good? | point **and** distributional |
+| **Val** | `synt_point/`, `synt_dist/` | `synthetic/` realistic mechanisms (out-of-prior) | does it generalize off the prior? | point, **and** distributional on a replicate set |
+| **Prior** | `prior_point/`, `prior_dist/` | `prior_eval/` frozen high-`K` set (in-prior) | is the posterior any good? | point **and** distributional |
 
 Plus two non-surfaces: `diag/*` (schedules and derived quantities put on another surface's axis) and
 a handful of flat keys (`lr`, `prior_time`, `train_time`, `Charts/*`).
@@ -23,8 +23,8 @@ The boundaries are load-bearing, and each is a thing someone will try to "fix":
 - **Train carries no point metrics.** They would be computed on the same distribution as the loss, at
   a batch size chosen for throughput rather than estimator variance. They tell you nothing the loss
   does not. Removed in step 1.
-- **Val depends on the *set*, not the surface, for both kinds.** `val_point/*` and `val_dist/*` are
-  both a side effect of one pass, `score_frozen_set` over `--val_eval_dir`, and both require a
+- **Val depends on the *set*, not the surface, for both kinds.** `synt_point/*` and `synt_dist/*` are
+  both a side effect of one pass, `score_frozen_set` over `--synt_eval_dir`, and both require a
   replicate-bearing set (`--mc_cate K`, `K > 1`); on anything else the pass is refused rather than
   computed. See [§7](#7-val_dist-and-the-set-it-may-be-scored-on) — the failure it describes is still
   the single most likely wrong contribution to this codebase. There is no separate point-only pass or
@@ -33,19 +33,19 @@ The boundaries are load-bearing, and each is a thing someone will try to "fix":
   precisely because they are in-prior, which makes them the sensitive guard against a distributional
   loss quietly trading away point accuracy.
 
-`val_point/*` and `val_dist/*` always describe the same dataset by construction — one flag,
-`--val_eval_dir`, one pass.
+`synt_point/*` and `synt_dist/*` always describe the same dataset by construction — one flag,
+`--synt_eval_dir`, one pass.
 
 ### Cadence
 
 | Surface | When | Gate |
 |---|---|---|
 | `loss/*`, `target/*`, `noise/*` | every step | — |
-| `val_point/*` + `val_dist/*` | every `--val_eval_interval` steps, and step 1 | `--val_eval_dir` set |
+| `synt_point/*` + `synt_dist/*` | every `--synt_eval_interval` steps, and step 1 | `--synt_eval_dir` set |
 | `prior_point/*` + `prior_dist/*`, `diag/sigma` | every `--prior_eval_interval` steps, and step 1 | `--prior_eval_dir` set |
 
-`--prior_eval_interval` and `--val_eval_interval` both default to `50`; `0` disables. Every rank must reach `prior_validate()`
-and `val_validate()` on the same steps — the episodes are sharded round-robin and the metrics
+`--prior_eval_interval` and `--synt_eval_interval` both default to `50`; `0` disables. Every rank must reach `prior_validate()`
+and `synt_validate()` on the same steps — the episodes are sharded round-robin and the metrics
 all-reduced, so a rank that skips one deadlocks the group. Both gates are therefore built only from
 values every rank agrees on.
 
@@ -54,14 +54,14 @@ values every rank agrees on.
 Everything on every surface is in **standardized outcome units**, but not the same standardization:
 
 - **Train** — the per-episode context standardization.
-- **`val_point/*`, `val_dist/*`, `prior_point/*`, `prior_dist/*`** — the set's frozen `y_context_std`
+- **`synt_point/*`, `synt_dist/*`, `prior_point/*`, `prior_dist/*`** — the set's frozen `y_context_std`
   at `n_max`, taken from `frozen_meta.pt`. All four now come from the same evaluator machinery
   (`score_episode`, inside `score_frozen_set`), which reads its target off `record["tau_star_std"]` —
   already in frozen units — so this is not a choice made per surface, it is what the shared code path
   produces. Per-episode standardization is random and correlated with `n_ctx`, so scoring in each
   episode's own moving scale would manufacture trends. See `_dist_eval.py`'s module docstring.
 
-So `val_point/cate/rmse` and `val_dist/*`'s widths are **not** in the same units even on the same
+So `synt_point/cate/rmse` and `synt_dist/*`'s widths are **not** in the same units even on the same
 data, which is why `sd_over_rmse` is computed inside the dist pass against its own RMSE rather than
 against the point surface's.
 
@@ -69,7 +69,7 @@ against the point surface's.
 
 ## 2. Reading a run, in order
 
-Each entry conditions the ones below it. This is the same order `python -m posterior_eval.score`
+Each entry conditions the ones below it. This is the same order `python -m prior_eval.score`
 prints its verdict block.
 
 1. **`prior_dist/out_of_grid_frac`** — if this is not ≈ 0, `--cate_vmin`/`--cate_vmax` are too tight
@@ -84,7 +84,7 @@ prints its verdict block.
    remaining CRPS is the bin grid, and the remedy is more `--nbins`, not more steps.
 5. **`diag/sigma` against `prior_dist/mean_sd`** — if the width is sitting on the schedule's floor you
    are measuring the schedule.
-6. **`prior_point/*` against `val_point/*`** — in-prior point accuracy is the guard that a
+6. **`prior_point/*` against `synt_point/*`** — in-prior point accuracy is the guard that a
    distributional objective has not traded away the point estimate.
 
 ---
@@ -200,26 +200,26 @@ computed at a different `K` and normalized differently.
 
 ---
 
-## 4. Val surface — `val_point/*` and `val_dist/*`
+## 4. Val surface — `synt_point/*` and `synt_dist/*`
 
-One pass over `--val_eval_dir` (a realistic replicate set's **root**, not its `val/`), scored by
+One pass over `--synt_eval_dir` (a realistic replicate set's **root**, not its `val/`), scored by
 `score_frozen_set` — the *same* function and the same per-episode forward pass the prior surface uses
 ([§5](#5-prior-surface)), just pointed at a different set. Point metrics (`CausalEvaluator`) and
 distributional metrics (`PosteriorEvaluator`) are both side effects of that one pass, not two separate
 ones: `score_episode`'s evaluator fan-out reads both off the same `probs`/`edges`/`tau_star_std`, so
-`val_point/*` costs nothing beyond what `val_dist/*` already pays for encoding the context.
+`synt_point/*` costs nothing beyond what `synt_dist/*` already pays for encoding the context.
 
 **Only a replicate-bearing set (`--mc_cate K`, `K > 1`) can be scored here.** The gate is the
 sidecar's absence — a plain `--mc_cate 1` set has no `frozen_meta.pt`, and `score_frozen_set` refuses
 it (`FileNotFoundError`) at `Trainer.__init__` rather than silently scoring either metric kind against
-sampled ITEs. There is no fallback point-only pass over an unreplicated set: before B4, `val_point/*`
+sampled ITEs. There is no fallback point-only pass over an unreplicated set: before B4, `synt_point/*`
 came from a separate batched pass (`point_validate()`) over `--val_dir` that would happily score
 against `Y1 − Y0` when `MU0`/`MU1` were absent — that path is gone, along with the inflated
 `cate/rmse ≈ √(PEHE² + Var(noise))` numbers it produced. See
 [§7](#7-val_dist-and-the-set-it-may-be-scored-on) for the full argument, and for the one number that
-does *not* carry over from the prior set: `val_dist/s_over_sd` is not negligible at realistic `K`.
+does *not* carry over from the prior set: `synt_dist/s_over_sd` is not negligible at realistic `K`.
 
-### `val_point/*`
+### `synt_point/*`
 
 Identical definitions to the table below, same evaluator as `prior_point/*` ([§5](#5-prior-surface)),
 same median-over-episodes and homogeneous-episode exclusion — scored on the realistic set instead of
@@ -238,21 +238,21 @@ combine them.
 
 | Key | Formula (per episode, then median) | Want |
 |---|---|---|
-| `val_point/cate/rmse` | `√ mean_i (τ̂ᵢ − τᵢ)²` | ↓ |
-| `val_point/cate/npehe` | `√ (MSE / Var(τ))` | ↓; **1.0 is the do-nothing baseline** (predicting the episode's constant ATE) |
-| `val_point/cate/r2` | `1 − MSE / Var(τ)` = `1 − npehe²` | ↑, max 1 |
-| `val_point/cate/r2_shape` | `1 − Var(τ̂ − τ) / Var(τ)` | ↑, max 1 |
-| `val_point/cate/sign_agreement` | share of rows with `sign(τ̂) = sign(τ)` | ↑ |
-| `val_point/ate/bias_norm` | `(mean τ̂ − mean τ) / SD(τ)`, signed | 0 |
-| `val_point/po/rmse_y0`, `po/rmse_y1` | per-arm RMSE | ↓ |
+| `synt_point/cate/rmse` | `√ mean_i (τ̂ᵢ − τᵢ)²` | ↓ |
+| `synt_point/cate/npehe` | `√ (MSE / Var(τ))` | ↓; **1.0 is the do-nothing baseline** (predicting the episode's constant ATE) |
+| `synt_point/cate/r2` | `1 − MSE / Var(τ)` = `1 − npehe²` | ↑, max 1 |
+| `synt_point/cate/r2_shape` | `1 − Var(τ̂ − τ) / Var(τ)` | ↑, max 1 |
+| `synt_point/cate/sign_agreement` | share of rows with `sign(τ̂) = sign(τ)` | ↑ |
+| `synt_point/ate/bias_norm` | `(mean τ̂ − mean τ) / SD(τ)`, signed | 0 |
+| `synt_point/po/rmse_y0`, `po/rmse_y1` | per-arm RMSE | ↓ |
 
 Each of the above also emits `<key>/p25` and `<key>/p75`.
 
 | Key | Formula (over the whole pass) | Want |
 |---|---|---|
-| `val_point/ate/rmse` | `√ mean_episodes (ATÊ − ATE)²` | ↓ |
-| `val_point/ate/r2` | `1 − MSE_ATE / Var_episodes(ATE)` | ↑ |
-| `val_point/eval_episodes` | episodes accumulated in the pass | constant across passes |
+| `synt_point/ate/rmse` | `√ mean_episodes (ATÊ − ATE)²` | ↓ |
+| `synt_point/ate/r2` | `1 − MSE_ATE / Var_episodes(ATE)` | ↑ |
+| `synt_point/eval_episodes` | episodes accumulated in the pass | constant across passes |
 | `Charts/val_point_time` | wall-clock seconds for the pass (filed under `Charts/` beside `Charts/prior_eval_time` — a pass diagnostic, not a metric about the model) | — |
 
 Caveats worth knowing:
@@ -269,7 +269,7 @@ Caveats worth knowing:
 - **`ate/*` is a point estimate with no credible interval**, here and everywhere. See
   [§6](#why-there-is-no-ate-credible-interval).
 
-### `val_dist/*`
+### `synt_dist/*`
 
 Same keys as `prior_dist/*` ([§5](#5-prior-surface)), same frozen scale, same DDP contract.
 
@@ -277,7 +277,7 @@ Same keys as `prior_dist/*` ([§5](#5-prior-surface)), same frozen scale, same D
 
 ## 5. Prior surface — `prior_point/*` + `prior_dist/*`
 
-One pass over `--prior_eval_dir`, the frozen set built by `posterior_eval/`. Produced by
+One pass over `--prior_eval_dir`, the frozen set built by `prior_eval/`. Produced by
 `score_frozen_set` and split in two: point metrics from the same `CausalEvaluator`, distributional
 metrics from `PosteriorEvaluator`.
 
@@ -310,7 +310,7 @@ One key exists here and nowhere else:
 
 `cate/rmse` is a *median over episodes*; `cate/rmse_pooled` is a mean over rows. They are different
 numbers and neither is wrong. `rmse_pooled` exists because it is exactly what
-`posterior_eval/report.py` prints at `n = n_max`, so a mismatch between the two is a scale bug and
+`prior_eval/report.py` prints at `n = n_max`, so a mismatch between the two is a scale bug and
 this is the cheapest place to catch one (`test_pooled_rmse_matches_the_report_path`).
 
 ### `prior_dist/*`
@@ -380,7 +380,7 @@ level, both of which you know. Under a *row-level* strata cut the effective `n` 
 episode, not `n_q`, so the floor widens accordingly.
 
 Only the pooled keys are additive across strata cuts; the quantiles are sample statistics, exactly
-like `pit_ks_pooled`. `tests/test_posterior_eval_strata.py` pins both halves of that.
+like `pit_ks_pooled`. `tests/test_prior_eval_strata.py` pins both halves of that.
 
 **PIT, pooled and per-episode.**
 
@@ -471,7 +471,7 @@ look merely extreme.
 ### Stratified cuts — offline only, **no wandb producer**
 
 ROADMAP A2. The same `prior_dist/*` keys, recomputed per stratum of the frozen set, by
-`python -m posterior_eval.score_strata`. Cuts are defined in `posterior_eval/strata.py` and stored as
+`python -m prior_eval.score_strata`. Cuts are defined in `prior_eval/strata.py` and stored as
 a `strata.pt` manifest of per-episode (or per-query-row) membership beside `frozen_meta.pt`; nothing
 about the 365 MB set is duplicated or rebuilt.
 
@@ -484,7 +484,7 @@ because the number would be wrong rather than merely numerous.)
 Why it is cheap: `PosteriorEvaluator` accumulates row-weighted **sums**, so a stratum's metrics are
 exactly what a separate pass over only that stratum's rows would produce. Every cut is scored from
 one forward pass per episode, fanned out through `score_episode`'s `dist_evaluators` argument.
-`tests/test_posterior_eval_strata.py` pins this to `rel=1e-9`.
+`tests/test_prior_eval_strata.py` pins this to `rel=1e-9`.
 
 The reading rule, which is the whole point of the tool:
 
@@ -503,7 +503,7 @@ fragile, which is worse than merely being inaccurate there.
 ### The `n`-sweep — offline only, **no wandb producer**
 
 ROADMAP A6. The same `prior_dist/*` keys at nested context prefixes, by
-`python -m posterior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
+`python -m prior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
 per metric is a table, not a dashboard. The set needs no rebuild — prefix `n` is the first `n`
 context rows of an episode that already exists, and `prior_dist/grid_scale` (above) is what puts
 every prefix on one scale.
@@ -636,14 +636,14 @@ Over-confident on half the episodes and under-confident on the other half is **u
 `pit_ks_pooled` passes its band and the posterior is badly miscalibrated everywhere.
 
 `pit_ks/p90 ≥ pit_ks/band` while `pit_ks_pooled < pit_ks_pooled_band` is precisely that signature.
-`posterior_eval.score` prints it as an explicit warning; there is a test constructing two
+`prior_eval.score` prints it as an explicit warning; there is a test constructing two
 opposite-direction episode groups and asserting the pooled statistic passes while the p90 fails.
 
 ### Median vs pooled RMSE
 
 `prior_point/cate/rmse` is a median over episodes. `prior_point/cate/rmse_pooled` is a mean over
 rows. Comparing either to a number from elsewhere requires knowing which one you have — the pooled
-key exists solely so there is a quantity that must match `posterior_eval/report.py` exactly.
+key exists solely so there is a quantity that must match `prior_eval/report.py` exactly.
 
 ### The homogeneous-episode exclusion
 
@@ -662,7 +662,7 @@ inference. `ate/rmse`, `ate/r2` and `ate/bias_norm` are all point accuracy. (Not
 
 ---
 
-## 7. `val_dist/*` and the set it may be scored on
+## 7. `synt_dist/*` and the set it may be scored on
 
 **The line is drawn at the dataset, not at the surface.** This section used to say `val/dist/*`
 cannot exist at all; ROADMAP B1–B3 changed what is true, and the reasoning is worth keeping because
@@ -682,12 +682,12 @@ would sit near 1 for a model whose CATE posterior is far too wide.
 
 ### Why it now errors instead
 
-`synthetic/build_proximal_datasets.py --mc_cate K` (`K > 1`) replicates each query row through the
+`synt_eval/build_proximal_datasets.py --mc_cate K` (`K > 1`) replicates each query row through the
 latent/noise draw and emits `MU0`/`MU1` with their paired sampling variance `S2`, plus a
 `frozen_meta.pt` sidecar carrying the frozen comparison scale and `tau_star_std`/`s2_std`. That set is
 scorable on exactly the terms the frozen prior set is.
 
-**The sidecar's absence is the gate.** `--val_eval_dir` loads it, unguarded, at `Trainer.__init__`, so
+**The sidecar's absence is the gate.** `--synt_eval_dir` loads it, unguarded, at `Trainer.__init__`, so
 pointing it at a `mc_cate=1` set — or at a plain `val/` subdirectory — raises `FileNotFoundError`
 before training starts. The wrong number is not reachable; you get a stack trace instead.
 
@@ -696,19 +696,19 @@ Two consequences worth internalising:
 - The estimand is `E[Y1 − Y0 | X]`, chosen to match `SCMPrior.generate_dataset` exactly. Scoring a
   posterior against a *different* conditional makes a calibrated model read as systematically
   over-wide, which is the same class of error as scoring the ITE, just subtler.
-- `K` there is moderate, not the prior set's 4000, so `val_dist/s_over_sd` is **not** negligible the
+- `K` there is moderate, not the prior set's 4000, so `synt_dist/s_over_sd` is **not** negligible the
   way `prior_dist/s_over_sd` is. It is the series that decides ROADMAP C4; see [§7 of
   ROADMAP](../../docs/notes/ROADMAP.md).
 
 ### The point surface is gated by exactly the same thing
 
-Before B4 wired the two together, `val_point/*` came from a separate batched pass
+Before B4 wired the two together, `synt_point/*` came from a separate batched pass
 (`point_validate()`) over `--val_dir`, which would run on *any* set — `LoadPriorDataset` substitutes
 `Y0`/`Y1` for `MU0`/`MU1` only when the latter are absent, so a `mc_cate=1` set still produced a number,
 just one inflated by outcome noise (`cate/rmse` estimating `√(PEHE² + Var(noise))` rather than `PEHE`).
 
-That fallback is gone. `val_point/*` is now a side effect of the same `score_frozen_set` pass that
-produces `val_dist/*`, over `--val_eval_dir`, so it is gated by the same sidecar-presence check: no
+That fallback is gone. `synt_point/*` is now a side effect of the same `score_frozen_set` pass that
+produces `synt_dist/*`, over `--synt_eval_dir`, so it is gated by the same sidecar-presence check: no
 `frozen_meta.pt` means no pass at all, point or distributional. There is no longer a way to get a
 point-only validation number, inflated or otherwise, from a non-replicate set.
 
@@ -739,16 +739,16 @@ under it.
 
 ## 9. `--best_metric`
 
-Default `val_point/cate/npehe`, with `--best_metric_mode min`. Any key from the val or prior surface
+Default `synt_point/cate/npehe`, with `--best_metric_mode min`. Any key from the val or prior surface
 works, and the comparison is gated on the step where *that surface's pass* actually ran, so
-`--prior_eval_interval` and `--val_eval_interval` need not coincide. B4 renamed this surface from
+`--prior_eval_interval` and `--synt_eval_interval` need not coincide. B4 renamed this surface from
 `val/point/*`, and the old spelling is simply gone — a run resumed with it monitors a key nothing
 emits, which `_check_best_metric_config` reports at startup along with two other configurations that
 silently no-op:
 
-- `--save_best` with neither `--prior_eval_dir` nor `--val_eval_dir` set;
+- `--save_best` with neither `--prior_eval_dir` nor `--synt_eval_dir` set;
 - a `best_metric` on a surface whose pass is disabled: `prior_dist/*` or `prior_point/*` with no
-  `--prior_eval_dir`, or `val_dist/*` or `val_point/*` with no `--val_eval_dir`;
+  `--prior_eval_dir`, or `synt_dist/*` or `synt_point/*` with no `--synt_eval_dir`;
 - a name whose direction contradicts `--best_metric_mode`. The heuristic is textual: `r2` and
   `sign_agreement` are treated as higher-is-better, and `rmse`, `npehe`, `mse`, `bias`, `loss`,
   `crps` as lower-is-better. A key matching neither list (e.g. `prior_dist/cov90_pooled` or

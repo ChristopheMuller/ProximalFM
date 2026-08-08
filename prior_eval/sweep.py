@@ -1,7 +1,7 @@
 """ROADMAP A6 -- the ``n``-sweep: does the posterior actually contract?
 
-    uv run python -m posterior_eval.sweep \\
-        --dir data/posterior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
+    uv run python -m prior_eval.sweep \\
+        --dir data/prior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
 
 Scores the same frozen set at nested context prefixes. The set needs no
 regeneration: prefix ``n`` is the first ``n`` context rows of an episode that
@@ -131,11 +131,11 @@ from typing import Any, Dict, List, Optional, Sequence
 import torch
 from tqdm import tqdm
 
-from posterior_eval.build_prior_frozen_set import (
+from prior_eval.build_prior_frozen_set import (
     frozen_content_digest,
     load_frozen_meta,
 )
-from posterior_eval.report import load_model
+from prior_eval.report import load_model
 from proximalfm.train._dist_eval import (
     PosteriorEvaluator,
     UnsupportedLossTypeError,
@@ -799,7 +799,7 @@ def _json_safe(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m posterior_eval.sweep",
+        prog="python -m prior_eval.sweep",
         description="Score a checkpoint at nested context prefixes of a frozen set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

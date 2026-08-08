@@ -20,8 +20,8 @@ import numpy as np
 import pytest
 import torch
 
-from posterior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
-from posterior_eval.sweep import (
+from prior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
+from prior_eval.sweep import (
     MIN_N,
     _NAccumulator,
     contraction_summary,
@@ -33,7 +33,7 @@ from posterior_eval.sweep import (
 )
 from proximalfm.train._dist_eval import score_frozen_set
 from proximalfm.train._dist_metrics import predictive_cdf, predictive_mean_var
-from test_posterior_eval import _FakeCateModel, discretized_gaussian
+from test_prior_eval import _FakeCateModel, discretized_gaussian
 
 
 class _ContractingModel(_FakeCateModel):

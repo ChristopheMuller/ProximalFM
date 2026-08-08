@@ -1,4 +1,4 @@
-"""Tests for synthetic/build_proximal_datasets.py.
+"""Tests for synt_eval/build_proximal_datasets.py.
 
 The build script writes datasets to disk ONLY in the raw, sparse val format;
 the benchmark rebuilds its standardized dict from those files at load time.
@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synthetic"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
 
 import build_proximal_datasets as bpd  # noqa: E402
 from realistic_proximal_mechanisms import (  # noqa: E402

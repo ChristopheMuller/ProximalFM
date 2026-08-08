@@ -473,7 +473,7 @@ class LoadPriorDataset(IterableDataset):
                 _LEGACY_TARGET_VAR_WARNED = True
                 warnings.warn(
                     f"{batch_file} carries no S2/K_eff (pre-dating target-noise "
-                    "tracking, or built by synthetic/build_proximal_datasets.py). "
+                    "tracking, or built by synt_eval/build_proximal_datasets.py). "
                     "Treating the CATE targets as noise-free: loss_type="
                     "'cate_single_noise_aware' falls back to its plain "
                     "sigma-smoothed NLL on these rows. Regenerate the batches to "
@@ -908,7 +908,7 @@ def write_batch_file(
     and so must any other producer of a ``val/``-style directory. The format is
     what :class:`LoadPriorDataset` replays, so a second implementation drifts
     silently (see the missing ``MU0``/``MU1``/``S2``/``K_eff`` in
-    ``synthetic/build_proximal_datasets.py``).
+    ``synt_eval/build_proximal_datasets.py``).
 
     ``U``/``X``/``W``/``Z`` are flattened to the ragged 1-D layout
     :func:`sparse2dense` expects, unless ``seq_len_per_gp`` says the caller

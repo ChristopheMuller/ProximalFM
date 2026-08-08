@@ -1,8 +1,8 @@
 """Integrity and sanity check for a frozen posterior-evaluation set.
 
-    uv run python -m posterior_eval.verify --dir data/posterior_eval/frozen_prod_v1
+    uv run python -m prior_eval.verify --dir data/prior_eval/frozen_prod_v1
 
-Needs no checkpoint. Sibling of :mod:`posterior_eval.report`, which answers
+Needs no checkpoint. Sibling of :mod:`prior_eval.report`, which answers
 "is ``K`` big enough *given a model*"; this one answers "is the set intact and
 well-formed at all" -- the question you have after building on one machine and
 copying to another.
@@ -41,12 +41,12 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 
-from posterior_eval.build_prior_frozen_set import (
+from prior_eval.build_prior_frozen_set import (
     Y_STD_FLOOR,
     frozen_content_digest,
     load_frozen_meta,
 )
-from posterior_eval.report import iter_episodes
+from prior_eval.report import iter_episodes
 
 # Agreement tolerance for group 3. The sidecar stores what the generator
 # produced in memory; the val/ files went through the sparse round-trip and a
@@ -351,7 +351,7 @@ def verify(
         noise.note(
             "This is s against the *prior spread* of tau*, an upper bound on "
             "sigma_post. The ratio that decides C4 is s/sigma_post, which is "
-            "larger and needs a checkpoint -- run posterior_eval.report."
+            "larger and needs a checkpoint -- run prior_eval.report."
         )
         if ratio_pooled > 0.2:
             noise.fail(
@@ -438,7 +438,7 @@ def _print_report(out_dir: Path, stats: Dict[str, Any]) -> None:
             print(f"    - {msg}")
     print()
     if stats["ok"]:
-        print("All checks passed. Next: posterior_eval.report --ckpt <ckpt> for the")
+        print("All checks passed. Next: prior_eval.report --ckpt <ckpt> for the")
         print("s/sigma_post read-off, which is the one thing this cannot answer.")
     else:
         print("FAILURES above. Read the first one: a later group's numbers are")
@@ -447,7 +447,7 @@ def _print_report(out_dir: Path, stats: Dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m posterior_eval.verify",
+        prog="python -m prior_eval.verify",
         description="Integrity and sanity check for a frozen evaluation set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

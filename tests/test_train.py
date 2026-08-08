@@ -9,7 +9,7 @@ from proximalfm.train._run import Trainer
 from proximalfm.train._dist_eval import UnsupportedLossTypeError
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._prior_config import DEFAULT_SAMPLED_HP
-from posterior_eval.build_prior_frozen_set import BuildConfig, build
+from prior_eval.build_prior_frozen_set import BuildConfig, build
 import torch
 from unittest.mock import patch, MagicMock
 
@@ -63,7 +63,7 @@ def dummy_args(tmp_path):
 def tiny_frozen_set(tmp_path_factory):
     """A tiny real frozen prior set for the ``--prior_eval_dir`` tests.
 
-    Same shape as ``tests/test_posterior_eval.py``'s ``frozen`` fixture, just
+    Same shape as ``tests/test_prior_eval.py``'s ``frozen`` fixture, just
     smaller: these tests only need the trainer wiring to fire, not meaningful
     numbers.
     """
@@ -82,7 +82,7 @@ def tiny_frozen_set(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def tiny_replicate_set(tmp_path_factory):
-    """A tiny realistic replicate set for the ``--val_eval_dir`` tests.
+    """A tiny realistic replicate set for the ``--synt_eval_dir`` tests.
 
     Built with ``--mc_cate > 1``, so it carries a Monte-Carlo CEPO target and a
     ``frozen_meta.pt`` sidecar -- the two things that make a realistic set
@@ -90,7 +90,7 @@ def tiny_replicate_set(tmp_path_factory):
     """
     import sys
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synthetic"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synt_eval"))
     from build_proximal_datasets import build as build_realistic
     from build_proximal_datasets import parse_args as parse_realistic_args
 
@@ -443,7 +443,7 @@ def test_non_finite_loss_skips_the_micro_batch(dummy_args):
     """An inf/NaN loss must never reach backward().
 
     One inf turns every parameter NaN, and from then on the whole logged
-    surface -- prior_dist/*, prior_point/*, val_point/* -- reads nan with no
+    surface -- prior_dist/*, prior_point/*, synt_point/* -- reads nan with no
     trace of which step did it.
     """
     dummy_args.loss_type = "cate_single_noise_aware"
@@ -532,10 +532,10 @@ def test_dist_eval_interval_zero_and_unset_dir_disable_it(mock_wandb_init, tmp_p
         # prior_point/* is produced by the dist pass too, so it needs the same
         # flag -- exactly as _monitored_surface_ran routes it.
         ("prior_point/cate/npehe", "prior_eval_dir"),
-        ("val_dist/crps", "val_eval_dir"),
-        # And val_point/* is a side effect of the SAME val_eval_dir pass, not
+        ("synt_dist/crps", "synt_eval_dir"),
+        # And synt_point/* is a side effect of the SAME synt_eval_dir pass, not
         # of a separate --val_dir -- that flag no longer exists.
-        ("val_point/cate/npehe", "val_eval_dir"),
+        ("synt_point/cate/npehe", "synt_eval_dir"),
     ],
 )
 @patch("wandb.init")
@@ -694,8 +694,8 @@ def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
 def test_val_point_best_metric_follows_val_dist_interval_not_dist_eval_interval(
     mock_wandb_init, tmp_path, capsys, tiny_replicate_set, tiny_frozen_set
 ):
-    """val_point/* is a side effect of the val_eval_dir pass, gated by
-    val_eval_interval -- not by prior_eval_interval, the PRIOR surface's
+    """synt_point/* is a side effect of the synt_eval_dir pass, gated by
+    synt_eval_interval -- not by prior_eval_interval, the PRIOR surface's
     cadence, even though both passes run in the same _post_step call."""
     args = _parse_args(
         tmp_path,
@@ -703,12 +703,12 @@ def test_val_point_best_metric_follows_val_dist_interval_not_dist_eval_interval(
             "--loss_type",
             "cate_single",
             "--best_metric",
-            "val_point/cate/npehe",
+            "synt_point/cate/npehe",
             "--best_metric_mode",
             "min",
-            "--val_eval_dir",
+            "--synt_eval_dir",
             str(tiny_replicate_set),
-            "--val_eval_interval",
+            "--synt_eval_interval",
             "3",
             "--prior_eval_dir",
             str(tiny_frozen_set),
@@ -730,8 +730,8 @@ def test_val_point_best_metric_follows_val_dist_interval_not_dist_eval_interval(
     captured = capsys.readouterr()
     assert "not found in validation results" not in captured.out
 
-    # step 3: val_dist fires again (3 % val_eval_interval == 0); must not
-    # error and must still be comparing the same val_point/* key.
+    # step 3: val_dist fires again (3 % synt_eval_interval == 0); must not
+    # error and must still be comparing the same synt_point/* key.
     trainer._post_step({}, prior_time=0.0, train_time=0.0)
     assert trainer.best_metric_value is not None
 
@@ -852,7 +852,7 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
 
 
 # ---------------------------------------------------------------------------
-# val_dist/* -- the realistic replicate surface (ROADMAP B4)
+# synt_dist/* -- the realistic replicate surface (ROADMAP B4)
 # ---------------------------------------------------------------------------
 
 
@@ -862,9 +862,9 @@ def _val_eval_args(tmp_path, replicate_set, extra=None):
         [
             "--loss_type",
             "cate_single",
-            "--val_eval_dir",
+            "--synt_eval_dir",
             str(replicate_set),
-            "--val_eval_interval",
+            "--synt_eval_interval",
             "1",
         ]
         + (extra or []),
@@ -877,7 +877,7 @@ def _val_eval_args(tmp_path, replicate_set, extra=None):
 def test_val_dist_pass_emits_both_val_surfaces(
     mock_wandb_init, tmp_path, tiny_replicate_set
 ):
-    """One pass over --val_eval_dir emits val_point/* AND val_dist/*.
+    """One pass over --synt_eval_dir emits synt_point/* AND synt_dist/*.
 
     Mirrors --prior_eval_dir producing both prior_point/* and prior_dist/* from
     one per-episode pass: point metrics are a side effect of the same forward
@@ -887,13 +887,13 @@ def test_val_dist_pass_emits_both_val_surfaces(
     trainer = Trainer(_val_eval_args(tmp_path, tiny_replicate_set))
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
 
-    assert "val_dist/crps" in results
-    assert "val_dist/sd_over_rmse" in results
-    assert "val_dist/eval_rows" in results
-    assert "val_dist/n_ctx" in results
-    assert "val_point/cate/npehe" in results
-    assert "val_point/cate/rmse_pooled" in results
-    assert "Charts/val_eval_time" in results
+    assert "synt_dist/crps" in results
+    assert "synt_dist/sd_over_rmse" in results
+    assert "synt_dist/eval_rows" in results
+    assert "synt_dist/n_ctx" in results
+    assert "synt_point/cate/npehe" in results
+    assert "synt_point/cate/rmse_pooled" in results
+    assert "Charts/synt_eval_time" in results
     # No leakage into the prior namespace.
     assert not any(k.startswith(("prior_dist/", "prior_point/")) for k in results)
 
@@ -915,10 +915,10 @@ def test_val_dist_and_prior_dist_do_not_overwrite_each_other(
     trainer = Trainer(args)
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
 
-    assert "prior_dist/crps" in results and "val_dist/crps" in results
+    assert "prior_dist/crps" in results and "synt_dist/crps" in results
     assert "prior_point/cate/npehe" in results
     # Different sets, so the numbers must not be the same object/value.
-    assert results["prior_dist/crps"] != results["val_dist/crps"]
+    assert results["prior_dist/crps"] != results["synt_dist/crps"]
 
 
 @patch("wandb.init")
@@ -926,28 +926,28 @@ def test_val_dist_lands_exactly_on_the_gated_steps(
     mock_wandb_init, tmp_path, tiny_replicate_set
 ):
     args = _val_eval_args(tmp_path, tiny_replicate_set)
-    args.val_eval_interval = 2
+    args.synt_eval_interval = 2
     trainer = Trainer(args)
-    trainer.val_eval_interval = 2
+    trainer.synt_eval_interval = 2
 
     fired = {}
     for _ in range(5):
         results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
-        fired[trainer.curr_step] = "val_dist/crps" in results
+        fired[trainer.curr_step] = "synt_dist/crps" in results
 
     assert fired == {1: True, 2: True, 3: False, 4: True, 5: False}
 
 
 @patch("wandb.init")
-def test_val_eval_interval_overrides_default(
+def test_synt_eval_interval_overrides_default(
     mock_wandb_init, tmp_path, tiny_replicate_set
 ):
     args = _val_eval_args(
         tmp_path,
         tiny_replicate_set,
-        ["--val_eval_interval", "7"],
+        ["--synt_eval_interval", "7"],
     )
-    assert Trainer(args).val_eval_interval == 7
+    assert Trainer(args).synt_eval_interval == 7
 
 
 @patch("wandb.init")
@@ -956,7 +956,7 @@ def test_a_set_without_a_sidecar_is_refused_at_construction(
 ):
     """The absence of frozen_meta.pt is the gate, and it must fire early.
 
-    Pointing --val_eval_dir at a plain val/ directory (or at a mc_cate=1 set)
+    Pointing --synt_eval_dir at a plain val/ directory (or at a mc_cate=1 set)
     is the mistake this prevents: those targets are sampled ITEs, and scoring a
     posterior against them is *minimised by an over-wide posterior* rather than
     erroring. Failing at __init__ beats failing hundreds of steps in.
@@ -970,23 +970,23 @@ def test_a_set_without_a_sidecar_is_refused_at_construction(
 def test_val_dist_best_metric_only_saves_best_on_steps_that_pass_ran(
     mock_wandb_init, tmp_path, tiny_replicate_set
 ):
-    """Routing: a val_dist/* best_metric must key off the val_dist pass, not
+    """Routing: a synt_dist/* best_metric must key off the val_dist pass, not
     the prior pass, even when the prior pass ran and this one didn't."""
     args = _val_eval_args(
         tmp_path,
         tiny_replicate_set,
         [
             "--best_metric",
-            "val_dist/crps",
+            "synt_dist/crps",
             "--best_metric_mode",
             "min",
-            "--val_eval_interval",
+            "--synt_eval_interval",
             "2",
         ],
     )
     trainer = Trainer(args)
-    assert trainer._monitored_surface_ran(ran_prior_eval=False, ran_val_eval=True)
-    assert not trainer._monitored_surface_ran(ran_prior_eval=True, ran_val_eval=False)
+    assert trainer._monitored_surface_ran(ran_prior_eval=False, ran_synt_eval=True)
+    assert not trainer._monitored_surface_ran(ran_prior_eval=True, ran_synt_eval=False)
 
 
 def test_atomic_checkpoint_save(dummy_args):

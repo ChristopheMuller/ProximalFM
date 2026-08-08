@@ -11,7 +11,7 @@ distributional score needs:
   re-derive the ``y_std`` vs ``y_std**2`` distinction. That is the one place a
   scale bug is invisible: both forms look plausible and only one is right.
 
-The schema is deliberately identical to ``posterior_eval``'s, so
+The schema is deliberately identical to ``prior_eval``'s, so
 ``proximalfm.train._dist_eval.score_frozen_set`` scores a realistic set with no
 realistic-specific branch. It reads exactly four things --
 ``meta["global"]["n_max"]``, ``meta["episodes"]``, and per record
@@ -51,7 +51,7 @@ REALISTIC_META_VERSION = 1
 SET_KIND = "realistic"
 
 # The *trainer's* standardisation floor, deliberately not ProximalFM.predict's
-# 1e-5. Kept in step with posterior_eval.build_prior_frozen_set.Y_STD_FLOOR.
+# 1e-5. Kept in step with prior_eval.build_prior_frozen_set.Y_STD_FLOOR.
 Y_STD_FLOOR = 1e-3
 
 META_NAME = "frozen_meta.pt"

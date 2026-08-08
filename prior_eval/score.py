@@ -1,6 +1,6 @@
 """Score a checkpoint's CATE posterior on a frozen set (EVAL_PLAN step 5).
 
-    uv run python -m posterior_eval.score --dir data/posterior_eval/frozen_v1 \
+    uv run python -m prior_eval.score --dir data/prior_eval/frozen_v1 \
         --ckpt path/to/model.ckpt
 
 Offline sibling of the trainer wiring that follows in step 6: the same
@@ -105,7 +105,7 @@ def run(
     max_episodes: Optional[int] = None,
     n_ctx: Optional[int] = None,
 ) -> Dict[str, Any]:
-    from posterior_eval.report import load_model
+    from prior_eval.report import load_model
 
     model, step = load_model(Path(ckpt), device=device)
     metrics = score_frozen_set(
@@ -116,7 +116,7 @@ def run(
         max_episodes=max_episodes,
     )
 
-    from posterior_eval.build_prior_frozen_set import (
+    from prior_eval.build_prior_frozen_set import (
         frozen_content_digest,
         load_frozen_meta,
     )
@@ -152,7 +152,7 @@ def run(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        prog="python -m posterior_eval.score",
+        prog="python -m prior_eval.score",
         description="Score a checkpoint's CATE posterior on a frozen eval set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

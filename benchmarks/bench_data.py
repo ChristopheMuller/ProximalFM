@@ -4,7 +4,7 @@ bench_data.py
 Build the standardized benchmark data dict from the RAW, sparse
 "training-validation" format (the ``batch_*.pt`` + ``metadata.json`` layout
 written by ``proximalfm.prior._genload.SavePriorDataset`` and by
-``synthetic/build_proximal_datasets.py``).
+``synt_eval/build_proximal_datasets.py``).
 
 The benchmark historically consumed its own single-file ``data.pt``; this
 module lets it consume the val-format directory directly, so the same files on

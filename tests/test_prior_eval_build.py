@@ -12,7 +12,7 @@ import json
 import pytest
 import torch
 
-from posterior_eval.build_prior_frozen_set import (
+from prior_eval.build_prior_frozen_set import (
     BuildConfig,
     FrozenSetConflictError,
     MonteCarloBudgetError,
@@ -109,7 +109,7 @@ def test_metadata_json_matches_the_prior_format(frozen):
 def test_batch_files_carry_every_field_the_loader_expects(frozen):
     _cfg_, _out, val_dir = frozen
     payload = torch.load(val_dir / "batch_000000.pt", weights_only=True)
-    # MU0/MU1/S2/K_eff are the fields synthetic/build_proximal_datasets.py omits
+    # MU0/MU1/S2/K_eff are the fields synt_eval/build_proximal_datasets.py omits
     # and LoadPriorDataset silently substitutes for. A frozen set that lost them
     # would train and score as noise-free with no error.
     for key in ("U", "X", "W", "Z", "A", "A_probs", "Y_obs", "Y0", "Y1"):
@@ -271,7 +271,7 @@ def test_force_overrides_the_guard(tmp_path):
 def test_verify_recomputes_the_stored_digest(tmp_path):
     # verify.py is what runs after a set is copied between machines, so it is
     # where a sidecar whose digest no longer matches its own config surfaces.
-    from posterior_eval.verify import _recompute_from_config
+    from prior_eval.verify import _recompute_from_config
 
     out = tmp_path / "set"
     build(_cfg(), out, datasets_per_file=2, progress=False)
