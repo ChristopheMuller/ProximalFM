@@ -6,7 +6,6 @@ utility (seeding, OOM handling, checkpoint transfer rules, timing).
 
 from __future__ import annotations
 
-import functools
 import os
 import random
 import timeit
@@ -14,7 +13,6 @@ import timeit
 import numpy as np
 import torch
 import yaml
-from torch.distributed import destroy_process_group
 
 
 def seed_dataloader_worker(worker_id: int) -> None:
@@ -24,7 +22,7 @@ def seed_dataloader_worker(worker_id: int) -> None:
     prior draws dimensions / hyperparameters via ``np.random`` in many places. Left
     unseeded, workers can produce correlated (partially duplicated) datasets. Derive
     every generator's seed from ``torch.initial_seed()``, which PyTorch already makes
-    unique per (DDP rank, worker), so this stays reproducible and decorrelated.
+    unique per worker, so this stays reproducible and decorrelated.
     """
     worker_seed = torch.initial_seed() % (2**31 - 1)
     np.random.seed(worker_seed)
@@ -108,21 +106,3 @@ class Timer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.elapsed = timeit.default_timer() - self.start_time
         return False  # Don't suppress exceptions
-
-
-def ddp_cleanup(func):
-    """Decorator to clean up DDP process group after method execution.
-
-    Ensures that destroy_process_group() is called if DDP is enabled,
-    even if an exception occurs during method execution.
-    """
-
-    @functools.wraps(func)
-    def wrapper(self, *args, **kwargs):
-        try:
-            return func(self, *args, **kwargs)
-        finally:
-            if self.ddp:
-                destroy_process_group()
-
-    return wrapper

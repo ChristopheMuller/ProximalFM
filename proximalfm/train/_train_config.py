@@ -563,9 +563,7 @@ def build_parser():
         type=nullable_int,
         help="Cap on the number of frozen-set episodes scored per "
         "prior_validate() pass. None (default) scores every episode in "
-        "--prior_eval_dir. A global cap, applied before the DDP round-robin "
-        "sharding, so which episodes get scored does not depend on the world "
-        "size -- only who scores them.",
+        "--prior_eval_dir.",
     )
 
     ###########################################################################
@@ -596,8 +594,7 @@ def build_parser():
         default=None,
         type=nullable_int,
         help="Cap on the number of episodes scored per synt_validate() "
-        "pass. None (default) scores every episode in --synt_eval_dir. Applied "
-        "before the DDP round-robin sharding, like --prior_eval_max_episodes.",
+        "pass. None (default) scores every episode in --synt_eval_dir.",
     )
 
     ###########################################################################

@@ -171,7 +171,7 @@ for i, checkp in enumerate(all_checkpoints):
     step = checkpoint["curr_step"]
     print(f"Plotting Checkpoint: {checkp}, Step: {step}")
 
-    # Strip 'module.' prefix if saved via DDP
+    # Strip 'module.' prefix left by older DDP-saved checkpoints
     state_dict = checkpoint["state_dict"]
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     model.load_state_dict(state_dict)

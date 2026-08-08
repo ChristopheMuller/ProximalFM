@@ -14,8 +14,6 @@ from torch import optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.multiprocessing import set_start_method
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.distributed import init_process_group
 
 from tqdm import tqdm
 import yaml
@@ -37,7 +35,6 @@ from proximalfm.train._losses import (
 )
 from proximalfm.train._utils import (
     Timer,
-    ddp_cleanup,
     empty_accelerator_cache,
     get_parameter_state,
     is_oom_error,
@@ -68,8 +65,8 @@ class Trainer:
         self.hl_linear_decay_steps = getattr(self.config, "hl_linear_decay_steps", 5000)
         self.hl_final_sigma = getattr(self.config, "hl_final_sigma", 0.01)
 
-        self.configure_ddp()
-        self.logger = ExperimentLogger(self.config, self.master_process)
+        self.configure_run()
+        self.logger = ExperimentLogger(self.config)
 
         self.build_model()
         self.configure_prior()
@@ -97,7 +94,7 @@ class Trainer:
             )
 
             self._prior_eval_meta = load_frozen_meta(Path(self.prior_eval_dir))
-            require_single_cate_head(self.raw_model)
+            require_single_cate_head(self.model)
             self.logger.update_config(
                 {
                     "prior_eval_content_digest": frozen_content_digest(
@@ -118,7 +115,7 @@ class Trainer:
             )
 
             self._synt_eval_meta = load_frozen_meta(Path(self.synt_eval_dir))
-            require_single_cate_head(self.raw_model)
+            require_single_cate_head(self.model)
             self.logger.update_config(
                 {
                     "synt_eval_content_digest": frozen_content_digest(
@@ -130,47 +127,15 @@ class Trainer:
                 }
             )
 
-    def configure_ddp(self):
-        """Set up distributed training configuration."""
-        self.ddp = int(os.environ.get("RANK", -1)) != -1
+    def configure_run(self):
+        """Seed the run and set global backend flags.
 
-        if self.ddp:
-            init_process_group(backend="nccl")
-            self.ddp_rank = int(os.environ["RANK"])
-            self.ddp_local_rank = int(os.environ["LOCAL_RANK"])
-            self.ddp_world_size = int(os.environ["WORLD_SIZE"])
-            self.master_process = self.ddp_rank == 0
-            self.config.device = f"cuda:{self.ddp_local_rank}"
-            self.config.prior_device = f"cuda:{self.ddp_local_rank}"
-            torch.cuda.set_device(self.config.device)
-
-            original_batch_size = self.config.batch_size
-            self.config.batch_size = math.ceil(
-                original_batch_size / self.ddp_world_size
-            )
-
-            if self.master_process:
-                print(f"DDP training with {self.ddp_world_size} processes")
-                if original_batch_size % self.ddp_world_size == 0:
-                    print(f"Per-GPU batch size: {self.config.batch_size}")
-                else:
-                    print(
-                        f"Original batch size ({original_batch_size}) cannot be divided by world size ({self.ddp_world_size}).\n"
-                        f"Use ceiling division for equal per-GPU batch size: {self.config.batch_size}.\n"
-                        f"Effective batch size is {self.config.batch_size * self.ddp_world_size}.\n"
-                    )
-        else:
-            self.master_process = True
-            self.ddp_rank = 0
-            self.ddp_world_size = 1
-            self.ddp_local_rank = 0
-            print("No DDP training")
-
+        Training is single-process: one device, one optimizer step per batch.
+        """
         self.curr_step = 0
 
-        seed_offset = self.ddp_rank if self.ddp else 0
-        np.random.seed(self.config.np_seed + seed_offset)
-        torch.manual_seed(self.config.torch_seed + seed_offset)
+        np.random.seed(self.config.np_seed)
+        torch.manual_seed(self.config.torch_seed)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
@@ -221,8 +186,7 @@ class Trainer:
         total_model_params = sum(p.numel() for p in model.parameters())
 
         if checkpoint_path and os.path.exists(checkpoint_path):
-            if self.master_process:
-                print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
+            print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
 
             checkpoint = torch.load(
                 checkpoint_path, map_location=self.config.device, weights_only=True
@@ -263,49 +227,40 @@ class Trainer:
             else:
                 param.requires_grad = True
 
-        if self.master_process:
-            num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            frozen_params = sum(
-                p.numel() for p in model.parameters() if not p.requires_grad
-            )
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        frozen_params = sum(
+            p.numel() for p in model.parameters() if not p.requires_grad
+        )
 
-            pct_loaded = (
-                (loaded_params_count / total_model_params * 100)
-                if total_model_params > 0
-                else 0.0
-            )
+        pct_loaded = (
+            (loaded_params_count / total_model_params * 100)
+            if total_model_params > 0
+            else 0.0
+        )
 
-            print(
-                f"Model built: {num_params:,} trainable params | "
-                f"{frozen_params:,} frozen params.\n"
-                f"Checkpoint tracking: {loaded_params_count:,}/{total_model_params:,} "
-                f"parameters loaded from checkpoint ({pct_loaded:.2f}%)."
-            )
+        print(
+            f"Model built: {num_params:,} trainable params | "
+            f"{frozen_params:,} frozen params.\n"
+            f"Checkpoint tracking: {loaded_params_count:,}/{total_model_params:,} "
+            f"parameters loaded from checkpoint ({pct_loaded:.2f}%)."
+        )
 
-            self.logger.log_summary(
-                {
-                    "trainable_params": num_params,
-                    "frozen_params": frozen_params,
-                    "total_params": total_model_params,
-                    "loaded_checkpoint_params": loaded_params_count,
-                    "pct_params_loaded": pct_loaded,
-                }
-            )
+        self.logger.log_summary(
+            {
+                "trainable_params": num_params,
+                "frozen_params": frozen_params,
+                "total_params": total_model_params,
+                "loaded_checkpoint_params": loaded_params_count,
+                "pct_params_loaded": pct_loaded,
+            }
+        )
 
         if self.config.model_compile:
             torch._dynamo.config.cache_size_limit = 64
             model = torch.compile(model, dynamic=True)
-            if self.master_process:
-                print("Model compiled successfully.")
+            print("Model compiled successfully.")
 
-        if self.ddp:
-            self.model = DDP(
-                model, device_ids=[self.ddp_local_rank], broadcast_buffers=False
-            )
-            self.raw_model = self.model.module
-        else:
-            self.model = model
-            self.raw_model = model
+        self.model = model
 
     def configure_prior(self):
         """Set up dataset generator for proximal synthetic data."""
@@ -347,15 +302,12 @@ class Trainer:
             dataset = LoadPriorDataset(
                 data_dir=c.prior_dir,
                 batch_size=c.batch_size,
-                ddp_world_size=self.ddp_world_size,
-                ddp_rank=self.ddp_rank,
                 start_from=c.load_prior_start,
                 delete_after_load=c.delete_after_load,
                 device=c.prior_device,
             )
 
-        if self.master_process:
-            print(dataset)
+        print(dataset)
 
         prior_on_cpu = "cpu" in getattr(self.config, "prior_device", "cpu")
         pin_to_cuda = prior_on_cpu and "cuda" in str(self.config.device)
@@ -375,7 +327,7 @@ class Trainer:
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
         self.optimizer = optim.AdamW(
-            params=self.raw_model.parameters(),
+            params=self.model.parameters(),
             lr=self.config.lr,
             weight_decay=self.config.weight_decay,
         )
@@ -396,8 +348,7 @@ class Trainer:
         self.scaler = torch.GradScaler("cuda", enabled=self.amp and need_scaler)
 
         if self.amp:
-            if self.master_process:
-                print(f"AMP enabled with dtype={dtype_str}.")
+            print(f"AMP enabled with dtype={dtype_str}.")
             self.amp_ctx = torch.autocast(device_type="cuda", dtype=amp_dtype)
         else:
             self.amp_ctx = nullcontext()
@@ -476,7 +427,7 @@ class Trainer:
         checkpoint_path = os.path.join(self.config.checkpoint_dir, name)
         checkpoint = {
             "config": self.model_config,
-            "state_dict": self.raw_model.state_dict(),
+            "state_dict": self.model.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": self.scheduler.state_dict(),
             "curr_step": self.curr_step,
@@ -503,8 +454,8 @@ class Trainer:
         return False
 
     def _check_best_metric_config(self):
-        """Warn on master process about invalid best_metric configurations."""
-        if not self.save_best or not self.master_process:
+        """Warn about invalid best_metric configurations."""
+        if not self.save_best:
             return
 
         if (
@@ -550,7 +501,7 @@ class Trainer:
 
     def _load_best_metric_value(self):
         """Recover best metric value from existing best_model.ckpt."""
-        if not self.save_best or not self.master_process:
+        if not self.save_best:
             return
         if not getattr(self.config, "checkpoint_dir", None):
             return
@@ -668,22 +619,17 @@ class Trainer:
         """Perform per-step bookkeeping and trigger validation passes."""
         self.curr_step += 1
 
-        if self.master_process:
-            results.update({"prior_time": prior_time, "train_time": train_time})
+        results.update({"prior_time": prior_time, "train_time": train_time})
 
-            is_temp_save = self.curr_step % self.config.save_temp_every == 0
-            is_perm_save = self.curr_step % self.config.save_perm_every == 0
+        is_temp_save = self.curr_step % self.config.save_temp_every == 0
+        is_perm_save = self.curr_step % self.config.save_perm_every == 0
 
-            if is_temp_save or is_perm_save:
-                ckpt_name = f"step-{self.curr_step}.ckpt"
-                self.save_checkpoint(name=ckpt_name)
+        if is_temp_save or is_perm_save:
+            ckpt_name = f"step-{self.curr_step}.ckpt"
+            self.save_checkpoint(name=ckpt_name)
 
-                if (
-                    is_temp_save
-                    and not is_perm_save
-                    and self.config.max_checkpoints > 0
-                ):
-                    self.manage_checkpoint()
+            if is_temp_save and not is_perm_save and self.config.max_checkpoints > 0:
+                self.manage_checkpoint()
 
         surface_results = {}
 
@@ -710,24 +656,22 @@ class Trainer:
                 ran_prior_eval=ran_prior_eval,
                 ran_synt_eval=ran_synt_eval,
             )
-            if self.master_process and self.save_best and surface_ran:
+            if self.save_best and surface_ran:
                 self._maybe_save_best(surface_results)
 
         results["lr"] = self.scheduler.get_last_lr()[0]
         self.logger.log(results, step=self.curr_step)
         return results
 
-    @ddp_cleanup
     def train(self):
         """Execute the main training loop across configured steps."""
 
-        if self.master_process:
-            step_progress = tqdm(
-                initial=self.curr_step,
-                total=self.config.max_steps,
-                desc="Step",
-                leave=True,
-            )
+        step_progress = tqdm(
+            initial=self.curr_step,
+            total=self.config.max_steps,
+            desc="Step",
+            leave=True,
+        )
 
         dataloader = iter(self.dataloader)
         num_batches_per_block = max(
@@ -743,28 +687,15 @@ class Trainer:
                     except RuntimeError as e:
                         if not is_oom_error(e):
                             raise
-                        if self.master_process:
-                            print(
-                                "\n[Step {}] OutOfMemory caught during block "
-                                "generation. Using a partial block.".format(
-                                    self.curr_step
-                                )
-                            )
+                        print(
+                            "\n[Step {}] OutOfMemory caught during block "
+                            "generation. Using a partial block.".format(self.curr_step)
+                        )
                         empty_accelerator_cache(self.config.device)
                         empty_accelerator_cache(self.config.prior_device)
                         break
-            # Keep the block length identical across ranks so every rank issues the
-            # same number of run_batch calls and reaches validation / internal
-            # all-reduces in lockstep, even if generation OOM'd on only some ranks.
-            if self.ddp:
-                count = torch.tensor(
-                    [len(block)], device=self.config.device, dtype=torch.int64
-                )
-                torch.distributed.all_reduce(count, op=torch.distributed.ReduceOp.MIN)
-                block = block[: int(count.item())]
-
             if not block:
-                # No rank produced a usable batch; retry generation on all ranks.
+                # Generation OOM'd before the first batch; retry.
                 continue
 
             # Generation cost is amortized over the steps that actually reuse the
@@ -794,11 +725,10 @@ class Trainer:
                     except RuntimeError as e:
                         if not is_oom_error(e):
                             raise
-                        if self.master_process:
-                            print(
-                                f"\n[Step {self.curr_step}] OutOfMemory caught during "
-                                "training. Skipping batch."
-                            )
+                        print(
+                            f"\n[Step {self.curr_step}] OutOfMemory caught during "
+                            "training. Skipping batch."
+                        )
                         empty_accelerator_cache(self.config.device)
                         continue
 
@@ -806,15 +736,14 @@ class Trainer:
                         results, amortized_prior_time, train_timer.elapsed
                     )
 
-                    if self.master_process:
-                        step_progress.update(1)
-                        # Rounded values for cleaner display
-                        step_progress.set_postfix(
-                            **{
-                                k: round(v, 3) if isinstance(v, float) else v
-                                for k, v in results.items()
-                            }
-                        )
+                    step_progress.update(1)
+                    # Rounded values for cleaner display
+                    step_progress.set_postfix(
+                        **{
+                            k: round(v, 3) if isinstance(v, float) else v
+                            for k, v in results.items()
+                        }
+                    )
 
                 if reached_end:
                     break
@@ -822,8 +751,7 @@ class Trainer:
             # Free the block before generating the next one (bounded memory).
             del block
 
-        if self.master_process:
-            step_progress.close()
+        step_progress.close()
 
     def validate_micro_batch(self, micro_seq_len, micro_train_size):
         """Validate consistent sequence length and train size within a micro batch."""
@@ -896,18 +824,6 @@ class Trainer:
             micro_MU1,
             micro_S2,
         )
-
-    def _ddp_all_valid(self, local_valid: bool) -> bool:
-        """Synchronize micro batch validity across DDP ranks."""
-        if not self.ddp:
-            return local_valid
-        valid_tensor = torch.tensor(
-            [1 if local_valid else 0],
-            device=self.config.device,
-            dtype=torch.int32,
-        )
-        torch.distributed.all_reduce(valid_tensor, op=torch.distributed.ReduceOp.MIN)
-        return bool(valid_tensor.item())
 
     def run_micro_batch(self, micro_batch, micro_batch_idx, num_micro_batches):
         """Process a single micro batch for gradient accumulation."""
@@ -1003,7 +919,7 @@ class Trainer:
         n0 = (A_train == 0).sum(dim=1)
         n1 = (A_train == 1).sum(dim=1)
 
-        if not self._ddp_all_valid(not ((n0 == 0).any() or (n1 == 0).any())):
+        if (n0 == 0).any() or (n1 == 0).any():
             return None
 
         with self.amp_ctx:
@@ -1018,36 +934,32 @@ class Trainer:
                 micro_d_W,
             )
 
-            if not self._ddp_all_valid(not pred_logits.isnan().any()):
+            if pred_logits.isnan().any():
                 return None
 
             loss_type = self.loss_type
 
             if loss_type == "bins_po":
-                nbins = self.raw_model.nbins
+                nbins = self.model.nbins
                 logits_y0 = pred_logits[..., :nbins]
                 logits_y1 = pred_logits[..., nbins:]
 
                 loss_y0 = compute_crps_loss(
                     logits_y0,
                     y_test_0_std,
-                    self.raw_model.bin_edges,
+                    self.model.bin_edges,
                 )
                 loss_y1 = compute_crps_loss(
                     logits_y1,
                     y_test_1_std,
-                    self.raw_model.bin_edges,
+                    self.model.bin_edges,
                 )
 
                 probs_y0 = F.softmax(logits_y0, dim=-1)
                 probs_y1 = F.softmax(logits_y1, dim=-1)
 
-                mean_pred_y0_std = torch.sum(
-                    probs_y0 * self.raw_model.bin_centers, dim=-1
-                )
-                mean_pred_y1_std = torch.sum(
-                    probs_y1 * self.raw_model.bin_centers, dim=-1
-                )
+                mean_pred_y0_std = torch.sum(probs_y0 * self.model.bin_centers, dim=-1)
+                mean_pred_y1_std = torch.sum(probs_y1 * self.model.bin_centers, dim=-1)
 
                 pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
 
@@ -1072,7 +984,7 @@ class Trainer:
                 loss_he_crps = compute_crps_loss(
                     he_logits,
                     true_he_std,
-                    self.raw_model.bin_edges,
+                    self.model.bin_edges,
                 )
 
                 lambda_ate = getattr(self.config, "lambda_ate", 1.0)
@@ -1081,14 +993,12 @@ class Trainer:
                 total_loss = (lambda_ate * loss_ate_nll) + (lambda_he * loss_he_crps)
 
                 probs_he = F.softmax(he_logits, dim=-1)
-                mean_he_pred_std = torch.sum(
-                    probs_he * self.raw_model.bin_centers, dim=-1
-                )
+                mean_he_pred_std = torch.sum(probs_he * self.model.bin_centers, dim=-1)
 
                 pred_cate_std = ate_mu + mean_he_pred_std
 
             elif loss_type == "hl":
-                nbins = self.raw_model.nbins
+                nbins = self.model.nbins
                 logits_y0 = pred_logits[..., :nbins]
                 logits_y1 = pred_logits[..., nbins:]
 
@@ -1097,25 +1007,21 @@ class Trainer:
                 loss_y0 = compute_hl_gaussian_cross_entropy_loss(
                     logits_y0,
                     y_test_0_std,
-                    self.raw_model.bin_edges,
+                    self.model.bin_edges,
                     sigma=hl_sigma,
                 )
                 loss_y1 = compute_hl_gaussian_cross_entropy_loss(
                     logits_y1,
                     y_test_1_std,
-                    self.raw_model.bin_edges,
+                    self.model.bin_edges,
                     sigma=hl_sigma,
                 )
 
                 probs_y0 = F.softmax(logits_y0, dim=-1)
                 probs_y1 = F.softmax(logits_y1, dim=-1)
 
-                mean_pred_y0_std = torch.sum(
-                    probs_y0 * self.raw_model.bin_centers, dim=-1
-                )
-                mean_pred_y1_std = torch.sum(
-                    probs_y1 * self.raw_model.bin_centers, dim=-1
-                )
+                mean_pred_y0_std = torch.sum(probs_y0 * self.model.bin_centers, dim=-1)
+                mean_pred_y1_std = torch.sum(probs_y1 * self.model.bin_centers, dim=-1)
 
                 pred_cate_std = mean_pred_y1_std - mean_pred_y0_std
 
@@ -1133,7 +1039,7 @@ class Trainer:
                     loss_cate_dist = compute_cate_noise_aware_nll(
                         pred_logits,
                         true_cate_std,
-                        self.raw_model.cate_bin_edges,
+                        self.model.cate_bin_edges,
                         target_var=target_var_std,
                         sigma=hl_sigma,
                     )
@@ -1141,13 +1047,13 @@ class Trainer:
                     loss_cate_dist = compute_cate_distribution_loss(
                         pred_logits,
                         true_cate_std,
-                        self.raw_model.cate_bin_edges,
+                        self.model.cate_bin_edges,
                         sigma=hl_sigma,
                     )
 
                 probs_cate = F.softmax(pred_logits, dim=-1)
                 pred_cate_std = torch.sum(
-                    probs_cate * self.raw_model.cate_bin_centers, dim=-1
+                    probs_cate * self.model.cate_bin_centers, dim=-1
                 )
 
                 cate_error_std = pred_cate_std - true_cate_std
@@ -1160,7 +1066,7 @@ class Trainer:
             else:
                 raise ValueError(f"Unknown loss_type: {loss_type}")
 
-        if not self._ddp_all_valid(bool(torch.isfinite(total_loss))):
+        if not torch.isfinite(total_loss):
             warnings.warn(
                 f"Non-finite {loss_type} loss at step {self.curr_step}; "
                 "skipping this micro batch. If this repeats, check "
@@ -1313,10 +1219,8 @@ class Trainer:
         # rescue a NaN -- ``clip_grad_norm_`` multiplies by a NaN scale and
         # leaves every gradient NaN. On CUDA + AMP ``GradScaler`` would catch
         # this and skip the step; ``configure_amp`` disables the scaler off
-        # CUDA, so on MPS/CPU nothing does. Skip the step explicitly instead,
-        # in lockstep across ranks (the all-reduced norms can differ in the last
-        # bit, so ranks must not decide independently).
-        if not self._ddp_all_valid(bool(torch.isfinite(grad_norm))):
+        # CUDA, so on MPS/CPU nothing does. Skip the step explicitly instead.
+        if not torch.isfinite(grad_norm):
             warnings.warn(
                 f"Non-finite gradient norm at step {self.curr_step}; skipping "
                 "the optimizer step. Repeated hits mean the run is diverging, "
@@ -1351,14 +1255,11 @@ class Trainer:
 
         with Timer() as timer:
             metrics = score_frozen_set(
-                self.raw_model,
+                self.model,
                 eval_dir,
                 device=self.config.device,
                 max_episodes=max_episodes,
                 meta=eval_meta,
-                rank=self.ddp_rank,
-                world_size=self.ddp_world_size,
-                sync_ddp=self.ddp,
                 prefix_point=f"{surface}_point/",
                 prefix_dist=f"{surface}_dist/",
             )
@@ -1413,7 +1314,7 @@ class Trainer:
         micro_K_eff,
     ) -> dict:
         """Diagnostics for the noise-aware CATE objective."""
-        centers = self.raw_model.cate_bin_centers.float()
+        centers = self.model.cate_bin_centers.float()
         probs = probs_cate.float()
         mean = pred_cate_std.float().unsqueeze(-1)
         var_pred = torch.sum(probs * (centers.view(1, 1, -1) - mean) ** 2, dim=-1)
@@ -1426,7 +1327,7 @@ class Trainer:
 
         frac_fallback = (~(s2 > 0)).float().mean()
 
-        edges = self.raw_model.cate_bin_edges
+        edges = self.model.cate_bin_edges
         out_of_grid = (
             ((true_cate_std < edges[0]) | (true_cate_std > edges[-1])).float().mean()
         )

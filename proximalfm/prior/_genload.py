@@ -3,15 +3,15 @@ Utilities for generating and loading prior datasets from disk for training.
 
 This module implements a workflow for generating synthetic tabular data from prior
 distributions, saving it efficiently to disk in a sparse format, and loading it during
-distributed training.
+training.
 
 This module provides two main classes:
 - SavePriorDataset: Generates and saves batches of prior data to disk
-- LoadPriorDataset: Loads pre-generated prior data from disk for distributed training
+- LoadPriorDataset: Loads pre-generated prior data from disk
 
 The data is saved in a sparse format to reduce storage requirements and loaded
-on demand during training. The module supports distributed training by allowing
-different processes to load different batches in a coordinated way.
+on demand during training. Dataloader workers each claim a disjoint slice of the
+batch files, so a multi-worker run consumes each file exactly once.
 """
 
 ####
@@ -294,7 +294,7 @@ def cat_slice_nested_tensors(tensors: List, dim=0) -> SliceNestedTensor:
 
 
 class LoadPriorDataset(IterableDataset):
-    """Load pre-generated prior data sequentially for distributed training.
+    """Load pre-generated prior data sequentially from disk.
 
     Parameters
     ----------
@@ -303,12 +303,6 @@ class LoadPriorDataset(IterableDataset):
 
     batch_size : int, default=512
         Number of datasets to return in each iteration.
-
-    ddp_world_size : int, default=1
-        Total number of distributed processes.
-
-    ddp_rank : int, default=0
-        Rank of current process.
 
     start_from : int, default=0
         Batch index to start loading from.
@@ -330,8 +324,6 @@ class LoadPriorDataset(IterableDataset):
         self,
         data_dir,
         batch_size=512,
-        ddp_world_size=1,
-        ddp_rank=0,
         start_from=0,
         max_batches=None,
         timeout=60,
@@ -342,11 +334,9 @@ class LoadPriorDataset(IterableDataset):
         self.start_from = start_from
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
-        self.ddp_world_size = ddp_world_size
-        self.ddp_rank = ddp_rank
         # Overwritten by __iter__ once the dataloader worker identity is known.
-        self.current_idx = ddp_rank + start_from
-        self.stride = ddp_world_size
+        self.current_idx = start_from
+        self.stride = 1
         self.max_batches = max_batches
         self.timeout = timeout
         self.delete_after_load = delete_after_load
@@ -385,28 +375,26 @@ class LoadPriorDataset(IterableDataset):
         self.buffer_size = 0
 
     def __iter__(self):
-        """Claim this replica's disjoint slice of the batch-file indices.
+        """Claim this worker's disjoint slice of the batch-file indices.
 
         An ``IterableDataset`` is *copied* into every dataloader worker, so a
         worker that does not narrow its own share replays the exact same files
-        as its siblings. Sharding on ``ddp_rank`` alone did precisely that:
-        with the trainer's default ``--train_dataloader_num_workers 4``, all
-        four workers walked the identical index sequence and a ``--prior_dir``
-        run consumed every batch file four times over (and, under
-        ``delete_after_load``, raced to unlink it).
+        as its siblings: with the trainer's default
+        ``--train_dataloader_num_workers 4``, all four workers would walk the
+        identical index sequence and a ``--prior_dir`` run would consume every
+        batch file four times over (and, under ``delete_after_load``, race to
+        unlink it).
 
-        Interleave both axes into one flat stride so each (rank, worker) pair
-        owns a distinct residue class. With a single worker the offset and
-        stride reduce to the previous ``ddp_rank`` / ``ddp_world_size``, so the
-        ``num_workers=0`` path -- validation, and every existing test -- is
-        unchanged.
+        Give each worker its own residue class instead. With a single worker
+        the offset is 0 and the stride 1, so the ``num_workers=0`` path --
+        validation, and every existing test -- is unchanged.
         """
         worker_info = torch.utils.data.get_worker_info()
         num_workers = 1 if worker_info is None else worker_info.num_workers
         worker_id = 0 if worker_info is None else worker_info.id
 
-        self.stride = self.ddp_world_size * num_workers
-        self.current_idx = self.start_from + self.ddp_rank * num_workers + worker_id
+        self.stride = num_workers
+        self.current_idx = self.start_from + worker_id
         self.buffer_size = 0
         return self
 
@@ -515,7 +503,7 @@ class LoadPriorDataset(IterableDataset):
         if self.delete_after_load and batch_file.exists():
             batch_file.unlink()
 
-        # Prepare next index for this (rank, worker) shard
+        # Prepare next index for this worker's shard
         self.current_idx += self.stride
 
         return (
@@ -843,8 +831,6 @@ class LoadPriorDataset(IterableDataset):
             f"LoadPriorDataset(\n"
             f"  data_dir: {self.data_dir}\n"
             f"  batch_size: {self.batch_size}\n"
-            f"  ddp_world_size: {self.ddp_world_size}\n"
-            f"  ddp_rank: {self.ddp_rank}\n"
             f"  start_from: {self.start_from}\n"
             f"  max_batches: {self.max_batches or 'Infinite'}\n"
             f"  timeout: {self.timeout}\n"

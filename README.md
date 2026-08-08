@@ -192,7 +192,7 @@ Rather than relying entirely on a static configuration, the orchestration enviro
 |---|---|---|
 | `--prior_type` | `str` | Structural Causal Model strategy (`mlp_scm`, `tree_scm`, `mix_scm`). |
 | `--num_batches` | `int` | Number of synthetic episode files to generate/train. |
-| `--batch_size` | `int` | Global meta-batch size across DDP nodes. |
+| `--batch_size` | `int` | Meta-batch size (datasets per optimizer step). |
 | `--micro_batch_size` | `int` | Batch slice size used for gradient accumulation. |
 | `--loss_type` | `str` | Objective routing framework (`bins_po`, `cate_decomposition`, `hl`). |
 | `--min_dim_X` / `--max_dim_X` | `int` | Dimensionality boundaries for baseline covariates $X$. |
@@ -292,7 +292,7 @@ uv run python -m proximalfm.train \
 |---|---|---|
 | `--synt_eval_dir` | `None` | **Root** of a replicate-bearing set (holds both `val/` and `frozen_meta.pt`). Drives both `synt_point/*` and `synt_dist/*` from one pass, mirroring how `--prior_eval_dir` drives `prior_point/*` + `prior_dist/*`. |
 | `--synt_eval_interval` | `50` | Steps between val passes; `0` disables. |
-| `--synt_eval_max_episodes` | `None` | Cap on episodes scored per pass, applied before DDP sharding. |
+| `--synt_eval_max_episodes` | `None` | Cap on episodes scored per pass. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
 | `--best_metric` | `synt_point/cate/npehe` | Metric key to monitor (e.g. `synt_point/cate/rmse`, `synt_dist/crps`, `prior_dist/crps`). |
 | `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |

@@ -134,14 +134,9 @@ def score_strata(
 ) -> Dict[str, Dict[str, float]]:
     """Score every stratum in one pass; returns ``{bucket_name: metrics}``.
 
-    Single process by design -- the stratified pass is an offline milestone
-    tool, so it carries none of ``score_frozen_set``'s rank/world_size
-    machinery. Adding DDP here would mean one collective pair per bucket, which
-    every rank would have to enter in the same order.
-
-    That single-process choice is also why ``progress`` defaults to on: the pass
-    is one forward per episode over the whole set, minutes to tens of minutes,
-    with nothing printed until the table at the end.
+    ``progress`` defaults to on: the pass is one forward per episode over the
+    whole set, minutes to tens of minutes, with nothing printed until the table
+    at the end.
     """
     out = Path(out)
     meta = load_frozen_meta(out) if meta is None else meta

@@ -271,7 +271,7 @@ Caveats worth knowing:
 
 ### `synt_dist/*`
 
-Same keys as `prior_dist/*` ([§5](#5-prior-surface)), same frozen scale, same DDP contract.
+Same keys as `prior_dist/*` ([§5](#5-prior-surface)), same frozen scale.
 
 ---
 
@@ -400,10 +400,7 @@ the same episode are dependent, so the effective sample size is below `n`. Treat
 as marginal.
 
 The pooled PIT sample is capped at `max_pit` (200 000) by uniform subsampling *at compute time*, so
-it stays an unbiased draw across all episodes rather than a prefix. Under DDP the cap is applied per
-rank as `max_pit // world_size` before the gather, which means **the pooled `pit_ks_pooled` is not bitwise
-reproducible across world sizes** — it is the same statistic on a different subsample. The
-per-episode keys are exact.
+it stays an unbiased draw across all episodes rather than a prefix. The per-episode keys are exact.
 
 **The variance identity and its parts.** All from one pass; `sd_over_rmse` is the one to report and
 the rest are there to debug it.

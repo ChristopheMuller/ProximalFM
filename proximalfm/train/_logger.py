@@ -11,10 +11,9 @@ import wandb
 class ExperimentLogger:
     """Handles communication with wandb to abstract tracking away from the main loop."""
 
-    def __init__(self, config, is_master=True):
+    def __init__(self, config):
         self.config = config
-        self.is_master = is_master
-        self.use_wandb = config.wandb_log and self.is_master
+        self.use_wandb = config.wandb_log
         self.run = None
         self.last_logged_step = -1
 
