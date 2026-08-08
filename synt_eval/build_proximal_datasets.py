@@ -72,6 +72,14 @@ validation at all: the trainer's `--synt_eval_dir` scores it once and emits both
 
 Memory scales as ``N = n_ctx + n_q*K`` rows per dataset (one dataset at a time,
 not the whole batch), and an unaffordable ``K`` raises rather than being capped.
+
+Because ``n_q`` is what trades against ``K``, the row split can also be given
+directly as ``--n_max C --n_q Q`` -- the spelling ``prior_eval`` uses -- instead
+of ``--seq_len``/``--prop_train``. It is a front-end spelling of the same one
+number the generator takes: it resolves to ``seq_len = n_max + n_q`` and
+``prop_train = n_max / seq_len`` exactly, so either spelling of a given split
+builds the same set with the same ``content_digest``. Pass one or the other; the
+builder refuses a mix.
 """
 
 from __future__ import annotations
@@ -319,6 +327,9 @@ def write_manifest(
         "n_datasets": int(mech_ids.shape[0]),
         "seq_len": args.seq_len,
         "prop_train": args.prop_train,
+        # The same split, spelled the way prior_eval spells it.
+        "n_max": args.n_max,
+        "n_q": args.n_q,
         "seed": args.seed,
         "cli_command": cli_command,
         "mechanisms": args.mechanisms,
@@ -428,6 +439,7 @@ def build(args: argparse.Namespace) -> None:
 
         print(
             f"Building '{args.name}': {args.n_datasets} datasets x T={args.seq_len} "
+            f"(n_max={args.n_max} + n_q={args.n_q}) "
             f"across {len(mechanisms)} mechanisms (seed={args.seed})…"
         )
 
@@ -513,6 +525,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fraction of rows used as training context (rest = query/test).",
     )
     p.add_argument(
+        "--n_max",
+        type=int,
+        default=None,
+        help="Context rows per dataset. Alternative spelling of the row split, "
+        "matching prior_eval's vocabulary; requires --n_q and is mutually "
+        "exclusive with --seq_len/--prop_train. Resolves to seq_len = n_max + "
+        "n_q, prop_train = n_max / seq_len.",
+    )
+    p.add_argument(
+        "--n_q",
+        type=int,
+        default=None,
+        help="Query rows per dataset -- the axis that trades against --mc_cate "
+        "for memory (N = n_max + n_q*K). Requires --n_max.",
+    )
+    p.add_argument(
         "--seed",
         type=int,
         default=123,
@@ -587,6 +615,52 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def resolve_rows(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    argv: Sequence[str],
+) -> argparse.Namespace:
+    """Fold ``--n_max``/``--n_q`` into the ``seq_len``/``prop_train`` pair.
+
+    The generator's row split is one number, ``train_size``, and everything
+    downstream -- the sidecar's ``content_digest`` included -- names it as
+    ``(seq_len, prop_train)``. So this is a front-end spelling, not a second
+    parameterisation: ``n_max``/``n_q`` resolve into exactly that pair, and a set
+    built either way with the same split is the same set with the same digest.
+
+    The resolution is exact, not approximate. ``_resolve_train_size`` computes
+    ``round(prop_train * seq_len)``, and ``round(n_max/(n_max+n_q) * (n_max+n_q))``
+    is ``n_max`` for any float error small enough to round away -- which it is,
+    at ~1e-16 relative.
+
+    Both or neither, and never mixed with the flags they replace: a build whose
+    row split came from two sources silently is exactly the kind of thing the
+    digest cannot warn you about, because the resulting set is self-consistent.
+    """
+    if (args.n_max is None) != (args.n_q is None):
+        parser.error("--n_max and --n_q must be given together")
+
+    if args.n_max is None:
+        # Record the resolved split anyway, so config.yaml/manifest.json spell
+        # it both ways regardless of which spelling built the set.
+        n_ctx = max(1, min(args.seq_len - 1, round(args.prop_train * args.seq_len)))
+        args.n_max, args.n_q = n_ctx, args.seq_len - n_ctx
+        return args
+
+    conflicting = [f for f in ("--seq_len", "--prop_train") if f in argv]
+    if conflicting:
+        parser.error(
+            f"--n_max/--n_q replace {'/'.join(conflicting)}; pass one spelling "
+            "of the row split, not both"
+        )
+    if args.n_max < 1 or args.n_q < 1:
+        parser.error("--n_max and --n_q must both be >= 1")
+
+    args.seq_len = args.n_max + args.n_q
+    args.prop_train = args.n_max / args.seq_len
+    return args
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     """Parse CLI args, seeding defaults from ``--config`` YAML if given.
 
@@ -611,7 +685,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             if action.dest in overrides:
                 action.required = False
 
-    return parser.parse_args(argv)
+    cli = list(argv) if argv is not None else sys.argv[1:]
+    return resolve_rows(parser, parser.parse_args(argv), cli)
 
 
 if __name__ == "__main__":

@@ -189,3 +189,51 @@ def test_build_writes_only_val_format(tmp_path):
     assert data["N_BATCH"] == 4
     assert data["N_TRAIN"] == int(SEQ_LEN * PROP_TRAIN)
     assert data["N_TEST"] == SEQ_LEN - data["N_TRAIN"]
+
+
+# -----------------------------------------------------------------------------
+# --n_max/--n_q: a front-end spelling of the row split, not a second one
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "n_max,n_q", [(1536, 512), (2048, 128), (1000, 1), (3, 4093), (1, 1)]
+)
+def test_n_max_n_q_resolve_to_that_exact_context_size(n_max, n_q):
+    """The float round-trip must land on n_max exactly, not near it.
+
+    ``--n_max``/``--n_q`` resolve to ``prop_train = n_max/seq_len``, which the
+    generator turns back into an integer via ``round(prop_train * seq_len)``. If
+    that ever came back off by one, the set would still build and still look
+    self-consistent -- so pin it.
+    """
+    args = bpd.parse_args(["--name", "x", "--n_max", str(n_max), "--n_q", str(n_q)])
+    assert args.seq_len == n_max + n_q
+    assert (
+        RealisticProximalGenerator._resolve_train_size(
+            None, args.prop_train, args.seq_len
+        )
+        == n_max
+    )
+
+
+def test_seq_len_prop_train_still_report_the_split_both_ways():
+    """The legacy spelling gains n_max/n_q, so the record is spelling-agnostic."""
+    args = bpd.parse_args(["--name", "x", "--seq_len", "2048", "--prop_train", "0.75"])
+    assert (args.n_max, args.n_q) == (1536, 512)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        ["--n_max", "10"],  # n_q missing
+        ["--n_q", "10"],  # n_max missing
+        ["--n_max", "10", "--n_q", "5", "--seq_len", "20"],  # mixed spellings
+        ["--n_max", "10", "--n_q", "5", "--prop_train", "0.5"],  # mixed spellings
+        ["--n_max", "0", "--n_q", "5"],  # empty context
+        ["--n_max", "5", "--n_q", "0"],  # no query rows to replicate
+    ],
+)
+def test_row_split_flag_misuse_is_refused(bad):
+    with pytest.raises(SystemExit):
+        bpd.parse_args(["--name", "x", *bad])
