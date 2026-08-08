@@ -263,26 +263,44 @@ uv run synthetic/build_proximal_datasets.py \
 
 ### Step 2 — Use it as validation during training
 
-Point the trainer at the `val/` folder:
+The trainer's validation surface needs a **replicate-bearing** set — one built with `--mc_cate K`,
+`K > 1` — because `val_point/*` and `val_dist/*` both come from `score_frozen_set`'s per-episode pass
+over `frozen_meta.pt`, and only a replicate build writes that sidecar. The committed
+`synthetic/validation_data` (built with the default `--mc_cate 1`) has no sidecar and is not usable
+here; it exists for the benchmark harness (Step 3), which is point-only and reads `val/` directly.
+Build a replicate set instead:
+
+```bash
+uv run synthetic/build_proximal_datasets.py \
+    --config synthetic/validation_data/config.yaml \
+    --name validation_data_dist --mc_cate 200
+```
+
+Then point the trainer at its **root**:
 
 ```bash
 uv run python -m proximalfm.train \
     <your usual training flags> \
-    --val_dir synthetic/validation_data/val \
-    --point_val_interval 50 \
+    --val_eval_dir synthetic/validation_data_dist \
+    --val_eval_interval 50 \
     --save_best true \
-    --best_metric val/point/cate/npehe \
+    --best_metric val_point/cate/npehe \
     --best_metric_mode min
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--val_dir` | `None` | Directory of `batch_*.pt` files to validate on (no validation if unset). |
-| `--point_val_interval` | `50` | Steps between validation passes. |
+| `--val_eval_dir` | `None` | **Root** of a replicate-bearing set (holds both `val/` and `frozen_meta.pt`). Drives both `val_point/*` and `val_dist/*` from one pass, mirroring how `--prior_eval_dir` drives `prior_point/*` + `prior_dist/*`. |
+| `--val_eval_interval` | `-1` | Steps between val passes; `-1` follows `--point_val_interval`, `0` disables. |
+| `--val_eval_max_episodes` | `None` | Cap on episodes scored per pass, applied before DDP sharding. |
 | `--save_best` | `true` | Keep a `best_model.ckpt`, overwritten whenever the monitored metric improves. |
-| `--best_metric` | `val/point/cate/npehe` | Metric key to monitor (e.g. `val/point/cate/rmse`, `val/point/ate/rmse`, `val/point/cate/r2`). |
+| `--best_metric` | `val_point/cate/npehe` | Metric key to monitor (e.g. `val_point/cate/rmse`, `val_dist/crps`, `prior_dist/crps`). |
 | `--best_metric_mode` | `min` | `min` for errors, `max` for scores like R². |
-| `--val_micro_batch_size` | `--micro_batch_size` | Validation runs without backward, so it can afford a larger micro-batch. |
+
+A set built **without** `--mc_cate` has no Monte-Carlo CATE target, so both metric kinds — point or
+distributional — would be scored against sampled ITEs; `--val_eval_dir` refuses such a set outright
+(no `frozen_meta.pt`, `FileNotFoundError` at construction) rather than silently reporting an inflated
+number. See [`proximalfm/train/metrics.md`](proximalfm/train/metrics.md) §7.
 
 ### Step 3 — Benchmark against other methods
 

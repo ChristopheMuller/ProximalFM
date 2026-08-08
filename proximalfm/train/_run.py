@@ -26,7 +26,6 @@ from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.train._optim import get_scheduler
 from proximalfm.train._train_config import build_parser
-from proximalfm.train._eval import CausalEvaluator
 from proximalfm.train._dist_eval import require_single_cate_head, score_frozen_set
 from proximalfm.train._logger import ExperimentLogger
 from proximalfm.train._losses import (
@@ -83,20 +82,12 @@ class Trainer:
 
         self.build_model()
         self.configure_prior()
-        self.configure_validation_prior()
         self.configure_optimizer()
         self.configure_amp()
         self.load_checkpoint()
 
-        self.val_evaluator = CausalEvaluator()
-
-        self.val_micro_batch_size = (
-            getattr(self.config, "val_micro_batch_size", None)
-            or self.config.micro_batch_size
-        )
-
         self.save_best = getattr(self.config, "save_best", True)
-        self.best_metric = getattr(self.config, "best_metric", "val/point/cate/npehe")
+        self.best_metric = getattr(self.config, "best_metric", "val_point/cate/npehe")
         self.best_metric_mode = getattr(self.config, "best_metric_mode", "min")
         self.best_metric_value = None
         self._warned_missing_metric = False
@@ -105,43 +96,79 @@ class Trainer:
 
         # Resolved once here rather than re-read from config at every step:
         # -1 tracks point_val_interval, 0 disables.
-        dist_eval_interval = getattr(self.config, "dist_eval_interval", -1)
-        self.dist_eval_interval = (
+        prior_eval_interval = getattr(self.config, "prior_eval_interval", -1)
+        self.prior_eval_interval = (
             self.config.point_val_interval
-            if dist_eval_interval == -1
-            else dist_eval_interval
+            if prior_eval_interval == -1
+            else prior_eval_interval
+        )
+        val_eval_interval = getattr(self.config, "val_eval_interval", -1)
+        self.val_eval_interval = (
+            self.config.point_val_interval
+            if val_eval_interval == -1
+            else val_eval_interval
         )
 
-        # `--dist_eval_dir`: load the frozen-set sidecar once, here, rather
-        # than on every dist_validate() pass -- it carries the per-episode
+        # `--prior_eval_dir`: load the frozen-set sidecar once, here, rather
+        # than on every prior_validate() pass -- it carries the per-episode
         # tau_star_std/s2_std and it is the expensive part (EVAL_PLAN step
         # 6c). Loaded on every rank (not just master) and left unguarded by
         # try/except, so a missing or malformed sidecar fails loudly at
         # construction instead of hundreds of steps into training. Likewise
         # for an unsupported loss_type: the posterior of a difference is not
         # identified by two marginals (bins_po/hl), so that is fatal here too.
-        self.dist_eval_dir = getattr(self.config, "dist_eval_dir", None)
-        self._dist_eval_meta = None
-        if self.dist_eval_dir is not None:
+        self.prior_eval_dir = getattr(self.config, "prior_eval_dir", None)
+        self._prior_eval_meta = None
+        if self.prior_eval_dir is not None:
             from posterior_eval.build_prior_frozen_set import (
                 frozen_content_digest,
                 load_frozen_meta,
             )
 
-            self._dist_eval_meta = load_frozen_meta(Path(self.dist_eval_dir))
+            self._prior_eval_meta = load_frozen_meta(Path(self.prior_eval_dir))
             require_single_cate_head(self.raw_model)
 
-            # `--dist_eval_dir` is already in the wandb config (wandb.init gets
+            # `--prior_eval_dir` is already in the wandb config (wandb.init gets
             # the whole namespace), but it is a *path* -- a name a human chose
             # and could reuse. Log the set's content digest beside it so two
             # runs that both say "frozen_prod_v1" are visibly the same set, or
             # visibly not.
             self.logger.update_config(
                 {
-                    "dist_eval_content_digest": frozen_content_digest(
-                        self._dist_eval_meta
+                    "prior_eval_content_digest": frozen_content_digest(
+                        self._prior_eval_meta
                     ),
-                    "dist_eval_n_datasets": self._dist_eval_meta["global"].get(
+                    "prior_eval_n_datasets": self._prior_eval_meta["global"].get(
+                        "n_datasets"
+                    ),
+                }
+            )
+
+        # `--val_eval_dir`: the same treatment for the realistic replicate set
+        # (ROADMAP B4). One directory drives both val_point/* and val_dist/*
+        # from a single per-episode pass -- exactly how --prior_eval_dir drives
+        # both prior_point/* and prior_dist/*, and for the same reason: the
+        # sidecar's *absence* is the gate that stops anyone scoring a posterior
+        # (or, now, a point estimate) against a set whose targets are sampled
+        # ITEs rather than a Monte Carlo CEPO. The load stays unguarded, so a
+        # set built without --mc_cate raises FileNotFoundError at construction.
+        self.val_eval_dir = getattr(self.config, "val_eval_dir", None)
+        self._val_eval_meta = None
+        if self.val_eval_dir is not None:
+            from posterior_eval.build_prior_frozen_set import (
+                frozen_content_digest,
+                load_frozen_meta,
+            )
+
+            self._val_eval_meta = load_frozen_meta(Path(self.val_eval_dir))
+            require_single_cate_head(self.raw_model)
+
+            self.logger.update_config(
+                {
+                    "val_eval_content_digest": frozen_content_digest(
+                        self._val_eval_meta
+                    ),
+                    "val_eval_n_datasets": self._val_eval_meta["global"].get(
                         "n_datasets"
                     ),
                 }
@@ -407,72 +434,6 @@ class Trainer:
             else None,
         )
 
-    def configure_validation_prior(self):
-        """Set up the dataloader for the fixed validation set."""
-        if self.config.val_dir is None:
-            self.val_dataloader = None
-            return
-
-        all_val_files = [
-            f
-            for f in os.listdir(self.config.val_dir)
-            if f.startswith("batch_") and f.endswith(".pt")
-        ]
-        total_val_files = len(all_val_files)
-
-        if total_val_files == 0:
-            raise ValueError(f"No validation files found in {self.config.val_dir}")
-
-        val_dataset = LoadPriorDataset(
-            data_dir=self.config.val_dir,
-            batch_size=self.config.batch_size,
-            ddp_world_size=self.ddp_world_size,
-            ddp_rank=self.ddp_rank,
-            start_from=0,
-            max_batches=total_val_files,
-            delete_after_load=False,
-            device=self.config.prior_device,
-        )
-
-        if self.master_process:
-            # Peek at the first batch file to report which CATE target the
-            # validation will use: the true response surfaces (MU0/MU1) or the
-            # realized potential outcomes (Y0/Y1) as a surrogate, in which case
-            # true_cate = Y1 - Y0 (see LoadPriorDataset._load_batch_file).
-            first_file = os.path.join(self.config.val_dir, sorted(all_val_files)[0])
-            try:
-                peek = torch.load(first_file, map_location="cpu", weights_only=True)
-                has_mu = "MU0" in peek and "MU1" in peek
-                del peek
-            except Exception:
-                has_mu = None
-
-            if has_mu is True:
-                target_note = "using true MU0/MU1 (noise-free CATE target)"
-            elif has_mu is False:
-                target_note = (
-                    "MU0/MU1 absent -> using Y0/Y1 as surrogate "
-                    "(true_cate = Y1 - Y0, the realized ITE)"
-                )
-            else:
-                target_note = "could not determine CATE target source"
-
-            print(
-                f"Validation dataset configured from {self.config.val_dir} "
-                f"({total_val_files} total files). {target_note}."
-            )
-
-        pin_memory = self.config.prior_device == "cpu" and "cuda" in str(
-            self.config.device
-        )
-        self.val_dataloader = DataLoader(
-            val_dataset,
-            batch_size=None,
-            shuffle=False,
-            num_workers=0,
-            pin_memory=pin_memory,
-        )
-
     def configure_optimizer(self):
         """Configure optimizer and scheduler."""
 
@@ -600,32 +561,67 @@ class Trainer:
         torch.save(checkpoint, tmp_path)
         os.replace(tmp_path, checkpoint_path)
 
+    def _monitored_surface_ran(
+        self, *, ran_prior_eval: bool, ran_val_eval: bool
+    ) -> bool:
+        """Did the pass that produces ``best_metric`` run on this step?
+
+        Two passes now emit into one merged dict on their own intervals, so the
+        comparison has to be gated on the *right* one. Getting this wrong is not
+        loud: ``_maybe_save_best`` would warn "metric not found" on every step
+        where the monitored pass happened not to run, and the real improvement
+        on the steps where it did would be judged against a stale best.
+        ``prior_point/*`` and ``val_point/*`` are each a side effect of their
+        surface's single per-episode pass (``prior_validate`` /
+        ``val_validate``), not a separate one, so they share that pass's
+        gate.
+        """
+        by_prefix = (
+            ("prior_dist/", ran_prior_eval),
+            ("prior_point/", ran_prior_eval),
+            ("val_dist/", ran_val_eval),
+            ("val_point/", ran_val_eval),
+        )
+        for prefix, ran in by_prefix:
+            if self.best_metric.startswith(prefix):
+                return ran
+        return False
+
     def _check_best_metric_config(self):
         """Warn (once, on master) about best-model configs that silently no-op.
 
         Catches the two common footguns: (a) ``save_best`` requested but no
-        validation set, so no best model can ever be saved; and (b) a
-        ``best_metric`` whose name implies a direction opposite to the chosen
-        ``best_metric_mode`` (e.g. an R2 tracked with ``min``).
+        validation surface configured, so no best model can ever be saved; and
+        (b) a ``best_metric`` whose name implies a direction opposite to the
+        chosen ``best_metric_mode`` (e.g. an R2 tracked with ``min``).
         """
         if not self.save_best or not self.master_process:
             return
 
-        if getattr(self.config, "val_dir", None) is None:
-            print(
-                "[save_best] Warning: save_best is enabled but val_dir is None; "
-                "validation never runs, so no best_model.ckpt will be saved."
-            )
-
-        if self.best_metric.startswith("prior_dist/") and (
-            getattr(self.config, "dist_eval_dir", None) is None
+        if (
+            getattr(self.config, "prior_eval_dir", None) is None
+            and getattr(self.config, "val_eval_dir", None) is None
         ):
             print(
-                f"[save_best] Warning: best_metric '{self.best_metric}' is on the "
-                "prior_dist/* surface but dist_eval_dir is None; distributional "
-                "evaluation never runs, so this metric will never appear in "
-                "validation results."
+                "[save_best] Warning: save_best is enabled but neither "
+                "prior_eval_dir nor val_eval_dir is set; no validation pass "
+                "ever runs, so no best_model.ckpt will be saved."
             )
+
+        for prefix, flag in (
+            ("prior_dist/", "prior_eval_dir"),
+            ("prior_point/", "prior_eval_dir"),
+            ("val_dist/", "val_eval_dir"),
+            ("val_point/", "val_eval_dir"),
+        ):
+            if self.best_metric.startswith(prefix) and (
+                getattr(self.config, flag, None) is None
+            ):
+                print(
+                    f"[save_best] Warning: best_metric '{self.best_metric}' is on "
+                    f"the {prefix}* surface but {flag} is None; that pass never "
+                    "runs, so this metric will never appear in validation results."
+                )
 
         name = self.best_metric.lower()
         higher_is_better = any(k in name for k in ("r2", "sign_agreement"))
@@ -809,9 +805,10 @@ class Trainer:
         """Per-step bookkeeping after one ``run_batch``.
 
         Advances ``curr_step`` by exactly one and preserves the per-step cadence
-        of checkpointing (``save_temp_every`` / ``save_perm_every``) and
-        validation (``point_val_interval``, and ``dist_eval_interval`` for the
-        ``prior_point/*` + `prior_dist/*`` surface). Returns the (possibly augmented) results.
+        of checkpointing (``save_temp_every`` / ``save_perm_every``) and the two
+        validation passes -- ``prior_eval_interval`` for `prior_point/*` +
+        `prior_dist/*`, ``val_eval_interval`` for `val_point/*` + `val_dist/*`.
+        Returns the (possibly augmented) results.
         """
         self.curr_step += 1
 
@@ -835,42 +832,46 @@ class Trainer:
                 ):
                     self.manage_checkpoint()
 
-        # Point validation must run on ALL processes to prevent DDP hangs
-        # during all_reduce (CausalEvaluator.compute(sync_ddp=True)).
-        ran_point_val = self.val_dataloader is not None and (
-            self.curr_step % self.config.point_val_interval == 0 or self.curr_step == 1
-        )
         surface_results = {}
-        if ran_point_val:
-            surface_results.update(self.point_validate())
 
-        # Distributional (prior_dist/*) evaluation runs on ALL processes: the
+        # The prior evaluation pass (prior_point/* + prior_dist/*) runs on ALL
+        # processes: the
         # episodes are sharded round-robin and the metrics are all-reduced
-        # (EVAL_PLAN step 6d), so every rank must enter dist_validate() or the
+        # (EVAL_PLAN step 6d), so every rank must enter prior_validate() or the
         # collectives inside it deadlock. The gate below is deliberately built
         # only from values every rank agrees on.
-        ran_dist_val = (
-            self.dist_eval_dir is not None
-            and self.dist_eval_interval > 0
-            and (self.curr_step % self.dist_eval_interval == 0 or self.curr_step == 1)
+        ran_prior_eval = (
+            self.prior_eval_dir is not None
+            and self.prior_eval_interval > 0
+            and (self.curr_step % self.prior_eval_interval == 0 or self.curr_step == 1)
         )
-        if ran_dist_val:
-            surface_results.update(self.dist_validate())
+        if ran_prior_eval:
+            surface_results.update(self.prior_validate())
+
+        # Same contract for the realistic replicate set's pass (val_point/* +
+        # val_dist/*): all ranks, gated only on values every rank agrees on.
+        ran_val_eval = (
+            self.val_eval_dir is not None
+            and self.val_eval_interval > 0
+            and (self.curr_step % self.val_eval_interval == 0 or self.curr_step == 1)
+        )
+        if ran_val_eval:
+            surface_results.update(self.val_validate())
 
         if surface_results:
             results.update(surface_results)
 
             # Overwrite best_model.ckpt if the monitored metric improved.
-            # Saving is master-only (like the step checkpoints); point
-            # results are already DDP-synced so every rank would agree on the
-            # value. Only compare on a step where the surface that produces
-            # the monitored metric actually ran -- otherwise a prior_dist/*
-            # best_metric would warn on every plain validation pass whenever
-            # dist_eval_interval and point_val_interval don't coincide.
-            monitors_dist_surface = self.best_metric.startswith(
-                ("prior_dist/", "prior_point/")
+            # Saving is master-only (like the step checkpoints); results are
+            # already DDP-synced so every rank would agree on the value. Only
+            # compare on a step where the surface that produces the monitored
+            # metric actually ran -- otherwise a best_metric would warn on
+            # every step where prior_eval_interval and val_eval_interval don't
+            # coincide.
+            surface_ran = self._monitored_surface_ran(
+                ran_prior_eval=ran_prior_eval,
+                ran_val_eval=ran_val_eval,
             )
-            surface_ran = ran_dist_val if monitors_dist_surface else ran_point_val
             if self.master_process and self.save_best and surface_ran:
                 self._maybe_save_best(surface_results)
 
@@ -1128,9 +1129,7 @@ class Trainer:
         torch.distributed.all_reduce(valid_tensor, op=torch.distributed.ReduceOp.MIN)
         return bool(valid_tensor.item())
 
-    def run_micro_batch(
-        self, micro_batch, micro_batch_idx, num_micro_batches, is_train=True
-    ):
+    def run_micro_batch(self, micro_batch, micro_batch_idx, num_micro_batches):
         """Process a micro batch for gradient accumulation.
 
         Parameters
@@ -1143,10 +1142,7 @@ class Trainer:
 
         num_micro_batches : int
             Total number of micro batches. Losses and reported metrics are divided
-            by it during training so that the accumulated batch sums to one step.
-
-        is_train : bool
-            Whether to backpropagate and feed the training evaluator.
+            by it so that the accumulated batch sums to one step.
 
         Returns
         -------
@@ -1211,10 +1207,9 @@ class Trainer:
         # non_blocking lets the thirteen copies below be queued and overlap
         # instead of the host waiting out each one in turn. It is only an actual
         # async copy for pinned host memory -- which is exactly the case
-        # configure_prior/configure_validation_prior set up (`pin_memory` when
-        # the prior lives on the CPU and training is on CUDA) -- and degrades to
-        # a plain synchronous copy everywhere else, so it is safe to pass
-        # unconditionally.
+        # configure_prior sets up (`pin_memory` when the prior lives on the CPU
+        # and training is on CUDA) -- and degrades to a plain synchronous copy
+        # everywhere else, so it is safe to pass unconditionally.
         #
         # Two things make it safe here. Every consumer is another op on the same
         # stream, so stream ordering already serialises them against the copy
@@ -1461,40 +1456,18 @@ class Trainer:
             return None
 
         # Optimization step
-        if is_train:
-            scaled_loss = total_loss / num_micro_batches
-            self.scaler.scale(scaled_loss).backward()
-            reported_loss_total = scaled_loss
-        else:
-            reported_loss_total = total_loss
+        scaled_loss = total_loss / num_micro_batches
+        self.scaler.scale(scaled_loss).backward()
+        reported_loss_total = scaled_loss
 
-        # Evaluation & Metric extraction block
+        # Evaluation & Metric extraction block. Point metrics live on the
+        # val_point/val_dist surfaces (score_frozen_set over --val_eval_dir),
+        # not here: this micro batch is always a training draw, at a batch size
+        # chosen for throughput rather than estimator variance.
         with torch.no_grad():
-            # Point metrics are a validation-surface concern only: on the training
-            # distribution they duplicate the loss at a batch size chosen for
-            # throughput rather than estimator variance.
-            if not is_train:
-                # Only bins_po/hl have a real per-arm head; other loss types
-                # predict the effect directly and have no honest po/* to report.
-                if loss_type in ("bins_po", "hl"):
-                    self.val_evaluator.update(
-                        pred_y0=mean_pred_y0_std,
-                        pred_y1=mean_pred_y1_std,
-                        true_y0=y_test_0_std,
-                        true_y1=y_test_1_std,
-                        pred_cate=pred_cate_std,
-                        true_cate=true_cate_std,
-                    )
-                else:
-                    self.val_evaluator.update(
-                        pred_cate=pred_cate_std,
-                        true_cate=true_cate_std,
-                    )
-
-            # Training metrics are accumulated over num_micro_batches to sum to
-            # one step's worth once every micro batch has been added in; eval
-            # metrics are reported per micro batch as-is (scale=1 is a no-op).
-            scale = num_micro_batches if is_train else 1
+            # Metrics are accumulated over num_micro_batches to sum to one
+            # step's worth once every micro batch has been added in.
+            scale = num_micro_batches
 
             # Dictionary structure routes cleanly back to log aggregation.
             # Values stay on the accelerator here and are divided by `scale` in
@@ -1692,121 +1665,35 @@ class Trainer:
 
         return results
 
-    def run_val_batch(self, batch):
-        """Evaluate the model on a batch without gradients."""
-        batch = [t.to_padded_tensor(padding=0.0) if t.is_nested else t for t in batch]
-
-        for i in (4, 5, 6, 7, 8):
-            if batch[i].dim() == 3 and batch[i].shape[-1] == 1:
-                batch[i] = batch[i].squeeze(-1)
-
-        seq_lens = batch[15]  # shape (B,)
-        train_sizes = batch[16]  # shape (B,)
-        # Group datasets that share a (seq_len, train_size) so each micro batch
-        # is homogeneous. Passed to _iter_micro_batches as a reordering rather
-        # than applied here, for the same reason as the training shuffle: a
-        # whole reordered copy of the batch, to visit it one micro batch at a
-        # time.
-        sort_idx = torch.argsort(seq_lens * (train_sizes.max() + 1) + train_sizes)
-
-        actual_batch_size = batch[0].shape[0]
-        num_micro_batches = math.ceil(actual_batch_size / self.val_micro_batch_size)
-
-        micro_batches = self._iter_micro_batches(
-            batch, self.val_micro_batch_size, sort_idx
-        )
-
-        total_valid_samples = 0
-
-        for idx, micro_batch in enumerate(micro_batches):
-            try:
-                current_mb_size = micro_batch[0].shape[0]
-
-                with self.amp_ctx:
-                    micro_results = self.run_micro_batch(
-                        micro_batch,
-                        idx,
-                        num_micro_batches,
-                        is_train=False,
-                    )
-
-                if micro_results is None:
-                    continue
-
-                total_valid_samples += current_mb_size
-
-            except RuntimeError as e:
-                if not is_oom_error(e):
-                    raise
-                empty_accelerator_cache(self.config.device)
-                continue
-
-        return total_valid_samples
-
     @torch.inference_mode()
-    def point_validate(self):
-        """Run one full pass over the entire validation set.
-
-        Metrics are accumulated across every validation episode and computed
-        once, so each ``point_validate()`` call reports performance over the
-        whole val_dir (i.e. logged exactly when all validation episodes have
-        been visited once).
-        """
-        if self.val_dataloader is None:
-            return {}
-
-        self.model.eval()
-        self.val_evaluator.reset()
-
-        # One full epoch over the validation set. The dataloader yields batches
-        # until all files are consumed, then stops.
-        with Timer() as val_timer:
-            for batch in self.val_dataloader:
-                self.run_val_batch(batch)
-
-        final_metrics = self.val_evaluator.compute(
-            prefix="val/point/",
-            sync_ddp=self.ddp,
-            device=self.config.device,
-            include_count=True,
-        )
-
-        # Time (seconds) taken to pass over the whole validation set.
-        final_metrics["val/time"] = val_timer.elapsed
-
-        self.val_evaluator.reset()
-        self.model.train()
-
-        return final_metrics
-
-    @torch.inference_mode()
-    def dist_validate(self):
+    def prior_validate(self):
         """Run one full pass over the frozen prior set (EVAL_PLAN step 6c).
 
-        Mirrors :meth:`point_validate`'s shape -- one pass, metrics computed
-        once at the end, ``model.eval()``/``model.train()`` around it -- but scores
-        ``--dist_eval_dir`` via :func:`score_frozen_set` instead, emitting both
-        ``prior_point/*`` and ``prior_dist/*``.
+        One pass, metrics computed once at the end, ``model.eval()``/
+        ``model.train()`` around it, scoring ``--prior_eval_dir`` via
+        :func:`score_frozen_set` and emitting both ``prior_point/*`` and
+        ``prior_dist/*``. :meth:`val_validate` is the sibling for the
+        realistic surface.
 
         Runs on every rank (EVAL_PLAN step 6d): episode ``i`` is scored by rank
         ``i % world_size`` and the accumulators are all-reduced, so the result
         is the single-process one up to the pooled-PIT subsample. Every rank
         must therefore reach this method on the same steps -- including a rank
         whose shard is empty, which is not hypothetical when
-        ``--dist_eval_max_episodes`` is smaller than the world size.
+        ``--prior_eval_max_episodes`` is smaller than the world size.
         """
-        if self.dist_eval_dir is None:
+        if self.prior_eval_dir is None:
             return {}
 
         self.model.eval()
 
-        with Timer() as dist_timer:
+        with Timer() as prior_timer:
             metrics = score_frozen_set(
                 self.raw_model,
-                self.dist_eval_dir,
+                self.prior_eval_dir,
                 device=self.config.device,
-                max_episodes=getattr(self.config, "dist_eval_max_episodes", None),
-                meta=self._dist_eval_meta,
+                max_episodes=getattr(self.config, "prior_eval_max_episodes", None),
+                meta=self._prior_eval_meta,
                 rank=self.ddp_rank,
                 world_size=self.ddp_world_size,
                 sync_ddp=self.ddp,
@@ -1817,7 +1704,7 @@ class Trainer:
         # diagnostic (how expensive the eval is), not a statement about the
         # posterior, and it would otherwise be the only wall-clock key sitting
         # among prior_dist/*'s calibration numbers.
-        metrics["Charts/prior_eval_time"] = dist_timer.elapsed
+        metrics["Charts/prior_eval_time"] = prior_timer.elapsed
 
         # The sigma schedule on the width axis (EVAL_PLAN step 6e). sigma is a
         # hard floor on learned width -- the HL-Gaussian target is a Gaussian of
@@ -1834,6 +1721,52 @@ class Trainer:
         grid_scale = metrics.get("prior_dist/grid_scale")
         if grid_scale is not None:
             metrics["diag/sigma"] = self.get_hl_sigma() * grid_scale
+
+        self.model.train()
+
+        return metrics
+
+    @torch.inference_mode()
+    def val_validate(self):
+        """Score the realistic replicate set: emits both val_point/* and val_dist/*.
+
+        :meth:`prior_validate`'s sibling for the realistic surface, pointed at
+        ``--val_eval_dir``. One directory, one per-episode pass, both metric
+        kinds -- the same shape as ``--prior_eval_dir`` driving both
+        ``prior_point/*`` and ``prior_dist/*``. The point half comes from
+        ``score_episode``'s ``CausalEvaluator`` fan-out over the *same* forward
+        pass that produces the distributional metrics, not a second one: the
+        expensive step is encoding each episode's context once, and that cost
+        is paid regardless of which metrics get read off it.
+
+        Same DDP contract as :meth:`prior_validate`: round-robin sharding plus
+        all-reduced accumulators, so every rank must reach this on the same
+        steps -- including one whose shard is empty.
+
+        No ``diag/sigma``: the schedule is shared with the prior pass and
+        ``grid_scale`` is ~1 for both at ``n_ctx == n_max``, so that pass's copy
+        already puts sigma on the width axis.
+        """
+        if self.val_eval_dir is None:
+            return {}
+
+        self.model.eval()
+
+        with Timer() as val_timer:
+            metrics = score_frozen_set(
+                self.raw_model,
+                self.val_eval_dir,
+                device=self.config.device,
+                max_episodes=getattr(self.config, "val_eval_max_episodes", None),
+                meta=self._val_eval_meta,
+                rank=self.ddp_rank,
+                world_size=self.ddp_world_size,
+                sync_ddp=self.ddp,
+                prefix_point="val_point/",
+                prefix_dist="val_dist/",
+            )
+
+        metrics["Charts/val_eval_time"] = val_timer.elapsed
 
         self.model.train()
 

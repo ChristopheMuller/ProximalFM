@@ -168,12 +168,12 @@ def test_extra_metrics_and_prefixes(evaluator):
     )
 
     # Compute with a prefix
-    metrics = evaluator.compute(prefix="val/point/")
+    metrics = evaluator.compute(prefix="val_point/")
 
-    assert "val/point/loss/total" in metrics
-    assert "val/point/loss/penalty" in metrics
+    assert "val_point/loss/total" in metrics
+    assert "val_point/loss/penalty" in metrics
     # Note: the implementation multiplies extra_metrics by batch_size and then
     # divides by num_episodes in compute(), effectively averaging them.
-    assert metrics["val/point/loss/total"] == pytest.approx(1.5)
-    assert metrics["val/point/loss/penalty"] == pytest.approx(0.5)
-    assert metrics["val/point/eval_episodes"] == batch_size
+    assert metrics["val_point/loss/total"] == pytest.approx(1.5)
+    assert metrics["val_point/loss/penalty"] == pytest.approx(0.5)
+    assert metrics["val_point/eval_episodes"] == batch_size

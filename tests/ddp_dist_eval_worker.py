@@ -34,6 +34,11 @@ def main() -> int:
     parser.add_argument("--dir", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--max-episodes", type=int, default=None)
+    parser.add_argument("--prefix-dist", default="prior_dist/")
+    # The val_dist pass runs with prefix_point=None, which skips one of the
+    # three collectives. Exercised here because a skip that were not uniform
+    # across ranks is precisely a deadlock.
+    parser.add_argument("--skip-point", action="store_true")
     args = parser.parse_args()
 
     rank = int(os.environ["RANK"])
@@ -48,6 +53,8 @@ def main() -> int:
             rank=rank,
             world_size=world_size,
             sync_ddp=True,
+            prefix_point=None if args.skip_point else "prior_point/",
+            prefix_dist=args.prefix_dist,
         )
         # A barrier after the pass: if any rank returned early from the
         # reductions instead of entering them, this is where it shows up as a

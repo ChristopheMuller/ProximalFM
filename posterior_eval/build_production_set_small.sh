@@ -18,7 +18,7 @@
 # anything pooled is ~n_datasets, not n_datasets*n_q.
 #
 # Scoring cost is the counterweight to a big set: each episode re-encodes the
-# full n_max context. Use --dist_eval_max_episodes to subsample during the run
+# full n_max context. Use --prior_eval_max_episodes to subsample during the run
 # and score the whole set only at milestones.
 #
 # Determinism is per-device: this set is reproducible on the same GPU + torch
@@ -62,4 +62,4 @@ python -m posterior_eval.build \
 echo
 echo "Done. Next:"
 echo "  uv run python -m posterior_eval.score --dir ${OUT} --ckpt <ckpt>"
-echo "  training: --dist_eval_dir ${OUT}  (the ROOT, not its val/)"
+echo "  training: --prior_eval_dir ${OUT}  (the ROOT, not its val/)"

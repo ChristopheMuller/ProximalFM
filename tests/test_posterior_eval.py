@@ -417,7 +417,15 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _run_sharded(out_dir, tmp_path, world_size, max_episodes=None, timeout=300):
+def _run_sharded(
+    out_dir,
+    tmp_path,
+    world_size,
+    max_episodes=None,
+    timeout=300,
+    prefix_dist=None,
+    skip_point=False,
+):
     """Launch ``world_size`` real gloo ranks; return each rank's metric dict.
 
     Every rank's JSON is returned, not just rank 0's: after an all-reduce all
@@ -436,6 +444,10 @@ def _run_sharded(out_dir, tmp_path, world_size, max_episodes=None, timeout=300):
         cmd = [sys.executable, str(script), "--dir", str(out_dir), "--out", str(path)]
         if max_episodes is not None:
             cmd += ["--max-episodes", str(max_episodes)]
+        if prefix_dist is not None:
+            cmd += ["--prefix-dist", prefix_dist]
+        if skip_point:
+            cmd.append("--skip-point")
         procs.append(
             subprocess.Popen(
                 cmd,
@@ -522,4 +534,28 @@ def test_empty_shard_still_completes(frozen4, tmp_path):
     )
     assert per_rank[0]["prior_dist/crps"] == pytest.approx(
         single["prior_dist/crps"], rel=1e-9
+    )
+
+
+def test_suppressing_the_point_surface_is_ddp_safe(frozen4, tmp_path):
+    """The val_dist pass's configuration: a custom prefix and no point half.
+
+    ``prefix_point=None`` skips one of the three collectives. That is only safe
+    because the argument is a static config decision every rank shares -- if it
+    could ever differ per rank the group would deadlock, so this exercises the
+    real multi-process path rather than trusting the argument.
+    """
+    cfg, out = frozen4
+    single = score_frozen_set(
+        _FakeCateModel(), out, prefix_point=None, prefix_dist="val_dist/"
+    )
+    per_rank = _run_sharded(
+        out, tmp_path, world_size=2, prefix_dist="val_dist/", skip_point=True
+    )
+
+    assert per_rank[0] == per_rank[1], "ranks disagree; a reduction was skipped"
+    assert per_rank[0]["val_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
+    assert not any(k.startswith("prior_") for k in per_rank[0])
+    assert per_rank[0]["val_dist/crps"] == pytest.approx(
+        single["val_dist/crps"], rel=1e-9
     )

@@ -518,11 +518,11 @@ def build_parser():
     )
     parser.add_argument(
         "--best_metric",
-        default="val/point/cate/npehe",
+        default="val_point/cate/npehe",
         type=str,
         help="Validation metric key to monitor for best-model checkpointing "
-        "(e.g. 'val/point/cate/rmse', 'val/point/ate/rmse', 'val/point/cate/r2'). "
-        "See CausalEvaluator for available keys.",
+        "(e.g. 'val_point/cate/rmse', 'val_dist/crps', 'prior_dist/crps'). "
+        "See CausalEvaluator and PosteriorEvaluator for available keys.",
     )
     parser.add_argument(
         "--best_metric_mode",
@@ -542,57 +542,79 @@ def build_parser():
     ###### Validation #########################################################
     ###########################################################################
     parser.add_argument(
-        "--val_dir",
-        default=None,
-        type=str,
-        help="Directory for validation data.",
-    )
-    parser.add_argument(
         "--point_val_interval",
         default=50,
         type=int,
-        help="Steps between validation checks",
-    )
-
-    parser.add_argument(
-        "--val_micro_batch_size",
-        default=None,
-        type=nullable_int,
-        help="Micro-batch size used during validation. Validation runs under "
-        "inference_mode (no backward pass), so it can use a larger micro-batch "
-        "than training before hitting memory limits. Defaults to "
-        "--micro_batch_size when unset.",
+        help="Default interval (steps) for the validation passes below. Each "
+        "of --prior_eval_interval / --val_eval_interval resolves to this when "
+        "left at -1; set one of those directly to run it on a different "
+        "cadence.",
     )
 
     ###########################################################################
-    ###### Distributional (prior) evaluation ##################################
+    ###### Prior evaluation (point + distributional) ###########################
     ###########################################################################
     parser.add_argument(
-        "--dist_eval_dir",
+        "--prior_eval_dir",
         default=None,
         type=str,
         help="Root directory of the frozen posterior-eval set (holds both the "
         "val/-format episodes and frozen_meta.pt; see "
-        "posterior_eval/build_prior_frozen_set.py). None disables the prior/* "
-        "distributional evaluation surface.",
+        "posterior_eval/build_prior_frozen_set.py). Drives BOTH the "
+        "prior_point/* and prior_dist/* surfaces from one pass. None disables "
+        "the prior evaluation surface entirely.",
     )
     parser.add_argument(
-        "--dist_eval_interval",
+        "--prior_eval_interval",
         default=-1,
         type=int,
-        help="Steps between distributional evaluation passes against "
-        "--dist_eval_dir. 0 disables it; -1 (default) resolves to "
+        help="Steps between validation passes against --prior_eval_dir. 0 "
+        "disables prior evaluation entirely; -1 (default) resolves to "
         "--point_val_interval.",
     )
     parser.add_argument(
-        "--dist_eval_max_episodes",
+        "--prior_eval_max_episodes",
         default=None,
         type=nullable_int,
         help="Cap on the number of frozen-set episodes scored per "
-        "dist_validate() pass. None (default) scores every episode in "
-        "--dist_eval_dir. A global cap, applied before the DDP round-robin "
+        "prior_validate() pass. None (default) scores every episode in "
+        "--prior_eval_dir. A global cap, applied before the DDP round-robin "
         "sharding, so which episodes get scored does not depend on the world "
         "size -- only who scores them.",
+    )
+
+    ###########################################################################
+    ###### Val evaluation (point + distributional) ############################
+    ###########################################################################
+    parser.add_argument(
+        "--val_eval_dir",
+        default=None,
+        type=str,
+        help="Root directory of a replicate-bearing realistic set, built by "
+        "synthetic/build_proximal_datasets.py with --mc_cate K (K > 1) -- the "
+        "set's ROOT, holding both val/ and frozen_meta.pt. Drives BOTH the "
+        "val_point/* and val_dist/* surfaces from one pass, mirroring how "
+        "--prior_eval_dir drives prior_point/* + prior_dist/*. A set built "
+        "without --mc_cate has no frozen_meta.pt and is refused: its targets "
+        "are sampled ITEs, and scoring against those -- point or "
+        "distributional -- is minimised by an over-wide, over-noisy estimate "
+        "rather than erroring.",
+    )
+    parser.add_argument(
+        "--val_eval_interval",
+        default=-1,
+        type=int,
+        help="Steps between validation passes against --val_eval_dir. 0 "
+        "disables val evaluation entirely; -1 (default) resolves to "
+        "--point_val_interval.",
+    )
+    parser.add_argument(
+        "--val_eval_max_episodes",
+        default=None,
+        type=nullable_int,
+        help="Cap on the number of episodes scored per val_validate() "
+        "pass. None (default) scores every episode in --val_eval_dir. Applied "
+        "before the DDP round-robin sharding, like --prior_eval_max_episodes.",
     )
 
     ###########################################################################

@@ -469,7 +469,7 @@ class RealisticProximalGenerator:
         if not r.replicated:
             # No replicates: MU is the single realized draw, matching what
             # LoadPriorDataset already substitutes for MU-less files, so the
-            # existing val/point surface is unchanged. S2 = 0 is the prior's
+            # existing val_point surface is unchanged. S2 = 0 is the prior's
             # "no replicates" marker (distinct from the NaN used for context).
             return (
                 Y0_mc,

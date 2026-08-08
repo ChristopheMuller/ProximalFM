@@ -1,5 +1,6 @@
 import math
 import os
+from pathlib import Path
 
 import pytest
 from proximalfm.train._train_config import build_parser
@@ -60,13 +61,13 @@ def dummy_args(tmp_path):
 
 @pytest.fixture(scope="module")
 def tiny_frozen_set(tmp_path_factory):
-    """A tiny real frozen prior set for the ``--dist_eval_dir`` tests.
+    """A tiny real frozen prior set for the ``--prior_eval_dir`` tests.
 
     Same shape as ``tests/test_posterior_eval.py``'s ``frozen`` fixture, just
     smaller: these tests only need the trainer wiring to fire, not meaningful
     numbers.
     """
-    out = tmp_path_factory.mktemp("dist_eval_frozen_set")
+    out = tmp_path_factory.mktemp("prior_eval_frozen_set")
     cfg = BuildConfig(
         n_datasets=2,
         n_max=16,
@@ -77,6 +78,46 @@ def tiny_frozen_set(tmp_path_factory):
     )
     build(cfg, out, datasets_per_file=2, progress=False)
     return out
+
+
+@pytest.fixture(scope="module")
+def tiny_replicate_set(tmp_path_factory):
+    """A tiny realistic replicate set for the ``--val_eval_dir`` tests.
+
+    Built with ``--mc_cate > 1``, so it carries a Monte-Carlo CEPO target and a
+    ``frozen_meta.pt`` sidecar -- the two things that make a realistic set
+    scorable distributionally at all (ROADMAP B1-B3).
+    """
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "synthetic"))
+    from build_proximal_datasets import build as build_realistic
+    from build_proximal_datasets import parse_args as parse_realistic_args
+
+    root = tmp_path_factory.mktemp("val_eval_set")
+    build_realistic(
+        parse_realistic_args(
+            [
+                "--name",
+                "toy",
+                "--out_root",
+                str(root),
+                "--n_datasets",
+                "2",
+                "--seq_len",
+                "20",
+                "--prop_train",
+                "0.75",
+                "--mc_cate",
+                "4",
+                "--mechanisms",
+                "1",
+                "--seed",
+                "20260807",
+            ]
+        )
+    )
+    return root / "toy"
 
 
 def _parse_args(tmp_path, extra):
@@ -299,15 +340,11 @@ def test_trainer_micro_batch_with_query_only_mc(dummy_args, mc_targets_on_contex
     # Guard that the parametrisation actually exercises both regimes.
     assert bool(MU0[:, :train_size].isnan().all()) is not mc_targets_on_context
 
-    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+    results = trainer.run_micro_batch(batch, 0, 1)
 
     assert results, "expected the micro batch to produce metrics"
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
-
-    # bins_po has a real per-arm head, so its po/* metrics are genuine and kept.
-    val_metrics = trainer.val_evaluator.compute(prefix="val/point/")
-    assert any(key.startswith("val/point/po/") for key in val_metrics)
 
 
 def test_trainer_micro_batch_cate_single(dummy_args):
@@ -326,7 +363,7 @@ def test_trainer_micro_batch_cate_single(dummy_args):
 
     batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=3))
 
-    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+    results = trainer.run_micro_batch(batch, 0, 1)
 
     assert results, "expected the micro batch to produce metrics"
     assert "loss/cate_dist" in results
@@ -336,12 +373,6 @@ def test_trainer_micro_batch_cate_single(dummy_args):
     )
     for key, value in results.items():
         assert math.isfinite(value), f"{key} is not finite: {value}"
-
-    # cate_single has no per-arm head, so the val evaluator was updated without
-    # pred_y0/pred_y1/true_y0/true_y1 and reports no po/* metrics.
-    val_metrics = trainer.val_evaluator.compute(prefix="val/point/")
-    assert not any(key.startswith("val/point/po/") for key in val_metrics)
-    assert any(key.startswith("val/point/cate/") for key in val_metrics)
 
 
 @pytest.mark.parametrize("mc_targets_on_context", [True, False])
@@ -372,7 +403,7 @@ def test_trainer_micro_batch_cate_single_noise_aware(dummy_args, mc_targets_on_c
     train_size = int(train_sizes[0].item())
     assert bool(S2[:, :train_size].isnan().all()) is not mc_targets_on_context
 
-    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+    results = trainer.run_micro_batch(batch, 0, 1)
 
     assert results, "expected the micro batch to produce metrics"
     for key in (
@@ -400,7 +431,7 @@ def test_noise_aware_falls_back_when_the_variance_is_missing(dummy_args):
     trainer = Trainer(dummy_args)
 
     batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=1))
-    results = trainer.run_micro_batch(batch, 0, 1, is_train=False)
+    results = trainer.run_micro_batch(batch, 0, 1)
 
     assert results["noise/frac_fallback"] == 1.0
     assert results["noise/mean_s"] == 0.0
@@ -412,7 +443,7 @@ def test_non_finite_loss_skips_the_micro_batch(dummy_args):
     """An inf/NaN loss must never reach backward().
 
     One inf turns every parameter NaN, and from then on the whole logged
-    surface -- prior_dist/*, prior_point/*, val/point/* -- reads nan with no
+    surface -- prior_dist/*, prior_point/*, val_point/* -- reads nan with no
     trace of which step did it.
     """
     dummy_args.loss_type = "cate_single_noise_aware"
@@ -424,7 +455,7 @@ def test_non_finite_loss_skips_the_micro_batch(dummy_args):
         _run, "compute_cate_noise_aware_nll", return_value=torch.tensor(float("inf"))
     ):
         with pytest.warns(RuntimeWarning, match="Non-finite"):
-            results = trainer.run_micro_batch(batch, 0, 1, is_train=True)
+            results = trainer.run_micro_batch(batch, 0, 1)
 
     assert results is None
     assert all(p.grad is None for p in trainer.model.parameters())
@@ -482,43 +513,43 @@ def test_dist_eval_interval_minus_one_resolves_to_point_val_interval(
 ):
     args = _parse_args(
         tmp_path,
-        ["--point_val_interval", "37", "--dist_eval_interval", "-1"],
+        ["--point_val_interval", "37", "--prior_eval_interval", "-1"],
     )
     trainer = Trainer(args)
-    assert trainer.dist_eval_interval == 37
+    assert trainer.prior_eval_interval == 37
 
 
 @patch("wandb.init")
 def test_dist_eval_interval_zero_and_unset_dir_disable_it(mock_wandb_init, tmp_path):
-    args = _parse_args(tmp_path, ["--dist_eval_interval", "0"])
+    args = _parse_args(tmp_path, ["--prior_eval_interval", "0"])
     trainer = Trainer(args)
-    assert trainer.dist_eval_interval == 0
-    assert trainer.config.dist_eval_dir is None
-
-
-@patch("wandb.init")
-def test_prior_dist_best_metric_without_dist_eval_dir_warns(
-    mock_wandb_init, tmp_path, capsys
-):
-    args = _parse_args(tmp_path, ["--best_metric", "prior_dist/crps"])
-    Trainer(args)
-    captured = capsys.readouterr()
-    assert "prior_dist/crps" in captured.out
-    assert "dist_eval_dir is None" in captured.out
+    assert trainer.prior_eval_interval == 0
+    assert trainer.config.prior_eval_dir is None
 
 
 @pytest.mark.parametrize(
-    "best_metric",
-    ["prior_point/cate/npehe", "val/point/cate/npehe", "val/dist/crps"],
+    "best_metric,missing_flag",
+    [
+        ("prior_dist/crps", "prior_eval_dir"),
+        # prior_point/* is produced by the dist pass too, so it needs the same
+        # flag -- exactly as _monitored_surface_ran routes it.
+        ("prior_point/cate/npehe", "prior_eval_dir"),
+        ("val_dist/crps", "val_eval_dir"),
+        # And val_point/* is a side effect of the SAME val_eval_dir pass, not
+        # of a separate --val_dir -- that flag no longer exists.
+        ("val_point/cate/npehe", "val_eval_dir"),
+    ],
 )
 @patch("wandb.init")
-def test_non_prior_dist_best_metric_without_dist_eval_dir_does_not_warn(
-    mock_wandb_init, tmp_path, capsys, best_metric
+def test_best_metric_on_a_pass_that_never_runs_warns(
+    mock_wandb_init, tmp_path, capsys, best_metric, missing_flag
 ):
+    """Naming a metric whose producing pass is disabled is silent otherwise."""
     args = _parse_args(tmp_path, ["--best_metric", best_metric])
     Trainer(args)
     captured = capsys.readouterr()
-    assert "dist_eval_dir is None" not in captured.out
+    assert best_metric in captured.out
+    assert f"{missing_flag} is None" in captured.out
 
 
 @patch("wandb.init")
@@ -532,19 +563,19 @@ def test_prior_best_metric_with_dist_eval_dir_set_does_not_warn(
             "prior_dist/crps",
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
         ],
     )
     Trainer(args)
     captured = capsys.readouterr()
-    assert "dist_eval_dir is None" not in captured.out
+    assert "prior_eval_dir is None" not in captured.out
     assert "higher-is-better" not in captured.out
     assert "lower-is-better" not in captured.out
 
 
 # --------------------------------------------------------------------------
-# Step 6c: dist_validate(), single process
+# Step 6c: prior_validate(), single process
 # --------------------------------------------------------------------------
 
 
@@ -554,8 +585,8 @@ def test_bins_po_with_dist_eval_dir_raises_at_construction(
 ):
     """The step-5 reason (two marginals don't identify a posterior of their
     difference) must be fatal at construction, not discovered at the first
-    dist_validate() pass hundreds of steps into training."""
-    args = _parse_args(tmp_path, ["--dist_eval_dir", str(tiny_frozen_set)])
+    prior_validate() pass hundreds of steps into training."""
+    args = _parse_args(tmp_path, ["--prior_eval_dir", str(tiny_frozen_set)])
     assert args.loss_type == "bins_po"
     with pytest.raises(UnsupportedLossTypeError):
         Trainer(args)
@@ -564,12 +595,12 @@ def test_bins_po_with_dist_eval_dir_raises_at_construction(
 @patch("wandb.init")
 def test_dist_validate_is_a_noop_when_dir_unset(mock_wandb_init, dummy_args):
     trainer = Trainer(dummy_args)
-    assert trainer.dist_validate() == {}
+    assert trainer.prior_validate() == {}
 
 
 @patch("wandb.init")
 def test_post_step_unchanged_when_dist_eval_dir_unset(mock_wandb_init, dummy_args):
-    """The clean no-op: with --dist_eval_dir unset, _post_step never produces
+    """The clean no-op: with --prior_eval_dir unset, _post_step never produces
     a prior_dist/* key, exactly as before this feature existed."""
     trainer = Trainer(dummy_args)
     results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
@@ -585,9 +616,9 @@ def test_dist_eval_lands_exactly_on_the_gated_steps(
         [
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "2",
         ],
     )
@@ -600,7 +631,7 @@ def test_dist_eval_lands_exactly_on_the_gated_steps(
         fired[trainer.curr_step] = "prior_dist/crps" in results
 
     # curr_step == 1 always fires (mirrors validate()'s early sanity check),
-    # then every multiple of --dist_eval_interval.
+    # then every multiple of --prior_eval_interval.
     assert fired == {1: True, 2: True, 3: False, 4: True, 5: False}
 
 
@@ -613,9 +644,9 @@ def test_dist_eval_pass_emits_both_prior_surfaces(
         [
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "1",
         ],
     )
@@ -633,7 +664,7 @@ def test_dist_eval_pass_emits_both_prior_surfaces(
 def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
     mock_wandb_init, tmp_path, tiny_frozen_set
 ):
-    """dist_eval_interval coarser than point_val_interval: a prior_dist/* best
+    """prior_eval_interval coarser than point_val_interval: a prior_dist/* best
     metric must not warn (or attempt a comparison) on the steps where only
     point validation ran."""
     args = _parse_args(
@@ -645,9 +676,9 @@ def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
             "prior_dist/crps",
             "--best_metric_mode",
             "min",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "3",
         ],
     )
@@ -663,30 +694,28 @@ def test_prior_best_metric_only_saves_best_on_steps_the_dist_surface_ran(
 
 
 @patch("wandb.init")
-def test_val_point_best_metric_only_saves_best_on_steps_the_point_surface_ran(
-    mock_wandb_init, tmp_path, capsys, tiny_frozen_set
+def test_val_point_best_metric_follows_val_dist_interval_not_dist_eval_interval(
+    mock_wandb_init, tmp_path, capsys, tiny_replicate_set, tiny_frozen_set
 ):
-    """The symmetric case of the test above: a val/point/* best_metric (the
-    default) must not be gated by dist_eval_interval. dist_eval_interval is
-    made *finer* than point_val_interval here specifically so that some steps
-    run dist only -- the case where surface_ran must collapse to
-    ran_point_val rather than ran_dist_val."""
+    """val_point/* is a side effect of the val_eval_dir pass, gated by
+    val_eval_interval -- not by prior_eval_interval, the PRIOR surface's
+    cadence, even though both passes run in the same _post_step call."""
     args = _parse_args(
         tmp_path,
         [
             "--loss_type",
             "cate_single",
             "--best_metric",
-            "val/point/cate/npehe",
+            "val_point/cate/npehe",
             "--best_metric_mode",
             "min",
-            "--val_dir",
-            str(tiny_frozen_set / "val"),
-            "--point_val_interval",
+            "--val_eval_dir",
+            str(tiny_replicate_set),
+            "--val_eval_interval",
             "3",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "1",
         ],
     )
@@ -699,13 +728,13 @@ def test_val_point_best_metric_only_saves_best_on_steps_the_point_surface_ran(
 
     trainer._post_step(
         {}, prior_time=0.0, train_time=0.0
-    )  # step 2: point idle, dist fires
+    )  # step 2: val_dist idle, prior_dist fires
     assert trainer.best_metric_value == first_best
     captured = capsys.readouterr()
     assert "not found in validation results" not in captured.out
 
-    # step 3: point fires again (3 % point_val_interval == 0); must not error
-    # and must still be comparing the same val/point/* key.
+    # step 3: val_dist fires again (3 % val_eval_interval == 0); must not
+    # error and must still be comparing the same val_point/* key.
     trainer._post_step({}, prior_time=0.0, train_time=0.0)
     assert trainer.best_metric_value is not None
 
@@ -728,9 +757,9 @@ def test_dist_validate_passes_its_shard_identity_through(
         [
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "1",
         ],
     )
@@ -747,7 +776,7 @@ def test_dist_validate_passes_its_shard_identity_through(
     monkeypatch.setattr(_run, "score_frozen_set", spy)
     # Pretend to be rank 1 of a world of 4; the trainer must forward that.
     trainer.ddp, trainer.ddp_rank, trainer.ddp_world_size = False, 1, 4
-    trainer.dist_validate()
+    trainer.prior_validate()
 
     assert seen["rank"] == 1
     assert seen["world_size"] == 4
@@ -758,7 +787,7 @@ def test_dist_validate_passes_its_shard_identity_through(
 def test_dist_eval_gate_does_not_depend_on_rank(
     mock_wandb_init, tmp_path, tiny_frozen_set
 ):
-    """Every rank must reach dist_validate() on the same steps: the pass enters
+    """Every rank must reach prior_validate() on the same steps: the pass enters
     collectives, so a gate that is true on one rank and false on another hangs
     the group. Assert the gate holds with master_process cleared."""
     args = _parse_args(
@@ -766,9 +795,9 @@ def test_dist_eval_gate_does_not_depend_on_rank(
         [
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "1",
         ],
     )
@@ -797,9 +826,9 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
         [
             "--loss_type",
             "cate_single",
-            "--dist_eval_dir",
+            "--prior_eval_dir",
             str(tiny_frozen_set),
-            "--dist_eval_interval",
+            "--prior_eval_interval",
             "1",
             "--hl_start_sigma",
             "0.2",
@@ -810,7 +839,7 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
     args.lambda_cate = 0.1
     trainer = Trainer(args)
 
-    metrics = trainer.dist_validate()
+    metrics = trainer.prior_validate()
 
     # Both keys, one dict: that is the whole point of the step.
     assert "diag/sigma" in metrics
@@ -823,6 +852,144 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
     )
     # At n_ctx == n_max the factor is 1, so this also pins the plain value.
     assert metrics["diag/sigma"] == pytest.approx(0.2, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# val_dist/* -- the realistic replicate surface (ROADMAP B4)
+# ---------------------------------------------------------------------------
+
+
+def _val_eval_args(tmp_path, replicate_set, extra=None):
+    args = _parse_args(
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--val_eval_dir",
+            str(replicate_set),
+            "--val_eval_interval",
+            "1",
+        ]
+        + (extra or []),
+    )
+    args.lambda_cate = 0.1
+    return args
+
+
+@patch("wandb.init")
+def test_val_dist_pass_emits_both_val_surfaces(
+    mock_wandb_init, tmp_path, tiny_replicate_set
+):
+    """One pass over --val_eval_dir emits val_point/* AND val_dist/*.
+
+    Mirrors --prior_eval_dir producing both prior_point/* and prior_dist/* from
+    one per-episode pass: point metrics are a side effect of the same forward
+    pass that produces the distributional ones (score_episode's
+    CausalEvaluator fan-out), not a second, separately-gated pass.
+    """
+    trainer = Trainer(_val_eval_args(tmp_path, tiny_replicate_set))
+    results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+
+    assert "val_dist/crps" in results
+    assert "val_dist/sd_over_rmse" in results
+    assert "val_dist/eval_rows" in results
+    assert "val_dist/n_ctx" in results
+    assert "val_point/cate/npehe" in results
+    assert "val_point/cate/rmse_pooled" in results
+    assert "Charts/val_eval_time" in results
+    # No leakage into the prior namespace.
+    assert not any(k.startswith(("prior_dist/", "prior_point/")) for k in results)
+
+
+@patch("wandb.init")
+def test_val_dist_and_prior_dist_do_not_overwrite_each_other(
+    mock_wandb_init, tmp_path, tiny_replicate_set, tiny_frozen_set
+):
+    """Both distributional passes in one step, on different data, both intact.
+
+    They are merged into one dict with ``update()``, so a shared prefix would
+    silently leave only whichever ran last.
+    """
+    args = _val_eval_args(
+        tmp_path,
+        tiny_replicate_set,
+        ["--prior_eval_dir", str(tiny_frozen_set), "--prior_eval_interval", "1"],
+    )
+    trainer = Trainer(args)
+    results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+
+    assert "prior_dist/crps" in results and "val_dist/crps" in results
+    assert "prior_point/cate/npehe" in results
+    # Different sets, so the numbers must not be the same object/value.
+    assert results["prior_dist/crps"] != results["val_dist/crps"]
+
+
+@patch("wandb.init")
+def test_val_dist_lands_exactly_on_the_gated_steps(
+    mock_wandb_init, tmp_path, tiny_replicate_set
+):
+    args = _val_eval_args(tmp_path, tiny_replicate_set)
+    args.val_eval_interval = 2
+    trainer = Trainer(args)
+    trainer.val_eval_interval = 2
+
+    fired = {}
+    for _ in range(5):
+        results = trainer._post_step({}, prior_time=0.0, train_time=0.0)
+        fired[trainer.curr_step] = "val_dist/crps" in results
+
+    assert fired == {1: True, 2: True, 3: False, 4: True, 5: False}
+
+
+@patch("wandb.init")
+def test_val_dist_interval_minus_one_follows_point_val_interval(
+    mock_wandb_init, tmp_path, tiny_replicate_set
+):
+    args = _val_eval_args(
+        tmp_path,
+        tiny_replicate_set,
+        ["--val_eval_interval", "-1", "--point_val_interval", "7"],
+    )
+    assert Trainer(args).val_eval_interval == 7
+
+
+@patch("wandb.init")
+def test_a_set_without_a_sidecar_is_refused_at_construction(
+    mock_wandb_init, tmp_path, tiny_replicate_set
+):
+    """The absence of frozen_meta.pt is the gate, and it must fire early.
+
+    Pointing --val_eval_dir at a plain val/ directory (or at a mc_cate=1 set)
+    is the mistake this prevents: those targets are sampled ITEs, and scoring a
+    posterior against them is *minimised by an over-wide posterior* rather than
+    erroring. Failing at __init__ beats failing hundreds of steps in.
+    """
+    args = _val_eval_args(tmp_path, tiny_replicate_set / "val")
+    with pytest.raises(FileNotFoundError, match="frozen_meta.pt"):
+        Trainer(args)
+
+
+@patch("wandb.init")
+def test_val_dist_best_metric_only_saves_best_on_steps_that_pass_ran(
+    mock_wandb_init, tmp_path, tiny_replicate_set
+):
+    """Routing: a val_dist/* best_metric must key off the val_dist pass, not
+    the prior pass, even when the prior pass ran and this one didn't."""
+    args = _val_eval_args(
+        tmp_path,
+        tiny_replicate_set,
+        [
+            "--best_metric",
+            "val_dist/crps",
+            "--best_metric_mode",
+            "min",
+            "--val_eval_interval",
+            "2",
+        ],
+    )
+    trainer = Trainer(args)
+    assert trainer._monitored_surface_ran(ran_prior_eval=False, ran_val_eval=True)
+    assert not trainer._monitored_surface_ran(ran_prior_eval=True, ran_val_eval=False)
 
 
 def test_atomic_checkpoint_save(dummy_args):

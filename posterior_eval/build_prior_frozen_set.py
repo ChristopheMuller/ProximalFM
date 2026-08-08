@@ -24,8 +24,8 @@ come back ``NaN`` on the context prefix, which is the existing convention.
 
 Output is the standard on-disk ``val/`` format (written through
 ``proximalfm.prior._genload.write_batch_file``, the single implementation), so
-the set is a drop-in ``--val_dir``, plus a ``frozen_meta.pt`` sidecar holding
-what the format cannot carry.
+any consumer of that format reads it directly, plus a ``frozen_meta.pt``
+sidecar holding what the format cannot carry.
 """
 
 from __future__ import annotations
@@ -145,7 +145,7 @@ class BuildConfig:
 
         - :func:`build` refuses to write into an existing set whose digest
           differs, so a named set cannot be silently mutated in place.
-        - the trainer logs it beside ``--dist_eval_dir`` (see
+        - the trainer logs it beside ``--prior_eval_dir`` (see
           ``proximalfm/train/_run.py``), so two curves that both claim
           ``frozen_prod_v1`` are visibly different sets rather than an
           unexplained regression.
@@ -435,7 +435,7 @@ def _check_no_silent_mutation(
 
     The failure this prevents: rebuilding a *named* directory (say
     ``frozen_prod_v1``) with a different ``n_q``/``K``/seed instead of choosing a
-    new name. Runs before and after log the same ``--dist_eval_dir`` string, so
+    new name. Runs before and after log the same ``--prior_eval_dir`` string, so
     their curves look comparable and are not -- and the old set, hours of GPU
     time, is gone. Detection after the fact is impossible: the rewritten sidecar
     is perfectly self-consistent. Only refusing up front works.
@@ -482,7 +482,7 @@ def _check_no_silent_mutation(
             f"requests {cfg.n_datasets}. The surplus batch files would remain "
             "on disk and be read as episodes the sidecar does not describe. "
             "Pass --force to rebuild from scratch, or just score a prefix with "
-            "--dist_eval_max_episodes."
+            "--prior_eval_max_episodes."
         )
     if datasets_per_file != prev_g.get("datasets_per_file", datasets_per_file):
         raise FrozenSetConflictError(

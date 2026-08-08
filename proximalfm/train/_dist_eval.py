@@ -1,10 +1,21 @@
 """Streaming distributional evaluation of the CATE posterior (EVAL_PLAN step 5).
 
-This is the ``prior_point/*`` + ``prior_dist/*`` surface: point **and** distributional metrics on the
-frozen high-``K`` set built by ``posterior_eval/``. It is the only surface where
-a distribution can be scored honestly, because it is the only one carrying a
-low-noise ``tau_star`` -- see EVAL_PLAN.md's table and ``_dist_metrics``'
-docstring for why ``--val_dir`` is deliberately excluded.
+Point **and** distributional metrics on a set carrying a low-noise ``tau_star``
+and a ``frozen_meta.pt`` sidecar. Two such sets exist, and ``score_frozen_set``
+namespaces them by caller-supplied prefix: the frozen high-``K`` prior set built
+by ``posterior_eval/`` (``prior_point/*`` + ``prior_dist/*``) and the realistic
+replicate set built by ``synthetic/build_proximal_datasets.py --mc_cate K``
+(``val_point/*`` + ``val_dist/*``, both from the same pass -- point metrics are a
+side effect of the per-episode forward pass that produces the distributional
+ones, not a second, separately-gated one).
+
+What such a set has and a plain ``mc_cate=1`` set does not is the Monte-Carlo
+CEPO target. A ``mc_cate=1`` set carries only sampled potential outcomes, so
+``y1 - y0`` there is an ITE draw, and scoring against it -- point or
+distributional -- is either minimized by an over-wide posterior or inflated by
+the outcome noise. The sidecar's *absence* is the gate: without it there is no
+frozen scale and no ``tau_star``, and this module fails loudly rather than
+producing a plausible wrong number. See ``proximalfm/train/metrics.md`` §7.
 
 Three things here are decisions, not implementation details:
 
@@ -414,7 +425,7 @@ def require_single_cate_head(model) -> None:
     histogram over ``tau`` on a single shared grid.
 
     Called both eagerly (``Trainer.__init__``, so a ``bins_po``/``hl`` config
-    with ``--dist_eval_dir`` set fails at construction rather than hundreds of
+    with ``--prior_eval_dir`` set fails at construction rather than hundreds of
     steps into training) and per-episode inside :func:`episode_predictive`.
     """
     from proximalfm._model.proximalfm import CATE_SINGLE_LOSS_TYPES
@@ -638,8 +649,10 @@ def score_frozen_set(
     rank: int = 0,
     world_size: int = 1,
     sync_ddp: bool = False,
+    prefix_point: Optional[str] = "prior_point/",
+    prefix_dist: str = "prior_dist/",
 ) -> Dict[str, float]:
-    """Score a whole frozen set; returns the merged ``prior_point/*`` + ``prior_dist/*`` metric dict.
+    """Score a whole frozen set; returns the merged point + distributional metric dict.
 
     ``out`` is the frozen set's *root* (the directory holding both ``val/`` and
     ``frozen_meta.pt``), because the sidecar is not optional: without it there
@@ -649,6 +662,17 @@ def score_frozen_set(
     loads it once at construction because it is the expensive part) pass it
     straight through instead of paying ``load_frozen_meta`` again on every
     pass. ``None`` (the CLI's case) loads it here.
+
+    ``prefix_point``/``prefix_dist`` namespace the two returned surfaces. The
+    defaults are the prior set's, so every existing caller is unchanged. The
+    trainer's *realistic* replicate pass (ROADMAP B4) passes
+    ``prefix_point="val_point/"``, ``prefix_dist="val_dist/"`` -- both metric
+    kinds from this one call, since point metrics are a side effect of the same
+    per-episode forward pass that produces the distributional ones
+    (``score_episode``'s ``CausalEvaluator`` fan-out), not a second pass.
+    ``prefix_point=None`` skips the point surface entirely, for a caller that
+    only wants the distributional half; the argument is a static config
+    decision, identical on every rank, so skipping it is DDP-safe.
 
     ``rank``/``world_size`` shard the episodes round-robin (episode ``i`` is
     scored by rank ``i % world_size``), and ``sync_ddp`` reduces the three
@@ -710,30 +734,33 @@ def score_frozen_set(
             pooled[2].item(),
         )
 
-    metrics = dict(
-        point_eval.compute(
-            prefix="prior_point/",
-            include_count=True,
-            sync_ddp=sync_ddp,
-            device=device,
+    metrics: Dict[str, float] = {}
+    if prefix_point is not None:
+        metrics.update(
+            point_eval.compute(
+                prefix=prefix_point,
+                include_count=True,
+                sync_ddp=sync_ddp,
+                device=device,
+            )
         )
-    )
     metrics.update(
         dist_eval.compute(
-            prefix="prior_dist/",
+            prefix=prefix_dist,
             include_count=True,
             sync_ddp=sync_ddp,
             device=device,
         )
     )
     if rows:
-        metrics["prior_point/cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
+        if prefix_point is not None:
+            metrics[f"{prefix_point}cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
         # Head units -> frozen space. Exactly 1.0 at n_ctx == n_max (the two
         # scales are then the same rows under the same formula), so this only
         # departs from 1 on an n-sweep prefix. Published because the trainer
         # needs it to express its sigma schedule in mean_sd's units, and a
         # caller that silently assumed 1.0 would be wrong precisely where the
         # sweep is interesting.
-        metrics["prior_dist/grid_scale"] = scale_sum / rows
-    metrics["prior_dist/n_ctx"] = float(n_ctx)
+        metrics[f"{prefix_dist}grid_scale"] = scale_sum / rows
+    metrics[f"{prefix_dist}n_ctx"] = float(n_ctx)
     return metrics
