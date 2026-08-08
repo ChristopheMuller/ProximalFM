@@ -1666,111 +1666,48 @@ class Trainer:
         return results
 
     @torch.inference_mode()
-    def prior_validate(self):
-        """Run one full pass over the frozen prior set (EVAL_PLAN step 6c).
-
-        One pass, metrics computed once at the end, ``model.eval()``/
-        ``model.train()`` around it, scoring ``--prior_eval_dir`` via
-        :func:`score_frozen_set` and emitting both ``prior_point/*`` and
-        ``prior_dist/*``. :meth:`val_validate` is the sibling for the
-        realistic surface.
-
-        Runs on every rank (EVAL_PLAN step 6d): episode ``i`` is scored by rank
-        ``i % world_size`` and the accumulators are all-reduced, so the result
-        is the single-process one up to the pooled-PIT subsample. Every rank
-        must therefore reach this method on the same steps -- including a rank
-        whose shard is empty, which is not hypothetical when
-        ``--prior_eval_max_episodes`` is smaller than the world size.
-        """
-        if self.prior_eval_dir is None:
+    def _validate_surface(self, surface: str):
+        eval_dir = getattr(self, f"{surface}_eval_dir", None)
+        if eval_dir is None:
             return {}
+
+        eval_meta = getattr(self, f"_{surface}_eval_meta", None)
+        max_episodes = getattr(self.config, f"{surface}_eval_max_episodes", None)
 
         self.model.eval()
 
-        with Timer() as prior_timer:
+        with Timer() as timer:
             metrics = score_frozen_set(
                 self.raw_model,
-                self.prior_eval_dir,
+                eval_dir,
                 device=self.config.device,
-                max_episodes=getattr(self.config, "prior_eval_max_episodes", None),
-                meta=self._prior_eval_meta,
+                max_episodes=max_episodes,
+                meta=eval_meta,
                 rank=self.ddp_rank,
                 world_size=self.ddp_world_size,
                 sync_ddp=self.ddp,
+                prefix_point=f"{surface}_point/",
+                prefix_dist=f"{surface}_dist/",
             )
 
-        # Time (seconds) taken to pass over the (possibly capped) frozen set.
-        # Filed under Charts/ rather than with the metrics: it is a pass
-        # diagnostic (how expensive the eval is), not a statement about the
-        # posterior, and it would otherwise be the only wall-clock key sitting
-        # among prior_dist/*'s calibration numbers.
-        metrics["Charts/prior_eval_time"] = prior_timer.elapsed
+        metrics[f"Charts/{surface}_eval_time"] = timer.elapsed
 
-        # The sigma schedule on the width axis (EVAL_PLAN step 6e). sigma is a
-        # hard floor on learned width -- the HL-Gaussian target is a Gaussian of
-        # that width, so a perfectly fitted head reports sqrt(sigma^2 + w^2/12)
-        # and no less. A posterior at the floor therefore stops narrowing
-        # because the *schedule* stopped, and reading that flat sd curve as
-        # convergence is the most likely misreading of the whole fine-tune.
-        #
-        # loss/hl_sigma already logs the value, but from the micro-batch path,
-        # in head units, at the training cadence -- three reasons a plot of it
-        # against prior_dist/mean_sd is not a comparison. This emits the same
-        # number in mean_sd's units at mean_sd's cadence, and leaves
-        # loss/hl_sigma alone: it is correct on the training surface.
-        grid_scale = metrics.get("prior_dist/grid_scale")
-        if grid_scale is not None:
-            metrics["diag/sigma"] = self.get_hl_sigma() * grid_scale
+        if surface == "prior":
+            grid_scale = metrics.get("prior_dist/grid_scale")
+            if grid_scale is not None:
+                metrics["diag/sigma"] = self.get_hl_sigma() * grid_scale
 
         self.model.train()
 
         return metrics
 
     @torch.inference_mode()
+    def prior_validate(self):
+        return self._validate_surface("prior")
+
+    @torch.inference_mode()
     def val_validate(self):
-        """Score the realistic replicate set: emits both val_point/* and val_dist/*.
-
-        :meth:`prior_validate`'s sibling for the realistic surface, pointed at
-        ``--val_eval_dir``. One directory, one per-episode pass, both metric
-        kinds -- the same shape as ``--prior_eval_dir`` driving both
-        ``prior_point/*`` and ``prior_dist/*``. The point half comes from
-        ``score_episode``'s ``CausalEvaluator`` fan-out over the *same* forward
-        pass that produces the distributional metrics, not a second one: the
-        expensive step is encoding each episode's context once, and that cost
-        is paid regardless of which metrics get read off it.
-
-        Same DDP contract as :meth:`prior_validate`: round-robin sharding plus
-        all-reduced accumulators, so every rank must reach this on the same
-        steps -- including one whose shard is empty.
-
-        No ``diag/sigma``: the schedule is shared with the prior pass and
-        ``grid_scale`` is ~1 for both at ``n_ctx == n_max``, so that pass's copy
-        already puts sigma on the width axis.
-        """
-        if self.val_eval_dir is None:
-            return {}
-
-        self.model.eval()
-
-        with Timer() as val_timer:
-            metrics = score_frozen_set(
-                self.raw_model,
-                self.val_eval_dir,
-                device=self.config.device,
-                max_episodes=getattr(self.config, "val_eval_max_episodes", None),
-                meta=self._val_eval_meta,
-                rank=self.ddp_rank,
-                world_size=self.ddp_world_size,
-                sync_ddp=self.ddp,
-                prefix_point="val_point/",
-                prefix_dist="val_dist/",
-            )
-
-        metrics["Charts/val_eval_time"] = val_timer.elapsed
-
-        self.model.train()
-
-        return metrics
+        return self._validate_surface("val")
 
     def _resolve_metrics(self, metrics: dict, scale: int) -> dict[str, float]:
         """Materialize a metric dict of 0-d tensors with a single device sync.
