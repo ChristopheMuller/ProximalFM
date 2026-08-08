@@ -595,7 +595,25 @@ def build_parser() -> argparse.ArgumentParser:
         description="Build a frozen high-K posterior-evaluation set from the prior.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--out", type=Path, required=True, help="output directory")
+    p.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Set identifier; the build lands in <out_root>/<name>/ "
+        "(e.g. frozen_prod_v1). Either --name or --out is required.",
+    )
+    p.add_argument(
+        "--out_root",
+        type=Path,
+        default=Path("data/prior_eval"),
+        help="Root directory under which --name is written.",
+    )
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Explicit output directory, overriding --out_root/--name.",
+    )
     p.add_argument("--n_datasets", type=int, default=400)
     p.add_argument("--n_max", type=int, default=1024, help="context rows per episode")
     p.add_argument(
@@ -670,7 +688,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.out is None:
+        if args.name is None:
+            parser.error("one of --name (with --out_root) or --out is required")
+        args.out = args.out_root / args.name
     cfg = BuildConfig(
         n_datasets=args.n_datasets,
         n_max=args.n_max,

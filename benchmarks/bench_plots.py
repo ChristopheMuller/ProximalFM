@@ -490,11 +490,16 @@ def resolve_exp_dir(exp: str) -> Path:
     """Resolve an experiment name to its benchmark output directory.
 
     Two layouts exist:
-      * fixed synthetic builds  -> synthetic/<exp>/bench   (bench_config_val.yaml)
-      * generated-data runs     -> results/<exp>           (bench_config_gen.yaml)
-    The synthetic layout wins if both are present.
+      * fixed synthetic builds  -> data/synt_eval/<exp>/bench (bench_config_val.yaml)
+      * generated-data runs     -> results/<exp>              (bench_config_gen.yaml)
+    The synthetic layout wins if both are present; `synthetic/<exp>/bench` is
+    still accepted for builds made before the default moved under `data/`.
     """
-    candidates = [Path("synthetic") / exp / "bench", Path("results") / exp]
+    candidates = [
+        Path("data/synt_eval") / exp / "bench",
+        Path("synthetic") / exp / "bench",
+        Path("results") / exp,
+    ]
     for cand in candidates:
         if cand.is_dir():
             return cand
@@ -511,8 +516,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--exp",
         default="first_test",
-        help="Experiment name, resolved to synthetic/<exp>/bench or results/<exp> "
-        "(first match wins).",
+        help="Experiment name, resolved to data/synt_eval/<exp>/bench, "
+        "synthetic/<exp>/bench or results/<exp> (first match wins).",
     )
     parser.add_argument(
         "--path",

@@ -44,7 +44,7 @@ those left at their defaults). Re-run an earlier build exactly, even if defaults
 have since changed, by pointing ``--config`` at it (explicit flags still win):
 
     python synt_eval/build_proximal_datasets.py \
-        --config synthetic/proximal_val_v1/config.yaml --name proximal_val_v2
+        --config data/synt_eval/proximal_val_v1/config.yaml --name proximal_val_v2
 
 Replicate mode (``--mc_cate K`` with ``K > 1``)
 ----------------------------------------------
@@ -496,7 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--out_root",
         type=str,
-        default="synthetic/",
+        default="data/synt_eval/",
         help="Root directory under which <name>/{benchmark,val} are written.",
     )
     p.add_argument(

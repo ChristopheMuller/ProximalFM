@@ -12,7 +12,7 @@ them except the metric *functions*.
 | Surface | Prefix | Data | Question | Kinds |
 |---|---|---|---|---|
 | **Train** | `loss/`, `target/`, `noise/` | on-the-fly prior | is the optimization healthy? | loss & batch diagnostics **only** |
-| **Val** | `synt_point/`, `synt_dist/` | `synthetic/` realistic mechanisms (out-of-prior) | does it generalize off the prior? | point, **and** distributional on a replicate set |
+| **Val** | `synt_point/`, `synt_dist/` | `data/synt_eval/` realistic mechanisms (out-of-prior) | does it generalize off the prior? | point, **and** distributional on a replicate set |
 | **Prior** | `prior_point/`, `prior_dist/` | `prior_eval/` frozen high-`K` set (in-prior) | is the posterior any good? | point **and** distributional |
 
 Plus two non-surfaces: `diag/*` (schedules and derived quantities put on another surface's axis) and
