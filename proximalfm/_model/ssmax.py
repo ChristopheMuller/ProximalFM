@@ -111,7 +111,6 @@ class SSMaxMLP(nn.Module):
         logn = _logn(n, q.device, q.dtype).reshape(1, 1)
         scales = self.mlp(logn)
         if self.elementwise:
-            # scales: (1, num_heads * head_dim) -> (1, num_heads, 1, head_dim)
             head_dim = q.shape[-1]
             scales = scales.view(1, self.num_heads, 1, head_dim)
         else:
@@ -174,7 +173,6 @@ class QASSMaxMLP(nn.Module):
             nn.Linear(head_dim, n_hidden), nn.GELU(), nn.Linear(n_hidden, query_out_dim)
         )
 
-        # ensures initial modulation is zero
         nn.init.zeros_(self.query_mlp[-1].weight)
         nn.init.zeros_(self.query_mlp[-1].bias)
 
@@ -197,14 +195,11 @@ class QASSMaxMLP(nn.Module):
         logn = _logn(n, q.device, q.dtype).reshape(1, 1)
 
         if self.elementwise:
-            # base_scales: (1, num_heads * head_dim) -> (1, num_heads, 1, head_dim)
             base_scales = self.base_mlp(logn).view(1, self.num_heads, 1, self.head_dim)
-            modulation = 1 + torch.tanh(
-                self.query_mlp(q)
-            )  # (bs, n_heads, seq_len, head_dim)
+            modulation = 1 + torch.tanh(self.query_mlp(q))
         else:
             base_scales = self.base_mlp(logn).view(1, self.num_heads, 1, 1)
-            modulation = 1 + torch.tanh(self.query_mlp(q))  # (bs, n_heads, seq_len, 1)
+            modulation = 1 + torch.tanh(self.query_mlp(q))
 
         scales = base_scales * modulation
 

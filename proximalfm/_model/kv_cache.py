@@ -261,17 +261,14 @@ class TabICLCache:
     def cache_size_mb(self) -> int:
         """Return the memory occupied by cached tensors in MB."""
         total = 0
-        # Count memory from ColEmbedding
         if self.col_cache:
             for kv in self.col_cache.kv.values():
                 if kv.key is not None:
                     total += kv.key.numel() * kv.key.element_size()
                 if kv.value is not None:
                     total += kv.value.numel() * kv.value.element_size()
-        # Count memory from row representations
         if self.row_repr is not None:
             total += self.row_repr.numel() * self.row_repr.element_size()
-        # Count memory from ICLearning
         if self.icl_cache:
             for kv in self.icl_cache.kv.values():
                 if kv.key is not None:

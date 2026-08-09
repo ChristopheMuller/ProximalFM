@@ -201,10 +201,8 @@ class Encoder(nn.Module):
         out = src
         for layer_idx, block in enumerate(self.blocks):
             if use_cache:
-                # When using cache, src is already test-only data; no train_size needed
                 out = block(q=out, rope=self.rope, cached_kv=icl_cache.kv[layer_idx])
             else:
-                # Compute K/V for training data and store in cache
                 out, k_proj, v_proj = block(
                     q=out, train_size=train_size, rope=self.rope, need_kv=True
                 )

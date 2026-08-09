@@ -1,31 +1,3 @@
-####
-# Changes vs TabICL:
-# - Proximal Input Protocol: Expanded 'forward', '_train_forward', and
-#   '_inference_forward' to accept the full causal quadruple: X (covariates),
-#   Z (treatment proxies), W (outcome proxies), and A (treatment).
-# - Causal Dimension Aggregation: Added '_get_d_total' to compute the unified
-#   feature count ($d_{total} = d_X + d_Z + d_W + 1$) required for
-#   position-aware row interactions.
-# - Target Task Simplification: Removed 'max_classes' and 'num_quantiles'
-#   logic, effectively deprecating the 'QuantileToDistribution' post-processing
-#   to focus on direct proximal learning.
-# - Parameter Pruning: Removed feature grouping configurations
-#   (col_feature_group, col_feature_group_size) from the top-level module
-#   to align with the new 'ColEmbedding' implementation.
-# - Deprecated Stat Methods: Excised 'predict_stats' and
-#   'predict_stats_with_cache', as the current iteration prioritizes raw
-#   proximal output over distribution-based regression stats.
-# - Interface Streamlining: Removed 'return_logits' and 'softmax_temperature'
-#   logic from inference calls, reflecting the shift from classification
-#   to continuous proximal estimation.
-####
-
-####
-# TODO:
-# - bring back forward with cache
-####
-
-
 from __future__ import annotations
 from typing import Optional, Union, Literal
 
@@ -39,13 +11,6 @@ from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 from .ensemble import FeatureEnsemble, apply_permutation, apply_value_transform
 
-# Loss types sharing the single-histogram CATE head: same out_dim, same
-# cate_bin_* grid, same predict path. They differ only in the training
-# objective ("cate_single_noise_aware" deconvolves the Monte Carlo noise on the
-# target; see proximalfm.train._run.compute_cate_noise_aware_nll), which is why
-# a "cate_single" checkpoint fine-tunes into the noise-aware one with no head
-# surgery. Anything that branches on the head's *shape* must test membership
-# here rather than equality with "cate_single".
 CATE_SINGLE_LOSS_TYPES = ("cate_single", "cate_single_noise_aware")
 
 SUPPORTED_LOSS_TYPES = ("bins_po", "cate_decomposition", "hl", *CATE_SINGLE_LOSS_TYPES)
@@ -244,10 +209,10 @@ class ProximalFM(nn.Module):
         norm_first: bool = True,
         bias_free_ln: bool = False,
         recompute: bool = False,
-        **kwargs,  # capture old parameters that are no longer used to avoid breaking old configs
+        **kwargs,
     ):
         super().__init__()
-        icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
+        icl_dim = embed_dim * row_num_cls
 
         if loss_type not in SUPPORTED_LOSS_TYPES:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
@@ -318,10 +283,6 @@ class ProximalFM(nn.Module):
         self.register_buffer("bin_centers", bin_centers)
 
         if self.loss_type in CATE_SINGLE_LOSS_TYPES:
-            # tau = mu1 - mu0 is much narrower than Y(a) on the standardized scale, so it
-            # gets its own grid. Distinct buffer names matter: the surgical transfer loader
-            # copies buffers by name+shape, so reusing "bin_edges" would let a two-head
-            # checkpoint silently overwrite this grid with its own [vmin, vmax].
             cate_bin_edges = torch.linspace(cate_vmin, cate_vmax, nbins + 1)
             cate_bin_width = cate_bin_edges[1] - cate_bin_edges[0]
             cate_bin_centers = cate_bin_edges[:-1] + 0.5 * cate_bin_width
@@ -334,7 +295,7 @@ class ProximalFM(nn.Module):
             out_dim = nbins * 2
         elif self.loss_type in CATE_SINGLE_LOSS_TYPES:
             out_dim = nbins
-        else:  # self.loss_type == "cate_decomposition"
+        else:
             out_dim = nbins + 2
 
         self.icl_predictor = ICLearning(
@@ -351,7 +312,6 @@ class ProximalFM(nn.Module):
             out_dim=out_dim,
         )
 
-        # KV cache for efficient inference
         self._cache: Optional[TabICLCache] = None
 
     @property
@@ -365,7 +325,7 @@ class ProximalFM(nn.Module):
 
     def _get_d_total(self, d_X, d_Z, d_W):
         if d_X is not None and d_Z is not None and d_W is not None:
-            return d_X + d_Z + d_W  # RowInteraction adds num_cls itself
+            return d_X + d_Z + d_W
         return None
 
     def _safe_standardize(
@@ -459,30 +419,23 @@ class ProximalFM(nn.Module):
 
     def _get_y0_y1_shift_scale(self, y_context: Tensor, A_context: Tensor):
         """Calculates standardization stats separately for treated and control."""
-        # Ensure A is squeezed to (B, train_size) to match y_context
         if A_context.dim() > 2:
             A_context = A_context.squeeze()
 
-        # 1. Compute joint stats for all batches (used as fallback or if strictly enforced)
         joint_mean = y_context.mean(dim=1, keepdim=True)
-        # unbiased=False matches the manual N-division variance calculation below
         joint_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
 
-        # If explicitly forced to use joint quantiles for ALL batches
         if getattr(self, "joint_quantiles", False):
             return joint_mean, joint_std, joint_mean, joint_std
 
-        # 2. Compute separate stats
         treated_mask = (A_context == 1).float()
         control_mask = (A_context == 0).float()
 
         treated_counts = treated_mask.sum(dim=1, keepdim=True)
         control_counts = control_mask.sum(dim=1, keepdim=True)
 
-        # 3. Create a fallback mask: True if EITHER group has fewer than 5 samples in that specific episode
         fallback_mask = (treated_counts < 5) | (control_counts < 5)
 
-        # Clamp counts to avoid division by zero during the manual calculation
         safe_treated_counts = treated_counts.clamp(min=1.0)
         safe_control_counts = control_counts.clamp(min=1.0)
 
@@ -508,7 +461,6 @@ class ProximalFM(nn.Module):
             + 1e-8
         )
 
-        # 4. Apply the fallback: Use joint stats if fallback_mask is True, else use separate stats
         y0_shift = torch.where(fallback_mask, joint_mean, y0_mean)
         y1_shift = torch.where(fallback_mask, joint_mean, y1_mean)
 
@@ -556,7 +508,6 @@ class ProximalFM(nn.Module):
             hide_query_proxies=True,
         )
 
-        # Dataset-wise in-context learning
         return self.icl_predictor(representations, y_train=y_train, A_train=A_train)
 
     def _inference_forward(
@@ -579,7 +530,6 @@ class ProximalFM(nn.Module):
         d_total = self._get_d_total(d_X, d_Z, d_W)
         train_size = y_train.shape[1]
 
-        # 1. Column-wise embedding
         col_embeddings = self.col_embedder(
             X=X,
             Z=Z,
@@ -593,7 +543,6 @@ class ProximalFM(nn.Module):
             mgr_config=inference_config.COL_CONFIG,
         )
 
-        # 2. Row-wise interaction
         representations = self.row_interactor(
             col_embeddings,
             d=d_total,
@@ -605,7 +554,6 @@ class ProximalFM(nn.Module):
             mgr_config=inference_config.ROW_CONFIG,
         )
 
-        # 3. Dataset-wise in-context learning
         out = self.icl_predictor(
             representations,
             y_train=y_train,
@@ -633,7 +581,6 @@ class ProximalFM(nn.Module):
 
         assert train_size <= T, "Number of training samples exceeds total samples"
 
-        # Important: all training and inference calls now go through this.
         X, Z, W, y_train, _, _ = self._standardize_forward_inputs(
             X=X,
             Z=Z,
@@ -705,33 +652,23 @@ class ProximalFM(nn.Module):
         y_mean_view = y_context_mean.unsqueeze(-1)
         y_std_view = y_context_std.unsqueeze(-1)
 
-        # --- Helper: Mean ---
         def _get_mean(probs, vals):
             return torch.sum(probs * vals, dim=-1)
 
-        # --- Helper: Quantiles ---
         def _get_quantiles(probs, vals, q_list):
-            # Assumes that vals and probs can be correctly gathered/expanded
             cdf = torch.cumsum(probs, dim=-1)
             results = []
 
-            # Ensures vals dimension matches before gathering
-            # if dynamically broadcasted from shape (B, 1, nbins)
             if vals.shape[1] == 1 and probs.shape[1] > 1:
                 vals = vals.expand(-1, probs.shape[1], -1)
 
             for q in q_list:
-                # searchsorted only accepts a scalar when the boundaries are 1-D, so
-                # broadcast the level to one query per (batch, row).
                 q_expanded = q.expand(*cdf.shape[:-1], 1).contiguous()
                 idx = torch.searchsorted(cdf, q_expanded).clamp(max=self.nbins - 1)
                 q_vals = torch.gather(vals, -1, idx).squeeze(-1)
                 results.append(q_vals)
             return torch.stack(results, dim=-1)
 
-        # ==========================================
-        # ROUTING: Original architecture (Bins PO)
-        # ==========================================
         if self.loss_type == "bins_po" or self.loss_type == "hl":
             probs_y0 = torch.softmax(logits[..., : self.nbins], dim=-1)
             probs_y1 = torch.softmax(logits[..., self.nbins :], dim=-1)
@@ -780,9 +717,6 @@ class ProximalFM(nn.Module):
             else:
                 raise ValueError(f"Unknown output_type: {output_type}")
 
-        # ==========================================
-        # ROUTING: Additive CATE Decomposition
-        # ==========================================
         elif self.loss_type == "cate_decomposition":
             if target not in ["cate"]:
                 raise ValueError(
@@ -790,14 +724,12 @@ class ProximalFM(nn.Module):
                     f"and does not support predicting target='{target}'."
                 )
 
-            # Dim 0: ATE Mean, Dim 1: ATE log_var (used in loss, skipped here), Dim 2+: Heterogeneous Effect Logits
             ate_mu_scaled = logits[..., 0]
             probs_he = torch.softmax(logits[..., 2:], dim=-1)
 
             ate_mu = ate_mu_scaled * y_context_std
             vals_he = self.bin_centers.view(1, 1, -1) * y_std_view
 
-            # CATE Distribution = Heterogeneous effect distribution anchored on the predicted ATE
             vals_cate = vals_he + ate_mu.unsqueeze(-1)
 
             if output_type == "distribution":
@@ -818,9 +750,6 @@ class ProximalFM(nn.Module):
             else:
                 raise ValueError(f"Unknown output_type: {output_type}")
 
-        # ==========================================
-        # ROUTING: Single CATE histogram
-        # ==========================================
         elif self.loss_type in CATE_SINGLE_LOSS_TYPES:
             if target not in ["cate"]:
                 raise ValueError(
@@ -830,8 +759,6 @@ class ProximalFM(nn.Module):
 
             probs_cate = torch.softmax(logits, dim=-1)
 
-            # tau is a difference, so the context mean cancels: de-standardize with the
-            # context scale ONLY. Adding y_mean_view here would bias the whole CATE.
             vals_cate = self.cate_bin_centers.view(1, 1, -1) * y_std_view
 
             if output_type == "distribution":
@@ -875,7 +802,6 @@ class ProximalFM(nn.Module):
             return torch.stack(outputs, dim=0).mean(dim=0)
 
         if isinstance(first, dict):
-            # Distribution outputs: recurse if nested (y0/y1), otherwise average weights.
             if "weights" in first:
                 weights = torch.stack([o["weights"] for o in outputs], dim=0).mean(
                     dim=0
@@ -992,9 +918,6 @@ class ProximalFM(nn.Module):
         outputs = []
         for view in views:
             transform = view["transform"]
-            # Value transform (bijective, per-column) on the enabled blocks, then
-            # permute columns. The two commute (transform is per-column), so the
-            # order is immaterial.
             X_v = (
                 X
                 if not transform_X

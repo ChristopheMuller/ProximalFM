@@ -99,7 +99,7 @@ def apply_rotary_emb(freqs, t, start_index=0, scale=1.0, seq_dim=-2, interleaved
     if interleaved:
         rot_dim = freqs.shape[-1]
     else:
-        rot_dim = freqs.shape[-1] * 2  # Non-interleaved: freqs has shape (L, half)
+        rot_dim = freqs.shape[-1] * 2
 
     end_index = start_index + rot_dim
 
@@ -107,23 +107,15 @@ def apply_rotary_emb(freqs, t, start_index=0, scale=1.0, seq_dim=-2, interleaved
         rot_dim <= t.shape[-1]
     ), f"feature dimension {t.shape[-1]} is not of sufficient size to rotate in all the positions {rot_dim}"
 
-    # Split t into three parts: left, middle (to be transformed), and right
     t_left = t[..., :start_index]
     t_middle = t[..., start_index:end_index]
     t_right = t[..., end_index:]
 
-    # Apply rotary embeddings without modifying t in place
-    # Formula: x * cos + rotate(x) * sin
     if interleaved:
-        # Interleaved mode: dimension pairs are (0,1), (2,3), etc.
-        # freqs has shape (..., rot_dim) where rot_dim = dim
         t_transformed = (t_middle * freqs.cos() * scale) + (
             rotate_half_interleaved(t_middle) * freqs.sin() * scale
         )
     else:
-        # Non-interleaved mode: split embedding into first half [0:d//2] and second half [d//2:d]
-        # freqs has shape (..., half) for non-interleaved mode
-        # Expand to full dim by concatenating: [f0, f1, ..., f0, f1, ...]
         cos_freq = torch.cat([freqs.cos(), freqs.cos()], dim=-1) * scale
         sin_freq = torch.cat([freqs.sin(), freqs.sin()], dim=-1) * scale
         t_transformed = (t_middle * cos_freq) + (
@@ -222,9 +214,6 @@ class RotaryEmbedding(nn.Module):
         cache_if_possible=True,
     ):
         super().__init__()
-        # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
-        # has some connection to NTK literature
-        # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
 
         theta *= theta_rescale_factor ** (dim / (dim - 2))
 
@@ -250,24 +239,15 @@ class RotaryEmbedding(nn.Module):
 
         self.learned_freq = learned_freq
 
-        # dummy for device
-
         self.tmp_store("dummy", torch.tensor(0))
-
-        # default sequence dimension
 
         self.seq_before_head_dim = seq_before_head_dim
         self.default_seq_dim = -3 if seq_before_head_dim else -2
 
-        # interpolation factors
-
         assert interpolate_factor >= 1.0
         self.interpolate_factor = interpolate_factor
 
-        # interleaved rotation mode
         self.interleaved = interleaved
-
-        # xpos
 
         self.use_xpos = use_xpos
         if not use_xpos:
@@ -277,8 +257,6 @@ class RotaryEmbedding(nn.Module):
         scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
         self.scale_base = xpos_scale_base
         self.tmp_store("scale", scale)
-
-        # add apply_rotary_emb as static method
 
         self.apply_rotary_emb = staticmethod(apply_rotary_emb)
 
@@ -308,8 +286,6 @@ class RotaryEmbedding(nn.Module):
         if self.interleaved:
             freqs = self.forward(seq, seq_len=seq_len, offset=offset)
         else:
-            # For non-interleaved mode, compute freqs without repetition
-            # freqs shape: (seq_len, half) instead of (seq_len, dim)
             freqs = einsum("..., f -> ... f", seq.type(self.freqs.dtype), self.freqs)
 
         if seq_dim == -3:
@@ -362,7 +338,6 @@ class RotaryEmbedding(nn.Module):
         if self.interleaved:
             freqs = self.forward(seq, seq_len=seq_len)
         else:
-            # For non-interleaved mode, compute freqs without repetition
             freqs = einsum("..., f -> ... f", seq.type(self.freqs.dtype), self.freqs)
         scale = self.get_scale(seq, seq_len=seq_len).to(dtype)
 

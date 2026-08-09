@@ -144,7 +144,6 @@ class RowInteraction(nn.Module):
         """
         rope = self.tf_row.rope
 
-        # Process all blocks except the last
         if self.recompute:
             for block in self.tf_row.blocks[:-1]:
                 embeddings = checkpoint(
@@ -156,7 +155,6 @@ class RowInteraction(nn.Module):
             for block in self.tf_row.blocks[:-1]:
                 embeddings = block(embeddings, key_padding_mask=key_mask, rope=rope)
 
-        # Last block: q = CLS tokens, k/v = full sequence
         last_block = self.tf_row.blocks[-1]
         if self.recompute:
             cls_outputs = checkpoint(
@@ -181,7 +179,7 @@ class RowInteraction(nn.Module):
         del embeddings
         cls_outputs = self.out_ln(cls_outputs)
 
-        return cls_outputs.flatten(-2)  # (B, T, C*E)
+        return cls_outputs.flatten(-2)
 
     def _generate_key_mask(
         self,
@@ -214,14 +212,11 @@ class RowInteraction(nn.Module):
 
         indices = torch.arange(HC, device=device).view(1, 1, HC).expand(B, T, HC)
 
-        # 1. Standard padding mask: mask positions beyond valid feature count.
         if d is not None:
             d = d.to(device=device)
             valid_count = d + self.num_cls
             key_mask = key_mask | (indices >= valid_count.view(B, 1, 1))
 
-        # 2. Proximal restriction:
-        #    query/test rows should not attend to Z/W feature positions.
         if hide_query_proxies:
             if train_size is None:
                 raise ValueError(
@@ -236,8 +231,6 @@ class RowInteraction(nn.Module):
             d_Z = d_Z.to(device=device)
             d_W = d_W.to(device=device)
 
-            # Layout after ColEmbedding:
-            # [CLS, X, Z, W, padding]
             z_start = self.num_cls + d_X
             w_end = self.num_cls + d_X + d_Z + d_W
 
@@ -250,7 +243,6 @@ class RowInteraction(nn.Module):
 
             key_mask = key_mask | (query_rows & proxy_positions)
 
-        # If nothing is masked, returning None is slightly cleaner.
         if not key_mask.any():
             return None
 
@@ -269,7 +261,6 @@ class RowInteraction(nn.Module):
         B, T, HC, E = embeddings.shape
         device = embeddings.device
 
-        # Safer than in-place mutation of the ColEmbedding output.
         embeddings = embeddings.clone()
 
         cls_tokens = self.cls_tokens.expand(B, T, self.num_cls, self.embed_dim)

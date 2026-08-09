@@ -1,35 +1,3 @@
-####
-# Changes vs TabICL:
-# - Proximal Variable Support: Redesigned the module to accept and process
-#   four distinct variable groups: X (covariates), Z (treatment proxies),
-#   W (outcome proxies), and A (treatment).
-# - Role Embeddings: Added an nn.Embedding layer to assign unique role-specific
-#   tokens to each group, allowing the Set Transformer to distinguish
-#   between proxy types.
-# - Y and A Conditioning: Incorporated target (y_train) and treatment (A) information
-#   directly into the embeddings, enabling target-aware and treatment-aware representations.
-# - Unified Concatenation: All variables (X, Z, W, A) are concatenated into a
-#   single sequence before being processed by the Set Transformer.
-# - Selective Masking: Implemented per-proxy-type masking (inv_X, inv_Z, etc.)
-#   to handle datasets where proxies have different feature counts.
-# - Target Specialization: Replaced the complex Mixed-Radix Ensemble and
-#   Classification logic with a simple Linear encoder, shifting focus
-#   strictly to regression/CATE estimation.
-# - Padding-Aware Sorting: Added logic to sort embeddings by validity (using
-#   torch.gather), ensuring that valid feature embeddings are packed at
-#   the front of the sequence for subsequent layers.
-# - Simplified Forward: Removed feature grouping logic (circular permutation)
-#   and KV caching support to streamline the proximal learning pipeline.
-# - make it always target-aware, instead of having it as a config option
-####
-
-####
-# TODO:
-# - Add feature_group back?
-# - Add back the with_cache options for inference and forward.
-# - Verify the whole thing: why masking with -100, can't we do something closer to original code, ...
-####
-
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -185,7 +153,6 @@ class ColEmbedding(nn.Module):
 
         self.inference_mgr = InferenceManager(enc_name="tf_col", out_dim=embed_dim)
 
-        # 4 Causal Roles: 0=X, 1=Z, 2=W
         self.role_embedding = nn.Embedding(num_embeddings=3, embedding_dim=embed_dim)
 
     def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
@@ -222,37 +189,27 @@ class ColEmbedding(nn.Module):
         """
         device = X.device
 
-        # 1. Project each variable and add its specific Causal Role Embedding
-        # self.in_linear maps (..., T, 1) -> (..., T, E)
         src_X = self.in_linear(X) + self.role_embedding(torch.tensor(0, device=device))
         src_Z = self.in_linear(Z) + self.role_embedding(torch.tensor(1, device=device))
         src_W = self.in_linear(W) + self.role_embedding(torch.tensor(2, device=device))
 
-        # 2. Concatenate along the feature dimension (dim=1)
-        # Resulting shape: (B, D_X + D_Z + D_W, T, E)
         src = torch.cat([src_X, src_Z, src_W], dim=1)
 
-        # Keep a concatenated version of the raw features for the affine step later
         raw_features = torch.cat([X, Z, W], dim=1)
 
-        # 3. Add target embeddings (y_train) to the context rows
         assert y_train is not None, "y_train must be provided."
 
         A_context = A_train[:, 0, :train_size, 0]
         y_emb = self.y_encoder(y_train, A_context)
         y_emb_broadcast = y_emb.unsqueeze(1)
 
-        # ('A_context shape: torch.Size([4, 633])', 'A_train shape: torch.Size([4, 1, 633, 1])', 'y_train shape: torch.Size([4, 633])')
-
         src[..., :train_size, :] = src[..., :train_size, :] + y_emb_broadcast
 
         inv_mask_exp = inv_concat.unsqueeze(-1).unsqueeze(-1).expand_as(src)
         src[inv_mask_exp] = -100.0
 
-        # 4. Pass through Set Transformer
         src = self.tf_col(src, train_size=None if embed_with_test else train_size)
 
-        # 5. Affine transformation (scales the original raw features)
         if self.affine:
             weights = self.ln_w(self.out_w(src))
             biases = self.ln_b(self.out_b(src))
@@ -260,11 +217,9 @@ class ColEmbedding(nn.Module):
         else:
             embeddings = src
 
-        # Clean up any garbage from affine
         embeddings[inv_mask_exp] = -100.0
 
-        valid_mask = ~inv_concat  # 1 for valid, 0 for invalid
-        # Stable sort keeps CLS -> X -> Z -> W -> A order intact, just removes the gaps!
+        valid_mask = ~inv_concat
         sort_indices = torch.argsort(
             valid_mask.int(), dim=1, descending=True, stable=True
         )
@@ -336,20 +291,16 @@ class ColEmbedding(nn.Module):
         if A_train.dim() == 2:
             A_train = A_train.unsqueeze(-1)
 
-        # 1. Pad X to reserve space for the CLS tokens
         if self.reserve_cls_tokens > 0:
             X = F.pad(X, (self.reserve_cls_tokens, 0), value=-100.0)
             if d_X is not None:
                 d_X = d_X + self.reserve_cls_tokens
 
-        # Create precise boolean masks for invalid padding
         inv_X = self._get_invalid_mask(X.shape[2], d_X, B, X.device)
         inv_Z = self._get_invalid_mask(Z.shape[2], d_Z, B, Z.device)
         inv_W = self._get_invalid_mask(W.shape[2], d_W, B, W.device)
-        # (B, Total_Max_Features)
         inv_concat = torch.cat([inv_X, inv_Z, inv_W], dim=1)
 
-        # Transpose
         X_feat = X.transpose(1, 2).unsqueeze(-1)
         Z_feat = Z.transpose(1, 2).unsqueeze(-1)
         W_feat = W.transpose(1, 2).unsqueeze(-1)

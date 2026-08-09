@@ -63,21 +63,16 @@ class MgrConfig:
     """
 
     _ALLOWED_KEYS = {
-        # General
         "device",
         "use_amp",
         "use_fa3",
         "verbose",
-        # Batching
         "min_batch_size",
         "safety_factor",
-        # Offloading
         "offload",
         "auto_offload_threshold",
-        # CPU offloading
         "cpu_safety_factor",
         "max_pinned_memory_mb",
-        # Disk offloading
         "disk_offload_dir",
         "disk_min_free_mb",
         "disk_flush_mb",
@@ -85,12 +80,10 @@ class MgrConfig:
         "disk_file_prefix",
         "disk_dtype",
         "disk_safety_factor",
-        # Async transfer
         "use_async",
         "async_depth",
     }
     _TYPE_SPECS = {
-        # General
         "device": {
             "expected_type": (type(None), str, torch.device),
             "validator": None,
@@ -111,7 +104,6 @@ class MgrConfig:
             "validator": None,
             "error_msg": "verbose must be a boolean",
         },
-        # Batching
         "min_batch_size": {
             "expected_type": int,
             "validator": lambda x: x >= 1,
@@ -122,7 +114,6 @@ class MgrConfig:
             "validator": lambda x: 0.0 <= x <= 1.0,
             "error_msg": "safety_factor must be a float between 0 and 1",
         },
-        # Offloading
         "offload": {
             "expected_type": (bool, str),
             "validator": lambda x: isinstance(x, bool)
@@ -134,7 +125,6 @@ class MgrConfig:
             "validator": lambda x: 0.0 <= x <= 1.0,
             "error_msg": "auto_offload_threshold must be a float between 0 and 1",
         },
-        # CPU offloading
         "cpu_safety_factor": {
             "expected_type": float,
             "validator": lambda x: 0.0 <= x <= 1.0,
@@ -145,7 +135,6 @@ class MgrConfig:
             "validator": lambda x: x >= 0,
             "error_msg": "max_pinned_memory_mb must be a non-negative number",
         },
-        # Disk offloading
         "disk_offload_dir": {
             "expected_type": (type(None), str),
             "validator": None,
@@ -181,7 +170,6 @@ class MgrConfig:
             "validator": lambda x: 0.0 <= x <= 1.0,
             "error_msg": "disk_safety_factor must be a float between 0 and 1",
         },
-        # Async transfer
         "use_async": {
             "expected_type": bool,
             "validator": None,
@@ -286,29 +274,23 @@ class InferenceConfig:
             self.COL_CONFIG = MgrConfig(**self.COL_CONFIG)
         elif self.COL_CONFIG is None:
             self.COL_CONFIG = MgrConfig(
-                # General
                 device=None,
                 use_amp=True,
                 use_fa3=True,
                 verbose=False,
-                # Batching
                 min_batch_size=1,
                 safety_factor=0.8,
-                # Offloading
                 offload="auto",
                 auto_offload_threshold=0.5,
-                # CPU offloading
                 cpu_safety_factor=0.85,
-                max_pinned_memory_mb=32768.0,  # 32 GB
-                # Disk offloading
+                max_pinned_memory_mb=32768.0,
                 disk_offload_dir=None,
-                disk_min_free_mb=1024.0,  # 1 GB
-                disk_flush_mb=8192.0,  # 8 GB
+                disk_min_free_mb=1024.0,
+                disk_flush_mb=8192.0,
                 disk_cleanup=True,
                 disk_file_prefix="",
                 disk_dtype=None,
                 disk_safety_factor=0.95,
-                # Async transfer
                 use_async=True,
                 async_depth=4,
             )
@@ -321,29 +303,23 @@ class InferenceConfig:
             self.ROW_CONFIG = MgrConfig(**self.ROW_CONFIG)
         elif self.ROW_CONFIG is None:
             self.ROW_CONFIG = MgrConfig(
-                # General
                 device=None,
                 use_amp=True,
                 use_fa3=True,
                 verbose=False,
-                # Batching
                 min_batch_size=1,
                 safety_factor=0.8,
-                # Offloading
                 offload=False,
                 auto_offload_threshold=0.5,
-                # CPU offloading
                 cpu_safety_factor=0.85,
-                max_pinned_memory_mb=32768.0,  # 32 GB
-                # Disk offloading
+                max_pinned_memory_mb=32768.0,
                 disk_offload_dir=None,
-                disk_min_free_mb=1024.0,  # 1 GB
-                disk_flush_mb=8192.0,  # 8 GB
+                disk_min_free_mb=1024.0,
+                disk_flush_mb=8192.0,
                 disk_cleanup=True,
                 disk_file_prefix="",
                 disk_dtype=None,
                 disk_safety_factor=0.95,
-                # Async transfer
                 use_async=True,
                 async_depth=4,
             )
@@ -356,29 +332,23 @@ class InferenceConfig:
             self.ICL_CONFIG = MgrConfig(**self.ICL_CONFIG)
         elif self.ICL_CONFIG is None:
             self.ICL_CONFIG = MgrConfig(
-                # General
                 device=None,
                 use_amp=True,
                 use_fa3=True,
                 verbose=False,
-                # Batching
                 min_batch_size=1,
                 safety_factor=0.8,
-                # Offloading
                 offload=False,
                 auto_offload_threshold=0.5,
-                # CPU offloading
                 cpu_safety_factor=0.85,
-                max_pinned_memory_mb=32768.0,  # 32 GB
-                # Disk offloading
+                max_pinned_memory_mb=32768.0,
                 disk_offload_dir=None,
-                disk_min_free_mb=1024.0,  # 1 GB
-                disk_flush_mb=8192.0,  # 8 GB
+                disk_min_free_mb=1024.0,
+                disk_flush_mb=8192.0,
                 disk_cleanup=True,
                 disk_file_prefix="",
                 disk_dtype=None,
                 disk_safety_factor=0.95,
-                # Async transfer
                 use_async=True,
                 async_depth=4,
             )

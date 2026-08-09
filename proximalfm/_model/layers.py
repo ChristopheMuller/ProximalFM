@@ -84,7 +84,6 @@ class OneHotAndLinear(nn.Linear):
         Tensor
             Embedded representation of shape (batch_size, sequence_length, embed_dim).
         """
-        # Convert indices to one-hot vectors and apply linear projection
         one_hot = F.one_hot(src.long(), self.num_classes).to(src.dtype)
         return F.linear(one_hot.float(), self.weight, self.bias)
 
@@ -460,7 +459,6 @@ class MultiheadAttentionBlock(nn.TransformerEncoderLayer):
         use_cache = cached_kv is not None
 
         if self.norm_first:
-            # Pre-norm: normalize first, then apply attention
             q_normed = self.norm1(q)
             if use_cache:
                 attn = self._attn_block(
@@ -495,7 +493,6 @@ class MultiheadAttentionBlock(nn.TransformerEncoderLayer):
             x = q + attn
             x = x + self._ff_block(self.norm2(x))
         else:
-            # Post-norm: attention first, then normalize
             if use_cache:
                 attn = self._attn_block(
                     q,
@@ -642,7 +639,6 @@ class InducedSelfAttentionBlock(nn.Module):
         if isinstance(ssmax, bool):
             ssmax = "qassmax-mlp-elementwise" if ssmax else "none"
 
-        # Two-stage attention mechanism
         self.multihead_attn1 = MultiheadAttentionBlock(
             d_model,
             nhead,
@@ -663,7 +659,6 @@ class InducedSelfAttentionBlock(nn.Module):
             bias_free_ln,
         )
 
-        # Learnable inducing points
         self.num_inds = num_inds
         self.ind_vectors = nn.Parameter(torch.empty(num_inds, d_model))
         nn.init.trunc_normal_(self.ind_vectors, std=0.02)
@@ -720,7 +715,7 @@ class InducedSelfAttentionBlock(nn.Module):
             Output tensor with same shape as input.
         """
 
-        skip_mask = (src == self.skip_value).all(dim=(-2, -1))  # batch shape
+        skip_mask = (src == self.skip_value).all(dim=(-2, -1))
         if skip_mask.any():
             if skip_mask.all():
                 out = torch.full_like(src, self.skip_value)
@@ -838,8 +833,6 @@ class InducedSelfAttentionBlock(nn.Module):
         if store_cache and train_size is None:
             raise ValueError("train_size must be provided when store_cache=True")
 
-        # When using cache, we need consistent batch dimensions, so we don't apply skip_mask
-        # The cache was populated with the full batch shape
         skip_mask = (src == self.skip_value).all(dim=(-2, -1))
         if skip_mask.all():
             return torch.full_like(src, self.skip_value)
@@ -847,7 +840,6 @@ class InducedSelfAttentionBlock(nn.Module):
             out = self.induced_attention_with_cache(
                 src, col_cache, block_idx, train_size, use_cache, store_cache
             )
-            # Restore skip values in output
             if skip_mask.any():
                 out[skip_mask] = self.skip_value
             return out

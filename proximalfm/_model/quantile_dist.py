@@ -155,7 +155,6 @@ if NUMBA_AVAILABLE:
             block_ends[num_blocks] = i
             num_blocks += 1
 
-            # Merge while violation exists
             while (
                 num_blocks > 1
                 and block_values[num_blocks - 2] > block_values[num_blocks - 1]
@@ -164,7 +163,6 @@ if NUMBA_AVAILABLE:
                 v2, c2 = block_values[num_blocks - 1], block_counts[num_blocks - 1]
                 end2 = block_ends[num_blocks - 1]
 
-                # Uniform weights: simple average
                 merged_count = c1 + c2
                 merged_val = (v1 * c1 + v2 * c2) / merged_count
 
@@ -173,7 +171,6 @@ if NUMBA_AVAILABLE:
                 block_ends[num_blocks - 2] = end2
                 num_blocks -= 1
 
-        # Reconstruct
         result = np.empty(n, dtype=y.dtype)
         start = 0
         for b in range(num_blocks):
@@ -203,7 +200,6 @@ if NUMBA_AVAILABLE:
             block_ends[num_blocks] = i
             num_blocks += 1
 
-            # Merge while violation exists
             while (
                 num_blocks > 1
                 and block_values[num_blocks - 2] > block_values[num_blocks - 1]
@@ -220,7 +216,6 @@ if NUMBA_AVAILABLE:
                 block_ends[num_blocks - 2] = end2
                 num_blocks -= 1
 
-        # Reconstruct
         result = np.empty(n, dtype=y.dtype)
         start = 0
         for b in range(num_blocks):
@@ -334,37 +329,28 @@ def estimate_exp_tail_params(
     n = quantiles.shape[-1]
     k = min(num_tail_quantiles, n // 4)
 
-    # === Left tail: Q(α) = β_L·ln(α) + c_L ===
     alpha_left = alpha_levels[:k]
-    q_left = quantiles[..., :k]  # Shape: (*batch_shape, k)
+    q_left = quantiles[..., :k]
 
-    # Log-transform alpha
-    ln_alpha_left = torch.log(alpha_left.clamp(min=cfg.TOL))  # Shape: (k,)
+    ln_alpha_left = torch.log(alpha_left.clamp(min=cfg.TOL))
 
-    # Linear regression: β = Cov(Q, ln(α)) / Var(ln(α))
     ln_alpha_mean = ln_alpha_left.mean()
-    ln_alpha_centered = ln_alpha_left - ln_alpha_mean  # Shape: (k,)
+    ln_alpha_centered = ln_alpha_left - ln_alpha_mean
 
-    q_left_mean = q_left.mean(dim=-1, keepdim=True)  # Shape: (*batch_shape, 1)
-    q_left_centered = q_left - q_left_mean  # Shape: (*batch_shape, k)
+    q_left_mean = q_left.mean(dim=-1, keepdim=True)
+    q_left_centered = q_left - q_left_mean
 
-    # Compute covariance and variance
-    cov_left = (q_left_centered * ln_alpha_centered).mean(
-        dim=-1
-    )  # Shape: (*batch_shape,)
-    var_ln_alpha_left = (ln_alpha_centered**2).mean()  # Scalar
+    cov_left = (q_left_centered * ln_alpha_centered).mean(dim=-1)
+    var_ln_alpha_left = (ln_alpha_centered**2).mean()
 
     beta_l = cov_left / var_ln_alpha_left.clamp(min=cfg.TOL)
     beta_l = torch.clamp(beta_l.abs(), min=cfg.MIN_BETA, max=cfg.MAX_BETA)
 
-    # === Right tail: Q(α) = -β_R·ln(1-α) + c_R ===
     alpha_right = alpha_levels[-k:]
-    q_right = quantiles[..., -k:]  # Shape: (*batch_shape, k)
+    q_right = quantiles[..., -k:]
 
-    # Log-transform (1 - alpha)
-    ln_one_minus_alpha = torch.log((1 - alpha_right).clamp(min=cfg.TOL))  # Shape: (k,)
+    ln_one_minus_alpha = torch.log((1 - alpha_right).clamp(min=cfg.TOL))
 
-    # Linear regression
     ln_1ma_mean = ln_one_minus_alpha.mean()
     ln_1ma_centered = ln_one_minus_alpha - ln_1ma_mean
 
@@ -374,7 +360,6 @@ def estimate_exp_tail_params(
     cov_right = (q_right_centered * ln_1ma_centered).mean(dim=-1)
     var_ln_1ma = (ln_1ma_centered**2).mean()
 
-    # Note: Q = -β·ln(1-α) + c, so coefficient is -β
     beta_r = -cov_right / var_ln_1ma.clamp(min=cfg.TOL)
     beta_r = torch.clamp(beta_r.abs(), min=cfg.MIN_BETA, max=cfg.MAX_BETA)
 
@@ -431,13 +416,10 @@ def estimate_gpd_tail_params(
     n = quantiles.shape[-1]
     k = min(num_tail_quantiles, n // 4)
 
-    # First get exponential estimates for μ (scale parameter)
     beta_l, beta_r = estimate_exp_tail_params(
         quantiles, alpha_levels, num_tail_quantiles
     )
 
-    # === Left tail - Pickands-like estimation ===
-    # Use three quantile levels: idx_1 (most extreme), idx_2 (medium), idx_3 (less extreme)
     idx_1 = 0
     idx_2 = k // 3
     idx_3 = 2 * k // 3
@@ -450,26 +432,17 @@ def estimate_gpd_tail_params(
     alpha_2 = alpha_levels[idx_2]
     alpha_3 = alpha_levels[idx_3]
 
-    # For left tail, smaller α = more extreme = smaller Q
-    # Q spacing ratios
-    delta_q_12 = q2_left - q1_left  # Q2 > Q1 for left tail
-    delta_q_23 = q3_left - q2_left  # Q3 > Q2
+    delta_q_12 = q2_left - q1_left
+    delta_q_23 = q3_left - q2_left
 
-    # Log-alpha spacing ratios
     ln_alpha_12 = torch.log((alpha_2 / alpha_1).clamp(min=cfg.TOL))
     ln_alpha_23 = torch.log((alpha_3 / alpha_2).clamp(min=cfg.TOL))
 
-    # For exponential tail: ΔQ_12 / ΔQ_23 = ln(α2/α1) / ln(α3/α2)
     expected_q_ratio = ln_alpha_12 / ln_alpha_23.clamp(min=cfg.TOL)
     actual_q_ratio = delta_q_12 / delta_q_23.clamp(min=cfg.TOL)
 
-    # η estimate: deviation from exponential behavior
-    # If actual_ratio > expected_ratio: heavier tail (η > 0)
-    # If actual_ratio < expected_ratio: lighter tail (η < 0)
     ratio_deviation = actual_q_ratio / expected_q_ratio.clamp(min=cfg.TOL)
 
-    # Map deviation to η using log relationship
-    # η ≈ (ln(ratio_deviation)) / (ln(α2/α1))
     eta_l_raw = torch.where(
         ratio_deviation > cfg.TOL,
         torch.log(ratio_deviation.clamp(min=cfg.TOL))
@@ -479,7 +452,6 @@ def estimate_gpd_tail_params(
     eta_l = torch.clamp(eta_l_raw, min=cfg.MIN_ETA, max=cfg.MAX_ETA)
     mu_l = beta_l
 
-    # === Right tail - Pickands-like estimation ===
     idx_1_r = n - 1
     idx_2_r = n - 1 - k // 3
     idx_3_r = n - 1 - 2 * k // 3
@@ -492,11 +464,9 @@ def estimate_gpd_tail_params(
     alpha_2_r = alpha_levels[idx_2_r]
     alpha_3_r = alpha_levels[idx_3_r]
 
-    # For right tail, larger α = larger Q
-    delta_q_12_r = q1_right - q2_right  # Q1 > Q2 for right tail
+    delta_q_12_r = q1_right - q2_right
     delta_q_23_r = q2_right - q3_right
 
-    # Use (1-α) ratios
     one_m_1 = (1 - alpha_1_r).clamp(min=cfg.TOL)
     one_m_2 = (1 - alpha_2_r).clamp(min=cfg.TOL)
     one_m_3 = (1 - alpha_3_r).clamp(min=cfg.TOL)
@@ -569,11 +539,9 @@ class QuantileDistribution(Distribution):
         self.tol = self.cfg.TOL
         self.tail_type = tail_type
 
-        # Store shapes
         self._batch_shape = quantiles.shape[:-1]
         self.num_quantiles = quantiles.shape[-1]
 
-        # Default alpha levels
         if alpha_levels is None:
             alpha_levels = torch.linspace(
                 0.0,
@@ -584,13 +552,11 @@ class QuantileDistribution(Distribution):
             )[1:-1]
         self.alpha_levels = alpha_levels
 
-        # Fix quantile crossing
         if fix_crossing:
             quantiles = enforce_monotonicity(quantiles, method=crossing_method)
 
         self.quantiles = quantiles
 
-        # Setup internal structures
         self._setup_spline()
         self._setup_tails()
 
@@ -601,36 +567,29 @@ class QuantileDistribution(Distribution):
 
         Creates segment boundaries and slopes for piecewise linear interpolation.
         """
-        # Expand alpha_levels for batch operations
         alpha = self.alpha_levels
         while alpha.dim() < len(self._batch_shape) + 1:
             alpha = alpha.unsqueeze(0)
         alpha = alpha.expand(*self._batch_shape, -1)
 
-        # Segment boundaries: (*batch_shape, num_segments) where num_segments = num_quantiles - 1
-        self.alpha_lo = alpha[..., :-1]  # α_i for segment i
-        self.alpha_hi = alpha[..., 1:]  # α_{i+1} for segment i
-        self.q_lo = self.quantiles[..., :-1]  # Q(α_i)
-        self.q_hi = self.quantiles[..., 1:]  # Q(α_{i+1})
+        self.alpha_lo = alpha[..., :-1]
+        self.alpha_hi = alpha[..., 1:]
+        self.q_lo = self.quantiles[..., :-1]
+        self.q_hi = self.quantiles[..., 1:]
 
-        # Segment properties
-        self.delta_alpha = (
-            self.alpha_hi - self.alpha_lo
-        )  # Shape: (*batch_shape, num_segments)
+        self.delta_alpha = self.alpha_hi - self.alpha_lo
         self.delta_q = self.q_hi - self.q_lo
         self.slopes = self.delta_q / torch.clamp(self.delta_alpha, min=self.tol)
 
         self.num_segments = self.num_quantiles - 1
 
-        # Boundary values (scalars for alpha, tensors for q)
         self.alpha_l = self.alpha_levels[0].item()
         self.alpha_r = self.alpha_levels[-1].item()
-        self.q_l = self.quantiles[..., 0]  # Shape: (*batch_shape,)
-        self.q_r = self.quantiles[..., -1]  # Shape: (*batch_shape,)
+        self.q_l = self.quantiles[..., 0]
+        self.q_r = self.quantiles[..., -1]
 
-        # 1D boundaries for searchsorted (same value for all batch elements)
-        self.alpha_lo_1d = self.alpha_levels[:-1]  # (S,)
-        self.alpha_hi_1d = self.alpha_levels[1:]  # (S,)
+        self.alpha_lo_1d = self.alpha_levels[:-1]
+        self.alpha_hi_1d = self.alpha_levels[1:]
 
     def _setup_tails(self):
         """Setup tail parameters inferred from boundary quantiles."""
@@ -641,29 +600,24 @@ class QuantileDistribution(Distribution):
         num_tail_q = cfg.TAIL_QUANTILES_FOR_ESTIMATION
 
         if self.tail_type == "exp":
-            # Estimate β using log-space regression
             self.beta_l, self.beta_r = estimate_exp_tail_params(
                 self.quantiles,
                 self.alpha_levels,
                 num_tail_quantiles=num_tail_q,
             )
 
-            # Compute tail coefficients
-            # Left: Q(α) = a_l·ln(α) + b_l where a_l = β_l
             alpha_l_safe = max(self.alpha_l, self.tol)
             self.tail_a_l = self.beta_l
             self.tail_b_l = self.q_l - self.tail_a_l * torch.log(
                 torch.tensor(alpha_l_safe, device=device, dtype=dtype)
             )
 
-            # Right: Q(α) = a_r·ln(1-α) + b_r where a_r = -β_r
             alpha_r_safe = min(self.alpha_r, 1 - self.tol)
             self.tail_a_r = -self.beta_r
             self.tail_b_r = self.q_r - self.tail_a_r * torch.log(
                 torch.tensor(1 - alpha_r_safe, device=device, dtype=dtype)
             )
-        else:  # GPD tails
-            # Estimate GPD parameters using Pickands-like estimator
+        else:
             self.eta_l, self.mu_l, self.eta_r, self.mu_r = estimate_gpd_tail_params(
                 self.quantiles,
                 self.alpha_levels,
@@ -696,9 +650,7 @@ class QuantileDistribution(Distribution):
 
         alpha_shape = alpha.shape
 
-        # Expand alpha for batch dimensions if needed
         if alpha.dim() == 1:
-            # Shape (n,) -> (*batch_shape, n)
             alpha_expanded = alpha
             for _ in range(len(self._batch_shape)):
                 alpha_expanded = alpha_expanded.unsqueeze(0)
@@ -706,12 +658,10 @@ class QuantileDistribution(Distribution):
         else:
             alpha_expanded = alpha
 
-        # Compute in each region
         q_left = self._icdf_left_tail(alpha_expanded)
         q_right = self._icdf_right_tail(alpha_expanded)
         q_spline = self._icdf_spline(alpha_expanded)
 
-        # Select based on region
         result = torch.where(
             alpha_expanded < self.alpha_l,
             q_left,
@@ -830,7 +780,7 @@ class QuantileDistribution(Distribution):
             )
             - 1
         )
-        seg_idx = seg_idx.clamp(0, self.num_segments - 1)  # (*batch_shape, n)
+        seg_idx = seg_idx.clamp(0, self.num_segments - 1)
 
         q_lo_g = self.q_lo.gather(-1, seg_idx)
         q_hi_g = self.q_hi.gather(-1, seg_idx)
@@ -860,7 +810,6 @@ class QuantileDistribution(Distribution):
             CDF values in :math:`[0, 1]`.
             Shape: ``(*batch_shape, ...)`` matching z after broadcasting.
         """
-        # Handle 1D input by broadcasting (only if z is not already batch_shape)
         if z.dim() == 1 and len(self._batch_shape) > 0 and z.shape != self._batch_shape:
             z = z.unsqueeze(0).expand(*self._batch_shape, -1)
 
@@ -955,12 +904,10 @@ class QuantileDistribution(Distribution):
 
     def _cdf_spline(self, z: Tensor) -> Tensor:
         """CDF in spline region via inverse linear interpolation."""
-        # Handle z: (*batch_shape,) or (*batch_shape, n)
         added_dim = z.dim() == len(self._batch_shape)
         if added_dim:
-            z = z.unsqueeze(-1)  # (*batch_shape, 1)
+            z = z.unsqueeze(-1)
 
-        # N-D batched: q_lo (*batch_shape, S), z (*batch_shape, n) → same batch dims required
         seg_idx = (
             torch.searchsorted(
                 self.q_lo.contiguous(),
@@ -1084,7 +1031,7 @@ class QuantileDistribution(Distribution):
         """Spline derivative: piecewise constant slopes."""
         added_dim = alpha.dim() == len(self._batch_shape)
         if added_dim:
-            alpha = alpha.unsqueeze(-1)  # (*batch_shape, 1)
+            alpha = alpha.unsqueeze(-1)
 
         seg_idx = (
             torch.searchsorted(
@@ -1098,7 +1045,6 @@ class QuantileDistribution(Distribution):
 
         result = self.slopes.gather(-1, seg_idx)
 
-        # Reproduce original: return 1.0 when alpha is below all segments
         no_segment = alpha < self.alpha_levels[0]
         result = torch.where(no_segment, torch.ones_like(result), result)
 
@@ -1126,7 +1072,6 @@ class QuantileDistribution(Distribution):
             Log probability density values.
             Shape: ``(*batch_shape, ...)`` matching z after broadcasting.
         """
-        # Handle 1D input (only if z is not already batch_shape)
         if z.dim() == 1 and len(self._batch_shape) > 0 and z.shape != self._batch_shape:
             z = z.unsqueeze(0).expand(*self._batch_shape, -1)
 
@@ -1338,7 +1283,6 @@ class QuantileDistribution(Distribution):
         n_extra = z.dim() - len(self._batch_shape)
         seg_dim = len(self._batch_shape)
 
-        # Expand segment data
         alpha_i = self.alpha_lo
         alpha_ip1 = self.alpha_hi
         q_i = self.q_lo
@@ -1353,17 +1297,14 @@ class QuantileDistribution(Distribution):
         z_exp = z.unsqueeze(seg_dim)
         alpha_z_exp = alpha_z.unsqueeze(seg_dim)
 
-        # Unified formula via clamp trick
         r = torch.clamp(alpha_z_exp, alpha_i, alpha_ip1)
 
         r2, r3 = r**2, r**3
         ai2, ai3 = alpha_i**2, alpha_i**3
         aip12, aip13 = alpha_ip1**2, alpha_ip1**3
 
-        # I1 = ∫_{α_i}^r 2α(z-Q)dα
         I1 = (z_exp - q_i) * (r2 - ai2) - 2 * m * (r3 / 3 - alpha_i * r2 / 2 + ai3 / 6)
 
-        # I2 = ∫_r^{α_{i+1}} 2(1-α)(Q-z)dα
         A = q_i - z_exp
         diff_a = alpha_ip1 - r
         diff_a2 = aip12 - r2
@@ -1421,13 +1362,10 @@ class QuantileDistribution(Distribution):
 
     def _mean_exp_analytical(self) -> Tensor:
         """Analytical mean for exponential tails."""
-        # Left tail: alpha_L * (q_L - beta_L)
         left_int = self.alpha_l * (self.q_l - self.tail_a_l)
 
-        # Spline: trapezoid rule
         spline_int = (self.delta_alpha * (self.q_lo + self.q_hi) / 2).sum(dim=-1)
 
-        # Right tail: (1-α_R) * (q_R - a_R) = (1-α_R) * (q_R + β_R)
         right_int = (1 - self.alpha_r) * (self.q_r - self.tail_a_r)
 
         return left_int + spline_int + right_int
@@ -1443,13 +1381,10 @@ class QuantileDistribution(Distribution):
             self.eta_r, min=cfg.ETA_TOLERANCE, max=1 - cfg.ETA_TOLERANCE
         )
 
-        # Left: α_L * (q_L - μ/(1-η))
         left_int = self.alpha_l * (self.q_l - self.mu_l / (1 - eta_l_safe))
 
-        # Spline
         spline_int = (self.delta_alpha * (self.q_lo + self.q_hi) / 2).sum(dim=-1)
 
-        # Right: (1-α_R) * (q_R + μ/(1-η))
         right_int = (1 - self.alpha_r) * (self.q_r + self.mu_r / (1 - eta_r_safe))
 
         return left_int + spline_int + right_int
@@ -1473,17 +1408,14 @@ class QuantileDistribution(Distribution):
         a_l = self.tail_a_l
         a_r = self.tail_a_r
 
-        # E[Z²] left: α_L * (q_L² - 2*a*q_L + 2*a²)
         e_z2_left = self.alpha_l * (self.q_l**2 - 2 * a_l * self.q_l + 2 * a_l**2)
 
-        # E[Z²] spline: ∑ Δα * (q_i² + q_i*q_{i+1} + q_{i+1}²) / 3
         e_z2_spline = (
             self.delta_alpha
             * (self.q_lo**2 + self.q_lo * self.q_hi + self.q_hi**2)
             / 3
         ).sum(dim=-1)
 
-        # E[Z²] right: (1-α_R) * (q_R² - 2*a*q_R + 2*a²)
         e_z2_right = (1 - self.alpha_r) * (
             self.q_r**2 - 2 * a_r * self.q_r + 2 * a_r**2
         )
@@ -1500,7 +1432,6 @@ class QuantileDistribution(Distribution):
         eta_l_safe = torch.clamp(self.eta_l, min=cfg.ETA_TOLERANCE, max=0.49)
         eta_r_safe = torch.clamp(self.eta_r, min=cfg.ETA_TOLERANCE, max=0.49)
 
-        # Left tail E[Z²]
         c_l = self.q_l + self.mu_l / eta_l_safe
         d_l = self.mu_l / eta_l_safe
         one_m_eta_l = 1 - eta_l_safe
@@ -1509,14 +1440,12 @@ class QuantileDistribution(Distribution):
             c_l**2 - 2 * c_l * d_l / one_m_eta_l + d_l**2 / one_m_2eta_l
         )
 
-        # Spline E[Z²]
         e_z2_spline = (
             self.delta_alpha
             * (self.q_lo**2 + self.q_lo * self.q_hi + self.q_hi**2)
             / 3
         ).sum(dim=-1)
 
-        # Right tail E[Z²]
         c_r = self.q_r - self.mu_r / eta_r_safe
         d_r = self.mu_r / eta_r_safe
         one_m_eta_r = 1 - eta_r_safe
@@ -1558,7 +1487,6 @@ class QuantileDistribution(Distribution):
         """
         n_samples = max(1, torch.Size(sample_shape).numel())
 
-        # Generate uniforms and apply inverse CDF: (*batch_shape, n_samples)
         u = torch.rand(
             *self.batch_shape,
             n_samples,
@@ -1568,9 +1496,8 @@ class QuantileDistribution(Distribution):
         q = self.icdf(u)
 
         if not sample_shape:
-            return q.squeeze(-1)  # (*batch_shape,)
+            return q.squeeze(-1)
 
-        # Reshape: (*batch_shape, n_samples) -> (*sample_shape, *batch_shape)
         n_batch = len(self.batch_shape)
         q = q.view(*self.batch_shape, *sample_shape)
         return q.movedim(tuple(range(n_batch)), tuple(range(-n_batch, 0)))
@@ -1615,7 +1542,6 @@ class QuantileToDistribution(nn.Module):
         self.fix_crossing = fix_crossing
         self.crossing_method = crossing_method
 
-        # Register alpha levels as buffer
         if alpha_levels is None:
             self.alpha_levels = torch.linspace(0.0, 1.0, num_quantiles + 2)[1:-1]
         else:

@@ -1,24 +1,3 @@
-####
-# Changes vs TabICL:
-# - Regression Specialization: Excised all classification-specific logic,
-#   including hierarchical classification ('ClassNode'), grouping, and
-#   label encoding.
-# - Unified Target Encoder: Standardized 'y_encoder' as 'nn.Linear(1, d_model)',
-#   removing the 'OneHotAndLinear' path previously used for classification.
-# - Inference Streamlining: Simplified '_predict_standard' and '_inference_forward'
-#   by removing 'softmax_temperature', 'return_logits', and multi-class
-#   slicing logic.
-# - Changed the y_encoder to take in both y and A, and use A to determine which linear layer to
-#    use for encoding the target values. This allows the model to learn separate embeddings for
-#    treated vs control samples, which is important for causal inference tasks.
-# - Cleaned API: Removed 'max_classes' and 'out_dim' from the constructor,
-#   as the task type is now strictly continuous proximal learning.
-# - Caching Logic: Simplified 'forward_with_cache' and 'forward_with_repr_cache'
-#   to handle only regression outputs without verifying class counts or
-#   hierarchical depth.
-####
-
-
 from __future__ import annotations
 
 from typing import Optional, Union
@@ -134,14 +113,12 @@ class ICLearning(nn.Module):
         Tensor
             Encoded target values of shape (B, train_size, d_model).
         """
-        # Ensure clean [B, train_size, 1] shapes for linear projections
         y_input = y.unsqueeze(-1)
         A_input = A.unsqueeze(-1)
 
-        y0_emb = self.y0_encoder(y_input)  # (B, train_size, d_model)
-        y1_emb = self.y1_encoder(y_input)  # (B, train_size, d_model)
+        y0_emb = self.y0_encoder(y_input)
+        y1_emb = self.y1_encoder(y_input)
 
-        # Condition matches embedding layout exactly along the last dimension
         y_emb = where(A_input == 0, y0_emb, y1_emb)
 
         return y_emb
@@ -153,17 +130,13 @@ class ICLearning(nn.Module):
         if A_train.dim() == 3:
             A_train = A_train.squeeze(-1)
 
-        # 2. SECURITY: Extract and slice A to isolate context entries matching y_train
-        A_context = A_train[:, :train_size]  # Shape: (B, train_size)
+        A_context = A_train[:, :train_size]
 
-        # 3. Compute conditional target embeddings
-        y_emb = self.y_encoder(y_train, A_context)  # Shape: (B, train_size, d_model)
+        y_emb = self.y_encoder(y_train, A_context)
 
-        # 4. FIX: Safely clone R and add context target values
         src = R.clone()
         src[:, :train_size] = src[:, :train_size] + y_emb
 
-        # 5. Dataset-wide context parsing
         src = self.tf_icl(src, train_size=train_size)
         if self.norm_first:
             src = self.ln(src)
@@ -244,7 +217,6 @@ class ICLearning(nn.Module):
                 Predictions of shape (B, test_size, 4), where test_size = T - train_size; 4 = dim of output (mean + log-var for two potential outcomes)
 
         """
-        # Configure inference parameters
         if mgr_config is None:
             mgr_config = InferenceConfig().ICL_CONFIG
         self.inference_mgr.configure(**mgr_config)

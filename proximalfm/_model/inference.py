@@ -44,7 +44,6 @@ class MemoryEstimator:
     When using AMP, actual memory usage will be lower than the estimates provided by this class.
     """
 
-    # Coefficients and intercepts for memory estimation (from profiling)
     coefficients: Dict[str, list] = {
         "tf_col": [1.456149314e-01, 1.94081457e-05, 4.88223400e-03],
         "tf_row": [-2.06831848e-05, 2.27205969e-04, 5.37117114e-03],
@@ -104,7 +103,7 @@ class MemoryEstimator:
             assert (
                 in_dim is not None
             ), "Input dimension must be provided for input memory estimation"
-            bytes_per_element = 4  # float32
+            bytes_per_element = 4
             n_elements = batch_size * seq_len * in_dim
             mem_inputs = n_elements * bytes_per_element / (1024**2)
             peak_activation_mem += mem_inputs
@@ -181,10 +180,10 @@ class MemoryEstimator:
 class OffloadMode(Enum):
     """Offload mode for intermediate results."""
 
-    GPU = auto()  # Keep everything on GPU (fastest if it fits)
-    CPU = auto()  # Offload to CPU pinned memory
-    DISK = auto()  # Offload to disk via memory-mapped files
-    AUTO = auto()  # Automatically choose based on available memory
+    GPU = auto()
+    CPU = auto()
+    DISK = auto()
+    AUTO = auto()
 
 
 @dataclass
@@ -204,29 +203,21 @@ class OffloadConfig:
 
     mode: OffloadMode = OffloadMode.AUTO
 
-    # Thresholds for AUTO mode
-    auto_offload_threshold: float = (
-        0.5  # Offload if output > this fraction of GPU memory
-    )
-    cpu_safety_factor: float = 0.85  # Safety margin for CPU memory
-    disk_safety_factor: float = 0.95  # Safety margin for disk space
+    auto_offload_threshold: float = 0.5
+    cpu_safety_factor: float = 0.85
+    disk_safety_factor: float = 0.95
 
-    # CPU options
-    max_pinned_memory_mb: float = (
-        32768.0  # Max pinned memory (32GB default), use regular memory above this
-    )
+    max_pinned_memory_mb: float = 32768.0
 
-    # Disk options
-    disk_offload_dir: Optional[str] = None  # Directory for memory-mapped files
-    disk_min_free_mb: float = 1024.0  # Minimum free disk space to maintain
-    disk_flush_mb: float = 2048.0  # Flush memmap after writing this many MB
-    disk_cleanup: bool = True  # Auto-cleanup disk files via weakref
-    disk_file_prefix: str = ""  # Prefix for disk files
-    disk_dtype: Optional[torch.dtype] = None  # Override dtype for disk storage
+    disk_offload_dir: Optional[str] = None
+    disk_min_free_mb: float = 1024.0
+    disk_flush_mb: float = 2048.0
+    disk_cleanup: bool = True
+    disk_file_prefix: str = ""
+    disk_dtype: Optional[torch.dtype] = None
 
-    # Async options
-    use_async: bool = True  # Use async D2H copy
-    async_depth: int = 4  # Number of pending async copies before blocking
+    use_async: bool = True
+    async_depth: int = 4
 
 
 class PinnedBufferPool:
@@ -269,7 +260,7 @@ class PinnedBufferPool:
     def put(self, buf: Tensor) -> None:
         """Return a buffer to the pool for reuse."""
         if not buf.is_pinned():
-            return  # Don't pool non-pinned buffers
+            return
         key = (tuple(buf.shape), buf.dtype)
         pool = self._pool.setdefault(key, [])
         if len(pool) < self._max_per_shape:
@@ -318,28 +309,22 @@ class DiskTensor:
         self.path = path
         self._cleanup = cleanup
 
-        # Handle dtype mapping (numpy doesn't support bfloat16)
         self._storage_dtype, self._np_dtype, self._needs_view = self._resolve_dtype(
             dtype
         )
 
-        # Create the memory-mapped file
         os.makedirs(os.path.dirname(path), exist_ok=True)
         nbytes = int(np.dtype(self._np_dtype).itemsize * math.prod(shape))
 
-        # Pre-allocate file
         with open(path, "wb") as f:
             f.truncate(nbytes)
 
-        # Create memmap and torch view
         self._memmap = np.memmap(path, mode="r+", dtype=self._np_dtype, shape=shape)
         self._tensor = torch.from_numpy(self._memmap)
 
         if self._needs_view:
-            # View as the target dtype (e.g., bfloat16)
             self._tensor = self._tensor.view(dtype)
 
-        # Setup cleanup finalizer
         if cleanup:
             self._finalizer = weakref.finalize(self, self._cleanup_file, path)
 
@@ -347,7 +332,6 @@ class DiskTensor:
     def _resolve_dtype(dtype: torch.dtype) -> Tuple[torch.dtype, np.dtype, bool]:
         """Resolve torch dtype to numpy dtype for storage."""
         if dtype == torch.bfloat16:
-            # Store as uint16, view as bfloat16
             return torch.uint16, np.uint16, True
         elif dtype == torch.float16:
             return torch.float16, np.float16, False
@@ -360,7 +344,6 @@ class DiskTensor:
         elif dtype == torch.int64:
             return torch.int64, np.int64, False
         else:
-            # Default to float32
             return torch.float32, np.float32, False
 
     @staticmethod
@@ -436,14 +419,12 @@ class AsyncCopyManager:
         self.max_pending = max_pending
         self.buffer_pool = buffer_pool or PinnedBufferPool(max_buffers_per_shape=8)
 
-        # Create dedicated copy stream
         self._copy_stream: Optional[torch.cuda.Stream] = None
         if device.type == "cuda":
             self._copy_stream = torch.cuda.Stream(device=device)
 
-        # Pending copies: (pinned_buffer, target, indices, event)
         self._pending: List[Tuple[Tensor, Any, tuple, Optional[torch.cuda.Event]]] = []
-        self._bytes_written: float = 0.0  # Track bytes in MB for flush control
+        self._bytes_written: float = 0.0
 
     def submit_copy(
         self,
@@ -465,26 +446,19 @@ class AsyncCopyManager:
             Indices where to write in the target.
         """
         if self._copy_stream is None:
-            # Fallback to sync copy if no CUDA
             target[indices] = gpu_tensor.cpu()
             self._bytes_written += (
                 gpu_tensor.numel() * gpu_tensor.element_size() / (1024 * 1024)
             )
             return
 
-        # Get a pinned buffer
         pinned_buf = self.buffer_pool.get(tuple(gpu_tensor.shape), gpu_tensor.dtype)
 
-        # Capture compute stream before switching context
         compute_stream = torch.cuda.current_stream(device=self.device)
 
-        # Tell the caching allocator that copy_stream is also using gpu_tensor's memory,
-        # so it won't be reclaimed until the copy completes.
         gpu_tensor.record_stream(self._copy_stream)
 
-        # Async copy GPU -> pinned buffer on dedicated stream
         with torch.cuda.stream(self._copy_stream):
-            # Wait for compute stream to finish producing gpu_tensor
             self._copy_stream.wait_stream(compute_stream)
             pinned_buf.copy_(gpu_tensor, non_blocking=True)
             event = torch.cuda.Event()
@@ -492,7 +466,6 @@ class AsyncCopyManager:
 
         self._pending.append((pinned_buf, target, indices, event))
 
-        # Drain if too many pending
         while len(self._pending) >= self.max_pending:
             self._drain_one()
 
@@ -510,7 +483,6 @@ class AsyncCopyManager:
         bytes_mb = pinned_buf.numel() * pinned_buf.element_size() / (1024 * 1024)
         self._bytes_written += bytes_mb
 
-        # Return buffer to pool
         self.buffer_pool.put(pinned_buf)
 
         return bytes_mb
@@ -593,7 +565,6 @@ class InferenceManager:
         self.out_no_seq = out_no_seq
         self._is_configured = False
 
-        # Internal state
         self._buffer_pool: Optional[PinnedBufferPool] = None
         self._disk_finalizers: List[weakref.finalize] = []
 
@@ -609,18 +580,15 @@ class InferenceManager:
         use_amp: bool = True,
         use_fa3: bool = True,
         verbose: bool = False,
-        # Disk options
         disk_offload_dir: Optional[str] = None,
         disk_min_free_mb: float = 1024.0,
         disk_flush_mb: float = 8192.0,
         disk_cleanup: bool = True,
         disk_file_prefix: str = "",
         disk_dtype: Optional[torch.dtype] = None,
-        # CPU options
         cpu_safety_factor: float = 0.85,
         disk_safety_factor: float = 0.95,
-        max_pinned_memory_mb: float = 32768.0,  # 32GB
-        # Async options
+        max_pinned_memory_mb: float = 32768.0,
         use_async: bool = True,
         async_depth: int = 4,
     ):
@@ -722,7 +690,6 @@ class InferenceManager:
         self.use_fa3 = bool(use_fa3)
         self.verbose = bool(verbose)
 
-        # Disk settings
         self.disk_offload_dir = disk_offload_dir
         self.disk_min_free_mb = float(disk_min_free_mb)
         self.disk_flush_mb = float(disk_flush_mb)
@@ -730,19 +697,15 @@ class InferenceManager:
         self.disk_file_prefix = str(disk_file_prefix)
         self.disk_dtype = disk_dtype
 
-        # Safety factors
         self.cpu_safety_factor = float(cpu_safety_factor)
         self.disk_safety_factor = float(disk_safety_factor)
         self.max_pinned_memory_mb = float(max_pinned_memory_mb)
 
-        # Async settings
         self.use_async = bool(use_async)
         self.async_depth = max(1, int(async_depth))
 
-        # Normalize offload mode
         self.offload_mode = self._normalize_offload(offload)
 
-        # Setup device
         if device is None:
             self.exe_device = torch.device(
                 "cuda" if torch.cuda.is_available() else "cpu"
@@ -752,7 +715,6 @@ class InferenceManager:
         else:
             self.exe_device = device
 
-        # Initialize buffer pool
         self._buffer_pool = PinnedBufferPool()
 
         self._is_configured = True
@@ -937,8 +899,6 @@ class InferenceManager:
         cpu_fits = output_mb <= safe_cpu_mb
         disk_fits = has_disk and output_mb <= safe_disk_mb
 
-        # User-requested mode with cascading fallback
-        # If the requested mode fails, downgrade one tier at a time: GPU -> CPU -> DISK -> CPU (swap as last resort)
         if self.offload_mode != OffloadMode.AUTO:
             requested = self.offload_mode
 
@@ -995,7 +955,6 @@ class InferenceManager:
                         "user_disk_fails", "disk (requested) tight -> cpu (swap)"
                     )
 
-        # AUTO mode
         output_pct = output_mb / max(gpu_free_mb, 1e-6) if has_gpu else 1.0
         gpu_within_threshold = has_gpu and output_pct <= self.auto_offload_threshold
 
@@ -1035,12 +994,10 @@ class InferenceManager:
                 return out, info
             except RuntimeError as e:
                 info["alloc_error"] = str(e)
-                # Fallback to CPU
                 mode = OffloadMode.CPU
 
         if mode == OffloadMode.CPU:
             try:
-                # Only use pinned memory for smaller allocations
                 use_pinned = output_mb <= self.max_pinned_memory_mb
                 if self.verbose and not use_pinned:
                     print(
@@ -1063,7 +1020,6 @@ class InferenceManager:
                     print(f"  CPU allocation failed: {e}, falling back to disk")
                 mode = OffloadMode.DISK
 
-        # Disk mode
         if self.disk_offload_dir is None:
             raise RuntimeError(
                 "Disk offload requested but disk_offload_dir is not configured. "
@@ -1077,7 +1033,6 @@ class InferenceManager:
 
         if self.disk_cleanup:
             self._disk_finalizers.append(disk_tensor._finalizer)
-            # Prune dead finalizers
             self._disk_finalizers = [f for f in self._disk_finalizers if f.alive]
 
         info.update({"path": path, "storage_dtype": str(storage_dtype)})
@@ -1190,15 +1145,12 @@ class InferenceManager:
                 "InferenceManager must be configured before running inference. Call configure() first."
             )
 
-        # Non-batched execution
         if not auto_batch:
             return self._run_forward(forward_fn, self._prepare_inputs(inputs))
 
-        # CPU/MPS execution: batching not supported (requires CUDA memory APIs)
         if self.exe_device.type in ("cpu", "mps"):
             return forward_fn(**inputs)
 
-        # Extract shape/dtype info
         first_value = next(iter(inputs.values()))
         if not isinstance(first_value, torch.Tensor):
             raise ValueError("First input must be a tensor.")
@@ -1212,7 +1164,6 @@ class InferenceManager:
         inputs_on_cuda = first_value.is_cuda
         total_bs = math.prod(batch_dims)
 
-        # Estimate batch size
         gpu_mem, batch_size = self.estimate_safe_batch_size(
             seq_len, include_inputs=not inputs_on_cuda, in_dim=in_dim
         )
@@ -1223,20 +1174,17 @@ class InferenceManager:
                 f"estimated batch size for {self.enc_name}: {batch_size}"
             )
 
-        # Calculate output shape
         if self.out_no_seq:
             output_shape = (*batch_dims, self.out_dim)
         else:
             output_shape = (*batch_dims, seq_len, self.out_dim)
 
-        # Estimate output size
         output_mb = self._estimate_tensor_mb(
             tuple(output_shape), input_dtype, repeat=output_repeat
         )
         cpu_free = self.get_available_cpu_memory()
         disk_free = self.get_available_disk_space(self.disk_offload_dir)
 
-        # Resolve offload mode
         mode, reason = self._resolve_offload_mode(
             output_mb, gpu_mem, cpu_free, disk_free
         )
@@ -1251,7 +1199,6 @@ class InferenceManager:
                 f"Disk free (effective): {eff_disk / 1024:.2f}GB @ {self.disk_offload_dir}"
             )
 
-        # Single batch case
         if batch_size >= total_bs:
             out = self._run_forward(forward_fn, self._prepare_inputs(inputs))
 
@@ -1259,7 +1206,6 @@ class InferenceManager:
                 return out
             if mode == OffloadMode.CPU:
                 return out.cpu()
-            # DISK
             outputs, _ = self._allocate_output_buffer(
                 mode, tuple(out.shape), input_dtype
             )
@@ -1270,12 +1216,10 @@ class InferenceManager:
             outputs.copy_(out.cpu())
             return outputs
 
-        # Multi-batch execution
         outputs, _ = self._allocate_output_buffer(
             mode, tuple(output_shape), input_dtype
         )
 
-        # Setup async copy manager if using async and offloading
         async_copy: Optional[AsyncCopyManager] = None
         if (
             self.use_async
@@ -1288,17 +1232,14 @@ class InferenceManager:
                 buffer_pool=self._buffer_pool,
             )
 
-        # Track in MB for consistency with disk_flush_mb
         bytes_since_flush_mb = 0.0
 
-        # Identify store-mode caches that need to be accumulated back into the original inputs
         store_cache_keys = {
             name
             for name, v in inputs.items()
             if isinstance(v, KVCache) and not v.is_populated()
         }
 
-        # Main inference loop with OOM recovery
         while True:
             try:
                 split_sizes = self.compute_split_sizes(batch_dims, batch_size)
@@ -1318,18 +1259,11 @@ class InferenceManager:
                 for batch_dict, indices in batch_iterator:
                     out = self._run_forward(forward_fn, batch_dict)
 
-                    # Accumulate store-mode caches back into the original inputs.
-                    # Each batch received a fresh empty KVCache and forward_fn fills
-                    # it in-place (e.g., forward_with_cache stores K/V projections
-                    # into the cache object it receives).  After the batch completes,
-                    # we copy those per-batch entries into the pre-allocated cache.
                     for cache_key in store_cache_keys:
                         batch_cache = batch_dict[cache_key]
                         if batch_cache.is_populated():
                             original_cache = inputs[cache_key]
                             if not original_cache.is_populated():
-                                # First populated batch: use its shapes as a template to
-                                # pre-allocate zero tensors with the full batch dimensions.
                                 original_cache.preallocate(
                                     batch_cache,
                                     tuple(batch_dims),
@@ -1342,7 +1276,6 @@ class InferenceManager:
                     else:
                         if async_copy is not None:
                             async_copy.submit_copy(out, outputs, indices)
-                            # Check if we need to flush (async manager tracks bytes internally)
                             if (
                                 isinstance(outputs, DiskTensor)
                                 and self.disk_flush_mb > 0
@@ -1357,7 +1290,6 @@ class InferenceManager:
                                 out_cpu.numel() * out_cpu.element_size() / (1024 * 1024)
                             )
 
-                            # Periodic flush for disk
                             if (
                                 isinstance(outputs, DiskTensor)
                                 and self.disk_flush_mb > 0
@@ -1369,11 +1301,9 @@ class InferenceManager:
                     del out
                     del batch_dict
 
-                # Drain async copies
                 if async_copy is not None:
                     async_copy.drain_all()
 
-                # Final flush
                 if isinstance(outputs, DiskTensor):
                     outputs.flush()
                     return outputs.tensor
@@ -1384,7 +1314,6 @@ class InferenceManager:
                 if async_copy is not None:
                     async_copy.clear()
 
-                # Clear pre-allocated cache entries before retry
                 for cache_key in store_cache_keys:
                     inputs[cache_key].kv.clear()
 
@@ -1505,12 +1434,8 @@ class InferenceManager:
                     batch_dict[name] = self._to_exe_device(value[slice_tuple])
                 elif isinstance(value, KVCache):
                     if value.is_populated():
-                        # use_cache mode: slice the populated cache along batch dims
-                        # and move to execution device
                         batch_dict[name] = value[slice_tuple].to(self.exe_device)
                     else:
-                        # store_cache mode: give each batch a fresh empty cache and
-                        # forward_fn will populate it in-place
                         batch_dict[name] = KVCache()
                 else:
                     batch_dict[name] = value

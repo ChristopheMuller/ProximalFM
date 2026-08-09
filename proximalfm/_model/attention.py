@@ -9,8 +9,7 @@ from torch.nn import functional as F
 from .rope import RotaryEmbedding
 from .kv_cache import KVCacheEntry
 
-
-HAS_FLASH_ATTN3 = False  # Check implementation in TabICL original
+HAS_FLASH_ATTN3 = False
 _use_flash_attn3 = False
 
 
@@ -194,7 +193,6 @@ def multi_head_attention_forward(
             - v: shape (..., num_heads, src_len, head_dim)
     """
 
-    # Extract shape information, supporting arbitrary batch dimensions
     *batch_shape, tgt_len, embed_dim = query.shape
     head_dim = embed_dim // num_heads
     assert (
@@ -202,7 +200,6 @@ def multi_head_attention_forward(
     ), f"embed_dim {embed_dim} not divisible by num_heads {num_heads}"
 
     if cached_kv is None:
-        # Standard: project Q, K, V jointly
         if key is None or value is None:
             raise ValueError("key and value must be provided when cached_kv is None")
         src_len = key.shape[-2]
@@ -219,7 +216,6 @@ def multi_head_attention_forward(
             q = rope.rotate_queries_or_keys(q)
             k = rope.rotate_queries_or_keys(k)
     else:
-        # Use cached K/V, project Q only
         k, v = cached_kv.key, cached_kv.value
         src_len = k.shape[-2]
         q_proj_weight = in_proj_weight[:embed_dim]
@@ -229,11 +225,9 @@ def multi_head_attention_forward(
         if rope is not None:
             q = rope.rotate_queries_or_keys(q)
 
-    # Disable dropout during evaluation
     if not training:
         dropout_p = 0.0
 
-    # Process attention mask
     correct_2d_shape = (tgt_len, src_len)
     correct_nd_shape = (*batch_shape, num_heads, tgt_len, src_len)
     if attn_mask is not None:
@@ -254,7 +248,6 @@ def multi_head_attention_forward(
                 f"attn_mask must be 2D or {len(correct_nd_shape)}D, got {attn_mask.dim()}D"
             )
 
-    # Process key padding mask
     if key_padding_mask is not None:
         if key_padding_mask.shape != (*batch_shape, src_len):
             raise ValueError(
@@ -271,17 +264,14 @@ def multi_head_attention_forward(
 
     attn_output = sdpa_with_flattened_batch(
         q, k, v, attn_mask, dropout_p, ssmax_layer=ssmax_layer
-    )  # (..., nh, tgt_len, hs)
+    )
 
-    # Reshape and project output
     attn_output = (
         attn_output.transpose(-3, -2)
         .contiguous()
         .view(*batch_shape, tgt_len, embed_dim)
     )
-    attn_output = F.linear(
-        attn_output, out_proj_weight, out_proj_bias
-    )  # (batch_shape, tgt_len, E)
+    attn_output = F.linear(attn_output, out_proj_weight, out_proj_bias)
 
     if need_kv and cached_kv is None:
         return attn_output, k, v

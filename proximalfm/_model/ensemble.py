@@ -1,22 +1,3 @@
-####
-# Ensemble prediction for ProximalFM.
-#
-# Idea ported from TabICL's sklearn `EnsembleGenerator` (see `_sklearn/`):
-# create several equivalent "views" of the same table by permuting feature
-# columns, run the model on each view, then average the predictions.
-#
-# Why it helps here: `RowInteraction` applies rotary position embeddings (RoPE)
-# over feature positions, so ProximalFM is only *approximately* invariant to the
-# ordering of feature columns. Different orderings therefore yield slightly
-# different (but equally valid) CATE estimates. Averaging over a handful of
-# permutations reduces this order-sensitivity variance, usually improving the
-# prediction.
-#
-# Unlike the sklearn version we do NOT ensemble over normalization methods:
-# ProximalFM standardizes its inputs internally (`_standardize_forward_inputs`),
-# so feature-column permutation is the natural transformation to ensemble over.
-####
-
 from __future__ import annotations
 
 import sys
@@ -29,11 +10,6 @@ from typing import Dict, List, Optional
 import torch
 from torch import Tensor
 
-# Bijective, information-preserving per-column value transforms usable at
-# inference time. Each is applied identically to context + query rows so the
-# transformed table is an *equivalent view* of the same data (see the module
-# docstring). Lossy maps (x**2, categorization) are intentionally excluded:
-# they make the query unit ambiguous and would bias the ensemble.
 VALUE_TRANSFORMS = ("none", "sign", "signed_log", "arcsinh", "quantile")
 
 
@@ -51,7 +27,7 @@ class RecursionLimitManager:
 
     def __exit__(self, exc_type, exc_value, traceback):
         sys.setrecursionlimit(self.original_limit)
-        return False  # propagate exceptions
+        return False
 
 
 class FeatureShuffler:
@@ -99,13 +75,11 @@ class FeatureShuffler:
         self.rng_ = random.Random(self.random_state)
         indices = list(range(self.n_elements))
 
-        # Latin squares are only feasible for a limited number of elements.
         if self.n_elements > self.max_elements_for_latin and self.method == "latin":
             method = "random"
         else:
             method = self.method
 
-        # Degenerate cases: nothing to permute.
         if method == "none" or n_estimators == 1 or self.n_elements <= 1:
             return [indices]
 
@@ -203,7 +177,6 @@ def apply_permutation(
             f"Permutation length {base.numel()} does not match feature width {F}."
         )
 
-    # Fast path: identity permutation.
     if torch.equal(base, torch.arange(F, device=device)):
         return x
 
@@ -215,7 +188,6 @@ def apply_permutation(
         for b in range(B):
             db = int(d[b].item())
             db = max(0, min(db, F))
-            # Keep valid columns (those < db) in permuted order, append padding as-is.
             valid = base[base < db]
             pad = torch.arange(db, F, device=device)
             rows.append(torch.cat([valid, pad]))
@@ -245,20 +217,16 @@ def _quantile_to_normal(z: Tensor, train_size: int, eps: float = 1e-6) -> Tensor
     values, then through the inverse normal CDF. Query values are ranked against
     the same context, so the transform is consistent across context and query.
     """
-    ctx = z[:, :train_size, :]  # (B, train_size, F)
-    ctx_sorted = ctx.sort(dim=1).values  # sorted along the sequence axis
-    # Put the feature axis first and the (sorted) sequence axis last so that
-    # searchsorted batches over (B, F) and searches along the context axis.
-    boundaries = ctx_sorted.permute(0, 2, 1).contiguous()  # (B, F, train_size)
-    vals = z.permute(0, 2, 1).contiguous()  # (B, F, T)
+    ctx = z[:, :train_size, :]
+    ctx_sorted = ctx.sort(dim=1).values
+    boundaries = ctx_sorted.permute(0, 2, 1).contiguous()
+    vals = z.permute(0, 2, 1).contiguous()
 
-    idx = torch.searchsorted(
-        boundaries, vals
-    )  # counts of context < val, in [0, train_size]
+    idx = torch.searchsorted(boundaries, vals)
     ranks = (idx.to(z.dtype) + 0.5) / boundaries.shape[-1]
     ranks = ranks.clamp(eps, 1.0 - eps)
     out = math.sqrt(2.0) * torch.erfinv(2.0 * ranks - 1.0)
-    return out.permute(0, 2, 1).contiguous()  # (B, T, F)
+    return out.permute(0, 2, 1).contiguous()
 
 
 def apply_value_transform(x: Tensor, name: Optional[str], train_size: int) -> Tensor:
@@ -374,7 +342,6 @@ class FeatureEnsemble:
                 raise ValueError(
                     f"Unknown value transform {t!r}. Expected one of {VALUE_TRANSFORMS}."
                 )
-        # "none" first, then the rest in given order without duplicates.
         ordered = ["none"] + [t for t in transforms if t != "none"]
         seen: set = set()
         return [t for t in ordered if not (t in seen or seen.add(t))]
@@ -393,8 +360,7 @@ class FeatureEnsemble:
         patterns = shuffler.shuffle(self.n_estimators)
 
         identity = list(range(width))
-        perms: List[Optional[List[int]]] = [identity]  # first member: canonical view
-        # Cycle through the generated patterns to fill the remaining members.
+        perms: List[Optional[List[int]]] = [identity]
         i = 0
         while len(perms) < self.n_estimators:
             perms.append(patterns[i % len(patterns)])
@@ -426,7 +392,6 @@ class FeatureEnsemble:
 
         views: List[Dict[str, object]] = []
         for i in range(self.n_estimators):
-            # transforms[0] == "none" and perms[0] == identity, so view 0 is canonical.
             transform = self.value_transforms[i % len(self.value_transforms)]
             views.append(
                 {
