@@ -38,6 +38,15 @@ from .learning import ICLearning
 from .kv_cache import TabICLCache
 from .inference_config import InferenceConfig
 from .ensemble import FeatureEnsemble, apply_permutation, apply_value_transform
+from ._utils import (
+    get_d_total,
+    safe_standardize,
+    hide_query_proxies,
+    standardize_forward_inputs,
+    get_histogram_mean,
+    get_histogram_quantiles,
+    average_ensemble_outputs,
+)
 
 # Loss types sharing the single-histogram CATE head: same out_dim, same
 # cate_bin_* grid, same predict path. They differ only in the training
@@ -364,9 +373,7 @@ class ProximalFM(nn.Module):
         self._cache = None
 
     def _get_d_total(self, d_X, d_Z, d_W):
-        if d_X is not None and d_Z is not None and d_W is not None:
-            return d_X + d_Z + d_W  # RowInteraction adds num_cls itself
-        return None
+        return get_d_total(d_X, d_Z, d_W)
 
     def _safe_standardize(
         self,
@@ -374,19 +381,7 @@ class ProximalFM(nn.Module):
         train_size: int,
         fit_on_context_only: bool = True,
     ) -> tuple[Tensor, Tensor, Tensor]:
-        """
-        Standardize x using context rows only by default.
-
-        Returns:
-            x_std, mean, std
-        """
-        fit_x = x[:, :train_size, :] if fit_on_context_only else x
-
-        mu = fit_x.mean(dim=1, keepdim=True)
-        std = fit_x.std(dim=1, unbiased=False, keepdim=True)
-        std = torch.where(std < 1e-5, torch.ones_like(std), std)
-
-        return (x - mu) / std, mu, std
+        return safe_standardize(x, train_size, fit_on_context_only)
 
     def _hide_query_proxies(
         self,
@@ -394,21 +389,7 @@ class ProximalFM(nn.Module):
         W: Tensor,
         train_size: int,
     ) -> tuple[Tensor, Tensor]:
-        """
-        Hide Z/W for query rows.
-
-        Important: call this AFTER standardization, so hidden query proxy
-        values become exactly 0 in standardized space.
-        """
-        if Z.shape[1] > train_size:
-            Z = Z.clone()
-            Z[:, train_size:, :] = 0.0
-
-        if W.shape[1] > train_size:
-            W = W.clone()
-            W[:, train_size:, :] = 0.0
-
-        return Z, W
+        return hide_query_proxies(Z, W, train_size)
 
     def _standardize_forward_inputs(
         self,
@@ -418,44 +399,7 @@ class ProximalFM(nn.Module):
         y_train: Tensor,
         train_size: int,
     ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        """
-        Standardize all model inputs in a no-leak way.
-
-        X:
-            Uses context-only stats. This is the strict no-transductive version.
-            If you later decide that using all X is acceptable, change only this line.
-
-        Z/W:
-            Always use context-only stats, then hide query rows.
-
-        y_train:
-            Uses context-only stats because y only exists for context rows.
-        """
-        X_std, _, _ = self._safe_standardize(
-            X,
-            train_size=train_size,
-            fit_on_context_only=True,
-        )
-
-        Z_std, _, _ = self._safe_standardize(
-            Z,
-            train_size=train_size,
-            fit_on_context_only=True,
-        )
-
-        W_std, _, _ = self._safe_standardize(
-            W,
-            train_size=train_size,
-            fit_on_context_only=True,
-        )
-
-        Z_std, W_std = self._hide_query_proxies(Z_std, W_std, train_size)
-
-        y_mean = y_train.mean(dim=1, keepdim=True)
-        y_std = y_train.std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-5)
-        y_train_std = (y_train - y_mean) / y_std
-
-        return X_std, Z_std, W_std, y_train_std, y_mean, y_std
+        return standardize_forward_inputs(X, Z, W, y_train, train_size)
 
     def _get_y0_y1_shift_scale(self, y_context: Tensor, A_context: Tensor):
         """Calculates standardization stats separately for treated and control."""
@@ -857,36 +801,7 @@ class ProximalFM(nn.Module):
 
     @staticmethod
     def _average_ensemble_outputs(outputs: list) -> Union[Tensor, dict]:
-        """Average a list of ``predict`` outputs across ensemble members.
-
-        Handles the three output shapes returned by :meth:`predict`:
-        - plain ``Tensor`` (``output_type`` in {"mean", "quantiles"}): stacked
-          and averaged over ensemble members.
-        - a ``{"values", "weights"}`` distribution dict: the bin ``values`` are
-          identical across feature permutations (they depend only on the y-context
-          statistics and bin centers, not on the ordering of X columns), so the
-          ``weights`` (probabilities) are averaged and the ``values`` of the first
-          member are kept.
-        - a nested ``{"y0": {...}, "y1": {...}}`` dict: averaged recursively.
-        """
-        first = outputs[0]
-
-        if isinstance(first, Tensor):
-            return torch.stack(outputs, dim=0).mean(dim=0)
-
-        if isinstance(first, dict):
-            # Distribution outputs: recurse if nested (y0/y1), otherwise average weights.
-            if "weights" in first:
-                weights = torch.stack([o["weights"] for o in outputs], dim=0).mean(
-                    dim=0
-                )
-                return {"values": first["values"], "weights": weights}
-            return {
-                key: ProximalFM._average_ensemble_outputs([o[key] for o in outputs])
-                for key in first
-            }
-
-        raise TypeError(f"Cannot average ensemble output of type {type(first)}.")
+        return average_ensemble_outputs(outputs)
 
     @torch.no_grad()
     def predict_ensemble(
