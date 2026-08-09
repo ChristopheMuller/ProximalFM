@@ -457,66 +457,6 @@ class ProximalFM(nn.Module):
 
         return X_std, Z_std, W_std, y_train_std, y_mean, y_std
 
-    def _get_y0_y1_shift_scale(self, y_context: Tensor, A_context: Tensor):
-        """Calculates standardization stats separately for treated and control."""
-        # Ensure A is squeezed to (B, train_size) to match y_context
-        if A_context.dim() > 2:
-            A_context = A_context.squeeze()
-
-        # 1. Compute joint stats for all batches (used as fallback or if strictly enforced)
-        joint_mean = y_context.mean(dim=1, keepdim=True)
-        # unbiased=False matches the manual N-division variance calculation below
-        joint_std = y_context.std(dim=1, unbiased=False, keepdim=True) + 1e-8
-
-        # If explicitly forced to use joint quantiles for ALL batches
-        if getattr(self, "joint_quantiles", False):
-            return joint_mean, joint_std, joint_mean, joint_std
-
-        # 2. Compute separate stats
-        treated_mask = (A_context == 1).float()
-        control_mask = (A_context == 0).float()
-
-        treated_counts = treated_mask.sum(dim=1, keepdim=True)
-        control_counts = control_mask.sum(dim=1, keepdim=True)
-
-        # 3. Create a fallback mask: True if EITHER group has fewer than 5 samples in that specific episode
-        fallback_mask = (treated_counts < 5) | (control_counts < 5)
-
-        # Clamp counts to avoid division by zero during the manual calculation
-        safe_treated_counts = treated_counts.clamp(min=1.0)
-        safe_control_counts = control_counts.clamp(min=1.0)
-
-        y1_mean = (y_context * treated_mask).sum(
-            dim=1, keepdim=True
-        ) / safe_treated_counts
-        y0_mean = (y_context * control_mask).sum(
-            dim=1, keepdim=True
-        ) / safe_control_counts
-
-        y1_std = (
-            torch.sqrt(
-                ((y_context - y1_mean) ** 2 * treated_mask).sum(dim=1, keepdim=True)
-                / safe_treated_counts
-            )
-            + 1e-8
-        )
-        y0_std = (
-            torch.sqrt(
-                ((y_context - y0_mean) ** 2 * control_mask).sum(dim=1, keepdim=True)
-                / safe_control_counts
-            )
-            + 1e-8
-        )
-
-        # 4. Apply the fallback: Use joint stats if fallback_mask is True, else use separate stats
-        y0_shift = torch.where(fallback_mask, joint_mean, y0_mean)
-        y1_shift = torch.where(fallback_mask, joint_mean, y1_mean)
-
-        y0_scale = torch.where(fallback_mask, joint_std, y0_std)
-        y1_scale = torch.where(fallback_mask, joint_std, y1_std)
-
-        return y0_shift, y0_scale, y1_shift, y1_scale
-
     def _train_forward(
         self,
         X: Tensor,
