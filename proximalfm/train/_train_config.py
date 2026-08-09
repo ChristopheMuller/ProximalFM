@@ -5,28 +5,7 @@ import argparse
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 
 
-def str2bool(value):
-    return value.lower() == "true"
-
-
-def nullable_int(value):
-    if value is None or str(value).lower() == "none":
-        return None
-    return int(value)
-
-
-def train_size_type(value):
-    """Custom type function to handle both int and float train sizes."""
-    value = float(value)
-    if 0 < value < 1:
-        return value
-    elif value.is_integer():
-        return int(value)
-    else:
-        raise argparse.ArgumentTypeError(
-            "Train size must be either an integer (absolute position) "
-            "or a float between 0 and 1 (ratio of sequence length)."
-        )
+from proximalfm.train._utils import str2bool, nullable_int, train_size_type
 
 
 def build_parser():

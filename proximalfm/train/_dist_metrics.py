@@ -142,53 +142,11 @@ __all__ = [
 _EPS = 1e-12
 
 
-def _f64(t: torch.Tensor) -> torch.Tensor:
-    """Detach to CPU float64.
-
-    Every reduction in this module accumulates in float64 to keep the pooled
-    sums exact, but MPS has no float64 at all -- ``.double()`` on an MPS tensor
-    raises. The reductions here are all per-episode-sized and end in a Python
-    float anyway, so the transfer is free in practice; this mirrors what
-    ``_eval.CausalEvaluator`` already does (``.cpu()`` on every per-episode
-    value before ``.double()``).
-    """
-    return t.detach().cpu().double()
-
-
-def _check(probs: torch.Tensor, bin_edges: torch.Tensor) -> None:
-    """Shape contract shared by every function taking ``(probs, bin_edges)``.
-
-    ``bin_edges`` is required to be 1-D: the model registers a single shared
-    ``cate_bin_edges`` buffer, and allowing a per-row grid would buy nothing
-    while making the gathers in :func:`predictive_quantile` considerably harder
-    to read. Values must be strictly ascending; that is *not* checked, because
-    the check is a device sync on a hot path.
-    """
-    if bin_edges.ndim != 1:
-        raise ValueError(f"bin_edges must be 1-D, got shape {tuple(bin_edges.shape)}")
-    if probs.shape[-1] + 1 != bin_edges.shape[0]:
-        raise ValueError(
-            f"probs has {probs.shape[-1]} bins but bin_edges has "
-            f"{bin_edges.shape[0]} edges (expected {probs.shape[-1] + 1})"
-        )
-
-
-def _prepare(
-    probs: torch.Tensor, bin_edges: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return ``(p, e_lo, e_hi, w)`` in fp32, with ``p`` renormalized.
-
-    Renormalization is defensive: softmax output already sums to one, but a
-    grid-reprojecting operation (e.g. the noise convolution of step 7) can lose
-    mass off the ends, and silently scoring an unnormalized "distribution" is
-    worse than absorbing the clamp here.
-    """
-    _check(probs, bin_edges)
-    p = probs.float()
-    p = p / p.sum(dim=-1, keepdim=True).clamp_min(_EPS)
-    edges = bin_edges.to(device=p.device, dtype=torch.float32)
-    e_lo, e_hi = edges[:-1], edges[1:]
-    return p, e_lo, e_hi, e_hi - e_lo
+from proximalfm.train._utils import (
+    f64 as _f64,
+    check_dist_shapes as _check,
+    prepare_dist as _prepare,
+)
 
 
 def predictive_cdf(

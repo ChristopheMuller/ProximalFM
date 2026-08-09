@@ -1,44 +1,90 @@
-"""Generic training-loop infrastructure used by ``proximalfm.train._run.Trainer``.
-
-Nothing here depends on ``Trainer`` or the model; each helper is a standalone
-utility (seeding, OOM handling, checkpoint transfer rules, timing).
-"""
-
 from __future__ import annotations
 
 import os
 import random
 import timeit
+import argparse
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 import yaml
 
 
-def seed_dataloader_worker(worker_id: int) -> None:
-    """Seed NumPy (and torch/random) independently in each dataloader worker.
+class UnsupportedLossTypeError(ValueError):
+    pass
 
-    PyTorch reseeds ``torch`` and ``random`` per worker but NOT NumPy, and the SCM
-    prior draws dimensions / hyperparameters via ``np.random`` in many places. Left
-    unseeded, workers can produce correlated (partially duplicated) datasets. Derive
-    every generator's seed from ``torch.initial_seed()``, which PyTorch already makes
-    unique per worker, so this stays reproducible and decorrelated.
-    """
+
+def str2bool(value):
+    return value.lower() == "true"
+
+
+def nullable_int(value):
+    if value is None or str(value).lower() == "none":
+        return None
+    return int(value)
+
+
+def train_size_type(value):
+    val = float(value)
+    if 0 < val < 1:
+        return val
+    elif val.is_integer():
+        return int(val)
+    else:
+        raise argparse.ArgumentTypeError(
+            "Train size must be an integer or a float between 0 and 1."
+        )
+
+
+def f64(t: torch.Tensor) -> torch.Tensor:
+    return t.detach().cpu().double()
+
+
+def check_dist_shapes(probs: torch.Tensor, bin_edges: torch.Tensor) -> None:
+    if bin_edges.ndim != 1:
+        raise ValueError(f"bin_edges must be 1-D, got shape {tuple(bin_edges.shape)}")
+    if probs.shape[-1] + 1 != bin_edges.shape[0]:
+        raise ValueError(
+            f"probs has {probs.shape[-1]} bins but bin_edges has "
+            f"{bin_edges.shape[0]} edges (expected {probs.shape[-1] + 1})"
+        )
+
+
+def prepare_dist(
+    probs: torch.Tensor, bin_edges: torch.Tensor, eps: float = 1e-12
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    check_dist_shapes(probs, bin_edges)
+    p = probs.float()
+    p = p / p.sum(dim=-1, keepdim=True).clamp_min(eps)
+    edges = bin_edges.to(device=p.device, dtype=torch.float32)
+    e_lo, e_hi = edges[:-1], edges[1:]
+    return p, e_lo, e_hi, e_hi - e_lo
+
+
+def require_single_cate_head(model) -> None:
+    from proximalfm._model.proximalfm import CATE_SINGLE_LOSS_TYPES
+
+    loss_type = getattr(model, "loss_type", None)
+    if loss_type in CATE_SINGLE_LOSS_TYPES:
+        return
+    if loss_type in ("bins_po", "hl"):
+        raise UnsupportedLossTypeError(
+            f"loss_type={loss_type!r} predicts two per-arm histograms, not a "
+            "distribution over tau."
+        )
+    raise UnsupportedLossTypeError(
+        f"loss_type={loss_type!r} is not supported for distributional metrics."
+    )
+
+
+def seed_dataloader_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % (2**31 - 1)
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
 
 def is_oom_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` is an out-of-memory error from any accelerator.
-
-    Covers CUDA (``torch.cuda.OutOfMemoryError``, a ``RuntimeError`` subclass) as
-    well as MPS / generic backends, which surface OOM as a plain ``RuntimeError``
-    whose message mentions running out of memory. Note that *asynchronous* MPS
-    command-buffer failures (kIOGPUCommandBufferCallbackErrorOutOfMemory) may not
-    be raised at the originating op and can leave the context unusable; those are
-    not reliably recoverable even when caught here.
-    """
     if isinstance(exc, torch.cuda.OutOfMemoryError):
         return True
     if isinstance(exc, RuntimeError):
@@ -52,7 +98,6 @@ def is_oom_error(exc: BaseException) -> bool:
 
 
 def empty_accelerator_cache(device: str) -> None:
-    """Free cached allocator memory on the active accelerator (CUDA or MPS)."""
     device = str(device)
     if "cuda" in device:
         torch.cuda.empty_cache()
@@ -61,7 +106,6 @@ def empty_accelerator_cache(device: str) -> None:
 
 
 def get_parameter_state(param_name: str, rules: dict) -> str:
-    """Finds the longest matching prefix in the rules dict for a given parameter name."""
     best_match = "default"
     longest_prefix = 0
     for prefix, state in rules.items():
@@ -74,12 +118,6 @@ def get_parameter_state(param_name: str, rules: dict) -> str:
 
 
 def load_transfer_rules(path: str) -> dict:
-    """Load the transfer/freeze rules yaml.
-
-    Resolved relative to the CWD first, then to the repository root, so that a run
-    launched from a subdirectory picks up the same file rather than silently failing
-    or using a different one.
-    """
     candidates = [path]
     if not os.path.isabs(path):
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -97,12 +135,10 @@ def load_transfer_rules(path: str) -> dict:
 
 
 class Timer:
-    """Context manager for timing code execution."""
-
     def __enter__(self):
         self.start_time = timeit.default_timer()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.elapsed = timeit.default_timer() - self.start_time
-        return False  # Don't suppress exceptions
+        return False

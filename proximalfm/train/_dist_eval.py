@@ -62,6 +62,7 @@ from proximalfm.train._dist_metrics import (
     variance_identity,
 )
 from proximalfm.train._eval import CausalEvaluator
+from proximalfm.train._utils import require_single_cate_head, UnsupportedLossTypeError
 
 __all__ = [
     "PosteriorEvaluator",
@@ -353,35 +354,6 @@ class PosteriorEvaluator:
 # --------------------------------------------------------------------------
 # Driving a model over the frozen set
 # --------------------------------------------------------------------------
-
-
-def require_single_cate_head(model) -> None:
-    """Raise :class:`UnsupportedLossTypeError` unless ``model`` predicts one
-    histogram over ``tau`` on a single shared grid.
-
-    Called both eagerly (``Trainer.__init__``, so a ``bins_po``/``hl`` config
-    with ``--prior_eval_dir`` set fails at construction rather than hundreds of
-    steps into training) and per-episode inside :func:`episode_predictive`.
-    """
-    from proximalfm._model.proximalfm import CATE_SINGLE_LOSS_TYPES
-
-    loss_type = getattr(model, "loss_type", None)
-    if loss_type in CATE_SINGLE_LOSS_TYPES:
-        return
-    if loss_type in ("bins_po", "hl"):
-        raise UnsupportedLossTypeError(
-            f"loss_type={loss_type!r} predicts two per-arm histograms, not a "
-            "distribution over tau. The posterior of a difference is not "
-            "identified by its two marginals -- any dependence between the arms "
-            "is unconstrained -- so there is nothing here to score. Point "
-            "metrics (prior_point/*) remain available; distributional ones need "
-            "a cate_single* checkpoint."
-        )
-    raise UnsupportedLossTypeError(
-        f"loss_type={loss_type!r} is not supported: the distributional metrics "
-        "need one histogram over tau on a single shared grid, and "
-        "'cate_decomposition' anchors its grid on a per-row predicted ATE."
-    )
 
 
 @torch.no_grad()
