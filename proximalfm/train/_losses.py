@@ -12,9 +12,6 @@ from typing import Union
 import torch
 import torch.nn.functional as F
 
-#: Floor applied to a probability before taking its log. Deliberately well
-#: inside the normal float32 range rather than at ``finfo.tiny``: subnormals are
-#: flushed to zero on some backends (MPS), turning the log into ``-inf``.
 _LOG_FLOOR = 1e-30
 
 

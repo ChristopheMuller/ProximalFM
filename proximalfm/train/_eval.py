@@ -33,16 +33,11 @@ class CausalEvaluator:
         homogeneous_var_threshold: float = 1e-6,
     ):
         self.eps = eps
-        # Episodes whose true CATE variance is below this are "constant effect"
-        # episodes; the scale-free R² metrics are undefined for them and they
-        # are dropped (matches benchmarks.bench_metrics.ITE_VAR_THRESHOLD).
         self.homogeneous_var_threshold = homogeneous_var_threshold
         self.reset()
 
     def reset(self):
-        # Running sums for buffer-level metrics (ATE) and extra_metrics.
         self.metric_sums = defaultdict(float)
-        # Per-episode value tensors for metrics summarized via percentiles.
         self.metric_values = defaultdict(list)
         self.num_episodes = 0
         self.num_updates = 0
@@ -82,8 +77,6 @@ class CausalEvaluator:
 
         batch_size = pred_cate.shape[0]
 
-        # 1. Potential outcome metrics (per-episode; summarized via percentiles).
-        # Opt-in: only loss types with a real per-arm head pass these.
         if pred_y0 is not None:
             pred_y0 = pred_y0.detach().float()
             pred_y1 = pred_y1.detach().float()
@@ -99,23 +92,15 @@ class CausalEvaluator:
             self.metric_values["po/rmse_y0"].append(rmse_y0.cpu())
             self.metric_values["po/rmse_y1"].append(rmse_y1.cpu())
 
-        # 2. CATE metrics (per-episode; summarized via percentiles)
         mse_cate = F.mse_loss(pred_cate, true_cate, reduction="none").mean(dim=1)
         rmse_cate = torch.sqrt(mse_cate)
         self.metric_values["cate/rmse"].append(rmse_cate.cpu())
 
-        # Sign / decision agreement: fraction of test units whose predicted
-        # effect direction matches the truth. Scale-free and defined for every
-        # episode, so it is kept for all of them.
         sign_agreement = (
             (torch.sign(pred_cate) == torch.sign(true_cate)).float().mean(dim=1)
         )
         self.metric_values["cate/sign_agreement"].append(sign_agreement.cpu())
 
-        # nPEHE / R² / ATE-bias are scale-free in Var(τ) and only defined for
-        # heterogeneous episodes. Drop near-constant episodes (as the benchmark
-        # does) rather than assigning them a fallback value that pollutes the
-        # distribution.
         true_ate = true_cate.mean(dim=1)
         pred_ate = pred_cate.mean(dim=1)
 
@@ -129,14 +114,12 @@ class CausalEvaluator:
             npehe = (mse_cate[heterogeneous] / vc).sqrt()
             r2_cate = 1.0 - (mse_cate[heterogeneous] / vc)
             r2_shape_cate = 1.0 - (var_residuals[heterogeneous] / vc)
-            # Signed, normalized ATE bias: (mean(τ̂) − mean(τ)) / SD(τ).
             ate_bias_norm = (pred_ate[heterogeneous] - true_ate[heterogeneous]) / sd_tau
             self.metric_values["cate/npehe"].append(npehe.cpu())
             self.metric_values["cate/r2"].append(r2_cate.cpu())
             self.metric_values["cate/r2_shape"].append(r2_shape_cate.cpu())
             self.metric_values["ate/bias_norm"].append(ate_bias_norm.cpu())
 
-        # 3. ATE — accumulate buffer-tracking sums only.
         mse_ate = (true_ate - pred_ate) ** 2
 
         self.metric_sums["_ate/mse_sum"] += mse_ate.sum().item()
@@ -175,7 +158,6 @@ class CausalEvaluator:
         count = float(self.num_episodes)
         raw_sums = {k: float(v) for k, v in self.metric_sums.items()}
 
-        # Concatenate per-episode value tensors for the percentile metrics.
         value_tensors = {
             k: torch.cat(v).double() for k, v in self.metric_values.items() if v
         }
@@ -186,7 +168,6 @@ class CausalEvaluator:
         keys = sorted(raw_sums.keys())
         metrics = {}
 
-        # 1. Per-episode metrics: median + inter-quartile bounds.
         quantiles = torch.tensor([0.25, 0.5, 0.75], dtype=torch.float64)
         for key, values in value_tensors.items():
             if values.numel() == 0:
@@ -196,12 +177,10 @@ class CausalEvaluator:
             metrics[f"{prefix}{key}/p25"] = p25
             metrics[f"{prefix}{key}/p75"] = p75
 
-        # 2. extra_metrics: buffer-level means (non-underscore sum keys).
         for key in keys:
             if not key.startswith("_"):
                 metrics[f"{prefix}{key}"] = raw_sums[key] / count
 
-        # 3. ATE metrics
         if "_ate/mse_sum" in raw_sums:
             mse_ate = raw_sums["_ate/mse_sum"] / count
             mean_ate = raw_sums["_ate/true_sum"] / count
@@ -209,7 +188,6 @@ class CausalEvaluator:
 
             var_ate = max(sq_mean_ate - mean_ate**2, 0.0)
 
-            # Use raw RMSE for ATE since data is already standardized
             metrics[f"{prefix}ate/rmse"] = math.sqrt(mse_ate)
 
             if var_ate > self.eps:

@@ -42,13 +42,11 @@ from proximalfm.train._utils import (
     seed_dataloader_worker,
 )
 
-
 warnings.filterwarnings(
     "ignore",
     message=".*The PyTorch API of nested tensors is in prototype stage.*",
     category=UserWarning,
 )
-
 
 _UNSCALED_METRICS = frozenset({"loss/total"})
 
@@ -384,7 +382,6 @@ class Trainer:
         if not checkpoints:
             return None
 
-        # Sort the checkpoint files by step number and get the latest
         try:
             latest_checkpoint = sorted(checkpoints, key=self._checkpoint_step)[-1]
             checkpoint_path = os.path.join(ckpt_dir, latest_checkpoint)
@@ -404,7 +401,6 @@ class Trainer:
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             return
 
-        # If you are doing transfer learning, you almost NEVER want to load the old optimizer states.
         if self.config.only_load_model:
             print("Transfer learning active: Starting with a fresh optimizer.")
             return
@@ -695,13 +691,8 @@ class Trainer:
                         empty_accelerator_cache(self.config.prior_device)
                         break
             if not block:
-                # Generation OOM'd before the first batch; retry.
                 continue
 
-            # Generation cost is amortized over the steps that actually reuse the
-            # block. The final/truncated block runs fewer than K*len(block) steps,
-            # so cap the denominator at the remaining steps (OOM-skipped batches
-            # are not corrected for; prior_time is a diagnostic only).
             planned_steps = min(
                 self.config.gen_reuse_passes * len(block),
                 self.config.max_steps - self.curr_step,
@@ -710,8 +701,6 @@ class Trainer:
 
             reached_end = False
             for _pass in range(self.config.gen_reuse_passes):
-                # Shuffle block order each pass so micro-batches are not drawn in
-                # generation order, decorrelating gradients across the block.
                 for bi in torch.randperm(len(block)).tolist():
                     if self.curr_step >= self.config.max_steps:
                         reached_end = True
@@ -737,7 +726,6 @@ class Trainer:
                     )
 
                     step_progress.update(1)
-                    # Rounded values for cleaner display
                     step_progress.set_postfix(
                         **{
                             k: round(v, 3) if isinstance(v, float) else v
@@ -748,7 +736,6 @@ class Trainer:
                 if reached_end:
                     break
 
-            # Free the block before generating the next one (bounded memory).
             del block
 
         step_progress.close()
@@ -1160,7 +1147,6 @@ class Trainer:
             batch, self.config.micro_batch_size, row_perm
         )
 
-        # Dynamically build up results dictated by loss routing mode
         results = {}
         failed_batches = 0
         successful_micro_batches = 0
@@ -1201,16 +1187,11 @@ class Trainer:
         if successful_micro_batches == 0:
             return results
 
-        # Fix logged metrics for skipped micro-batches.
         if successful_micro_batches < num_micro_batches:
             correction = num_micro_batches / successful_micro_batches
             for k in results:
                 results[k] *= correction
 
-        # Clip the gradient. The norm is computed either way -- with
-        # ``max_norm=inf`` the call measures and scales by 1 -- because it is
-        # also the guard below, and one extra reduction per step is cheap next
-        # to a silently dead model.
         max_norm = (
             self.config.gradient_clipping
             if self.config.gradient_clipping > 0
@@ -1219,11 +1200,6 @@ class Trainer:
         self.scaler.unscale_(self.optimizer)
         grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
 
-        # A finite loss does not imply finite gradients, and clipping does not
-        # rescue a NaN -- ``clip_grad_norm_`` multiplies by a NaN scale and
-        # leaves every gradient NaN. On CUDA + AMP ``GradScaler`` would catch
-        # this and skip the step; ``configure_amp`` disables the scaler off
-        # CUDA, so on MPS/CPU nothing does. Skip the step explicitly instead.
         if not torch.isfinite(grad_norm):
             warnings.warn(
                 f"Non-finite gradient norm at step {self.curr_step}; skipping "
@@ -1236,11 +1212,9 @@ class Trainer:
             self.scheduler.step()
             return results
 
-        # Update parameters
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        # Update the learning rate
         self.optimizer.zero_grad(set_to_none=True)
         self.scheduler.step()
 

@@ -40,9 +40,6 @@ def build_parser():
     """
     parser = argparse.ArgumentParser()
 
-    ###########################################################################
-    ###### Wandb Config #######################################################
-    ###########################################################################
     parser.add_argument(
         "--wandb_log", default=False, type=str2bool, help="Log results using wandb"
     )
@@ -61,9 +58,6 @@ def build_parser():
         help="Wandb logging mode: online, offline, or disabled",
     )
 
-    ###########################################################################
-    ###### Training Config ####################################################
-    ###########################################################################
     parser.add_argument(
         "--device",
         default="mps",
@@ -119,7 +113,6 @@ def build_parser():
         "regenerating a fresh one. This is the data reuse factor K.",
     )
 
-    # Optimization Config
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument(
         "--scheduler",
@@ -180,9 +173,6 @@ def build_parser():
         help="Power factor for polynomial decay scheduler",
     )
 
-    ###########################################################################
-    ###### Prior Dataset Config ###############################################
-    ###########################################################################
     parser.add_argument(
         "--prior_dir",
         type=str,
@@ -205,7 +195,6 @@ def build_parser():
         "--batch_size_per_gp", type=int, default=4, help="Batch size per group"
     )
 
-    # Proximal Causal Dimensions
     parser.add_argument(
         "--min_dim_U",
         type=int,
@@ -255,7 +244,6 @@ def build_parser():
         help="Maximum dimensionality of baseline covariates X",
     )
 
-    # Sequence Length and Split
     parser.add_argument(
         "--min_seq_len", type=int, default=None, help="Minimum samples per dataset"
     )
@@ -332,9 +320,6 @@ def build_parser():
         "Raise on large-memory GPUs so mc_cate is not throttled; set 0 to disable.",
     )
 
-    ###########################################################################
-    ##### Model Architecture Config ###########################################
-    ###########################################################################
     parser.add_argument(
         "--amp",
         default=True,
@@ -348,7 +333,6 @@ def build_parser():
         help="If True, compile the model using torch.compile for speedup",
     )
 
-    # Shared Architecture Config
     parser.add_argument(
         "--embed_dim", type=int, default=128, help="Base embedding dimension"
     )
@@ -383,7 +367,6 @@ def build_parser():
         help="If True, uses gradient checkpointing to save memory",
     )
 
-    # Column Embedding Config
     parser.add_argument(
         "--col_num_blocks",
         type=int,
@@ -415,7 +398,6 @@ def build_parser():
         help="Type of scalable softmax to use in the column embedding transformer",
     )
 
-    # Row Interaction Config
     parser.add_argument(
         "--row_num_blocks",
         type=int,
@@ -447,7 +429,6 @@ def build_parser():
         help="If True, uses interleaved rotation for RoPE",
     )
 
-    # ICL Config
     parser.add_argument(
         "--icl_num_blocks",
         type=int,
@@ -467,9 +448,6 @@ def build_parser():
         help="Type of scalable softmax to use in the in-context learning transformer",
     )
 
-    ###########################################################################
-    ###### Checkpointing ######################################################
-    ###########################################################################
     parser.add_argument(
         "--checkpoint_dir",
         default=None,
@@ -538,9 +516,6 @@ def build_parser():
         help="Whether to only load model weights",
     )
 
-    ###########################################################################
-    ###### Prior evaluation (point + distributional) ###########################
-    ###########################################################################
     parser.add_argument(
         "--prior_eval_dir",
         default=None,
@@ -566,9 +541,6 @@ def build_parser():
         "--prior_eval_dir.",
     )
 
-    ###########################################################################
-    ###### Val evaluation (point + distributional) ############################
-    ###########################################################################
     parser.add_argument(
         "--synt_eval_dir",
         default=None,
@@ -597,9 +569,6 @@ def build_parser():
         "pass. None (default) scores every episode in --synt_eval_dir.",
     )
 
-    ###########################################################################
-    ###### LOSS ###############################################################
-    ###########################################################################
     parser.add_argument(
         "--lambda_cate",
         type=float,

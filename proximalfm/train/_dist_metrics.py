@@ -279,7 +279,7 @@ def predictive_quantile(
     levels = torch.as_tensor(q, device=p.device, dtype=torch.float32).reshape(-1)
 
     cdf = p.cumsum(dim=-1)
-    below = cdf - p  # C_i, cumulative mass strictly below bin i
+    below = cdf - p
 
     target = levels.expand(*p.shape[:-1], levels.numel()).contiguous()
     idx = torch.searchsorted(cdf.contiguous(), target).clamp_max(p.shape[-1] - 1)
@@ -328,15 +328,13 @@ def crps(probs: torch.Tensor, bin_edges: torch.Tensor, y: torch.Tensor) -> torch
     yb = y.float().unsqueeze(-1)
 
     cdf = p.cumsum(dim=-1)
-    a = cdf - p  # C_i
-    a_shift = a - 1.0  # C_i - 1
+    a = cdf - p
+    a_shift = a - 1.0
     b = p
 
-    # Whole-bin integrals for the two indicator regimes.
-    full_right = w * (a**2 + a * b + b**2 / 3.0)  # indicator 0 (y above bin)
-    full_left = w * (a_shift**2 + a_shift * b + b**2 / 3.0)  # indicator 1 (y below)
+    full_right = w * (a**2 + a * b + b**2 / 3.0)
+    full_left = w * (a_shift**2 + a_shift * b + b**2 / 3.0)
 
-    # Split integral for the bin containing y.
     v = ((yb - e_lo) / w).clamp(0.0, 1.0)
     v2, v3 = v * v, v * v * v
     split = w * (
@@ -571,8 +569,6 @@ def variance_identity(
     mse_obs = _f64(sq_err).mean().item()
     mean_s2 = _f64(s2_t).mean().item()
 
-    # Clamped at 0: with a good model and a noisy target, sampling error can put
-    # the empirical MSE below s^2, and a negative denominator is not a ratio.
     mse_corrected = max(mse_obs - mean_s2, 0.0)
     var_ratio = mean_var / mse_corrected if mse_corrected > _EPS else float("nan")
 

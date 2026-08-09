@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from transformers import (  # uv pip install "transformers[torch]";  https://github.com/huggingface/transformers
+from transformers import (
     get_constant_schedule,
     get_linear_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
     get_polynomial_decay_schedule_with_warmup,
 )
-
 
 import math
 from functools import partial
@@ -30,27 +29,21 @@ def _get_cosine_with_restarts_lr_lambda(
     Compute the learning rate factor for a cosine schedule with warmup, hard restarts, and amplitude scaling.
     """
     if current_step < num_warmup_steps:
-        # Warmup phase: Linearly increase learning rate
         return float(current_step) / float(max(1, num_warmup_steps))
 
-    # After warmup: Apply cosine schedule with hard restarts and amplitude scaling
     progress = float(current_step - num_warmup_steps) / float(
         max(1, num_training_steps - num_warmup_steps)
     )
     if progress >= 1.0:
-        return lr_end / lr_init  # as LambdaLR multiplies by lr_init
+        return lr_end / lr_init
 
-    # Determine which cycle the current step is in
     cycle_progress = (float(num_cycles) * progress) % 1.0
     current_cycle = int(float(num_cycles) * progress)
-    amplitude = (
-        amplitude_decay**current_cycle
-    )  # Exponentially decay amplitude per cycle
+    amplitude = amplitude_decay**current_cycle
 
-    # Calculate the current learning rate with proper scaling
     cosine_factor = 0.5 * (1.0 + math.cos(math.pi * cycle_progress))
     current_lr = lr_end + (lr_init - lr_end) * cosine_factor * amplitude
-    return current_lr / lr_init  # as LambdaLR multiplies by lr_init
+    return current_lr / lr_init
 
 
 def get_cosine_with_restarts(

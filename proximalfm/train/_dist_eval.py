@@ -72,11 +72,6 @@ __all__ = [
     "score_frozen_set",
 ]
 
-# ``ProximalFM.predict``'s std clamp, duplicated here because it is a literal in
-# ``predict`` with no name to import. It only bites on a degenerate context
-# (sd < 1e-5); the frozen scale uses the trainer's 1e-3 floor instead, and the
-# ratio of the two is exactly what :func:`episode_predictive` folds into the
-# grid, so a divergence changes the grid rather than passing unnoticed.
 PREDICT_Y_STD_FLOOR = 1e-5
 
 _EPS = 1e-12
@@ -201,18 +196,11 @@ class PosteriorEvaluator:
         for key, value in cov.items():
             self._add(key, value * n)
 
-        # Retained as a sample, not a sum: quantiles over episodes are not
-        # recoverable from a row-weighted mean, which is the whole reason the
-        # per-episode keys exist alongside the pooled one. Gated on n >= 2 for
-        # the same reason as the per-episode KS below -- a coverage over one row
-        # is 0 or 1 and would drag the quantiles toward the extremes.
         if n >= 2:
             for level in self.levels:
                 tag = f"{round(level * 100)}"
                 self._episode_cov.setdefault(f"cov{tag}", []).append(cov[f"cov{tag}"])
 
-        # variance_identity returns means over the episode; scale them back to
-        # sums so the pooled ratios below are over rows, not over episodes.
         vi = variance_identity(probs, bin_edges, y, s2_t)
         for key in ("mean_var", "mean_sd", "mse_obs", "mean_s2"):
             self._add(key, vi[key] * n)
@@ -306,10 +294,6 @@ class PosteriorEvaluator:
                         sample.quantile(torch.tensor(q, dtype=torch.float64))
                     )
 
-        # The variance identity, pooled over rows. Same algebra as
-        # ``_dist_metrics.variance_identity``, applied to the accumulated means:
-        # the s^2 subtraction is unconditional, and dropping it would inflate the
-        # denominator and make the model read as more over-confident than it is.
         mean_var = mean["mean_var"]
         mse_obs = mean["mse_obs"]
         mean_s2 = mean["mean_s2"]
@@ -348,11 +332,6 @@ class PosteriorEvaluator:
             metrics["eval_rows"] = rows
 
         return {f"{prefix}{k}": v for k, v in metrics.items()}
-
-
-# --------------------------------------------------------------------------
-# Driving a model over the frozen set
-# --------------------------------------------------------------------------
 
 
 def require_single_cate_head(model) -> None:
@@ -653,8 +632,6 @@ def score_frozen_set(
                 point_evaluator=point_eval,
             )
             mse_sum += stats["mse"] * stats["rows"]
-            # Row-weighted, matching how ``mean_sd`` averages -- the two are
-            # multiplied together downstream, so they must pool the same way.
             scale_sum += stats["grid_scale"] * stats["rows"]
             rows += stats["rows"]
 
@@ -665,12 +642,6 @@ def score_frozen_set(
     if rows:
         if prefix_point is not None:
             metrics[f"{prefix_point}cate/rmse_pooled"] = math.sqrt(mse_sum / rows)
-        # Head units -> frozen space. Exactly 1.0 at n_ctx == n_max (the two
-        # scales are then the same rows under the same formula), so this only
-        # departs from 1 on an n-sweep prefix. Published because the trainer
-        # needs it to express its sigma schedule in mean_sd's units, and a
-        # caller that silently assumed 1.0 would be wrong precisely where the
-        # sweep is interesting.
         metrics[f"{prefix_dist}grid_scale"] = scale_sum / rows
     metrics[f"{prefix_dist}n_ctx"] = float(n_ctx)
     return metrics
