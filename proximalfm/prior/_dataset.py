@@ -79,7 +79,12 @@ from torch.utils.data import IterableDataset
 
 from ._mlp_scm import MLPSCM
 from ._tree_scm import TreeSCM
-from ._utils import XSampler
+from ._utils import (
+    GaussianNoise,
+    XSampler,
+    scalar_params as _scalar_params,
+    mc_mean_var as _mc_mean_var,
+)
 
 from ._diagnostics import mechanism_diagnostics
 
@@ -102,47 +107,6 @@ warnings.filterwarnings(
 # Emit the Monte Carlo memory-budget warning at most once per process to avoid
 # flooding logs when many datasets get capped.
 _MC_BUDGET_WARNED = False
-
-
-def _scalar_params(params: Dict[str, Any]) -> Dict[str, Any]:
-    """The JSON-friendly scalars of a params dict (sampled + fixed HPs, dims).
-
-    Drops tensors, classes and other rich objects; converts numpy scalars so
-    the result survives serialisation unchanged.
-    """
-    out: Dict[str, Any] = {}
-    for key, value in params.items():
-        if isinstance(value, (bool, str)):
-            out[key] = value
-        elif isinstance(value, (int, np.integer)):
-            out[key] = int(value)
-        elif isinstance(value, (float, np.floating)):
-            out[key] = float(value)
-    return out
-
-
-def _mc_mean_var(replicates: Tensor, K: int) -> Tensor:
-    """Sampling variance of the Monte Carlo mean, per row.
-
-    ``replicates`` is ``(rows, K)`` holding the per-replicate CATE draws
-    ``y1_mc - y0_mc``; the supervised target is their mean over ``K``, so its
-    sampling variance is ``Var_k(.) / K`` (unbiased, ``K - 1`` dof).
-
-    Note this is the *paired* variance of the difference, not
-    ``[Var(y1_mc) + Var(y0_mc)] / K``. Both arms come out of a single ``f_y``
-    forward pass over the same replicate rows (shared ``U_mc`` and ``alphas``),
-    so they are strongly positively correlated and summing their variances
-    would materially over-state the target noise.
-
-    ``K < 2`` admits no variance estimate; returns zeros rather than NaN so
-    consumers can tell "no replicates" apart from the NaN used to mark context
-    rows that were never Monte Carlo replicated at all.
-    """
-    if K < 2:
-        return torch.zeros(
-            replicates.shape[0], device=replicates.device, dtype=replicates.dtype
-        )
-    return replicates.var(dim=1, unbiased=True) / K
 
 
 class Prior:
