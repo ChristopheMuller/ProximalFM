@@ -65,9 +65,6 @@ class XSampler:
     def _pre_stats(self):
         means = np.random.normal(0, 1, self.num_features)
         stds = np.abs(np.random.normal(0, 1, self.num_features) * means)
-        # Keep the per-feature stats as (1, num_features) and broadcast at sample
-        # time. The old code materialized full (seq_len, num_features) copies via
-        # .repeat -- two large allocations that broadcasting makes unnecessary.
         self.means = torch.tensor(
             means, dtype=torch.float, device=self.device
         ).unsqueeze(0)
@@ -96,8 +93,6 @@ class XSampler:
 
     def sample_normal_all(self):
         if self.pre_stats:
-            # Broadcast (1, F) stats over freshly-sampled standard normals instead
-            # of calling torch.normal on materialized (seq_len, F) mean/std tensors.
             noise = torch.randn(self.seq_len, self.num_features, device=self.device)
             X = (self.means + self.stds * noise).float()
         else:

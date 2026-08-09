@@ -1,10 +1,7 @@
 from ._activations import get_activations
 
-
 DEFAULT_FIXED_HP = {
-    # SCMPrior
     "mix_probs": (0.7, 0.3),
-    # TreeSCM
     "tree_model": "random_forest",
     "tree_depth_lambda": 0.5,
     "tree_n_estimators_lambda": 0.5,
@@ -24,7 +21,6 @@ DEFAULT_FIXED_HP = {
 }
 
 DEFAULT_SAMPLED_HP = {
-    # MLPSCM
     "mlp_activations": {
         "distribution": "meta_choice_mixed",
         "choice_values": get_activations(random=True, scale=True, diverse=True),
@@ -39,7 +35,6 @@ DEFAULT_SAMPLED_HP = {
         "min": 0.1,
         "max": 5.0,
     },
-    # MLPSCM and TreeSCM
     "num_layers": {
         "distribution": "meta_trunc_norm_log_scaled",
         "max_mean": 6,
@@ -69,13 +64,11 @@ DEFAULT_SAMPLED_HP = {
         "distribution": "meta_choice",
         "choice_values": [True, False],
     },
-    # CATEGORIZATION
     "cat_col_prob": {
         "distribution": "beta",
         "a": 1.0,
         "b": 3.0,
     },
-    # PROPENSITY SHIFT AND SCALE
     "propensity_shift": {
         "distribution": "uniform",
         "min": -2.5,
@@ -88,7 +81,6 @@ DEFAULT_SAMPLED_HP = {
         "lower_bound": 0.1,
         "round": False,
     },
-    # CONFOUNDING EDGE SHARES
     "confounding_share_of_U_in_Y": {
         "distribution": "beta",
         "a": 1.2,
@@ -99,7 +91,6 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.2,
         "b": 2.8,
     },
-    # PROXY EDGE SHARES
     "direct_edge_share_of_W_in_Y": {
         "distribution": "beta",
         "a": 1.0,
@@ -110,7 +101,6 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.0,
         "b": 1.0,
     },
-    # COV SHARE OF X IN U/W/Z/A/Y
     "covariate_share_of_X_in_U": {
         "distribution": "beta",
         "a": 1.0,
@@ -136,7 +126,6 @@ DEFAULT_SAMPLED_HP = {
         "a": 1.0,
         "b": 1.0,
     },
-    # NOISE
     "noise_share_of_input_in_U": {
         "distribution": "beta",
         "a": 1.2,

@@ -243,12 +243,9 @@ class LinearSCMPrior(LinearPrior):
             )
 
         while True:
-            # Draw standard normal base tracking vectors
             U = torch.randn(seq_len, dU, device=self.device)
             U_ = safe_normalize(U)
 
-            # --- Fully Linear Generation ---
-            # Standard uniform structural coefficients bounded to avoid variance explosions
             W_weights = torch.rand(dU, dW, device=self.device) - 0.5
             W = U_ @ W_weights + torch.randn(seq_len, dW, device=self.device) * 0.2
             W_ = safe_normalize(W)
@@ -261,14 +258,10 @@ class LinearSCMPrior(LinearPrior):
             X = U_ @ X_weights + torch.randn(seq_len, dX, device=self.device) * 0.2
             X_ = safe_normalize(X)
 
-            # --- Treatment Assignment (A) Logits ---
             A_input = torch.cat([U_, X_], dim=-1)
-            A_weights = (
-                torch.rand(dU + dX, 1, device=self.device) * 0.8
-            ) - 0.4  # [-0.4, 0.4]
+            A_weights = (torch.rand(dU + dX, 1, device=self.device) * 0.8) - 0.4
             A_logits = (A_input @ A_weights).squeeze(-1)
 
-            # Standardization & Scaling link mapping to guarantee stable propensities
             A_logits = (A_logits - A_logits.mean()) / (A_logits.std() + 1e-8)
             A_logits = A_logits * params.get("propensity_scale", 1.0) + params.get(
                 "propensity_shift", 0.0
@@ -276,12 +269,9 @@ class LinearSCMPrior(LinearPrior):
             A_probs = torch.sigmoid(A_logits).clamp(1e-3, 1.0 - 1e-3)
             A = torch.bernoulli(A_probs).long()
 
-            # --- Potential Outcomes (Y) ---
             Y_input = torch.cat([U_, X_], dim=-1)
-            beta_0 = torch.rand(dU + dX, 1, device=self.device) - 0.5  # [-0.5, 0.5]
-            beta_cate = (
-                torch.rand(dU + dX, 1, device=self.device) * 0.6
-            ) - 0.3  # [-0.3, 0.3]
+            beta_0 = torch.rand(dU + dX, 1, device=self.device) - 0.5
+            beta_cate = (torch.rand(dU + dX, 1, device=self.device) * 0.6) - 0.3
 
             y0_raw = (Y_input @ beta_0).squeeze(-1) + torch.randn(
                 seq_len, device=self.device
@@ -291,7 +281,6 @@ class LinearSCMPrior(LinearPrior):
             ) * 0.05
             y1_raw = y0_raw + cate_raw
 
-            # RealCause Realization tracking script matching
             gamma_hetero = torch.rand(1, device=self.device)
             alphas = torch.rand(seq_len, device=self.device)
             ate_raw = (y1_raw - y0_raw).mean()
@@ -304,7 +293,6 @@ class LinearSCMPrior(LinearPrior):
             ) * alphas * (y1_raw - ate_raw)
             y = torch.where(A == 1, y1, y0)
 
-            # --- Padding to Global Matrix Dimension Max Bounds ---
             U_padded = F.pad(U, (0, params["max_dim_U"] - dU), value=0.0).unsqueeze(0)
             X_padded = F.pad(X, (0, params["max_dim_X"] - dX), value=0.0).unsqueeze(0)
             W_padded = F.pad(W, (0, params["max_dim_W"] - dW), value=0.0).unsqueeze(0)
@@ -315,7 +303,6 @@ class LinearSCMPrior(LinearPrior):
             d_W_t = torch.tensor([dW], device=self.device, dtype=torch.long)
             d_Z_t = torch.tensor([dZ], device=self.device, dtype=torch.long)
 
-            # Unique verification masks mapping filter pipeline execution
             U_padded, d_U_t = self.filter_constant_features_and_pad(
                 U_padded, d_U_t, params["max_dim_U"]
             )

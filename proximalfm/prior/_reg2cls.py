@@ -8,24 +8,6 @@ import numpy as np
 import torch
 from torch import nn, Tensor
 
-
-# ---------------------------------------------------------------------------
-# Categorical completeness heuristic (Track F)
-# ---------------------------------------------------------------------------
-#
-# A processed feature block (U, W, or Z) has a *profile* summarising its
-# discrete structure:
-#
-#   * ``continuous`` -- the number of columns left continuous.
-#   * ``categorical`` -- the multiset of category-counts of its categorical
-#     columns, stored sorted descending for a canonical form.
-#
-# A continuous column carries strictly more information than any finite
-# categorical column, so a proxy ``P`` is *complete* w.r.t. ``U`` iff every
-# column of ``U`` can be matched one-to-one to a column of ``P`` that is at
-# least as informative (see :func:`dominates`). This is the discrete analogue
-# of the dimension heuristic ``min(d_W, d_Z) >= d_U`` and collapses to it when
-# nothing is categorised.
 BlockProfile = namedtuple("BlockProfile", ["continuous", "categorical"])
 
 
@@ -185,31 +167,25 @@ def outlier_removing(input: Tensor, threshold: float = 4.0) -> Tensor:
     Tensor
         The tensor with outliers clamped.
     """
-    # First stage: Identify outliers using initial statistics
     mean = torch.nanmean(input, dim=0)
     std = torch_nanstd(input, dim=0, ddof=1 if input.shape[0] > 1 else 0).clip(min=1e-6)
     cut_off = std * threshold
     lower, upper = mean - cut_off, mean + cut_off
 
-    # Create mask for non-outlier, non-NaN values
     mask = (lower <= input) & (input <= upper) & ~torch.isnan(input)
 
-    # Second pass using only non-outlier values for mean/std
     masked_input = torch.where(mask, input, torch.nan)
     masked_mean = torch.nanmean(masked_input, dim=0)
     masked_std = torch_nanstd(
         masked_input, dim=0, ddof=1 if input.shape[0] > 1 else 0
     ).clip(min=1e-6)
 
-    # Handle cases where a column had <= 1 valid value after masking -> std is NaN or 0
     masked_mean = torch.where(torch.isnan(masked_mean), mean, masked_mean)
     masked_std = torch.where(torch.isnan(masked_std), torch.zeros_like(std), masked_std)
 
-    # Recalculate cutoff with robust estimates
     cut_off = masked_std * threshold
     lower, upper = masked_mean - cut_off, masked_mean + cut_off
 
-    # Replace NaN bounds with +/- inf
     lower = torch.nan_to_num(lower, nan=-torch.inf)
     upper = torch.nan_to_num(upper, nan=torch.inf)
 
@@ -232,14 +208,12 @@ def permute_classes(input: Tensor) -> Tensor:
     unique_vals, _ = torch.unique(input, return_inverse=True)
     num_classes = len(unique_vals)
 
-    if num_classes <= 1:  # No permutation needed for single class
+    if num_classes <= 1:
         return input
 
-    # Ensure labels are encoded from 0 to num_classes-1
     indices = unique_vals.argsort()
     mapped = indices[torch.searchsorted(unique_vals, input)]
 
-    # Randomly permute classes
     perm = torch.randperm(num_classes, device=input.device)
     permuted = perm[mapped]
 
@@ -270,7 +244,6 @@ class MulticlassAssigner(nn.Module):
         If ``num_classes < 2``, or ``mode`` is not one of :attr:`MODES`.
     """
 
-    #: The boundary-sampling strategies :meth:`forward` implements.
     MODES = ("rank", "value")
 
     def __init__(self, num_classes: int, mode: str = "rank", ordered_prob: float = 0.2):
@@ -316,23 +289,16 @@ class MulticlassAssigner(nn.Module):
         elif self.mode == "value":
             boundaries = torch.randn(self.num_classes - 1, device=device)
         else:
-            # Unreachable via __init__, which validates `mode`; reachable by
-            # assigning to `.mode` afterwards. Without this branch `boundaries`
-            # is simply never bound and the next line raises UnboundLocalError,
-            # which says nothing about what went wrong.
             raise ValueError(
                 f"Unknown MulticlassAssigner mode {self.mode!r} "
                 f"(expected one of {self.MODES})."
             )
 
-        # Compare input tensor with boundaries and sum across the boundary dimension to get classes
         classes = (input.unsqueeze(-1) > boundaries.unsqueeze(0)).sum(dim=1)
 
-        # Permute classes
         if random.random() > self.ordered_prob:
             classes = permute_classes(classes)
 
-        # Reverse classes
         if random.random() > 0.5:
             classes = self.num_classes - 1 - classes
 
@@ -402,7 +368,7 @@ def num2cat(
         return X, _num2cat_enforced(X, hp, require_profile, max_categories)
 
     meta: dict[int, int] = {}
-    col_prob = hp.get("cat_col_prob", 0.25)  # per-column categorisation probability
+    col_prob = hp.get("cat_col_prob", 0.25)
     for col in range(X.shape[1]):
         if random.random() < col_prob:
             num_cats = _sample_num_cats(max_categories)
@@ -449,22 +415,13 @@ def _num2cat_enforced(
 
     meta: dict[int, int] = {}
 
-    # cols[:c_u] stay continuous (reserved).
-
-    # Requirement slots: cover each with a categorical column or a continuous
-    # wildcard. `U`'s counts are themselves capped at `max_categories`, so the
-    # categorical floor is always feasible.
     cat_cover_prob = hp.get("proxy_cat_cover_prob", 0.5)
     for col, min_cats in zip(cols[c_u : c_u + k], required):
         if random.random() < cat_cover_prob:
             num_cats = _sample_num_cats(max_categories, min_cats=min_cats)
             _categorize_column(X, col, num_cats)
             meta[col] = num_cats
-        # else: leave continuous -> wildcard covering this requirement.
 
-    # Extra optional categorisation on the leftover columns, as in the
-    # unconstrained mode. Only adds capacity; the reserved/wildcard continuous
-    # columns above are untouched, so the profile still dominates.
     col_prob = hp.get("cat_col_prob", 0.25)
     for col in cols[c_u + k :]:
         if random.random() < col_prob:
@@ -556,7 +513,7 @@ def observed_block_profile(block: Tensor, meta: dict[int, int]) -> BlockProfile:
         Continuous count and category-counts (sorted descending) of the columns
         that survive filtering.
     """
-    keep = block.amax(dim=0) != block.amin(dim=0)  # non-constant survive filtering
+    keep = block.amax(dim=0) != block.amin(dim=0)
     cats: list[int] = []
     continuous = 0
     for col in range(block.shape[1]):

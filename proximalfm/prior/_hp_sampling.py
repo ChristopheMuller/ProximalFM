@@ -126,7 +126,6 @@ class HpSampler(nn.Module):
         """Sets up a meta-beta distribution sampler.
         Returns a closure that samples beta distribution parameters and then samples from that beta.
         """
-        # Dynamically define b and k if not explicitly provided
         self.ensure_hyperparameter("b", "uniform", self.min, self.max)
         self.ensure_hyperparameter("k", "uniform", self.min, self.max)
 
@@ -141,7 +140,6 @@ class HpSampler(nn.Module):
         """Sets up a meta-gamma distribution sampler.
         Returns a closure that samples gamma distribution parameters and then samples from that gamma.
         """
-        # Dynamically define alpha and scale if not explicitly provided
         self.ensure_hyperparameter("alpha", "uniform", 0.0, math.log(self.max_alpha))
         self.ensure_hyperparameter("scale", "uniform", 0.0, self.max_scale)
 
@@ -165,7 +163,6 @@ class HpSampler(nn.Module):
         """Sets up a meta truncated normal distribution sampler.
         Returns a closure that samples normal distribution parameters and then samples from that normal.
         """
-        # Dynamically define mean and std if not explicitly provided
         self.min_std = self.min_std if hasattr(self, "min_std") else 0.01
         self.max_std = self.max_std if hasattr(self, "max_std") else 1.0
         self.ensure_hyperparameter("mean", "uniform", self.min_mean, self.max_mean)
@@ -190,7 +187,6 @@ class HpSampler(nn.Module):
     def setup_meta_trunc_norm_log_scaled_sampler(self):
         """Sets up a log-scaled meta truncated normal distribution sampler.
         Useful for parameters that vary on logarithmic scales."""
-        # Dynamically define log_mean and log_std if not explicitly provided
         self.min_std = self.min_std if hasattr(self, "min_std") else 0.01
         self.max_std = self.max_std if hasattr(self, "max_std") else 1.0
         self.ensure_hyperparameter(
@@ -222,7 +218,6 @@ class HpSampler(nn.Module):
         """Sets up a meta-categorical distribution sampler.
         Returns a closure that samples probabilities and then samples categorical values.
         """
-        # Ensure that choice weights are defined or dynamically created
         for i in range(1, len(self.choice_values)):
             self.ensure_hyperparameter(
                 f"choice_{i}_weight", distribution="uniform", min=-3.0, max=5.0
@@ -242,7 +237,6 @@ class HpSampler(nn.Module):
     def setup_meta_choice_mixed_sampler(self):
         """Sets up a mixed meta-categorical distribution sampler.
         Similar to meta_choice but with different probability scaling."""
-        # Similar to meta_choice but may include different logic for mixed scenarios
         for i in range(1, len(self.choice_values)):
             self.ensure_hyperparameter(
                 f"choice_{i}_weight", distribution="uniform", min=-5.0, max=6.0
@@ -293,7 +287,7 @@ class HpSamplerList(nn.Module):
     ...     },
     ... }
     >>> sampler = HpSamplerList(hp_config, device='cuda')
-    >>> params = sampler.sample()  # Returns dict with sampled values
+    >>> params = sampler.sample()
     """
 
     def __init__(self, hyperparameters, device):

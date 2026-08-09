@@ -1,21 +1,3 @@
-####
-# Changes vs TabICL:
-# - Functional Decoupling: Shifted from a standalone dataset generator to a modular
-#   feature-to-feature transformation block.
-# - Explicit Dimensions: Replaced implicit causal parameters (num_causes, num_features)
-#   with explicit 'in_dim' and 'num_outputs' to support directed graph components.
-# - Externalized Sampling: Removed the internal 'XSampler'; the module now receives
-#   parent variables as 'input' in the forward pass rather than sampling them internally.
-# - Removal of Causal Selection: Excised 'handle_outputs', 'in_clique', and feature
-#   sorting logic, as variable partitioning is now handled at the dataset level.
-# - Forward Pass Simplification: Replaced hidden-state slicing with a standard
-#   sequential pass, returning only the final layer's output.
-# - NaN Handling: Modernized error recovery using 'torch.nan_to_num' instead of
-#   manual tensor slicing and constant assignment.
-# - Layer Architecture: Refined the 'layers' sequence to consistently include an
-#   output projection layer regardless of the causal flag.
-####
-
 from __future__ import annotations
 
 import math
@@ -161,7 +143,6 @@ class MLPSCM(nn.Module):
         self.in_dim = in_dim
         self.num_outputs = num_outputs
 
-        # Enforce minimum layers (1 hidden layer + 1 output layer minimum)
         self.num_layers = max(num_layers, 2)
         self.hidden_dim = hidden_dim
         self.mlp_activations = mlp_activations
@@ -173,7 +154,6 @@ class MLPSCM(nn.Module):
         self.pre_sample_noise_std = pre_sample_noise_std
         self.device = device
 
-        # Build layers using the explicit in_dim
         layers = [nn.Linear(self.in_dim, self.hidden_dim)]
 
         for _ in range(self.num_layers - 1):
@@ -184,7 +164,6 @@ class MLPSCM(nn.Module):
 
     def generate_layer_modules(self):
         """Generates a layer module with activation, linear transformation, and noise."""
-        # Removed is_output_layer flag; all layers maintain hidden_dim width
         activation = self.mlp_activations()
         linear_layer = nn.Linear(self.hidden_dim, self.hidden_dim)
 
@@ -227,10 +206,8 @@ class MLPSCM(nn.Module):
 
     def initialize_normally(self, param, index):
         """Initializes parameters using normal distribution."""
-        if param.dim() == 2:  # Applies only to weights, not biases
-            dropout_prob = (
-                self.mlp_dropout_prob if index > 0 else 0
-            )  # No dropout for the first layer's weights
+        if param.dim() == 2:
+            dropout_prob = self.mlp_dropout_prob if index > 0 else 0
             dropout_prob = min(dropout_prob, 0.99)
             std = self.init_std / (
                 (1 - dropout_prob) ** 0.5 if self.scale_init_std_by_dropout else 1
@@ -248,17 +225,11 @@ class MLPSCM(nn.Module):
         random_perm = torch.randperm(total_width, device=input.device)
         indices = random_perm[: self.num_outputs]
 
-        # Sort indices to preserve topological ordering.
-        # This ensures that if variable A causally precedes B in the generation graph,
-        # it appears earlier in the returned feature vector.
         indices, _ = torch.sort(indices)
 
-        # ``layer_ids`` maps a global pool index to the layer that produces it;
-        # ``col_ids`` to the column within that layer.
         layer_ids = indices // hidden_dim
         col_ids = indices % hidden_dim
 
-        # 2. Sequential pass, gathering selected columns on the fly.
         out = input
         final_out = None
         for i, layer in enumerate(self.layers):

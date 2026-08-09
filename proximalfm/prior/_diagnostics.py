@@ -60,13 +60,13 @@ def first_layer_variances(
     Cross-block covariances are ignored by construction: shares normalised by
     the sum of these variances attribute shared signal proportionally.
     """
-    weight = mlp.layers[0].weight  # (hidden_dim, in_dim)
+    weight = mlp.layers[0].weight
     variances: Dict[str, float] = {}
     for name, sl in slices.items():
         if sl.stop - sl.start == 0:
             variances[name] = 0.0
             continue
-        partial = x[:, sl] @ weight[:, sl].T  # (rows, hidden_dim)
+        partial = x[:, sl] @ weight[:, sl].T
         variances[name] = float(partial.var(dim=0, unbiased=False).mean())
     return variances
 

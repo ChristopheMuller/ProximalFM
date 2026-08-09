@@ -13,52 +13,6 @@ The main class is PriorDataset, which provides an iterable interface for generat
 an infinite stream of synthetic datasets with diverse characteristics.
 """
 
-####
-# Changes vs TabICL:
-# - Proximal DAG Structure: Implemented specific causal relationships (U -> X, W, Z, A, Y)
-#   to replace generic i.i.d. feature sampling.
-# - Feature Partitioning: Replaced 'max_features' with specific ranges for Latent U,
-#   Covariates X, Outcome Proxies W, and Treatment Proxies Z.
-# - Potential Outcomes: Added counterfactual generation for Y(0) and Y(1) via joint
-#   forward passes with intervened treatment values.
-# - Completeness Heuristic: Enforced dim(W) >= dim(U) and dim(Z) >= dim(U) during
-#   hyperparameter sampling to support proximal identification.
-# - Positivity Control: Introduced 'sample_A' with temperature scaling and epsilon
-#   clamping to ensure treatment overlap (P(A|X,U) > 0).
-# - Robust Padding: Replaced dynamic filtering with 'filter_constant_features_and_pad'
-#   to maintain fixed block sizes for X, W, and Z across datasets.
-# - Regression Alignment: Dropped the target-side reg-to-cls transform to keep Y
-#   continuous for CATE estimation. Only the feature-side corruptions of Reg2Cls
-#   (categorization / outlier clamping / scaling via process_features) are reused,
-#   applied to X, W, Z (and optionally U) at their generation step so the observed
-#   proxies stay consistent with the mechanisms that produced Y and A.
-# - Adaptive Scaling: Updated 'adjust_max_features' to scale the entire proximal
-#   feature set (X+W+Z) proportionally for large sequence lengths to prevent OOM.
-# - Target-Leaf Mechanisms: f_Z and f_A run on the T observed rows only, not on
-#   the N Monte-Carlo rows. Z and A are leaves w.r.t. MU0/MU1 (Z never feeds
-#   f_W/f_Y, A never feeds f_Y), so their replicates were computed only to be
-#   discarded at 'obs_idx'. Distribution-preserving; see generate_dataset.
-# - Query-Only MC Targets: 'mc_targets_on_context=False' replicates only the
-#   query rows [train_size:] when estimating MU0/MU1, leaving the context prefix
-#   NaN. The trainer reads MU only on that slice, so this is a pure compute win
-#   there; analysis/visualisation code uses all T rows, hence the opt-in default.
-# - Exogenous-Noise Model: All meaningful randomness enters each mechanism as
-#   explicit eps input columns whose count is proportional to the mechanism's
-#   signal input width (sampled 'noise_share_of_input_in_*' converted via
-#   confounding_input_dim). Within-layer GaussianNoise ('noise_std') is kept at
-#   a tiny fixed dither (1e-3, see DEFAULT_FIXED_HP) purely so continuous
-#   columns realise distinct values under saturating/discretising activations;
-#   it is a tie-breaker for the distinct-count profile classification, not part
-#   of the noise model.
-####
-
-
-#########
-# TODO:
-# - Generate not only U -> X but also X -> U or X <-> U relationships
-# - Generate not only U -> Z but also Z -> U
-#########
-
 from __future__ import annotations
 
 import os
@@ -92,15 +46,12 @@ from ._reg2cls import (
 )
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
-
 warnings.filterwarnings(
     "ignore",
     message=".*The PyTorch API of nested tensors is in prototype stage.*",
     category=UserWarning,
 )
 
-# Emit the Monte Carlo memory-budget warning at most once per process to avoid
-# flooding logs when many datasets get capped.
 _MC_BUDGET_WARNED = False
 
 
@@ -267,13 +218,11 @@ class Prior:
         ValueError
             If training size types are mismatched or invalid.
         """
-        # Check for numeric types only
         if not isinstance(min_train_size, (int, float)) or not isinstance(
             max_train_size, (int, float)
         ):
             raise TypeError("Training sizes must be int or float")
 
-        # Check for valid ranges based on type
         if isinstance(min_train_size, int) and isinstance(max_train_size, int):
             assert (
                 0 < min_train_size < max_train_size
@@ -392,7 +341,7 @@ class Prior:
         seq_len: int, max_x: int, max_w: int, max_z: int
     ) -> Tuple[int, int, int]:
         """Adjust the maximum dimensions proportionally based on the sequence length."""
-        total_features = max_x + max_w + max_z + 1  # +1 for Treatment A
+        total_features = max_x + max_w + max_z + 1
 
         if seq_len <= 10240:
             limit = 100
@@ -455,22 +404,16 @@ class Prior:
             if xi.ndim == 1:
                 xi = xi.unsqueeze(0)
 
-            # Treat di as an integer, but bound it safely by the actual tensor size
             actual_di = min(int(di), xi.shape[-1])
 
-            # Slice down to the true active feature width to prevent indexing out of bounds
             xi_active = xi[:, :actual_di]
             num_features = xi.shape[-1]
-            # Identify non-constant features. A column has >1 unique value iff its
-            # max differs from its min -- a single vectorized reduction instead of a
-            # Python loop calling torch.unique (which sorts) once per column.
             if actual_di > 0:
                 unique_mask = xi_active.amax(dim=0) != xi_active.amin(dim=0)
             else:
                 unique_mask = torch.zeros(0, dtype=torch.bool, device=xi.device)
             di_new = int(unique_mask.sum())
 
-            # Extract the non-constant features and pad back up to the original size
             xi_unique = xi_active[:, unique_mask]
             xi_new = F.pad(
                 xi_unique,
@@ -480,11 +423,9 @@ class Prior:
             )
             return xi_new, torch.tensor(di_new, device=xi.device)
 
-        # Process each dataset in the batch independently
         filtered_results = [filter_unique_features(xi, di) for xi, di in zip(X, d)]
         X_new, d_new = [torch.stack(res) for res in zip(*filtered_results)]
 
-        # Padding to max_d if needed
         if X_new.shape[-1] < max_d:
             X_new = F.pad(X_new, (0, max_d - X_new.shape[-1]), mode="constant", value=0)
         d_new = torch.tensor([min(int(di), max_d) for di in d_new], device=X_new.device)
@@ -678,12 +619,6 @@ class SCMPrior(Prior):
         num_layers = max(2, int(params.get("num_layers", 4)))
         hidden_dim = int(params.get("hidden_dim", 20))
 
-        # The eps blocks widen each mechanism's input by up to
-        # share / (1 - share) times its signal width (share clamped at 0.75 by
-        # confounding_input_dim, i.e. worst case 4x). Use the largest sampled
-        # share as a coarse over-estimate; exact widths depend on binomial
-        # subsampling draws not known at cap time. Z/A are excluded: their eps
-        # blocks are T rows.
         max_noise_share = max(
             min(float(params.get(f"noise_share_of_input_in_{k}", 0.3)), 0.75)
             for k in ("U", "W", "Y")
@@ -692,14 +627,10 @@ class SCMPrior(Prior):
 
         return (
             num_layers * hidden_dim
-            + params["dim_X"]  # X_rep_
-            # raw + normalized U and W (Z is T rows)
+            + params["dim_X"]
             + 2 * (params["dim_U"] + params["dim_W"])
-            # eps_U, eps_W, eps_Y, sized off the widest N-row signal input
             + math.ceil(noise_mult * 3 * (params["dim_X"] + params["dim_W"] + 1))
-            # the X_U_ / X_W_ / X_Y_ covariate subsamples
             + 3 * params["dim_X"]
-            # y_joint_raw (2), alphas, cate_raw, y0_mc, y1_mc
             + 6
         )
 
@@ -824,8 +755,6 @@ class SCMPrior(Prior):
 
         def safe_normalize(tensor: Tensor) -> Tensor:
             """Normalize a tensor while avoiding division by zero."""
-            # One fused reduction for both stats instead of two separate scans;
-            # runs on the N-row U/W/Z blocks.
             std, mean = torch.std_mean(tensor, dim=0, keepdim=True)
             return (tensor - mean) / (std + 1e-8)
 
@@ -834,35 +763,20 @@ class SCMPrior(Prior):
         if K < 1:
             raise ValueError("mc_cate must be >= 1")
 
-        # Only the query rows need Monte Carlo replicates: MU0/MU1 are read
-        # exclusively on the ``[train_size:]`` slice downstream, and the model
-        # must not see the CEPOs of its own context. Context rows therefore run
-        # a single replicate, and the mechanisms process
-        # ``N = T_ctx + T_q * K`` rows instead of ``T * K``.
         if params.get("mc_targets_on_context", False):
             T_ctx = 0
         else:
-            # train_size is only metadata elsewhere, so it is not guaranteed to
-            # be < seq_len (int-valued ranges are allowed). Clamp so at least
-            # one query row survives.
             T_ctx = max(0, min(int(params.get("train_size", 0)), T - 1))
         T_q = T - T_ctx
 
-        # Memory safeguard
         K = self._cap_mc_samples(K, T_ctx, T_q, params)
         N = T_ctx + T_q * K
 
-        # Counts resamples triggered by the completeness check below.
         attempt = 0
 
         while True:
             attempt += 1
 
-            # Row index of the realised (observed) replicate of every row. Drawn
-            # up front because the Z -> A branch is evaluated on *these rows
-            # only*: both are leaves w.r.t. the MC targets (Z never enters
-            # f_W/f_Y, A never enters f_Y), so their non-observed replicates
-            # were only ever computed to be discarded here.
             if T_ctx == 0:
                 obs_k = torch.randint(K, size=(T,), device=self.device)
                 obs_idx = torch.arange(T, device=self.device) * K + obs_k
@@ -902,12 +816,6 @@ class SCMPrior(Prior):
                     "categorical completeness is defined relative to a categorised U."
                 )
 
-            # Row layout of every N-row tensor below:
-            #   [ context rows 0..T_ctx-1 ] [ query row 0 x K ] [ query row 1 x K ] ...
-            # i.e. the replicate block is a contiguous suffix, so the MU
-            # reduction is a single view(T_q, K).mean(1) and no gather is needed.
-            # Built by broadcasting straight into one preallocated buffer: an
-            # expand().reshape() plus a cat would copy the query block twice.
             X_rep_ = X_.new_empty((N, params["dim_X"]))
             X_rep_[:T_ctx] = X_[:T_ctx]
             X_rep_[T_ctx:].view(T_q, K, params["dim_X"])[:] = X_[T_ctx:, None, :]
@@ -923,9 +831,6 @@ class SCMPrior(Prior):
                     )
                     return torch.randperm(params["dim_X"])[:m]
 
-                # X_rep_[obs_idx] == X_ by construction of the replicate layout,
-                # so the Z/A mechanisms read their covariates straight off the
-                # T-row X_ rather than the N-row replicate buffer.
                 X_U_ = X_rep_[:, _cov_subsample_cols("U")]
                 X_W_ = X_rep_[:, _cov_subsample_cols("W")]
                 X_Z_ = X_[:, _cov_subsample_cols("Z")]
@@ -963,11 +868,8 @@ class SCMPrior(Prior):
             if categorize_U:
                 U_mc, u_meta = process_features(U_mc, params)
             U_mc_ = safe_normalize(U_mc)
-            # The confounder as realised in the *observed* world of each row --
-            # the only latent state the Z/A branch is ever read in.
             U_obs_ = U_mc_[obs_idx]
 
-            # Proxies must dominate U's pre-filter profile when enforcing.
             require_profile = (
                 block_profile(params["dim_U"], u_meta) if enforce_cat else None
             )
@@ -987,9 +889,6 @@ class SCMPrior(Prior):
             )
             W_mc_ = safe_normalize(W_mc)
 
-            # Z is a leaf w.r.t. MU0/MU1, so it is generated on the T observed
-            # rows only -- hence ``Z_obs`` rather than the ``_mc`` (N-row)
-            # naming used for U and W above.
             eps_Z = sample_eps("Z", params["dim_U"] + X_Z_.shape[-1], T)
             input_Z = torch.cat([U_obs_, X_Z_, eps_Z], dim=-1)
 
@@ -1025,10 +924,6 @@ class SCMPrior(Prior):
                 Z_direct = Z_obs_
 
             if params.get("confounding_dim_control", True):
-                # Shares are defined relative to the non-noise (signal) input
-                # width: confounding widths first, then the eps widths below
-                # are computed from the resulting full signal width. This
-                # avoids a circular dependency between the two share knobs.
                 k_Y = self.confounding_input_dim(
                     params.get("confounding_share_of_U_in_Y", 0.3),
                     X_Y_.shape[-1] + W_direct.shape[-1],
@@ -1052,9 +947,6 @@ class SCMPrior(Prior):
                         num_layers=3,
                         hidden_dim=max(10, aug_out_dim),
                     ).to(self.device)
-                    # Both sides must read the *same* network. Only the Y side
-                    # needs all N rows, so when it takes no augmentation columns
-                    # the net runs on the T observed rows alone.
                     if aug_dim_y > 0:
                         u_aug = f_u_augment(U_mc_)
                         u_aug_y = u_aug[:, :aug_dim_y]
@@ -1071,8 +963,6 @@ class SCMPrior(Prior):
                 u_aug_y = U_mc_[:, :0]
                 u_aug_a = U_obs_[:, :0]
 
-            # A inherits Z's row set: every input above is already T rows, so
-            # the treatment is drawn directly in its observed world.
             eps_A = sample_eps(
                 "A",
                 U_sel_a.shape[-1]
@@ -1109,12 +999,6 @@ class SCMPrior(Prior):
             )
             input_y = torch.cat([U_sel_y, X_Y_, W_direct, eps_Y, u_aug_y], dim=-1)
 
-            # MU0/MU1 below are Monte Carlo means over the K replicates of each
-            # row. Their validity requires the observed rows and the replicates
-            # to share the *same* forward pass per mechanism: MLPSCM.forward
-            # draws a fresh output-column permutation per call, so splitting
-            # generation into separate passes would silently change the
-            # mechanism between the targets and the observed data.
             f_y = prior_cls(
                 in_dim=input_y.shape[-1],
                 num_outputs=2,
@@ -1140,24 +1024,13 @@ class SCMPrior(Prior):
                 1 - gamma_hetero
             ) * alphas * (y1_raw - ate_raw)
 
-            # Per-replicate CATE draws. The supervised target MU1 - MU0 is their
-            # mean, so S2 = Var_k(.) / K is the variance of the noise that target
-            # carries around the true CEPO contrast -- what the noise-aware loss
-            # deconvolves. See :func:`_mc_mean_var` for why this is paired.
             cate_mc = y1_mc - y0_mc
 
-            # The query block is contiguous by construction, so ``view`` (which
-            # would raise on a non-contiguous layout) doubles as an assertion.
             if T_ctx == 0:
                 MU0 = y0_mc.view(T, K).mean(dim=1)
                 MU1 = y1_mc.view(T, K).mean(dim=1)
                 S2 = _mc_mean_var(cate_mc.view(T, K), K)
             else:
-                # Context rows have no K-average to report. NaN rather than the
-                # single realised draw: any consumer that reads MU outside
-                # ``[train_size:]`` is looking at something that was never
-                # computed, and should fail loudly instead of silently getting
-                # ITE-quality values.
                 nan_pad = torch.full(
                     (T_ctx,), float("nan"), device=self.device, dtype=y0_mc.dtype
                 )
@@ -1167,22 +1040,17 @@ class SCMPrior(Prior):
 
             U = U_mc[obs_idx]
             W = W_mc[obs_idx]
-            # Z, A and A_probs were generated on the observed rows directly.
             Z = Z_obs
             y0 = y0_mc[obs_idx]
             y1 = y1_mc[obs_idx]
 
             y = torch.where(A == 1, y1, y0)
 
-            # Categorical-completeness profiles are computed on the realised
-            # (observed, pre-padding) blocks so they reflect exactly what
-            # survives the constant-column filtering below.
             if enforce_cat:
                 u_profile = observed_block_profile(U, u_meta)
                 w_profile = observed_block_profile(W, w_meta)
                 z_profile = observed_block_profile(Z, z_meta)
 
-            # Add batch dim for single dataset to be compatible with delete_unique_features and sanity_check
             U, X, W, Z, A, A_probs, y, y0, y1, MU0, MU1, S2 = (
                 U.unsqueeze(0),
                 X.unsqueeze(0),
@@ -1202,22 +1070,13 @@ class SCMPrior(Prior):
             d_W = torch.tensor([params["dim_W"]], device=self.device, dtype=torch.long)
             d_Z = torch.tensor([params["dim_Z"]], device=self.device, dtype=torch.long)
 
-            # Only keep valid datasets with sufficient features and balanced classes
             U, d_U = self.filter_constant_features_and_pad(U, d_U, params["max_dim_U"])
             X, d_X = self.filter_constant_features_and_pad(X, d_X, params["max_dim_X"])
             W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
 
-            # Basic validity: every observed block needs at least one active
-            # (non-constant) column, else the dataset is unusable.
             basic_ok = (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
 
-            # Proximal validity: the completeness heuristic must survive column
-            # filtering. dim_W, dim_Z >= dim_U holds at sampling time, but the
-            # filtering above acts on each block independently, so a proxy can
-            # drop below d_U afterwards. Reject and resample those. Requiring
-            # d_U > 0 also rejects the rare unconfounded draws where U collapsed
-            # to constants.
             if params.get("enforce_completeness_heuristic", True):
                 proximal_ok = bool(
                     (d_U > 0).all() and (torch.minimum(d_W, d_Z) >= d_U).all()
@@ -1233,10 +1092,6 @@ class SCMPrior(Prior):
             give_up = attempt >= int(params.get("completeness_max_attempts", 50))
 
             if basic_ok and (proximal_ok or give_up):
-                # Optional audit payload: how each parent block feeds f_A / f_Y.
-                # Collected only on the accepted attempt and under fork_rng, so
-                # enabling it leaves the generated data (and the RNG stream any
-                # later dataset sees) bit-identical to a run without it.
                 diagnostics = None
                 if params.get("collect_mechanism_diagnostics", False) and isinstance(
                     f_A, MLPSCM
@@ -1286,11 +1141,6 @@ class SCMPrior(Prior):
                     d_W.squeeze(0),
                     d_Z.squeeze(0),
                 )
-                # The *realised* K, i.e. after ``_cap_mc_samples``. The nominal
-                # ``mc_cate`` is not a substitute: prior_mc_mem_budget caps it
-                # per dataset behind a once-per-process warning, so this is the
-                # only place downstream code can see how many replicates the
-                # targets were actually averaged over.
                 K_eff = torch.tensor(K, device=self.device, dtype=torch.long)
                 return (
                     U,
@@ -1426,18 +1276,15 @@ class SCMPrior(Prior):
         """
         batch_size = batch_size or self.batch_size
 
-        # Calculate number of groups and subgroups
         size_per_gp = min(self.batch_size_per_gp, batch_size)
         num_gps = math.ceil(batch_size / size_per_gp)
 
         size_per_subgp = min(self.batch_size_per_subgp, size_per_gp)
 
-        # Generate parameters list for all datasets, preserving group and subgroup structure
         param_list = []
         global_seq_len = None
         global_train_size = None
 
-        # Determine global seq_len/train_size if not per-group
         if not self.seq_len_per_gp:
             global_seq_len = self.sample_seq_len(
                 self.min_seq_len,
@@ -1449,16 +1296,13 @@ class SCMPrior(Prior):
                 self.min_train_size, self.max_train_size, global_seq_len
             )
 
-        # Generate parameters for each group
         for gp_idx in range(num_gps):
-            # Determine actual size for this group (may be smaller for the last group)
             actual_gp_size = min(size_per_gp, batch_size - gp_idx * size_per_gp)
             if actual_gp_size <= 0:
                 break
 
             group_sampled_hp = self.hp_sampling()
 
-            # Sequence Length & Max Dimension Scaling
             if self.seq_len_per_gp:
                 gp_seq_len = self.sample_seq_len(
                     self.min_seq_len,
@@ -1469,7 +1313,6 @@ class SCMPrior(Prior):
                 gp_train_size = self.sample_train_size(
                     self.min_train_size, self.max_train_size, gp_seq_len
                 )
-                # Adjust maximum dimensions proportionally if sequence is huge to avoid OOM
                 gp_max_X, gp_max_W, gp_max_Z = self.adjust_max_features(
                     gp_seq_len, self.max_dim_X, self.max_dim_W, self.max_dim_Z
                 )
@@ -1486,33 +1329,24 @@ class SCMPrior(Prior):
 
             num_subgps_in_gp = math.ceil(actual_gp_size / size_per_subgp)
 
-            # Generate parameters for each subgroup
             for subgp_idx in range(num_subgps_in_gp):
-                # Determine actual size for this subgroup
                 actual_subgp_size = min(
                     size_per_subgp, actual_gp_size - subgp_idx * size_per_subgp
                 )
                 if actual_subgp_size <= 0:
                     break
 
-                # Subgroups share prior type, number of features, and sampled HPs
                 subgp_prior_type = self.get_prior()
                 subgp_sampled_hp = {
                     k: v() if callable(v) else v for k, v in group_sampled_hp.items()
                 }
 
-                # 1. Sample Latent Confounder Dimension. A triangular pmf
-                # (Option B) skews d_U small so the conditional-uniform proxies
-                # below get a gentle linear marginal instead of piling up at
-                # max_dim; "uniform" restores the original flat d_U for A/B.
                 dim_U = self.sample_dim(
                     self.min_dim_U,
                     self.max_dim_U,
                     self.fixed_hp.get("dim_U_distribution", "triangular"),
                 )
 
-                # 2. Enforce Completeness: dim(W) >= dim(U) and dim(Z) >= dim(U)
-                # We use max() to ensure the lower bound satisfies both the user's config and the DAG requirement
                 min_W_req = max(self.min_dim_W, dim_U)
                 max_W_req = max(gp_max_W, min_W_req)
                 dim_W = np.random.randint(min_W_req, max_W_req + 1)
@@ -1521,7 +1355,6 @@ class SCMPrior(Prior):
                 max_Z_req = max(gp_max_Z, min_Z_req)
                 dim_Z = np.random.randint(min_Z_req, max_Z_req + 1)
 
-                # 3. Sample Covariates (No completeness requirement relative to U)
                 max_X_req = max(self.min_dim_X, gp_max_X)
                 dim_X = np.random.randint(self.min_dim_X, max_X_req + 1)
 
@@ -1532,14 +1365,12 @@ class SCMPrior(Prior):
                         "train_size": gp_train_size,
                         "mc_cate": self.mc_cate,
                         "mc_targets_on_context": self.mc_targets_on_context,
-                        # Pass the memory-safe maximums so the PyTorch module knows what to pad up to
                         "max_dim_U": self.max_dim_U,
                         "max_dim_X": gp_max_X,
                         "max_dim_W": gp_max_W,
                         "max_dim_Z": gp_max_Z,
                         **subgp_sampled_hp,
                         "prior_type": subgp_prior_type,
-                        # Pass the exact active dimensions for this specific graph
                         "dim_U": dim_U,
                         "dim_W": dim_W,
                         "dim_Z": dim_Z,
@@ -1548,7 +1379,6 @@ class SCMPrior(Prior):
                     }
                     param_list.append(params)
 
-        # Parallel Generation
         if self.n_jobs != 1 and self.device == "cpu":
             with joblib.parallel_config(
                 n_jobs=self.n_jobs,
@@ -1583,12 +1413,8 @@ class SCMPrior(Prior):
             diagnostics_list,
         ) = zip(*results)
 
-        # Per-dataset mechanism diagnostics (None unless the fixed HP
-        # collect_mechanism_diagnostics is set). Exposed as an attribute rather
-        # than a return value to keep the batch tuple stable for training code.
         self.last_diagnostics = list(diagnostics_list)
 
-        # Combine Results
         if self.seq_len_per_gp:
             U = nested_tensor([t.to(self.device) for t in U_list], device=self.device)
             X = nested_tensor([t.to(self.device) for t in X_list], device=self.device)
@@ -1624,7 +1450,6 @@ class SCMPrior(Prior):
             MU1 = torch.stack(MU1_list).to(self.device)
             S2 = torch.stack(S2_list).to(self.device)
 
-        # Metadata
         d_U = torch.stack(d_U_list).to(self.device)
         d_X = torch.stack(d_X_list).to(self.device)
         d_W = torch.stack(d_W_list).to(self.device)

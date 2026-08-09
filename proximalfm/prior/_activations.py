@@ -22,11 +22,7 @@ class StdScaleLayer(nn.Module):
         self.std = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # fit the info on the first batch
         if self.mean is None or self.std is None:
-            # std_mean computes both statistics in a single fused reduction pass
-            # instead of two separate scans over x. This layer sits inside every
-            # scaled activation, so it runs on the (T*K, hidden_dim) activations.
             std, mean = torch.std_mean(x, dim=0, keepdim=True)
             self.mean = mean
             self.std = std + 1e-6
@@ -132,8 +128,6 @@ class RandomFunctionActivation(nn.Module):
             freq_factors * torch.randn(n_frequencies), requires_grad=False
         )
 
-    # Lookup-table resolution: samples per period of the highest frequency
-    # component, and a hard cap on the table length for pathological ranges.
     _LUT_SAMPLES_PER_PERIOD = 32
     _LUT_MAX_GRID = 1 << 20
 
@@ -218,7 +212,6 @@ class RandomScaleLayer(nn.Module):
     def initialize(self, x: torch.Tensor):
         n_out = x.shape[-1] if self.individual else 1
         self.scale = torch.exp(np.log(1.0) + 2 * torch.randn(1, n_out, device=x.device))
-        # use uniform on [0, 1] since we round to integers anyway
         self.bias = torch.randn(1, n_out, device=x.device)
         self.initialized = True
 
@@ -324,7 +317,6 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
         If True, adds RandomChoiceFactory instances to allow different activation
         functions in each layer.
     """
-    # Start with a set of simple activations
     simple_activations = [
         nn.Tanh,
         nn.LeakyReLU,
@@ -338,7 +330,6 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
         nn.Hardtanh,
         SignActivation,
         RBFActivation,
-        # ExpActivation,
         SqrtAbsActivation,
         UnitIntervalIndicator,
         SineActivation,
@@ -347,15 +338,12 @@ def get_activations(random: bool = True, scale: bool = True, diverse: bool = Tru
     ]
     activations = simple_activations
     if random:
-        # Add random activation and sample it more often
         activations += [RandomFunctionActivation] * 10
 
     if scale:
-        # Create scaled versions using StdRandomScaleFactory
         activations = [StdRandomScaleFactory(act) for act in activations]
 
     if diverse:
-        # Add possibility to have different activation functions in each layer
         activations += [RandomChoiceFactory(activations)] * len(activations)
 
     return activations

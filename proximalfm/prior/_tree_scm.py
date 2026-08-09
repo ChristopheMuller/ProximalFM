@@ -1,28 +1,3 @@
-####
-# Changes vs TabICL:
-# - Modular Transformation: Converted from a standalone dataset generator into a
-#   reusable DAG component that maps parent nodes to child nodes.
-# - Externalized Input: Removed internal 'XSampler' and 'handle_outputs' logic; the
-#   module now processes an explicit 'input' tensor in the forward pass.
-# - Parameter Flexibility: Removed the hardcoded overrides for 'is_causal',
-#   'num_layers', and 'hidden_dim', allowing these to be controlled via the
-#   global SCMPrior configuration.
-# - Dimension Refactoring: Replaced implicit causal selection parameters with
-#   explicit 'in_dim' and 'num_outputs' to align with the proximal DAG structure.
-# - API Alignment: Renamed lambda parameters (e.g., 'max_depth_lambda') to match
-#   the updated naming convention in the hyperparameter sampler.
-# - Error Handling: Switched to 'torch.nan_to_num' for cleaner and more efficient
-#   recovery from tree-induced numerical instabilities.
-# - Sequential Logic: Streamlined the forward pass to a standard sequential flow,
-#   removing intermediate state tracking and causal indexing.
-####
-
-#####
-# TODO:
-# - cpu to gpu transfer: can be improved?
-# - XGB does not work -> crashes
-#####
-
 from __future__ import annotations
 
 import random
@@ -250,11 +225,9 @@ class TreeSCM(nn.Module):
         self.in_dim = in_dim
         self.num_outputs = num_outputs
 
-        # Ensure we have at least 2 layers to sample from intermediate steps
         self.num_layers = max(2, num_layers)
         self.hidden_dim = hidden_dim
 
-        # Ensure the pool of intermediate nodes is large enough
         self.pool_size = self.num_layers * self.hidden_dim
         assert (
             self.pool_size >= self.num_outputs
@@ -267,7 +240,6 @@ class TreeSCM(nn.Module):
         self.pre_sample_noise_std = pre_sample_noise_std
         self.device = device
 
-        # Build layers sequentially
         layers = []
         for _ in range(self.num_layers):
             layers.append(self.generate_layer_modules())
@@ -276,7 +248,7 @@ class TreeSCM(nn.Module):
 
     def generate_layer_modules(self):
         """Generates a layer module with tree-based transformation and noise."""
-        out_dim = self.hidden_dim  # All layers maintain hidden_dim width
+        out_dim = self.hidden_dim
 
         max_depth = 2 + int(np.random.exponential(1 / self.tree_depth_lambda))
         n_estimators = 1 + int(np.random.exponential(1 / self.tree_n_estimators_lambda))
@@ -309,24 +281,19 @@ class TreeSCM(nn.Module):
         out = input
         outputs = []
 
-        # 1. Sequential pass & collect intermediate states
         for layer in self.layers:
             out = layer(out)
             outputs.append(out)
 
-        # 2. Pool all hidden states together
         pool = torch.cat(outputs, dim=-1)
 
-        # 3. Permutation sampling
         random_perm = torch.randperm(pool.shape[-1], device=pool.device)
         indices = random_perm[: self.num_outputs]
 
-        # Sort indices to preserve the causal/topological ordering
         indices, _ = torch.sort(indices)
 
         final_out = pool[:, indices]
 
-        # 4. Check for NaNs and handle them safely
         if torch.any(torch.isnan(final_out)):
             final_out = torch.nan_to_num(final_out, nan=0.0)
 

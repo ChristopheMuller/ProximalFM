@@ -14,24 +14,6 @@ on demand during training. Dataloader workers each claim a disjoint slice of the
 batch files, so a multi-worker run consumes each file exactly once.
 """
 
-####
-# Changes vs TabICL:
-# - Schema Expansion: Updated both Loader and Saver to handle the full proximal
-#   feature set (X, W, Z, A) and target set (Y_obs, Y0, Y1).
-# - Multi-Proxy Buffer Management: Expanded the internal buffers in 'LoadPriorDataset'
-#   to track 12 distinct data streams instead of 5.
-# - Sparse/Dense Support for Proxies: Extended 'dense2sparse' and 'sparse2dense'
-#   operations to W and Z proxies, maintaining storage efficiency for the new dimensions.
-# - Metadata Granularity: Modified 'save_metadata' and the repr output to document
-#   independent dimension ranges for U, W, Z, and X.
-# - Nested Tensor Slicing: Updated 'SliceNestedTensor' and 'cat_slice_nested_tensors'
-#   to handle the additional proximal variables during batch accumulation.
-# - CLI Modernization: Replaced generic '--max_features' and '--max_classes'
-#   arguments with specific causal dimension flags (--min_dim_U, --max_dim_Z, etc.).
-# - Return Signature: Refactored 'get_batch' and 'next' to return the 12-tuple
-#   structure required for continuous proximal causal learning.
-####
-
 from __future__ import annotations
 
 import time
@@ -56,8 +38,6 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-# Batch files written before S2/K_eff existed are still perfectly usable; warn
-# once per process rather than once per file so the log stays readable.
 _LEGACY_TARGET_VAR_WARNED = False
 
 
@@ -286,7 +266,6 @@ def cat_slice_nested_tensors(tensors: List, dim=0) -> SliceNestedTensor:
     SliceNestedTensor
         Concatenated tensor wrapped in SliceNestedTensor.
     """
-    # Extract the wrapped nested tensors
     nested_tensors = [
         t.nested_tensor if isinstance(t, SliceNestedTensor) else t for t in tensors
     ]
@@ -334,7 +313,6 @@ class LoadPriorDataset(IterableDataset):
         self.start_from = start_from
         self.data_dir = Path(data_dir)
         self.batch_size = batch_size
-        # Overwritten by __iter__ once the dataloader worker identity is known.
         self.current_idx = start_from
         self.stride = 1
         self.max_batches = max_batches
@@ -342,7 +320,6 @@ class LoadPriorDataset(IterableDataset):
         self.delete_after_load = delete_after_load
         self.device = device
 
-        # Load metadata if available
         self.metadata = None
         metadata_file = self.data_dir / "metadata.json"
         if metadata_file.exists():
@@ -352,7 +329,6 @@ class LoadPriorDataset(IterableDataset):
             except Exception as e:
                 print(f"Warning: Could not load or parse metadata.json: {e}")
 
-        # Buffers for storing datasets that haven't been returned yet
         self.buffer_U = None
         self.buffer_X = None
         self.buffer_W = None
@@ -409,7 +385,6 @@ class LoadPriorDataset(IterableDataset):
         """
         batch_file = self.data_dir / f"batch_{self.current_idx:06d}.pt"
 
-        # Try loading the file for up to timeout seconds
         wait_time = 0
         while not batch_file.exists():
             if wait_time >= self.timeout:
@@ -427,14 +402,6 @@ class LoadPriorDataset(IterableDataset):
             batch["A_probs"],
         )
         Y_obs, Y0, Y1 = batch["Y_obs"], batch["Y0"], batch["Y1"]
-        # MU0/MU1 are the noise-free conditional means (response surfaces) used to
-        # build the supervised CATE target (true_cate = MU1 - MU0). Real / benchmark
-        # validation datasets often ship only realized potential outcomes (Y0, Y1)
-        # and no surfaces, so fall back to them: true_cate then becomes the realized
-        # ITE (Y1 - Y0). They share shape/dtype, so the loss and evaluator are
-        # unchanged. NOTE: if Y0/Y1 carry outcome noise, validation CATE error is
-        # inflated by that noise variance (it estimates PEHE^2 + Var(noise)); treat
-        # it as a monitoring signal rather than an absolute PEHE.
         if "MU0" in batch and "MU1" in batch:
             MU0, MU1 = batch["MU0"], batch["MU1"]
         else:
@@ -444,15 +411,6 @@ class LoadPriorDataset(IterableDataset):
         train_sizes = batch["train_sizes"]
         batch_size = batch["batch_size"]
 
-        # S2 is the per-row sampling variance of the CATE target and K_eff the
-        # realised replicate count (see SCMPrior.generate_dataset). Files written
-        # before these existed -- and the synthetic/ validation sets, which have
-        # no Monte Carlo replicates at all -- get zeros: "this target carries no
-        # measurable MC noise". That is exactly right for the exact-tau realistic
-        # mechanisms and merely conservative elsewhere, and the noise-aware loss
-        # degrades to its plain sigma-smoothed form on those rows. The trainer
-        # logs the affected fraction as noise/frac_fallback rather than letting
-        # it pass unnoticed. K_eff = 0 marks "unknown".
         if "S2" in batch and "K_eff" in batch:
             S2, K_eff = batch["S2"], batch["K_eff"]
         else:
@@ -478,7 +436,6 @@ class LoadPriorDataset(IterableDataset):
             K_eff = torch.zeros(batch_size, dtype=torch.long, device=d_U.device)
 
         if X.is_nested:
-            # Wrap nested tensors with SliceNestedTensor
             U = SliceNestedTensor(U)
             X = SliceNestedTensor(X)
             W = SliceNestedTensor(W)
@@ -492,18 +449,15 @@ class LoadPriorDataset(IterableDataset):
             MU1 = SliceNestedTensor(MU1)
             S2 = SliceNestedTensor(S2)
         else:
-            # Convert sparse tensor to dense
             T = int(seq_lens[0])
             U = sparse2dense_blocks(U, d_U, T, dtype=torch.float32)
             X = sparse2dense_blocks(X, d_X, T, dtype=torch.float32)
             W = sparse2dense_blocks(W, d_W, T, dtype=torch.float32)
             Z = sparse2dense_blocks(Z, d_Z, T, dtype=torch.float32)
 
-        # Delete file if requested
         if self.delete_after_load and batch_file.exists():
             batch_file.unlink()
 
-        # Prepare next index for this worker's shard
         self.current_idx += self.stride
 
         return (
@@ -532,7 +486,6 @@ class LoadPriorDataset(IterableDataset):
     def __next__(self):
         """Load datasets until we have at least batch_size, then return exactly batch_size."""
 
-        # Check if we've reached the maximum number of batches and have no buffered data
         if (
             self.max_batches is not None
             and self.current_idx >= self.max_batches
@@ -540,7 +493,6 @@ class LoadPriorDataset(IterableDataset):
         ):
             raise StopIteration
 
-        # Initialize or use existing buffer
         if self.buffer_size == 0:
             (
                 U,
@@ -586,15 +538,11 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_train_sizes = train_sizes
             self.buffer_size = file_batch_size
 
-        # Keep loading files until we have enough data or no more files
         while self.buffer_size < self.batch_size:
-            # Check if we've reached max_batches
             if self.max_batches is not None and self.current_idx >= self.max_batches:
-                # If we can't get a full batch, return what we have
                 break
 
             try:
-                # Load another batch and append to buffer
                 (
                     U,
                     X,
@@ -618,9 +566,7 @@ class LoadPriorDataset(IterableDataset):
                     file_batch_size,
                 ) = self._load_batch_file()
 
-                # Concatenate with existing buffer
                 if self.buffer_X is None:
-                    # If buffer is empty, directly assign
                     self.buffer_U = U
                     self.buffer_X = X
                     self.buffer_W = W
@@ -642,7 +588,6 @@ class LoadPriorDataset(IterableDataset):
                     self.buffer_train_sizes = train_sizes
                     self.buffer_size = file_batch_size
                 else:
-                    # Otherwise concatenate, handling SliceNestedTensor if needed
                     if isinstance(X, SliceNestedTensor):
                         self.buffer_U = cat_slice_nested_tensors(
                             [self.buffer_U, U], dim=0
@@ -709,21 +654,11 @@ class LoadPriorDataset(IterableDataset):
                     )
                     self.buffer_size += file_batch_size
             except PriorBatchTimeout as e:
-                # The producer has not written the next file yet. Topping the
-                # buffer up is best-effort, so return the short batch we already
-                # have. Every other failure -- a truncated file, a payload
-                # missing a key, an unpickling error -- is a real fault and must
-                # propagate: swallowing it here would leave the loader retrying
-                # the same unreadable index forever (_load_batch_file raises
-                # before advancing current_idx), silently yielding short batches
-                # for the rest of the run.
                 print(f"Warning: Could not load more files: {str(e)}")
                 break
 
-        # Extract batch_size datasets (or all if we have fewer)
         output_size = min(self.batch_size, self.buffer_size)
 
-        # Prepare output
         U_out = self.buffer_U[:output_size]
         X_out = self.buffer_X[:output_size]
         W_out = self.buffer_W[:output_size]
@@ -744,7 +679,6 @@ class LoadPriorDataset(IterableDataset):
         seq_lens_out = self.buffer_seq_lens[:output_size]
         train_sizes_out = self.buffer_train_sizes[:output_size]
 
-        # Update buffer with remaining data
         if output_size < self.buffer_size:
             self.buffer_U = self.buffer_U[output_size:]
             self.buffer_X = self.buffer_X[output_size:]
@@ -767,7 +701,6 @@ class LoadPriorDataset(IterableDataset):
             self.buffer_train_sizes = self.buffer_train_sizes[output_size:]
             self.buffer_size -= output_size
         else:
-            # Buffer is now empty
             self.buffer_U = None
             self.buffer_X = None
             self.buffer_W = None
@@ -904,7 +837,6 @@ def write_batch_file(
     save_dir = Path(save_dir)
 
     if seq_len_per_gp:
-        # Tensors are nested and already sparse
         B = len(d_X)
     else:
         B, T, _ = X.shape
@@ -921,7 +853,6 @@ def write_batch_file(
             Z.view(-1, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
         )
 
-    # Create temporary file first
     batch_file = save_dir / f"batch_{batch_idx:06d}.pt"
     temp_file = save_dir / f"batch_{batch_idx:06d}.pt.tmp"
     torch.save(
@@ -949,7 +880,6 @@ def write_batch_file(
         },
         temp_file,
     )
-    # Atomic rename to ensure file integrity
     temp_file.replace(batch_file)
 
 
@@ -1113,7 +1043,6 @@ class SavePriorDataset:
                 K_eff,
             ) = self.prior.get_batch()
 
-            # Move tensors to CPU before saving
             U, X, W, Z, A, A_probs = (
                 U.cpu(),
                 X.cpu(),
