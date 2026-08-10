@@ -4,7 +4,7 @@ y=-0.015cm,
 line cap=round,
 line join=round,
 % -----------------------------------------------------------------------------
-% Refined Color Palette (shared with figure_prior.tex)
+% Refined Color Palette
 % -----------------------------------------------------------------------------
 plate color/.style={draw=black!45, fill=gray!3, line width=0.5pt, rounded corners=3pt},
 op color/.style={draw=teal!80!black, fill=teal!5, line width=0.6pt, rounded corners=2pt},
@@ -18,7 +18,6 @@ cellY/.style={draw=blue!80!black, fill=blue!4, line width=0.6pt},
 roleX/.style={cellX, fill=cyan!18, rounded corners=2pt, line width=0.7pt},
 roleZ/.style={cellZ, fill=orange!20, rounded corners=2pt, line width=0.7pt},
 roleW/.style={cellW, fill=violet!16, rounded corners=2pt, line width=0.7pt},
-roleA/.style={cellA, fill=green!18, rounded corners=2pt, line width=0.7pt},
 % -----------------------------------------------------------------------------
 % Style Definitions
 % -----------------------------------------------------------------------------
@@ -35,157 +34,172 @@ every node/.style={text=black}
 ]
 
 % -----------------------------------------------------------------------------
-% Plate 1a: Context embedding
+% Plate 1: Context embedding (variables as rows, units along horizontal axis)
 % -----------------------------------------------------------------------------
-\draw[plate] (18,18) rectangle (410,336);
-\node[tiny text, anchor=south west] at (28,330) {\textbf{context embedding}};
+\draw[plate] (18,30) rectangle (404,267);
+\node[tiny text, anchor=south west] at (28,261) {\textbf{context embedding}};
 
-% Column group headers
-\node[small text] at (72,58) {$X$};
-\node[small text] at (141,58) {$Z$};
-\node[small text] at (206,58) {$W$};
-\node[small text] at (261,58) {$A$};
-\node[small text] at (322,85) {$y$};
+% ---- Feature rows: cells (+) role token ----------------------------------
+% X
+\node[small text] at (36,74) {$X$};
+\draw[cellX] (50,61) rectangle (104,87);
+\node[small text] at (77,74) {$x_1$};
+\draw[cellX] (110,61) rectangle (164,87);
+\node[small text] at (137,74) {$x_2$};
+\node[tiny text] at (176,74) {$\cdots$};
+\draw[cellX] (188,61) rectangle (242,87);
+\node[small text] at (215,74) {$x_N$};
+\draw[draw=black!55, line width=0.5pt] (256,74) circle (6);
+\node[tiny text] at (256,74) {$+$};
+\draw[roleX] (270,61) rectangle (308,87);
+\node[small text] at (289,74) {$e_X$};
 
-% Learnable role tokens
-\draw[roleX] (52,72) rectangle (93,98);
-\node[small text] at (72.5,85) {$e_X$};
-\draw[roleZ] (120,72) rectangle (162,98);
-\node[small text] at (141,85) {$e_Z$};
-\draw[roleW] (185,72) rectangle (227,98);
-\node[small text] at (206,85) {$e_W$};
-\draw[roleA] (241,72) rectangle (281,98);
-\node[small text] at (261,85) {$e_A$};
+% Z
+\node[small text] at (36,108) {$Z$};
+\draw[cellZ] (50,95) rectangle (104,121);
+\node[small text] at (77,108) {$z_1$};
+\draw[cellZ] (110,95) rectangle (164,121);
+\node[small text] at (137,108) {$z_2$};
+\node[tiny text] at (176,108) {$\cdots$};
+\draw[cellZ] (188,95) rectangle (242,121);
+\node[small text] at (215,108) {$z_N$};
+\draw[draw=black!55, line width=0.5pt] (256,108) circle (6);
+\node[tiny text] at (256,108) {$+$};
+\draw[roleZ] (270,95) rectangle (308,121);
+\node[small text] at (289,108) {$e_Z$};
 
-% "+" arrows: role tokens added to column embeddings
-\draw[edge] (72,98) -- (72,124);
-\node[tiny text] at (82,111) {$+$};
-\draw[edge] (141,98) -- (141,124);
-\node[tiny text] at (151,111) {$+$};
-\draw[edge] (206,98) -- (206,124);
-\node[tiny text] at (216,111) {$+$};
-\draw[edge] (261,98) -- (261,124);
-\node[tiny text] at (271,111) {$+$};
+% W
+\node[small text] at (36,142) {$W$};
+\draw[cellW] (50,129) rectangle (104,155);
+\node[small text] at (77,142) {$w_1$};
+\draw[cellW] (110,129) rectangle (164,155);
+\node[small text] at (137,142) {$w_2$};
+\node[tiny text] at (176,142) {$\cdots$};
+\draw[cellW] (188,129) rectangle (242,155);
+\node[small text] at (215,142) {$w_N$};
+\draw[draw=black!55, line width=0.5pt] (256,142) circle (6);
+\node[tiny text] at (256,142) {$+$};
+\draw[roleW] (270,129) rectangle (308,155);
+\node[small text] at (289,142) {$e_W$};
 
-% Context table: row 1
-\draw[cellX] (40,130) rectangle (105,158);
-\node[small text] at (72.5,144) {$x_1$};
-\draw[cellZ] (112,130) rectangle (170,158);
-\node[small text] at (141,144) {$z_1$};
-\draw[cellW] (177,130) rectangle (235,158);
-\node[small text] at (206,144) {$w_1$};
-\draw[cellA] (242,130) rectangle (280,158);
-\node[small text] at (261,144) {$a_1$};
-\draw[cellY] (294,130) rectangle (350,158);
-\node[small text] at (322,144) {$y_1$};
+% ---- Divider: features above, supervision below --------------------------
+\draw[draw=black!30, line width=0.5pt, dash pattern=on 1.6pt off 1.6pt] (30,166) -- (392,166);
 
-% Context table: row 2
-\draw[cellX] (40,164) rectangle (105,192);
-\node[small text] at (72.5,178) {$x_2$};
-\draw[cellZ] (112,164) rectangle (170,192);
-\node[small text] at (141,178) {$z_2$};
-\draw[cellW] (177,164) rectangle (235,192);
-\node[small text] at (206,178) {$w_2$};
-\draw[cellA] (242,164) rectangle (280,192);
-\node[small text] at (261,178) {$a_2$};
-\draw[cellY] (294,164) rectangle (350,192);
-\node[small text] at (322,178) {$y_2$};
+% a
+\node[small text] at (36,188) {$a$};
+\draw[cellA] (50,175) rectangle (104,201);
+\node[small text] at (77,188) {$a_1$};
+\draw[cellA] (110,175) rectangle (164,201);
+\node[small text] at (137,188) {$a_2$};
+\node[tiny text] at (176,188) {$\cdots$};
+\draw[cellA] (188,175) rectangle (242,201);
+\node[small text] at (215,188) {$a_N$};
 
-% Dots
-\node[tiny text] at (72.5,208) {$\vdots$};
-\node[tiny text] at (141,208) {$\vdots$};
-\node[tiny text] at (206,208) {$\vdots$};
-\node[tiny text] at (261,208) {$\vdots$};
-\node[tiny text] at (322,208) {$\vdots$};
-
-% Context table: row N
-\draw[cellX] (40,224) rectangle (105,252);
-\node[small text] at (72.5,238) {$x_N$};
-\draw[cellZ] (112,224) rectangle (170,252);
-\node[small text] at (141,238) {$z_N$};
-\draw[cellW] (177,224) rectangle (235,252);
-\node[small text] at (206,238) {$w_N$};
-\draw[cellA] (242,224) rectangle (280,252);
-\node[small text] at (261,238) {$a_N$};
-\draw[cellY] (294,224) rectangle (350,252);
-\node[small text] at (322,238) {$y_N$};
-
-\node[tiny text, anchor=north west] at (40,264) {context set $\mathcal{D}_N$};
-
-% Treatment-aware target encoder
-\draw[edge] (322,252) -- (331,272);
-\draw[operation] (256,272) rectangle (406,322);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (331,290) {treatment-aware};
-\node[small text] at (331,307) {$y$-encoder $(a_i)$};
+% y
+\node[small text] at (36,222) {$y$};
+\draw[cellY] (50,209) rectangle (104,235);
+\node[small text] at (77,222) {$y_1$};
+\draw[cellY] (110,209) rectangle (164,235);
+\node[small text] at (137,222) {$y_2$};
+\node[tiny text] at (176,222) {$\cdots$};
+\draw[cellY] (188,209) rectangle (242,235);
+\node[small text] at (215,222) {$y_N$};
 
 % -----------------------------------------------------------------------------
-% Plate 1b: Query embedding
+% Gathers: features -> concat ; (a, y) -> enc(y, a)
 % -----------------------------------------------------------------------------
-\draw[plate] (18,352) rectangle (410,432);
-\node[tiny text, anchor=south east] at (402,424) {\textbf{query embedding}};
-\draw[cellX] (40,372) rectangle (105,400);
-\node[small text] at (72.5,386) {$x^\star$};
+% Feature brace
+\draw[decorate, decoration={brace, mirror, amplitude=4pt}, draw=black!55, line width=0.5pt]
+    (318,155) -- (318,61);
+\draw[edge] (324,108) .. controls (360,108) and (400,122) .. (415,132);
+
+% Supervision brace into target encoder
+\draw[decorate, decoration={brace, mirror, amplitude=4pt}, draw=black!55, line width=0.5pt]
+    (250,235) -- (250,175);
+\draw[operation] (272,188) rectangle (392,222);
+\node[small text] at (332,205) {$\mathrm{enc}(y, a)$};
+\draw[edge] (260,205) -- (272,205);
+
+% Join: encoder output is added to the context tokens
+\draw[draw=black!55, line width=0.5pt] (422,138) circle (7);
+\node[small text] at (422,138) {$+$};
+\draw[edge] (392,205) .. controls (412,205) and (420,165) .. (422,145);
+\draw[edge] (429,138) -- (470,138);
 
 % -----------------------------------------------------------------------------
-% Transformer (kept deliberately plain)
+% Plate 2: Query Embedding (Left Bottom)
 % -----------------------------------------------------------------------------
-\draw[operation] (470,120) rectangle (650,330);
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (560,205) {Transformer};
-\node[small text, font=\scriptsize\bfseries\color{teal!50!black}] at (560,222) {Encoder};
-\node[tiny text] at (560,248) {(TabICLv2 backbone)};
-\node[tiny text] at (560,346) {queries attend};
-\node[tiny text] at (560,360) {only to context};
+\draw[plate] (18,290) rectangle (404,370);
+\node[tiny text, anchor=south west] at (28,364) {\textbf{query embedding}};
 
-% Tokens flowing into the transformer
-\draw[edge] (354,190) -- (470,190);
-\draw[edge] (402,297) .. controls (444,297) and (456,252) .. (470,228);
-\draw[edge] (108,386) .. controls (280,388) and (430,370) .. (470,300);
+\node[small text] at (36,322) {$x^\star$};
+\draw[cellX] (50,309) rectangle (104,335);
+\node[small text] at (77,322) {$x^\star_1$};
+\draw[cellX] (110,309) rectangle (164,335);
+\node[small text] at (137,322) {$x^\star_2$};
+\node[tiny text] at (176,322) {$\cdots$};
+\draw[cellX] (188,309) rectangle (242,335);
+\node[small text] at (215,322) {$x^\star_M$};
+\draw[draw=black!55, line width=0.5pt] (256,322) circle (6);
+\node[tiny text] at (256,322) {$+$};
+\draw[roleX] (270,309) rectangle (308,335);
+\node[small text] at (289,322) {$e_X$};
+
+% Arrow from Query Embedding to Transformer Encoder
+\draw[edge] (308,322) -- (470,322);
 
 % -----------------------------------------------------------------------------
-% Plate 2: Single Distributional Prediction Head
+% Transformer Encoder (Full vertical height: y=30 to y=370)
 % -----------------------------------------------------------------------------
-\draw[plate] (676,30) rectangle (1008,432);
-\node[tiny text, anchor=south east] at (1000,424) {\textbf{prediction head}};
+\draw[operation] (470,30) rectangle (620,370);
+\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,185) {Transformer};
+\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,210) {Encoder};
+
+% -----------------------------------------------------------------------------
+% Plate 3: Single Distributional Prediction Head (Right Side)
+% -----------------------------------------------------------------------------
+\draw[plate] (676,30) rectangle (1008,370);
+\node[tiny text, anchor=south east] at (1000,362) {\textbf{prediction head}};
 
 % Transformer -> head arrow
-\draw[edge] (650,225) -- (695,160);
+\draw[edge] (620,138) -- (695,138);
 
-% Single Histogram Box (centered at top, full width)
-\draw[output] (695,48) rectangle (989,250);
-\node[small text] at (922,67) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
+% Single Histogram Box
+\draw[output] (695,45) rectangle (989,235);
+\node[small text] at (922,62) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
 
 % X-axis line
-\draw[draw=black!50, line width=0.5pt] (705,234) -- (979,234);
+\draw[draw=black!50, line width=0.5pt] (705,220) -- (979,220);
 
 % Asymmetric / realistic histogram bars (bins b_1 to b_13)
-\draw[histbar] (708,226) rectangle (723,234);
-\draw[histbar] (727,212) rectangle (742,234);
-\draw[histbar] (746,185) rectangle (761,234);
-\draw[histbar] (765,142) rectangle (780,234);
-\draw[histbar] (784,102) rectangle (799,234); % Primary mode
-\draw[histbar] (803,122) rectangle (818,234);
-\draw[histbar] (822,156) rectangle (837,234);
-\draw[histbar] (841,148) rectangle (856,234); % Secondary bump / asymmetry
-\draw[histbar] (860,172) rectangle (875,234);
-\draw[histbar] (879,195) rectangle (894,234);
-\draw[histbar] (898,212) rectangle (913,234);
-\draw[histbar] (917,222) rectangle (932,234);
-\draw[histbar] (936,228) rectangle (951,234);
+\draw[histbar] (708,212) rectangle (723,220);
+\draw[histbar] (727,198) rectangle (742,220);
+\draw[histbar] (746,171) rectangle (761,220);
+\draw[histbar] (765,128) rectangle (780,220);
+\draw[histbar] (784,88)  rectangle (799,220); % Primary mode
+\draw[histbar] (803,108) rectangle (818,220);
+\draw[histbar] (822,142) rectangle (837,220);
+\draw[histbar] (841,134) rectangle (856,220); % Secondary bump / asymmetry
+\draw[histbar] (860,158) rectangle (875,220);
+\draw[histbar] (879,181) rectangle (894,220);
+\draw[histbar] (898,198) rectangle (913,220);
+\draw[histbar] (917,208) rectangle (932,220);
+\draw[histbar] (936,214) rectangle (951,220);
 
 % Mean line & label
-\node[tiny text, anchor=south] at (811,86) {$\hat{Q}_\theta(x^\star)$};
-\draw[meanline] (811,90) -- (811,234);
+\node[tiny text, anchor=south] at (811,72) {$\hat{Q}_\theta(x^\star)$};
+\draw[meanline] (811,76) -- (811,220);
 
-% Small uncertainty width indicator (e.g. 90% interval arrow)
-\draw[draw=blue!80!black, line width=0.4pt, <->] (748,220) -- (892,220);
-\node[tiny text, font=\fontsize{6}{7}\selectfont\color{blue!80!black}, fill=blue!4, inner sep=1pt] at (820,220) {posterior width};
+% Small uncertainty width indicator
+\draw[draw=blue!80!black, line width=0.4pt, <->] (748,206) -- (892,206);
+\node[tiny text, font=\fontsize{6}{7}\selectfont\color{blue!80!black}, fill=blue!4, inner sep=1pt] at (820,206) {posterior width};
 
 % Down arrow from histogram to CATE point estimate box
-\draw[edge] (842,250) -- (842,305);
+\draw[edge] (842,235) -- (842,265);
 
 % CATE estimate box
-\draw[output] (765,305) rectangle (919,385);
-\node[output math] at (842,332) {$\hat{Q}_\theta(x^\star)$};
-\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (842,362) {CATE estimate};
+\draw[output] (765,265) rectangle (919,340);
+\node[output math] at (842,292) {$\hat{Q}_\theta(x^\star)$};
+\node[tiny text, font=\fontsize{7}{8}\selectfont\bfseries\color{blue!60!black}] at (842,320) {CATE estimate};
 
 \end{tikzpicture}
