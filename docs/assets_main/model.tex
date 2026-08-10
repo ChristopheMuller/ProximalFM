@@ -152,7 +152,7 @@ every node/.style={text=black}
 
 % Single Histogram Box (centered at top, full width)
 \draw[output] (695,48) rectangle (989,250);
-\node[small text] at (842,63) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
+\node[small text] at (922,67) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
 
 % X-axis line
 \draw[draw=black!50, line width=0.5pt] (705,234) -- (979,234);
@@ -173,16 +173,12 @@ every node/.style={text=black}
 \draw[histbar] (936,228) rectangle (951,234);
 
 % Mean line & label
-\node[tiny text, anchor=south] at (792,86) {$\hat{Q}_\theta(x^\star)$};
-\draw[meanline] (792,90) -- (792,234);
-
-% Small annotation node pointing to a specific bin logit / probability
-\draw[draw=black!60, line width=0.4pt, -{Latex[length=1.2mm,width=1.0mm]}] (730,135) -- (766,155);
-\node[tiny text, font=\fontsize{6.5}{7.5}\selectfont\color{black!70}, anchor=south] at (725,133) {bins $b \in [B]$};
+\node[tiny text, anchor=south] at (811,86) {$\hat{Q}_\theta(x^\star)$};
+\draw[meanline] (811,90) -- (811,234);
 
 % Small uncertainty width indicator (e.g. 90% interval arrow)
-\draw[draw=blue!80!black, line width=0.4pt, <->] (748,220) -- (873,220);
-\node[tiny text, font=\fontsize{6}{7}\selectfont\color{blue!80!black}, fill=blue!4, inner sep=1pt] at (810,220) {posterior width};
+\draw[draw=blue!80!black, line width=0.4pt, <->] (748,220) -- (892,220);
+\node[tiny text, font=\fontsize{6}{7}\selectfont\color{blue!80!black}, fill=blue!4, inner sep=1pt] at (820,220) {posterior width};
 
 % Down arrow from histogram to CATE point estimate box
 \draw[edge] (842,250) -- (842,305);
