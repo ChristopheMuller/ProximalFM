@@ -716,6 +716,7 @@ def run_neural_model(
 
 ORACLE_CATE = "Oracle-CATE(X)"
 ORACLE_ATE = "Oracle-ATE"
+ORACLE_ITE = "Oracle-ITE"
 
 TRACK_TITLES = {
     "cate": "CATE  —  scored against tau*(x) = E[Y1-Y0 | X]",
@@ -796,12 +797,26 @@ def reference_predictions(targets: dict) -> dict[str, np.ndarray]:
     irreducible noise floor, i.e. the best any method conditioning on X alone
     can do, which is what makes the tau(x, w) methods' advantage readable.
     ``Oracle-ATE`` is the best per-episode constant, the nPEHE = 1 anchor.
+
+    ``Oracle-ITE`` is the realized Y1-Y0 itself — the mirror image of
+    ``Oracle-CATE(X)``, and only emitted when the two targets differ (without a
+    Monte-Carlo target it would duplicate that row exactly). It is the perfect
+    score on the ITE track and, on the CATE track, the *price of the noise*: it
+    predicts tau*(x) + that row's own U and noise, so its nPEHE is
+    SD(ITE - tau*)/SD(tau*), typically well above 1, with a strongly negative
+    Shape R². Reading it beside ``Oracle-ATE`` says how much of Var(ITE) no
+    tau(x) method should even try to explain. At the ATE level it is nearly
+    unbiased — only the row-average of the noise survives — so it is also the
+    per-episode sampling floor for the ATE columns.
     """
     base = targets.get("cate", targets["ite"])
-    return {
+    refs = {
         ORACLE_CATE: base,
         ORACLE_ATE: np.repeat(base.mean(axis=1, keepdims=True), base.shape[1], axis=1),
     }
+    if "cate" in targets:
+        refs[ORACLE_ITE] = targets["ite"]
+    return refs
 
 
 def score_everything(

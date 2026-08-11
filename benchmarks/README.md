@@ -43,13 +43,22 @@ extra information is a real advantage; on the CATE target it is answering a diff
 therefore gets its own row in the ITE table and none in the CATE ranking — the "they had the
 advantage and still lost" comparison.
 
-Two **reference rows** are computed with no fitting and appear in every table, shown but never
+**Reference rows** are computed with no fitting and appear in every table, shown but never
 ranked (and never eligible for a bolded best-of cell):
 
 - **`Oracle-CATE(X)`** — the true `tau*(x)`. Scores nPEHE ≈ 0 on the cate track (a self-check on the
   whole pipeline; if it does not, something is wrong with the target plumbing) and the **irreducible
   noise floor** on the ite track. That floor is what makes the `xw` methods' advantage readable.
 - **`Oracle-ATE`** — the best per-episode constant. The nPEHE = 1 / Shape R² = 0 anchor.
+- **`Oracle-ITE`** — the realized `Y1 − Y0` itself, the mirror image of `Oracle-CATE(X)`. Perfect on
+  the ite track (nPEHE = 0) and, on the cate track, the **price of the noise**: it predicts
+  `tau*(x)` plus that row's own `U` and noise, so its nPEHE is `SD(ITE − tau*)/SD(tau*)`, normally
+  well above 1, with a strongly negative Shape R². Read beside `Oracle-ATE` it says how much of
+  `Var(ITE)` no `tau(x)` method should be trying to explain — and it is the reason a good method can
+  beat a *perfect ITE predictor* on the CATE table without anything being wrong. At the ATE level it
+  is near-unbiased (only the row-average of the noise survives), so its `ATE RMSE` is the
+  per-episode sampling floor for that column. Only emitted when the set carries a Monte-Carlo CATE
+  target; without one it would duplicate `Oracle-CATE(X)` exactly.
 
 ### Metrics
 
