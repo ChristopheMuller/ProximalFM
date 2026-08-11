@@ -140,6 +140,53 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 `True`** for the learners and the PFN wrappers), `interactions`, `is_oracle: true` (concatenates the
 true `U` onto `X` — an upper bound, not a competitor), and `estimand:` to override the derived tag.
 
+**`base: tabicl` speed.** TabICL dominates the wall clock for a reason that is entirely outside the
+model: with no cache, every `predict()` re-runs the whole context (2048 rows × 8 ensemble members)
+through the network, and an S-learner predicts twice off one fit. The `tabicl:` block passes options
+straight to `TabICLRegressor`; the benchmark defaults to `kv_cache: repr`, which caches that context
+pass at `fit()` time and reproduces the uncached predictions **bit for bit**. 480 episodes, 6 workers:
+
+| `kv_cache`        | 480 episodes | vs uncached                                  | peak RSS / worker |
+|-------------------|--------------|----------------------------------------------|-------------------|
+| `false` (library) | 30.6 min     | —                                            | 1.61 GiB          |
+| `repr` (default)  | 22.7 min     | bit-identical                                | 1.54 GiB          |
+| `true`            | 16.6 min     | max abs Δ ≈ 3e-7 — 2 float32 ulp             | 2.44 GiB          |
+
+```yaml
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    tabicl: { kv_cache: true }      # 1.8x, at float32 accumulation noise
+    torch_threads: 2                # a further 1.2x; see below
+```
+
+`kv_cache: true` additionally caches the ICL layers' KV projections; the residual difference is
+accumulation order, not a change of estimator. Check the memory column against `n_workers` before
+using it.
+
+`torch_threads:` (any method, default 1) raises the per-worker torch thread count that `_worker`
+otherwise pins to 1. It only matters for the torch-heavy methods — the sklearn ones don't use torch
+threads.
+
+**Don't bother chasing the device.** Once the context pass is cached, every arrangement converges on
+the same ceiling, because the irreducible work is one forward of 8 ensemble members over the 2048
+context rows per episode. Real episodes, 480 of them:
+
+| arrangement                          | ep/s  | 480 episodes |
+|--------------------------------------|-------|--------------|
+| cpu, 6 workers × 1 thread, no cache  | 0.255 | 31.3 min     |
+| cpu, 6 workers × 1 thread, `kv`      | 0.467 | 17.1 min     |
+| cpu, 6 workers × 2 threads, `kv`     | 0.556 | 14.4 min     |
+| mps, 2–3 workers × 2 threads, `kv`   | 0.55  | 14.5 min     |
+| mps, 1 process × 4 threads, `kv`     | 0.569 | 14.1 min     |
+
+`device: mps` is ~5x faster *per episode* than one CPU worker (2.1 s vs 15.0 s), which is why a
+single GPU process keeps up with six CPU ones — but it does not beat them, so it is worth choosing
+only for its memory profile (one 2.4 GiB process instead of six). Breaking the ~0.57 ep/s ceiling
+needs episodes batched into the model's batch dimension, the way the ProximalFM path already does
+it; that means bypassing `TabICLRegressor` and padding the ragged `d_X`, so it would no longer be
+the same predictions.
+
 **Multi-output methods.** KPV / PMMR / NMMR / DFPV fit once and emit several predictions from that
 one fit via an `outputs:` list — much cheaper than four separate entries:
 

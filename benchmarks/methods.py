@@ -1130,28 +1130,51 @@ class CausalPFN_Estimator(CATEEstimator):
 # Base-model registry + factory
 # ─────────────────────────────────────────────────────────────────────────────
 
-# 1. Add a global cache for TabICL models to prevent repeated initializations
-_TABICL_CACHE = {}
+# TabICL inference options, overridable per method with a `tabicl:` block in the
+# config. The defaults are the ones that were measured to matter (n=2048 context,
+# 128 queries, an S-learner's one fit + two predicts, per-episode wall time on a
+# 12-core M-series, 6 worker processes at one torch thread each):
+#
+#   kv_cache=False (the library default)   30.6 min / 480 episodes
+#   kv_cache="repr"                        22.7 min      bit-identical
+#   kv_cache=True                          16.6 min      max|Δ| ~ 3e-7 (2 float32 ulp)
+#
+# `fit()` re-runs the whole 2048-row context through the model on *every* predict
+# when there is no cache, and an S-learner predicts twice (A=1 and A=0) off one
+# fit — that redundant context pass is where the time goes, not the checkpoint
+# load (~0.15 s) or the ensemble size. Caching it once at fit() time is what buys
+# the speedup. "repr" caches the column-embedding KV and the row-interaction
+# outputs and re-runs the ICL transformer at predict time: less saving, ~24x less
+# memory than "kv", and exactly reproducing the uncached numbers. True/"kv" also
+# caches the ICL layers' KV projections; the residual 1e-6 relative difference is
+# float32 accumulation order, not a change of estimator. Peak RSS per worker:
+# 1.54 GiB ("repr") / 1.61 GiB (off) / 2.44 GiB (True) — multiply by n_workers.
+#
+# device: "mps" is ~5x faster than a single-threaded CPU process per episode, but
+# the 6 worker processes already saturate the machine, so at pool level it is a
+# wash (16.5 min) and the workers contend for one GPU. Left on CPU by default;
+# set it if you drop to one worker.
+_TABICL_DEFAULTS: dict = {"kv_cache": True}
 
 
-def _get_cached_tabicl():
-    """Returns a single, globally shared instance of TabICLRegressor."""
+def _make_tabicl(options: dict | None = None):
+    """Return a fresh TabICLRegressor with the benchmark's inference options.
+
+    Fresh, not shared: T-/X-learners call the base-model factory once per arm and
+    expect independent estimators. TabICL construction is free — the checkpoint is
+    loaded inside ``fit()``, not ``__init__`` — so there is nothing to cache here.
+    """
     if not _TABICL_AVAILABLE:
         raise ImportError("tabicl is not installed.")
 
-    if "default" not in _TABICL_CACHE:
-        with silent():
-            # Adjust initialization parameters if your TabICL setup requires them
-            _TABICL_CACHE["default"] = TabICLRegressor()
-
-    return _TABICL_CACHE["default"]
+    with silent():
+        return TabICLRegressor(**{**_TABICL_DEFAULTS, **(options or {})})
 
 
-def _make_base_model(name: str):
-    """Return a fresh sklearn estimator by short name (or cached for FMs)."""
+def _make_base_model(name: str, tabicl_options: dict | None = None):
+    """Return a fresh sklearn estimator by short name."""
     if name == "tabicl":
-        # 2. Divert to the cached singleton instance instead of creating a new one
-        return _get_cached_tabicl()
+        return _make_tabicl(tabicl_options)
 
     factories: dict[str, Callable] = {
         "linear": LinearRegression,
@@ -1262,30 +1285,33 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
     name = cfg["name"]
     cls = cfg["cls"]
 
+    # Inference knobs for a `base: tabicl` method; see _TABICL_DEFAULTS.
+    tabicl_opts = cfg.get("tabicl") or None
+
+    def base_factory(default: str = "linear") -> Callable[[], object]:
+        bn = cfg.get("base", default)
+        return lambda: _make_base_model(bn, tabicl_opts)
+
     factories: dict[str, Callable[[], CATEEstimator]] = {
         "S_Learner": lambda: S_Learner(
-            base_model=_make_base_model(cfg.get("base", "linear")),
+            base_model=base_factory()(),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
             interactions=cfg.get("interactions", False),
         ),
         "T_Learner": lambda: T_Learner(
-            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(
-                bn
-            ),
+            base_model_factory=base_factory(),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
         "X_Learner": lambda: X_Learner(
-            base_model_factory=lambda bn=cfg.get("base", "linear"): _make_base_model(
-                bn
-            ),
+            base_model_factory=base_factory(),
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
         ),
         "P2SLS": lambda: P2SLS(),
         "PLearner": lambda: ProximalPLearner(
-            final_model=_make_base_model(cfg.get("base", "rf")),
+            final_model=base_factory("rf")(),
             n_splits=cfg.get("n_splits", 3),
             random_state=cfg.get("random_state", 42),
             q_clip=cfg.get("q_clip", None),

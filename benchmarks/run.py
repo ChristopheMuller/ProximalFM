@@ -330,8 +330,13 @@ def method_output_names(method_cfg: dict) -> list[str]:
 def _worker(args: tuple) -> tuple[int, dict[str, np.ndarray] | None, float, str | None]:
     b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
     try:
+        # One torch thread per worker keeps n_workers processes from oversubscribing
+        # the machine, but it also throttles the torch-heavy methods to a single
+        # core. `torch_threads:` on the method config lifts that: for `base: tabicl`
+        # (6 workers, 12 logical cores) 1 -> 2 threads is a measured 0.47 -> 0.56
+        # episodes/s, and the sklearn methods do not use torch threads at all.
         try:
-            torch.set_num_threads(1)
+            torch.set_num_threads(int(method_cfg.get("torch_threads", 1)))
             torch.set_num_interop_threads(1)
         except RuntimeError:
             pass
