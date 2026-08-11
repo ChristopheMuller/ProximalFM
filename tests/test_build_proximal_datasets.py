@@ -21,7 +21,7 @@ from synt_eval.realistic_proximal_mechanisms import (
     RealisticProximalGenerator,
 )
 
-from benchmarks.bench_data import (  # noqa: E402
+from benchmarks.data import (  # noqa: E402
     build_benchmark_dict,
     load_benchmark_from_val_dir,
 )
@@ -60,8 +60,8 @@ def pool_and_cfg(tmp_path_factory):
 
 def direct_build(pool):
     """Standardized benchmark dict straight from the in-memory pool."""
-    # Indices 0..14 are the original 15 fields; MU0/MU1/S2/K_eff follow and are
-    # not part of the benchmark view.
+    # Indices 0..14 are the original 15 fields; MU0/MU1/S2/K_eff follow and
+    # carry the Monte-Carlo CATE target, which the benchmark now scores.
     (
         U,
         X,
@@ -78,7 +78,11 @@ def direct_build(pool):
         d_Z,
         seq_lens,
         train_sizes,
-    ) = pool[:15]
+        MU0,
+        MU1,
+        S2,
+        K_eff,
+    ) = pool
     return build_benchmark_dict(
         U=U,
         X=X,
@@ -92,6 +96,10 @@ def direct_build(pool):
         d_W=d_W,
         d_Z=d_Z,
         train_size=int(train_sizes[0].item()),
+        MU0=MU0,
+        MU1=MU1,
+        S2=S2,
+        K_eff=K_eff,
     )
 
 
@@ -105,7 +113,9 @@ def assert_equivalent(direct: dict, rebuilt: dict):
     assert set(direct.keys()) == set(rebuilt.keys())
     for k in direct:
         o, n = direct[k], rebuilt[k]
-        if isinstance(o, torch.Tensor):
+        if o is None or n is None:
+            assert o is None and n is None, k
+        elif isinstance(o, torch.Tensor):
             if o.dim() == 3 and o.shape[-1] > n.shape[-1]:
                 assert (o[..., n.shape[-1] :] == 0).all(), f"{k}: non-zero padding"
                 o = o[..., : n.shape[-1]]
@@ -126,6 +136,44 @@ def test_val_roundtrip_equals_direct_build(pool_and_cfg, tmp_path):
     )
     assert n_files == 1
     assert_equivalent(direct_build(pool), load_benchmark_from_val_dir(tmp_path / "val"))
+
+
+def test_val_roundtrip_carries_the_cate_target(tmp_path):
+    """A replicate build must round-trip MU0/MU1/S2/K_eff, not just Y0/Y1.
+
+    The module fixture uses the default ``mc_cate=1``, where the benchmark is
+    ITE-only by design — so it cannot catch a CATE target lost in the writer.
+    """
+    cfg = RealisticGeneratorConfig(
+        save_dir=tmp_path / "gen_scratch",
+        K=N_DATASETS,
+        seq_len=SEQ_LEN,
+        train_size=PROP_TRAIN,
+        max_dim_U=3,
+        max_dim_X=3,
+        max_dim_W=3,
+        max_dim_Z=3,
+        mc_cate=4,
+        seed=1234,
+        device="cpu",
+    )
+    pool, _, _ = bpd.generate_pool(
+        RealisticProximalGenerator(cfg),
+        n_datasets=N_DATASETS,
+        seq_len=SEQ_LEN,
+        train_size=PROP_TRAIN,
+        mechanisms=MECHANISMS,
+    )
+    bpd.save_validation(
+        pool, tmp_path / "val", cfg, datasets_per_file=None, cli_command="test"
+    )
+
+    direct = direct_build(pool)
+    rebuilt = load_benchmark_from_val_dir(tmp_path / "val")
+    assert direct["true_CATEs"] is not None
+    assert_equivalent(direct, rebuilt)
+    # The whole point: the CATE target is a different object from the ITE one.
+    assert not np.allclose(rebuilt["true_CATEs"], rebuilt["true_ITEs"])
 
 
 def test_val_roundtrip_equals_direct_build_multifile(pool_and_cfg, tmp_path):

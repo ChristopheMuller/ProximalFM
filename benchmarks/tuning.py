@@ -1,5 +1,5 @@
 """
-bench_tuning.py — Generic hyperparameter-tuning scaffolding for baselines.
+tuning.py — Generic hyperparameter-tuning scaffolding for baselines.
 
 Design
 ──────

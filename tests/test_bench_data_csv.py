@@ -1,10 +1,10 @@
-"""Tests for bench_data_csv.py's single-CSV loader."""
+"""Tests for data_csv.py's single-CSV loader."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarks.bench_data_csv import load_benchmark_from_csv
+from benchmarks.data_csv import load_benchmark_from_csv
 
 
 def make_chamber_csv(tmp_path, T=20):

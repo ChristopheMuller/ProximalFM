@@ -1,12 +1,12 @@
 """
-bench_run.py — Single entry-point for the full benchmark pipeline.
+run.py — Single entry-point for the full benchmark pipeline.
 
 Usage
 ─────
-    python bench_run.py                          # uses bench_config.yaml
-    python bench_run.py --config my_config.yaml
-    python bench_run.py --force                  # rerun even if preds exist
-    python bench_run.py --no-parallel            # single-process (debug)
+    python run.py                          # uses config_val.yaml
+    python run.py --config my_config.yaml
+    python run.py --force                  # rerun even if preds exist
+    python run.py --no-parallel            # single-process (debug)
 
 Pipeline
 ────────
@@ -27,6 +27,7 @@ import multiprocessing
 import os
 import sys
 import time
+from typing import Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
@@ -52,14 +53,20 @@ from rich.rule import Rule
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.bench_data import build_benchmark_dict, load_benchmark_from_val_dir
-from benchmarks.bench_data_csv import load_benchmark_from_csv
-from benchmarks.bench_methods import build_method
-from benchmarks.bench_metrics import (
+from benchmarks.data import build_benchmark_dict, load_benchmark_from_val_dir
+from benchmarks.data_csv import load_benchmark_from_csv
+from benchmarks.methods import build_method, method_estimand
+from benchmarks.metrics import (
+    ATE_RICH_COLUMNS,
+    DEFAULT_RICH_COLUMNS,
     compute_all_metrics,
     build_summary_table,
     make_summary_rich_table,
 )
+
+# Above this share of the CATE target's variance being Monte-Carlo sampling
+# noise, the set is too coarsely built to rank methods on and we say so.
+_S2_WARN_THRESHOLD = 0.05
 
 # ── Optional: neural model support ───────────────────────────────────────────
 try:
@@ -84,7 +91,7 @@ def load_config(path: str) -> dict:
         cfg = yaml.safe_load(f)
     for key in ("data", "run"):
         if key not in cfg:
-            raise KeyError(f"bench_config.yaml is missing required section '{key}'.")
+            raise KeyError(f"config_*.yaml is missing required section '{key}'.")
     return cfg
 
 
@@ -142,7 +149,8 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
     # dataset = LinearPriorDataset(**prior_kw)
     batch = next(iter(dataset))
 
-    # Prior dataset yields 14 elements
+    # SCMPrior.get_batch yields 19 elements; S2 and K_eff are appended last, so
+    # the leading 17 keep the order older readers assumed.
     (
         U,
         X,
@@ -161,6 +169,8 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         d_Z,
         seq_len,
         train_size,
+        S2,
+        K_eff,
     ) = batch
 
     # Standardize (context-only stats, no test leakage) and package into the
@@ -179,6 +189,10 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         d_W=d_W,
         d_Z=d_Z,
         train_size=int(train_size[0].item()),
+        MU0=MU0,
+        MU1=MU1,
+        S2=S2,
+        K_eff=K_eff,
     )
 
     torch.save(data, output_dir / "data.pt")
@@ -196,12 +210,16 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
       1. ``data.val_dir`` set and no cached ``data.pt`` (or --force): build the
          standardized dict from the raw val-format directory (``batch_*.pt``,
          as written by synt_eval/build_proximal_datasets.py) and cache it as
-         ``data.pt`` in the run's output dir (bench_plots.py reads it there).
+         ``data.pt`` in the run's output dir (plots.py reads it there).
       2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
          standardized dict from a single real-world CSV (e.g. a Causal
          Chambers export) via ``data.csv_path`` + ``data.columns``, a
          column-name to variable-block mapping. Always yields ``N_BATCH=1``.
       3. Otherwise fall back to an existing ``data.pt`` in the output dir.
+
+    A ``data.pt`` cached before the CATE target existed carries no
+    ``true_CATEs``, so the run falls back to the ITE track and says so on the
+    console. Delete it (or pass ``--force``) to rebuild with the CATE target.
     """
     data_path = output_dir / "data.pt"
     data_cfg = cfg["data"]
@@ -243,7 +261,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
         f"Data file not found at {data_path}. "
         "Set data.source: generate, point data.val_dir at a directory of "
         "batch_*.pt files, or set data.source: csv with data.csv_path + "
-        "data.columns in bench_config.yaml."
+        "data.columns in config_*.yaml."
     )
 
 
@@ -257,6 +275,7 @@ def build_batches(data: dict) -> list[dict]:
     A_np = data["A"].numpy()
     Y_np = data["Y"].numpy()
     true_ITEs_np = data["true_ITEs"]
+    true_CATEs_np = data.get("true_CATEs")
 
     batches = []
     for b in range(data["N_BATCH"]):
@@ -283,6 +302,7 @@ def build_batches(data: dict) -> list[dict]:
                 "W_q": W_np[b, N_TRAIN:],
                 "Z_q": Z_np[b, N_TRAIN:],
                 "true_ITE_std": true_ITEs_np[b],
+                "true_CATE_std": (None if true_CATEs_np is None else true_CATEs_np[b]),
             }
         )
 
@@ -694,17 +714,143 @@ def run_neural_model(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+ORACLE_CATE = "Oracle-CATE(X)"
+ORACLE_ATE = "Oracle-ATE"
+
+TRACK_TITLES = {
+    "cate": "CATE  —  scored against tau*(x) = E[Y1-Y0 | X]",
+    "ite": "ITE  —  scored against the realized Y1-Y0",
+    "ate": "ATE  —  level only",
+}
+
+
+def build_targets(data: dict, batches: list[dict]) -> tuple[dict, Optional[np.ndarray]]:
+    """The per-row ground truths to score against, keyed by target kind.
+
+    Always carries ``"ite"``; carries ``"cate"`` only when the set was built
+    with Monte-Carlo replicates (see ``data.build_benchmark_dict``). The
+    second return value is the per-row sampling variance of the CATE target, or
+    ``None`` — reported as ``s2_over_var``, never subtracted.
+    """
+    targets = {
+        "ite": np.stack(
+            [np.asarray(b["true_ITE_std"]).squeeze() for b in batches]
+        ).astype(np.float32)
+    }
+    if data.get("true_CATEs") is not None:
+        targets["cate"] = np.stack(
+            [np.asarray(b["true_CATE_std"]).squeeze() for b in batches]
+        ).astype(np.float32)
+    s2 = data.get("cate_s2")
+    return targets, None if s2 is None else np.asarray(s2, dtype=np.float32)
+
+
+def describe_targets(targets: dict, s2: Optional[np.ndarray], data: dict) -> None:
+    """Say which estimand is being scored, and how trustworthy the target is."""
+    if "cate" not in targets:
+        console.print(
+            "    [yellow]⚠[/] No Monte-Carlo CATE target in this set — scoring "
+            "the realized ITE only. Every method is then capped by "
+            "E[Var(Y1-Y0 | X)], which is usually most of Var(ITE). Rebuild with "
+            "[cyan]--mc_cate K[/] (K > 1) for the CATE track."
+        )
+        return
+
+    K = data.get("cate_K_eff")
+    k_txt = f", K={int(K.min())}" if K is not None else ""
+    console.print(
+        f"    [green]✓[/] Scoring tau*(x) = E[Y1-Y0 | X] (MU1-MU0{k_txt}), "
+        "with the realized ITE as a secondary track."
+    )
+    if s2 is None:
+        return
+    var = targets["cate"].var(axis=1)
+    share = float(np.median(s2.mean(axis=1)[var > 0] / var[var > 0]))
+    if share > _S2_WARN_THRESHOLD:
+        console.print(
+            f"    [yellow]⚠[/] {share:.1%} of the CATE target's variance is "
+            "Monte-Carlo noise in the target itself (median over episodes). "
+            "It is reported as s2_over_var and never subtracted, so every "
+            "method scores worse than it is; rebuild with a larger --mc_cate."
+        )
+
+
+def method_output_estimands(method_cfg: dict) -> dict[str, str]:
+    """Estimand of each prediction set a single method config yields."""
+    outputs = method_cfg.get("outputs")
+    if outputs:
+        return {o["name"]: method_estimand(method_cfg, o) for o in outputs}
+    return {method_cfg["name"]: method_estimand(method_cfg)}
+
+
+def primary_track(targets: dict) -> str:
+    """The track the live table and the default plots speak in."""
+    return "cate" if "cate" in targets else "ite"
+
+
+def reference_predictions(targets: dict) -> dict[str, np.ndarray]:
+    """Oracle rows: predictions that need no fitting.
+
+    ``Oracle-CATE(X)`` is tau*(x) itself. On the CATE track it must score ~0 —
+    a self-check on the target plumbing — and on the ITE track it is the
+    irreducible noise floor, i.e. the best any method conditioning on X alone
+    can do, which is what makes the tau(x, w) methods' advantage readable.
+    ``Oracle-ATE`` is the best per-episode constant, the nPEHE = 1 anchor.
+    """
+    base = targets.get("cate", targets["ite"])
+    return {
+        ORACLE_CATE: base,
+        ORACLE_ATE: np.repeat(base.mean(axis=1, keepdims=True), base.shape[1], axis=1),
+    }
+
+
+def score_everything(
+    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
+    estimands: dict[str, str],
+    targets: dict[str, np.ndarray],
+    s2: Optional[np.ndarray] = None,
+    references: Optional[dict[str, np.ndarray]] = None,
+) -> pd.DataFrame:
+    """Score every method against every available target, into one long frame.
+
+    One row per (method, episode, target). Scoring is pure numpy over arrays
+    already in memory, so there is no reason to be selective here — the tables
+    decide which rows they can rank fairly.
+    """
+    frames = []
+    for kind, target in targets.items():
+        rows = dict(accumulated)
+        if references:
+            zeros = np.zeros(len(target), dtype=np.float32)
+            rows.update({n: (p, zeros) for n, p in references.items()})
+        for name, (preds, times) in rows.items():
+            frames.append(
+                compute_all_metrics(
+                    preds,
+                    target,
+                    times,
+                    name,
+                    target_kind=kind,
+                    estimand=estimands.get(name, "x"),
+                    is_reference=bool(references and name in references),
+                    s2=s2 if kind == "cate" else None,
+                )
+            )
+    return pd.concat(frames, ignore_index=True)
+
+
 def print_partial_results(
-    accumulated: dict[str, tuple[np.ndarray, np.ndarray]], true_ites: np.ndarray
+    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
+    estimands: dict[str, str],
+    targets: dict[str, np.ndarray],
 ) -> None:
     if not accumulated:
         return
-    frames = [
-        compute_all_metrics(preds, true_ites, times, name)
-        for name, (preds, times) in accumulated.items()
-    ]
-    all_df = pd.concat(frames, ignore_index=True)
-    summary = build_summary_table(all_df)
+    track = primary_track(targets)
+    all_df = score_everything(accumulated, estimands, {track: targets[track]})
+    summary = build_summary_table(all_df, track)
+    if summary.empty:
+        return
     console.print(
         Padding(
             make_summary_rich_table(summary, title="Live Results So Far"),
@@ -722,7 +868,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="CATE benchmark — generate data, run methods, evaluate."
     )
-    default_config = Path(__file__).resolve().parent / "bench_config.yaml"
+    default_config = Path(__file__).resolve().parent / "config_val.yaml"
     parser.add_argument(
         "--config", default=str(default_config), help="Path to the YAML config file."
     )
@@ -762,9 +908,12 @@ def main() -> None:
         f"    [green]✓[/] Loaded: {N_BATCH} episodes × (n_train={data['N_TRAIN']}, n_test={N_TEST})"
     )
     batches = build_batches(data)
-    true_ITEs = np.stack(
-        [np.asarray(b["true_ITE_std"]).squeeze() for b in batches]
-    ).astype(np.float32)
+    targets, cate_s2 = build_targets(data, batches)
+    describe_targets(targets, cate_s2, data)
+
+    # output name -> estimand, filled in as methods are configured; the tables
+    # use it to decide which track can rank a given output.
+    estimands: dict[str, str] = {}
 
     # ── Step 2: Baseline methods ─────────────────────────────────────────────
     method_cfgs: list[dict] = cfg.get("methods", [])
@@ -791,6 +940,7 @@ def main() -> None:
         for mcfg in method_cfgs:
             name = mcfg["name"]
             output_names = method_output_names(mcfg)
+            estimands.update(method_output_estimands(mcfg))
             pred_files = {n: preds_dir / f"{n}_preds.npz" for n in output_names}
 
             # Skip only when every output of this config is already cached.
@@ -822,7 +972,7 @@ def main() -> None:
                 )
                 accumulated[out_name] = (preds, times)
 
-            print_partial_results(accumulated, true_ITEs)
+            print_partial_results(accumulated, estimands, targets)
 
     # ── Step 3 (optional): Neural model checkpoints ──────────────────────────
     model_cfgs = cfg.get("models", [])
@@ -835,7 +985,7 @@ def main() -> None:
             if results is not None:
                 for name, preds, times in results:
                     accumulated[name] = (preds, times)
-                    print_partial_results(accumulated, true_ITEs)
+                    print_partial_results(accumulated, estimands, targets)
 
     # ── Step 4: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 4  Evaluation[/]"))
@@ -845,25 +995,42 @@ def main() -> None:
         console.print("  [red]No method predictions found. Exiting.[/]")
         return
 
-    all_results = pd.concat(
-        [
-            compute_all_metrics(preds, true_ITEs, times, name)
-            for name, (preds, times) in accumulated.items()
-        ],
-        ignore_index=True,
+    eval_cfg = cfg.get("eval", {})
+    references = (
+        reference_predictions(targets) if eval_cfg.get("reference_rows", True) else None
+    )
+    all_results = score_everything(
+        accumulated, estimands, targets, s2=cate_s2, references=references
     )
 
-    summary = build_summary_table(all_results)
-    console.print(
-        Padding(
-            make_summary_rich_table(summary, title="Final Evaluation"),
-            (1, 4),
+    # One table per track. `cate` is the headline; `ite` is where the methods
+    # that read the query rows' proxies are allowed their advantage; `ate` is
+    # the level-only view, and the only place a constant-prediction method says
+    # anything.
+    tracks = [t for t in ("cate", "ite", "ate") if t in targets or t == "ate"]
+    for track in tracks:
+        summary = build_summary_table(all_results, track)
+        if summary.empty:
+            continue
+        columns = ATE_RICH_COLUMNS if track == "ate" else DEFAULT_RICH_COLUMNS
+        console.print(
+            Padding(
+                make_summary_rich_table(
+                    summary, title=TRACK_TITLES[track], columns=columns
+                ),
+                (1, 4),
+            )
         )
+        summary.to_csv(results_dir / f"summary_{track}.csv")
+
+    # summary.csv keeps its name and its meaning "the headline table", so
+    # anything downstream that globs for it still finds the primary track.
+    build_summary_table(all_results, primary_track(targets)).to_csv(
+        results_dir / "summary.csv"
     )
 
     results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)
-    summary.to_csv(results_dir / "summary.csv")
 
     console.print(f"  [green]✓[/] Full results → [cyan]{results_csv}[/]")
     console.print(Rule("[bold green]Done[/]"))

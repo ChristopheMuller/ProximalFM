@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # ─────────────────────────────────────────────────────────────────────────────
 # Method Styling Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# One entry per `name:` in bench_config.yaml (active *and* commented, so styles
+# One entry per `name:` in config_*.yaml (active *and* commented, so styles
 # survive when a method is re-enabled), plus the neural model name.
 #
 # Convention: colour = method family, marker = variant within the family.
@@ -92,6 +92,37 @@ def style_for(method: str) -> dict:
     if prefixes:
         return METHOD_STYLES[max(prefixes, key=len)]
     return {"color": "gray", "marker": "o"}
+
+
+def default_target(csv_path: str | Path) -> str | None:
+    """Which scoring track the plots speak in unless told otherwise.
+
+    ``results.csv`` holds one row per (method, episode, target). The CATE target
+    is the primary one whenever the set carries it; pre-track result files have
+    no ``target`` column at all, and those are read whole.
+    """
+    df = pd.read_csv(csv_path, nrows=200)
+    if "target" not in df.columns:
+        return None
+    return "cate" if (pd.read_csv(csv_path)["target"] == "cate").any() else "ite"
+
+
+def load_results(csv_path: str | Path, target: str | None) -> pd.DataFrame:
+    """Read results.csv, keeping only the rows of one scoring track."""
+    df = pd.read_csv(csv_path)
+    if target is None or "target" not in df.columns:
+        return df
+    df = df[df["target"] == target]
+    if df.empty:
+        raise SystemExit(f"No rows with target={target!r} in {csv_path}.")
+    return df
+
+
+def _suffixed(path: Path, target: str | None) -> Path:
+    """Per-track output filename, so the two tracks' plots never overwrite."""
+    if target is None:
+        return path
+    return path.with_name(f"{path.stem}_{target}{path.suffix}")
 
 
 def plot_ate_bias_vs_npehe(results_dir: Path):
@@ -182,8 +213,8 @@ def plot_ate_bias_vs_npehe(results_dir: Path):
     plt.close()
 
 
-def plot_npehe_boxplot(csv_path: str):
-    df = pd.read_csv(csv_path)
+def plot_npehe_boxplot(csv_path: str, target: str | None = None):
+    df = load_results(csv_path, target)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
     df_valid = df.dropna(subset=["npehe"]).copy()
@@ -219,13 +250,13 @@ def plot_npehe_boxplot(csv_path: str):
     plt.ylabel("")
     plt.legend(loc="lower right")
 
-    output_file = Path(csv_path).parent / "plot_npehe_box.png"
+    output_file = _suffixed(Path(csv_path).parent / "plot_npehe_box.png", target)
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
 
 
-def plot_cd_diagram(csv_path: str):
+def plot_cd_diagram(csv_path: str, target: str | None = None):
     """Critical-difference diagram of methods ranked by per-episode nPEHE.
 
     Runs a Friedman omnibus test + Nemenyi post-hoc (via autorank) over the
@@ -245,10 +276,14 @@ def plot_cd_diagram(csv_path: str):
         warnings.warn("autorank not installed; skipping CD diagram.")
         return
 
-    df = pd.read_csv(csv_path)
+    df = load_results(csv_path, target)
     if "npehe" not in df.columns:
         warnings.warn("No 'npehe' column found; skipping CD diagram.")
         return
+    # Oracles are anchors, not competitors: including them would shift every
+    # method's average rank and inflate the omnibus test.
+    if "is_reference" in df.columns:
+        df = df[~df["is_reference"].astype(bool)]
 
     n_episodes = df["episode"].nunique()
 
@@ -303,14 +338,14 @@ def plot_cd_diagram(csv_path: str):
         y=1.05,
     )
 
-    output_file = Path(csv_path).parent / "plot_cd_npehe.png"
+    output_file = _suffixed(Path(csv_path).parent / "plot_cd_npehe.png", target)
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
 
 
-def plot_true_vs_pred_ate(csv_path: str):
-    df = pd.read_csv(csv_path)
+def plot_true_vs_pred_ate(csv_path: str, target: str | None = None):
+    df = load_results(csv_path, target)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
     min_val = min(
@@ -347,20 +382,22 @@ def plot_true_vs_pred_ate(csv_path: str):
         "True vs. Predicted ATE across Episodes", y=1.02, fontsize=16, fontweight="bold"
     )
 
-    output_file = Path(csv_path).parent / "plot_ate_scatter.png"
+    output_file = _suffixed(Path(csv_path).parent / "plot_ate_scatter.png", target)
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
 
 
-def plot_cate_r2_boxplot(csv_path: str):
-    df = pd.read_csv(csv_path)
+def plot_shape_r2_boxplot(csv_path: str, target: str | None = None):
+    df = load_results(csv_path, target)
     sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
     df_valid = df.dropna(subset=["shape_r2"]).copy()
 
     if df_valid.empty:
-        warnings.warn("No heterogeneity in treatment effect. Skipping CATE R2 boxplot.")
+        warnings.warn(
+            "No heterogeneity in treatment effect. Skipping shape R2 boxplot."
+        )
         return
 
     # Order methods by median shape R² (best at the top).
@@ -389,27 +426,34 @@ def plot_cate_r2_boxplot(csv_path: str):
     # Clip the X-axis so massive negative outliers don't squash the plot
     ax.set_xlim(-2.05, 1.05)
 
-    plt.title(
-        "CATE Estimation: R² (Shape) Distribution", fontsize=16, fontweight="bold"
-    )
-    plt.xlabel("CATE R² (pure shape recovery, ATE bias removed)")
+    # The plotted column is shape_r2, not cate_r2 — label it as such. (CATE R²
+    # is 1 − nPEHE² and is a different curve; it lives in summary_*.csv.)
+    plt.title("CATE Estimation: Shape R² Distribution", fontsize=16, fontweight="bold")
+    plt.xlabel("Shape R² (pure shape recovery, ATE bias removed)")
     plt.ylabel("")
     plt.legend(loc="lower left")
 
-    output_file = Path(csv_path).parent / "plot_cate_r2_box.png"
+    output_file = _suffixed(Path(csv_path).parent / "plot_shape_r2_box.png", target)
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
 
 
-def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
-    # 1. Load the ground truth CATE for this specific episode
+def plot_single_episode_cate(
+    exp_dir: Path, episode_idx: int = 0, target: str | None = None
+):
+    # 1. Load the ground truth for this specific episode. Prefer the Monte-Carlo
+    #    CATE: against the realized ITE this scatter is mostly a noise cloud,
+    #    because Var(ITE | X) is typically most of Var(ITE).
     data_path = exp_dir / "data.pt"
     if not data_path.exists():
         raise FileNotFoundError(f"Could not find data.pt at {data_path}")
 
     data = torch.load(data_path, weights_only=False)
-    true_cate = data["true_ITEs"][episode_idx]
+    if target == "ite" or data.get("true_CATEs") is None:
+        true_cate, target = data["true_ITEs"][episode_idx], "ite"
+    else:
+        true_cate, target = data["true_CATEs"][episode_idx], "cate"
 
     true_cate_eval = np.array(
         true_cate.cpu() if hasattr(true_cate, "cpu") else true_cate
@@ -468,19 +512,22 @@ def plot_single_episode_cate(exp_dir: Path, episode_idx: int = 0):
 
     g.map(plot_scatter_with_ref, "true_cate", "pred_cate", color="#e6550d")
 
-    g.set_axis_labels(f"True CATE (Ep {episode_idx})", "Predicted CATE")
+    truth = "tau*(x)" if target == "cate" else "realized ITE"
+    g.set_axis_labels(f"True {truth} (Ep {episode_idx})", "Predicted CATE")
     g.set_titles(col_template="{col_name}", fontweight="bold")
     g.set(xlim=axis_limits, ylim=axis_limits)
 
     plt.suptitle(
-        f"CATE Estimation: Single Episode View (Index: {episode_idx})",
+        f"CATE Estimation vs {truth}: Single Episode (Index: {episode_idx})",
         y=1.02,
         fontsize=16,
         fontweight="bold",
     )
 
     # 4. Save
-    output_file = exp_dir / "results" / f"plot_cate_scatter_ep{episode_idx}.png"
+    output_file = _suffixed(
+        exp_dir / "results" / f"plot_cate_scatter_ep{episode_idx}.png", target
+    )
     plt.savefig(output_file, dpi=300, bbox_inches="tight")
     print(f"Plot saved successfully to: {output_file}")
     plt.close()
@@ -490,8 +537,8 @@ def resolve_exp_dir(exp: str) -> Path:
     """Resolve an experiment name to its benchmark output directory.
 
     Two layouts exist:
-      * fixed synthetic builds  -> data/synt_eval/<exp>/bench (bench_config_val.yaml)
-      * generated-data runs     -> results/<exp>              (bench_config_gen.yaml)
+      * fixed synthetic builds  -> data/synt_eval/<exp>/bench (config_val.yaml)
+      * generated-data runs     -> results/<exp>              (config_gen.yaml)
     The synthetic layout wins if both are present; `synthetic/<exp>/bench` is
     still accepted for builds made before the default moved under `data/`.
     """
@@ -506,7 +553,7 @@ def resolve_exp_dir(exp: str) -> Path:
     raise SystemExit(
         f"No experiment directory found for '{exp}' "
         f"(tried: {', '.join(str(c) for c in candidates)}). "
-        "Run benchmarks/bench_run.py first, or pass --path explicitly."
+        "Run benchmarks/run.py first, or pass --path explicitly."
     )
 
 
@@ -524,8 +571,19 @@ if __name__ == "__main__":
         default=None,
         help=(
             "Path to a benchmark output directory (containing data.pt, preds/ and "
-            "a results/ sub-folder), e.g. synt_eval/validation_data/bench. "
+            "a results/ sub-folder), e.g. data/synt_eval/<name>/bench. "
             "Overrides --exp for experiments stored elsewhere."
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        choices=["cate", "ite"],
+        default=None,
+        help=(
+            "Which scoring track to plot: 'cate' scores against the "
+            "Monte-Carlo tau*(x) = E[Y1-Y0 | X], 'ite' against the realized "
+            "Y1-Y0. Defaults to cate when the run has it. Outputs are suffixed "
+            "with the track, so both can coexist."
         ),
     )
     args = parser.parse_args()
@@ -536,15 +594,17 @@ if __name__ == "__main__":
     if not full_csv_path.exists():
         raise SystemExit(
             f"{full_csv_path} not found — the benchmark has not produced results "
-            f"in {exp_dir} yet. Run benchmarks/bench_run.py first."
+            f"in {exp_dir} yet. Run benchmarks/run.py first."
         )
 
+    target = args.target or default_target(full_csv_path)
+
     # Existing Plots
-    plot_true_vs_pred_ate(full_csv_path)
-    plot_cate_r2_boxplot(full_csv_path)
-    plot_npehe_boxplot(full_csv_path)
+    plot_true_vs_pred_ate(full_csv_path, target)
+    plot_shape_r2_boxplot(full_csv_path, target)
+    plot_npehe_boxplot(full_csv_path, target)
     plot_ate_bias_vs_npehe(results_dir)
-    plot_cd_diagram(full_csv_path)
+    plot_cd_diagram(full_csv_path, target)
 
     for i in range(5):
-        plot_single_episode_cate(exp_dir, episode_idx=i)
+        plot_single_episode_cate(exp_dir, episode_idx=i, target=target)

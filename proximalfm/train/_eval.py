@@ -21,7 +21,7 @@ class CausalEvaluator:
           unbounded below, so a handful of near-homogeneous episodes (tiny
           Var(τ)) can drive a *mean* arbitrarily negative even when the model is
           good; the median is unaffected. To match the benchmark
-          (``benchmarks/bench_metrics.py``), episodes with
+          (``benchmarks/metrics.py``), episodes with
           ``Var(τ) < homogeneous_var_threshold`` are *excluded* from the R²
           metrics entirely.
         - ATE metrics: computed over the full buffer of episodes.
@@ -35,7 +35,7 @@ class CausalEvaluator:
         self.eps = eps
         # Episodes whose true CATE variance is below this are "constant effect"
         # episodes; the scale-free R² metrics are undefined for them and they
-        # are dropped (matches benchmarks.bench_metrics.ITE_VAR_THRESHOLD).
+        # are dropped (matches benchmarks.metrics.TARGET_VAR_THRESHOLD).
         self.homogeneous_var_threshold = homogeneous_var_threshold
         self.reset()
 

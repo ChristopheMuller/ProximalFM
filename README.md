@@ -251,7 +251,7 @@ synt_eval/validation_data/
 └── val/             # THE data: raw sparse batch_*.pt + metadata.json
 ```
 
-`val/` is the single on-disk format for everything downstream. It is the raw, *unstandardized* layout of `proximalfm.prior._genload.SavePriorDataset` (read back by `LoadPriorDataset` for validation); the benchmark rebuilds its standardized view from these same files at load time (see [`benchmarks/bench_data.py`](benchmarks/bench_data.py) — context-only statistics, no test leakage).
+`val/` is the single on-disk format for everything downstream. It is the raw, *unstandardized* layout of `proximalfm.prior._genload.SavePriorDataset` (read back by `LoadPriorDataset` for validation); the benchmark rebuilds its standardized view from these same files at load time (see [`benchmarks/data.py`](benchmarks/data.py) — context-only statistics, no test leakage).
 
 Explicit flags override the config, which is how you build a **held-out test batch** with the same characteristics but never-seen DGP draws:
 
@@ -304,7 +304,7 @@ number. See [`proximalfm/train/metrics.md`](proximalfm/train/metrics.md) §7.
 
 ### Step 3 — Benchmark against other methods
 
-[`benchmarks/bench_config_val.yaml`](benchmarks/bench_config_val.yaml) is a ready-made benchmark config pointing at this dataset. Its `data:` section is all it takes to consume a fixed build:
+[`benchmarks/config_val.yaml`](benchmarks/config_val.yaml) is a ready-made benchmark config pointing at this dataset. Its `data:` section is all it takes to consume a fixed build:
 
 ```yaml
 data:
@@ -316,7 +316,7 @@ data:
 Run it (after Step 1) with:
 
 ```bash
-uv run benchmarks/bench_run.py --config benchmarks/bench_config_val.yaml
+uv run benchmarks/run.py --config benchmarks/config_val.yaml
 ```
 
 What happens:

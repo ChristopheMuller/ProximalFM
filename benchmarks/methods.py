@@ -1,5 +1,5 @@
 """
-bench_methods.py — CATE estimator classes for the benchmark.
+methods.py — CATE estimator classes for the benchmark.
 
 Design principles
 ─────────────────
@@ -27,6 +27,11 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable, Optional
 import warnings
+
+# The estimand taxonomy lives in the metrics layer (numpy/pandas only) rather
+# than here: metrics must not import this module, which drags in torch,
+# sklearn and the competitor submodules.
+from benchmarks.metrics import ESTIMANDS
 
 # Add this at the very top of your script
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -687,7 +692,7 @@ class NMMR_Wrapper(CATEEstimator):
 
     def __init__(self, **kwargs):
         from benchmarks.baselines.nmmr import NMMRConfig, NMMREstimator
-        from benchmarks.bench_tuning import TuningConfig
+        from benchmarks.tuning import TuningConfig
 
         self._NMMREstimator = NMMREstimator
 
@@ -750,7 +755,7 @@ class NMMR_Wrapper(CATEEstimator):
         Candidates are trained on a train split and ranked by held-out moment
         loss (a fixed-kernel score, so bandwidth choices stay comparable).
         """
-        from benchmarks.bench_tuning import sample_candidates, search, train_val_split
+        from benchmarks.tuning import sample_candidates, search, train_val_split
 
         tc = self._tune_cfg
         candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
@@ -860,18 +865,44 @@ class DFPV_Wrapper(CATEEstimator):
                 f"choose from {sorted(self._VALID_STRATEGIES)}."
             )
 
+        self._outputs = kwargs.get("outputs", None)
+        if self._outputs:
+            for o in self._outputs:
+                strat = o.get("strategy")
+                if strat not in self._VALID_STRATEGIES:
+                    raise ValueError(
+                        f"Unknown DFPV strategy {strat!r} in outputs entry {o!r}; "
+                        f"choose from {sorted(self._VALID_STRATEGIES)}."
+                    )
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("DFPV requires both W and Z proxies.")
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
 
-    def predict(self, X, *, W=None, Z=None):
+    def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other
         # strategies marginalise W internally and ignore it.
-        if self.strategy == "paired":
+        if strategy == "paired":
             return self.model.predict(X, W=W, strategy="paired")
-        return self.model.predict(X, strategy=self.strategy)
+        return self.model.predict(X, strategy=strategy)
+
+    def predict(self, X, *, W=None, Z=None):
+        return self._predict_strategy(self.strategy, X, W=W)
+
+    def predict_variants(self, X, *, W=None, Z=None):
+        # Without this the wrapper would silently accept an `outputs:` block
+        # (it arrives through **cfg) and then return a single prediction keyed
+        # by the method name, which the runner cannot match to the output names
+        # it pre-allocated. One fit, every requested strategy — as for the other
+        # three bridge wrappers.
+        if not self._outputs:
+            return {None: self.predict(X, W=W, Z=Z)}
+        return {
+            o["name"]: self._predict_strategy(o["strategy"], X, W=W)
+            for o in self._outputs
+        }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1137,6 +1168,85 @@ def _make_base_model(name: str):
     return factories[name]()
 
 
+# Estimand of each strategy supported by the proximal bridge methods. This is a
+# property of the *strategy*, not of the method: `paired` evaluates the bridge at
+# the query row's own W, the two marginalisations integrate W out and land back
+# on tau(x), and `marginal` collapses to one scalar per episode.
+_STRATEGY_ESTIMAND = {
+    "paired": "xw",
+    "independent": "x",
+    "conditional": "x",
+    "marginal": "ate",
+}
+
+# Classes whose estimand does not depend on any config flag.
+_CLS_ESTIMAND = {
+    "P2SLS": "ate",  # predict() broadcasts a single fitted ATE
+    "PLearner": "x",  # regresses the proximal score on X; W/Z discarded at predict
+    "CausalForest": "x",  # W/Z go into EconML's nuisance controls, not effect()
+}
+
+# Classes that stack W/Z into the design matrix used at *predict* time, so
+# use_W/use_Z decide whether they answer tau(x) or tau(x, w, z).
+_PROXY_FEATURE_CLASSES = (
+    "S_Learner",
+    "T_Learner",
+    "X_Learner",
+    "CausalFM",
+    "DoPFN",
+    "CausalPFN",
+)
+
+
+def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
+    """Which conditional a method output answers: ``"x"``, ``"xw"`` or ``"ate"``.
+
+    This is what routes an output to the benchmark's tracks, so it is derived
+    from the config rather than declared: every pre-existing config file keeps
+    working and keeps meaning what it did. An explicit ``estimand:`` key (on the
+    method entry, or on the ``outputs[]`` entry for a multi-output method) wins
+    — it is the escape hatch for a method whose wiring this function cannot see.
+
+    The distinction that matters: an ``xw`` output is evaluated at the query
+    row's *own* proxies, so it estimates ``E[Y1 - Y0 | X, W]`` — a finer
+    conditional than the benchmark's primary target, and one that no ``x``
+    method can match on ITE data. It is not a better estimate of tau(x); it is an
+    estimate of something else.
+    """
+    for source in (output_cfg, cfg):
+        if source and source.get("estimand"):
+            declared = source["estimand"]
+            if declared not in ESTIMANDS:
+                raise ValueError(
+                    f"estimand must be one of {ESTIMANDS}, got {declared!r}"
+                )
+            return declared
+
+    strategy = (output_cfg or {}).get("strategy") or cfg.get("strategy")
+    if strategy:
+        if strategy not in _STRATEGY_ESTIMAND:
+            raise ValueError(
+                f"unknown strategy {strategy!r}; expected one of "
+                f"{list(_STRATEGY_ESTIMAND)}"
+            )
+        return _STRATEGY_ESTIMAND[strategy]
+
+    cls = cfg.get("cls")
+    if cls in _CLS_ESTIMAND:
+        return _CLS_ESTIMAND[cls]
+    if cls in _PROXY_FEATURE_CLASSES:
+        # Mirror the factory defaults below: use_W/use_Z default to True for
+        # every class in this tuple, so an entry that says neither is tau(x, w, z).
+        use_W = cfg.get("use_W", True)
+        use_Z = cfg.get("use_Z", True)
+        return "xw" if (use_W or use_Z) else "x"
+
+    # Unknown class: assume the conservative reading. A method that secretly
+    # uses the query proxies and is scored as tau(x) merely looks bad on the
+    # primary track; the reverse would hand it an unearned advantage.
+    return "x"
+
+
 def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
     """Instantiate a CATE estimator from a single YAML method-config dict.
 
@@ -1144,7 +1254,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
     The run script calls this; it never imports individual estimator classes.
 
     Args:
-        cfg : one entry from the 'methods' list in bench_config.yaml.
+        cfg : one entry from the 'methods' list in config_*.yaml.
 
     Returns:
         (display_name, estimator_instance)

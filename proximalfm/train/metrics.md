@@ -242,7 +242,7 @@ mean arbitrarily negative while the model is fine.
 **Near-homogeneous episodes are dropped** from every scale-free metric: an episode with
 `Var(τ) < 1e-6` (`CausalEvaluator.homogeneous_var_threshold`) contributes to `cate/rmse`,
 `cate/sign_agreement` and the ATE keys but not to `cate/npehe`, `cate/r2`, `cate/r2_shape` or
-`ate/bias_norm`. This matches `benchmarks/bench_metrics.py`'s `ITE_VAR_THRESHOLD`. It also means
+`ate/bias_norm`. This matches `benchmarks/metrics.py`'s `TARGET_VAR_THRESHOLD`. It also means
 those four keys are computed on a *different episode subset* than the others — do not algebraically
 combine them.
 

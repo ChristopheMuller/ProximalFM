@@ -1,5 +1,5 @@
 """
-bench_data.py
+data.py
 
 Build the standardized benchmark data dict from the RAW, sparse
 "training-validation" format (the ``batch_*.pt`` + ``metadata.json`` layout
@@ -12,7 +12,7 @@ disk serve both in-training validation and benchmarking.
 
 This module is deliberately free of any ``proximalfm`` import: the benchmark
 must stay runnable in environments where proximalfm is not installed
-(``bench_run.py`` only requires it when *generating* data). ``sparse2dense``
+(``run.py`` only requires it when *generating* data). ``sparse2dense``
 is therefore vendored verbatim from ``proximalfm.prior._genload``; a unit test
 in ``tests/test_bench_data.py`` keeps the two in sync.
 """
@@ -60,6 +60,20 @@ def _squeeze_trailing(t: Tensor) -> Tensor:
     return t
 
 
+def _has_replicates(K_eff: Optional[Tensor]) -> bool:
+    """True when every episode carries more than one Monte-Carlo replicate.
+
+    ``K_eff`` is the *realized* replicate count after ``prior_mc_mem_budget``
+    capping, so it is the only trustworthy witness that ``MU0``/``MU1`` are an
+    average rather than a single draw. A mixed pool (some episodes at ``K = 1``)
+    is refused wholesale: one scalar target per benchmark, no per-episode
+    switching between two different estimands.
+    """
+    if K_eff is None:
+        return False
+    return bool((K_eff > 1).all())
+
+
 def build_benchmark_dict(
     *,
     U: Tensor,
@@ -74,17 +88,37 @@ def build_benchmark_dict(
     d_W: Tensor,
     d_Z: Tensor,
     train_size: int,
+    MU0: Optional[Tensor] = None,
+    MU1: Optional[Tensor] = None,
+    S2: Optional[Tensor] = None,
+    K_eff: Optional[Tensor] = None,
 ) -> dict:
     """Standardize a raw pool of datasets into the benchmark data dict.
 
     Covariates/proxies are standardized with statistics computed ONLY on the
     first ``train_size`` rows (the context the methods may see — no test
-    leakage), and ``Y``/``true_ITEs`` are scaled by the observed training
-    outcomes' mean/std. Schema matches what ``bench_run.py`` saves as
+    leakage), and ``Y``/``true_ITEs``/``true_CATEs`` are scaled by the observed
+    training outcomes' mean/std. Schema matches what ``run.py`` saves as
     ``data.pt``.
 
     ``U``/``X``/``W``/``Z`` are dense ``[B, T, d]``; ``A``/``Y_obs``/``Y0``/
     ``Y1`` are ``[B, T]`` (a trailing singleton dim is squeezed off).
+
+    Two ground truths, and the difference is the whole point of the benchmark:
+
+    ``true_ITEs``
+        ``Y1 − Y0`` on the query rows — one *realized* draw of the individual
+        effect, carrying that row's own ``U`` and noise.
+    ``true_CATEs``
+        ``MU1 − MU0``, the Monte-Carlo estimate of ``tau*(x) = E[Y1 − Y0 | X=x]``
+        that ``SCMPrior`` builds from ``K_eff`` replicates per query row. This is
+        the estimand ProximalFM is trained on; scoring against ``true_ITEs``
+        instead buries every method under an irreducible noise floor.
+
+    ``true_CATEs`` is ``None`` unless ``MU0``/``MU1`` are given **and** every
+    episode has ``K_eff > 1``. At ``K = 1`` the "Monte-Carlo estimate" is a
+    single draw — the same object as the ITE, with none of its honesty — so the
+    gate is what keeps a ``--mc_cate 1`` set from silently scoring as a CATE set.
     """
     train_size = int(train_size)
     B, T, _ = X.shape
@@ -116,6 +150,21 @@ def build_benchmark_dict(
         ((Y1[:, train_size:] - Y0[:, train_size:]) / y_ctx_std).cpu().numpy()
     )
 
+    true_CATEs_std = None
+    cate_s2_std = None
+    cate_K_eff = None
+    if MU0 is not None and MU1 is not None and _has_replicates(K_eff):
+        MU0, MU1 = (_squeeze_trailing(t) for t in (MU0, MU1))
+        true_CATEs_std = (
+            ((MU1[:, train_size:] - MU0[:, train_size:]) / y_ctx_std).cpu().numpy()
+        )
+        cate_K_eff = K_eff.cpu()
+        if S2 is not None:
+            # S2 is a *variance* of the target, so it takes the square of the
+            # scale factor that true_CATEs takes.
+            S2 = _squeeze_trailing(S2)
+            cate_s2_std = (S2[:, train_size:] / y_ctx_std**2).cpu().numpy()
+
     return {
         "U": U_std.cpu(),
         "X": X_std.cpu(),
@@ -127,6 +176,9 @@ def build_benchmark_dict(
         "d_Z": d_Z.cpu(),
         "d_W": d_W.cpu(),
         "true_ITEs": true_ITEs_std,
+        "true_CATEs": true_CATEs_std,
+        "cate_s2": cate_s2_std,
+        "cate_K_eff": cate_K_eff,
         "N_TRAIN": train_size,
         "N_TEST": n_test,
         "N_BATCH": B,
@@ -143,6 +195,10 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
 
     Requires all datasets to share a single ``seq_len`` and ``train_size``
     (the benchmark dict has one scalar ``N_TRAIN``/``N_TEST``).
+
+    ``MU0``/``MU1``/``S2``/``K_eff`` are picked up when the files carry them —
+    every file written by ``proximalfm.prior._genload.write_batch_file`` does,
+    but sets predating that writer do not, and those load as ITE-only.
     """
     val_dir = Path(val_dir)
     files = sorted(val_dir.glob("batch_*.pt"))
@@ -186,6 +242,11 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
     def flat(field: str) -> Tensor:
         return torch.cat([_squeeze_trailing(p[field]) for p in payloads], dim=0)
 
+    def flat_opt(field: str) -> Optional[Tensor]:
+        if not all(field in p for p in payloads):
+            return None
+        return flat(field)
+
     return build_benchmark_dict(
         U=densify("U", "d_U"),
         X=densify("X", "d_X"),
@@ -199,4 +260,8 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
         d_W=torch.cat([p["d_W"] for p in payloads]),
         d_Z=torch.cat([p["d_Z"] for p in payloads]),
         train_size=train_size,
+        MU0=flat_opt("MU0"),
+        MU1=flat_opt("MU1"),
+        S2=flat_opt("S2"),
+        K_eff=flat_opt("K_eff"),
     )

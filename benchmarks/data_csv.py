@@ -1,12 +1,12 @@
 """
-bench_data_csv.py — Build the standardized benchmark data dict from a single
+data_csv.py — Build the standardized benchmark data dict from a single
 real-world CSV (e.g. a Causal Chambers export), given a user-supplied column
 to variable-block mapping.
 
 Unlike ``load_benchmark_from_val_dir`` (many synthetic episodes sharing one
 ``seq_len``/``train_size``), this loader always produces exactly one episode
 (``N_BATCH == 1``): a single dataset, evaluated on its own train/test split.
-Downstream (``bench_methods.py``, ``bench_metrics.py``) needs no changes for
+Downstream (``methods.py``, ``metrics.py``) needs no changes for
 this — every estimator and metric already operates per-episode.
 
 The mapping mirrors the one used in
@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from benchmarks.bench_data import build_benchmark_dict
+from benchmarks.data import build_benchmark_dict
 
 _REQUIRED_KEYS = ("X", "W", "Z", "A", "Y", "Y0", "Y1")
 

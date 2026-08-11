@@ -16,7 +16,7 @@ consistency ``Y = Y_A`` holds *exactly* rather than up to measurement noise.
 NOT standardized — on purpose
 ─────────────────────────────
 Standardization already happens downstream in
-``benchmarks/bench_data.py::build_benchmark_dict`` (``safe_standardize``), and
+``benchmarks/data.py::build_benchmark_dict`` (``safe_standardize``), and
 it is deliberately computed from the **first ``train_size`` rows only** so that
 no test-set statistics leak into the context the methods see. Standardizing
 here would (a) double-standardize and (b) use *all* rows, destroying exactly

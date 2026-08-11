@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from benchmarks.bench_data import (
+from benchmarks.data import (
     build_benchmark_dict,
     load_benchmark_from_val_dir,
     sparse2dense,
@@ -23,7 +23,10 @@ def _rand_padded(B, T, dims, max_dim, g):
     return x * mask.unsqueeze(1)
 
 
-def make_pool(B=6, T=32, train_size=24, max_dim=4, seed=0):
+def make_pool(B=6, T=32, train_size=24, max_dim=4, seed=0, K=8):
+    """A raw pool. ``K`` is the Monte-Carlo replicate count behind MU0/MU1;
+    ``K=1`` makes them single draws, which the loader must refuse to treat as a
+    CATE target."""
     g = torch.Generator().manual_seed(seed)
     dims = {
         k: torch.randint(1, max_dim + 1, (B,), generator=g)
@@ -43,6 +46,13 @@ def make_pool(B=6, T=32, train_size=24, max_dim=4, seed=0):
         "A_probs": torch.rand(B, T, generator=g),
         "Y0": torch.randn(B, T, generator=g),
         "Y1": torch.randn(B, T, generator=g) + 1.0,
+        # The MC CEPO target is a *different* object from the realized ITE —
+        # deliberately not derivable from Y0/Y1 here, so any test that confuses
+        # the two fails loudly.
+        "MU0": torch.randn(B, T, generator=g),
+        "MU1": torch.randn(B, T, generator=g) + 1.0,
+        "S2": torch.rand(B, T, generator=g) * 0.1,
+        "K_eff": torch.full((B,), K, dtype=torch.long),
         **dims,
         "seq_lens": torch.full((B,), T, dtype=torch.long),
         "train_sizes": torch.full((B,), train_size, dtype=torch.long),
@@ -67,6 +77,10 @@ def write_val_file(path, pool, sl=slice(None)):
         "Y_obs": pool["Y_obs"][sl],
         "Y0": pool["Y0"][sl],
         "Y1": pool["Y1"][sl],
+        "MU0": pool["MU0"][sl],
+        "MU1": pool["MU1"][sl],
+        "S2": pool["S2"][sl],
+        "K_eff": pool["K_eff"][sl],
         "d_U": d_U,
         "d_X": d_X,
         "d_W": d_W,
@@ -92,13 +106,19 @@ def build_from_pool(pool):
         d_W=pool["d_W"],
         d_Z=pool["d_Z"],
         train_size=int(pool["train_sizes"][0]),
+        MU0=pool["MU0"],
+        MU1=pool["MU1"],
+        S2=pool["S2"],
+        K_eff=pool["K_eff"],
     )
 
 
 def assert_dicts_equal(a, b):
     assert set(a.keys()) == set(b.keys())
     for k in a:
-        if isinstance(a[k], torch.Tensor):
+        if a[k] is None or b[k] is None:
+            assert a[k] is None and b[k] is None, k
+        elif isinstance(a[k], torch.Tensor):
             torch.testing.assert_close(a[k], b[k])
         elif isinstance(a[k], np.ndarray):
             np.testing.assert_allclose(a[k], b[k], rtol=1e-5, atol=1e-6)
@@ -175,6 +195,71 @@ def test_build_benchmark_dict_schema_and_stats():
     np.testing.assert_allclose(
         data["true_ITEs"], expected.numpy(), rtol=1e-5, atol=1e-6
     )
+
+    # true_CATEs = (MU1 - MU0) on the same rows, same scale. A *different*
+    # quantity from true_ITEs — that difference is the point of the benchmark.
+    assert data["true_CATEs"].shape == (B, T - train_size)
+    expected_cate = (pool["MU1"][:, train_size:] - pool["MU0"][:, train_size:]) / y_std
+    np.testing.assert_allclose(
+        data["true_CATEs"], expected_cate.numpy(), rtol=1e-5, atol=1e-6
+    )
+    # S2 is a variance of that target, so it scales by the *square*.
+    expected_s2 = pool["S2"][:, train_size:] / y_std**2
+    np.testing.assert_allclose(
+        data["cate_s2"], expected_s2.numpy(), rtol=1e-5, atol=1e-6
+    )
+    torch.testing.assert_close(data["cate_K_eff"], pool["K_eff"])
+
+
+def test_no_cate_target_without_replicates():
+    """K_eff == 1 makes MU0/MU1 single draws, not an average. Refuse them."""
+    pool = make_pool(K=1)
+    data = build_from_pool(pool)
+    assert data["true_CATEs"] is None
+    assert data["cate_s2"] is None
+    assert data["cate_K_eff"] is None
+    assert data["true_ITEs"] is not None  # the ITE track still works
+
+
+def test_no_cate_target_when_mixed_replicate_counts():
+    """One target per benchmark: a pool with any K == 1 episode is ITE-only."""
+    pool = make_pool(K=8)
+    pool["K_eff"][2] = 1
+    assert build_from_pool(pool)["true_CATEs"] is None
+
+
+def test_no_cate_target_when_mu_absent():
+    """Sets predating write_batch_file carry no MU at all."""
+    pool = make_pool()
+    data = build_benchmark_dict(
+        U=pool["U"],
+        X=pool["X"],
+        W=pool["W"],
+        Z=pool["Z"],
+        A=pool["A"],
+        Y_obs=pool["Y_obs"],
+        Y0=pool["Y0"],
+        Y1=pool["Y1"],
+        d_X=pool["d_X"],
+        d_W=pool["d_W"],
+        d_Z=pool["d_Z"],
+        train_size=int(pool["train_sizes"][0]),
+    )
+    assert data["true_CATEs"] is None
+
+
+def test_load_val_dir_without_mu_fields(tmp_path):
+    """A val file written before MU0/MU1 existed loads as an ITE-only set."""
+    pool = make_pool()
+    write_val_file(tmp_path / "batch_000000.pt", pool)
+    payload = torch.load(tmp_path / "batch_000000.pt", weights_only=True)
+    for k in ("MU0", "MU1", "S2", "K_eff"):
+        payload.pop(k)
+    torch.save(payload, tmp_path / "batch_000000.pt")
+
+    data = load_benchmark_from_val_dir(tmp_path)
+    assert data["true_CATEs"] is None
+    assert data["true_ITEs"].shape == (6, 32 - 24)
 
 
 def test_build_benchmark_dict_squeezes_trailing_singleton():
