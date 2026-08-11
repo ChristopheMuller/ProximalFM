@@ -41,8 +41,8 @@ readers stay valid:
     MU0, MU1, S2, K_eff
 
 
-Replicate mode and the estimand (ROADMAP B1)
---------------------------------------------
+Replicate mode and the estimand
+-------------------------------
 
 With ``mc_cate = K > 1`` each *query* row is replicated ``K`` times through the
 latent and noise draw with its covariate row held fixed, and the target is
@@ -54,7 +54,7 @@ is not a free choice: it is exactly the estimand
 ``SCMPrior.generate_dataset`` supervises the model on
 (``proximalfm/prior/_dataset.py``, which replicates ``X`` and re-runs ``f_U``
 *and* ``f_W`` per replicate). Scoring a posterior against any other conditional
--- notably ``E[Y1 - Y0 | X, W, Z]``, which the ROADMAP originally proposed --
+-- notably ``E[Y1 - Y0 | X, W, Z]``, the other natural choice --
 measures a different object than the one the model was fit to, and a perfectly
 calibrated model then reads as systematically over-wide.
 

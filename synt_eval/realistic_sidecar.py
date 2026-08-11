@@ -1,4 +1,4 @@
-"""The ``frozen_meta.pt`` sidecar for replicate-bearing realistic sets (ROADMAP B3).
+"""The ``frozen_meta.pt`` sidecar for replicate-bearing realistic sets.
 
 ``val/`` files carry the episodes; they cannot carry the two things a
 distributional score needs:

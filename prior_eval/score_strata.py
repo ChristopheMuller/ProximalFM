@@ -1,4 +1,4 @@
-"""ROADMAP A2 -- score a checkpoint on each stratified cut of a frozen set.
+"""Score a checkpoint on each stratified cut of a frozen set.
 
     uv run python -m prior_eval.score_strata \\
         --dir data/prior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
@@ -35,7 +35,7 @@ the same caveat for a different reason: their binomial floor scales with the
 *rows per episode inside the cut*, so a row-level cut that keeps a third of each
 episode's rows widens the IQR on sampling noise alone.
 
-**The headline for A2** is ``sd_over_rmse`` on ``weak_proxy`` against its
+**The headline** is ``sd_over_rmse`` on ``weak_proxy`` against its
 complement. Pooled ~1 with ``weak_proxy`` well below 1 is the failure the
 roadmap names: the posterior is *not* widening where proximal identification is
 fragile, which is worse than being merely inaccurate there.
@@ -82,10 +82,10 @@ COMPARABLE = (
 SCALE_BOUND = ("crps", "mean_sd", "width50", "width90")
 
 #: ``sd_over_rmse`` below this is genuinely over-confident: intervals narrower
-#: than the errors warrant. **The A2 alarm is gated on this absolute level, not
+#: than the errors warrant. **The alarm is gated on this absolute level, not
 #: on the stratum-vs-complement gap alone.** A model that is 3x too wide
 #: everywhere is over-*dispersed*; one of its strata being relatively less wide
-#: is not the failure ROADMAP A2 describes, and reporting it as such would fire
+#: is not the failure this pass looks for, and reporting it as such would fire
 #: on every early checkpoint.
 OVERCONFIDENT = 0.9
 
@@ -301,21 +301,22 @@ def _print_verdict(results: Dict[str, Dict[str, float]], manifest: Dict[str, Any
         if relatively_narrower and weak < OVERCONFIDENT:
             print(
                 "  ! weak_proxy is over-confident in absolute terms AND narrower "
-                "than its\n    complement. This is the ROADMAP A2 failure: the "
-                "posterior does not widen\n    where proximal identification is "
+                "than its\n    complement. This is the identification-fragility failure: "
+                "the posterior does not widen\n    where proximal identification is "
                 "fragile."
             )
         elif relatively_narrower:
             # The distinction that makes this tool honest rather than alarming.
             # sd_over_rmse >> 1 everywhere means the model is over-*dispersed*;
             # "relatively narrower" inside that is not over-confidence, and
-            # calling it the A2 failure would cry wolf on every early checkpoint.
+            # calling it the identification-fragility failure would cry wolf on
+            # every early checkpoint.
             print(
                 f"  weak_proxy is narrower than its complement "
                 f"({weak:.2f} vs {weak_out:.2f}), but both are\n"
                 f"  above {OVERCONFIDENT} -- the model is over-DISPERSED here, not "
                 "over-confident. This\n  is a relative statement inside a globally "
-                "too-wide posterior, not the A2\n  failure. Re-read it once pooled "
+                "too-wide posterior, not the\n  identification-fragility failure. Re-read it once pooled "
                 "sd_over_rmse approaches 1; the gap is what\n  to watch, since it "
                 "is what would survive the width coming down."
             )
@@ -390,8 +391,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
 
     print(f"\ncheckpoint: {args.ckpt}" + (f" (step {step})" if step else ""))
-    # Names the set by content, not by a reusable directory name (ROADMAP A4) --
-    # these tables get quoted into the roadmap and the paper.
+    # Names the set by content, not by a reusable directory name: a directory
+    # name can be reused, the digest cannot, and these tables get quoted.
     print(f"frozen set: {args.dir}  [content_digest={frozen_content_digest(meta)}]")
     _print_report(results, manifest)
 

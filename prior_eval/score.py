@@ -1,4 +1,4 @@
-"""Score a checkpoint's CATE posterior on a frozen set (EVAL_PLAN step 5).
+"""Score a checkpoint's CATE posterior on a frozen set.
 
     uv run python -m prior_eval.score --dir data/prior_eval/frozen_v1 \
         --ckpt path/to/model.ckpt
@@ -125,7 +125,7 @@ def run(
 
     print()
     # The digest, not the path, is what makes this table quotable later: a
-    # directory name can be reused, the digest cannot (ROADMAP A4).
+    # directory name can be reused, the digest cannot.
     print(f"Frozen set: {out}  [content_digest={digest}]")
     print(f"Checkpoint: {ckpt} (step {step}, loss_type={model.loss_type})")
     print(

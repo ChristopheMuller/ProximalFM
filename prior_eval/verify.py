@@ -28,7 +28,7 @@ makes the later numbers meaningless, so the first FAIL is the one to read.
    a target outside it is one no forecast can ever cover -- and
    ``out_of_grid_frac`` at score time would be the first thing to invalidate
    every other number.
-6. **Stratification readiness.** The per-episode hyperparameters A2 cuts on are
+6. **Stratification readiness.** The per-episode hyperparameters the cuts need are
    present and actually vary.
 """
 
@@ -350,7 +350,8 @@ def verify(
         )
         noise.note(
             "This is s against the *prior spread* of tau*, an upper bound on "
-            "sigma_post. The ratio that decides C4 is s/sigma_post, which is "
+            "sigma_post. The ratio that decides whether the predictive-side "
+            "noise convolution is needed is s/sigma_post, which is "
             "larger and needs a checkpoint -- run prior_eval.report."
         )
         if ratio_pooled > 0.2:
@@ -405,7 +406,7 @@ def verify(
             )
     elif not hp_keys:
         strata.fail(
-            "no per-episode sampled_hp in the sidecar: A2's stratified cuts have "
+            "no per-episode sampled_hp in the sidecar: the stratified cuts have "
             "nothing to cut on (was collect_mechanism_diagnostics set?)"
         )
     else:

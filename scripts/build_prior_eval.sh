@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build a PRODUCTION frozen prior-evaluation set (ROADMAP A1 / A5).
+# Build a PRODUCTION frozen prior-evaluation set.
 #
 #   validation set (selection):  NAME=frozen_prod_v1 SEED=20260806 ./scripts/build_prior_eval.sh
-#   held-out test set (A5):      NAME=frozen_test_v1 SEED=<new>    ./scripts/build_prior_eval.sh
+#   held-out test set:           NAME=frozen_test_v1 SEED=<new>    ./scripts/build_prior_eval.sh
 #
 # Output: data/prior_eval/<NAME>/  ({val/, frozen_meta.pt}; pass the ROOT, not val/).
 #

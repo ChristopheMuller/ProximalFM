@@ -1,4 +1,4 @@
-"""ROADMAP A2 -- stratified cuts of a frozen evaluation set.
+"""Stratified cuts of a frozen evaluation set.
 
     uv run python -m prior_eval.strata --dir data/prior_eval/frozen_prod_v1
 
@@ -191,7 +191,7 @@ def score_homogeneous_effect(records: Sequence[Any]) -> np.ndarray:
     """``gamma_hetero``, the outcome remix dial.
 
     ``gamma -> 0`` collapses the SCM's heterogeneity into a constant treatment
-    effect. Not in ROADMAP's list, but it earns a cut: ``prior_eval.verify``
+    effect. Not an obvious axis to cut on, but it earns one: ``prior_eval.verify``
     showed these episodes drive the out-of-grid tail (a flat ``tau`` sitting past
     the grid edge), and a near-constant target is where a posterior can look
     well-calibrated for reasons that have nothing to do with the proxies.
@@ -230,7 +230,7 @@ def score_covariate_extrapolation(
     further out than the context rows themselves typically are", which needs no
     cross-episode scale and no tuning constant beyond ``q``.
 
-    This is the one cut in A2 with no prior art in the repo, so the definition
+    This is the one cut with no prior art in the repo, so the definition
     is a judgement call rather than an inherited constant. Returns
     ``(mask, distance)`` both shaped ``(n_datasets, n_q)``.
     """
@@ -416,7 +416,7 @@ def build_manifest(
     return {
         "format_version": STRATA_FORMAT_VERSION,
         # Provenance: which set these cuts describe. load_manifest refuses a
-        # mismatch, which is ROADMAP A4 enforced at the one place it can be.
+        # mismatch -- set identity enforced at the one place it can be.
         "source": {
             "n_datasets": int(glob["n_datasets"]),
             "n_q": n_q,

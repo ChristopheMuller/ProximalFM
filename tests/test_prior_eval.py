@@ -1,4 +1,4 @@
-"""The distributional evaluator (EVAL_PLAN step 5).
+"""The distributional evaluator.
 
 Two kinds of check, and both are needed:
 
@@ -260,7 +260,7 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
         "prior_dist/s_over_sd",
     ):
         assert key in metrics, key
-    # No per-arm predictions exist for a single-CATE head (EVAL_PLAN step 2).
+    # No per-arm predictions exist for a single-CATE head.
     assert not any(k.startswith("prior_point/po/") for k in metrics)
 
 
@@ -359,7 +359,7 @@ def test_padded_feature_columns_are_trimmed_before_predict(frozen):
 
 def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
     """``prior_dist/grid_scale`` converts head units into the frozen space, and the
-    trainer multiplies its sigma schedule by it (EVAL_PLAN step 6e). A caller
+    trainer multiplies its sigma schedule by it. A caller
     that hardcoded 1.0 would be right at n_max and wrong on every sweep prefix,
     so pin both ends."""
     cfg, out = frozen

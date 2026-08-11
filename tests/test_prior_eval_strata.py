@@ -1,4 +1,4 @@
-"""Stratified evaluation of a frozen set (ROADMAP A2).
+"""Stratified evaluation of a frozen set.
 
 The whole design rests on one property: ``PosteriorEvaluator`` accumulates
 row-weighted sums, so a stratum's metrics are *exactly* what a separate pass
@@ -295,25 +295,26 @@ def _verdict_text(weak_in, weak_out, capsys):
     return capsys.readouterr().out
 
 
-def test_the_a2_alarm_needs_absolute_over_confidence_not_just_a_gap(capsys):
+def test_the_alarm_needs_absolute_over_confidence_not_just_a_gap(capsys):
     """A globally over-wide model must not be reported as over-confident.
 
     ``sd_over_rmse`` far above 1 everywhere means the posterior is
     over-*dispersed*. One stratum being relatively less wide inside that is not
-    the A2 failure, and firing on it would cry wolf on every early checkpoint --
+    the identification-fragility failure, and firing on it would cry wolf on
+    every early checkpoint --
     which is exactly what the first full run on frozen_prod_v1 did (weak_proxy
     2.86 vs 3.14, both ~3x too wide).
     """
     text = _verdict_text(2.86, 3.14, capsys)
     assert "over-DISPERSED" in text
     # The alarm itself must not fire. Matched on the phrase the alarm branch
-    # owns, not on wrapped prose -- the explanatory branch also mentions A2.
-    assert "ROADMAP A2 failure" not in text
+    # owns, not on wrapped prose -- the explanatory branch names it too.
+    assert "This is the identification-fragility failure" not in text
 
 
-def test_the_a2_alarm_fires_when_the_stratum_is_actually_over_confident(capsys):
+def test_the_alarm_fires_when_the_stratum_is_actually_over_confident(capsys):
     text = _verdict_text(0.72, 0.98, capsys)
-    assert "ROADMAP A2 failure" in text
+    assert "This is the identification-fragility failure" in text
     assert "over-confident in absolute terms" in text
 
 

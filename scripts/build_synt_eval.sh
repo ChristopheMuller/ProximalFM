@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build a PRODUCTION realistic-mechanism replicate set (ROADMAP B1-B4 / B5).
+# Build a PRODUCTION realistic-mechanism replicate set.
 #
 #   validation set (selection):  NAME=realistic_prod_v1 SEED=20260807 ./scripts/build_synt_eval.sh
-#   held-out test set (B5):      NAME=realistic_test_v1 SEED=<new>    ./scripts/build_synt_eval.sh
+#   held-out test set:           NAME=realistic_test_v1 SEED=<new>    ./scripts/build_synt_eval.sh
 #
 # Output: data/synt_eval/<NAME>/  ({val/, frozen_meta.pt, config.yaml, manifest.json};
 # pass the ROOT to --synt_eval_dir, the val/ subdirectory to the benchmark harness).

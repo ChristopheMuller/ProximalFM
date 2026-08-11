@@ -1,4 +1,4 @@
-"""The n-sweep (ROADMAP A6).
+"""The n-sweep.
 
 Three things are pinned here, in decreasing order of how expensive the bug
 would be:

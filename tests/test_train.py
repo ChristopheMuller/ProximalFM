@@ -86,7 +86,7 @@ def tiny_replicate_set(tmp_path_factory):
 
     Built with ``--mc_cate > 1``, so it carries a Monte-Carlo CEPO target and a
     ``frozen_meta.pt`` sidecar -- the two things that make a realistic set
-    scorable distributionally at all (ROADMAP B1-B3).
+    scorable distributionally at all.
     """
     from synt_eval.build_proximal_datasets import build as build_realistic
     from synt_eval.build_proximal_datasets import parse_args as parse_realistic_args
@@ -775,7 +775,7 @@ def test_dist_validate_emits_sigma_on_the_width_axis(
 
 
 # ---------------------------------------------------------------------------
-# synt_dist/* -- the realistic replicate surface (ROADMAP B4)
+# synt_dist/* -- the realistic replicate surface
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""Replicate mode in the realistic generator (ROADMAP B1/B2/B3).
+"""Replicate mode in the realistic generator.
 
 The load-bearing test here is ``test_legacy_path_is_byte_identical``: replicate
 mode had to be threaded through twelve hand-written mechanisms without moving a
@@ -318,7 +318,7 @@ def test_score_frozen_set_reads_a_realistic_set_unchanged(toy_set):
 
     The namespace is the *caller's* choice, not a property of the set -- which
     is what lets the trainer score a prior set and a realistic set in the same
-    step without their keys colliding (ROADMAP B4). The trainer's own
+    step without their keys colliding. The trainer's own
     ``synt_validate()`` passes an explicit ``prefix_point="synt_point/"``
     rather than ``None`` (both metric kinds come from one pass over the
     replicate set); this test exercises ``prefix_point=None`` directly as a

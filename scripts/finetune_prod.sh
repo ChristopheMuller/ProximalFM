@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PRODUCTION fine-tune (ROADMAP C1) -- point-estimate checkpoint -> calibrated
+# PRODUCTION fine-tune -- point-estimate checkpoint -> calibrated
 # posterior over tau, on GPU.
 #
 #   CUDA=3 RUN=mc_run_7_NoiseAware ./scripts/finetune_prod.sh
@@ -12,20 +12,20 @@
 #
 # The three choices that are not obvious from the flags
 # -----------------------------------------------------
-# GRID (D1). --nbins is the head's output WIDTH, so changing it throws the
+# GRID. --nbins is the head's output WIDTH, so changing it throws the
 # pretrained decoder away (94 % load instead of 100 %). --cate_vmin/--cate_vmax
 # are not parameters. Hence +-5 at nbins 1000: the head loads whole, the bin
 # width grows 0.008 -> 0.010, and the 0.96 % of frozen-set targets that fell
 # outside +-3 come back inside the grid. Do not change --nbins again mid-programme.
 #
-# SIGMA FLOOR (C2). hl_final_sigma is a HARD floor on learnable posterior width:
+# SIGMA FLOOR. hl_final_sigma is a HARD floor on learnable posterior width:
 # a perfect fit reports sqrt(sigma^2 + w^2/12). A flat mean_sd curve sitting on
 # it is the SCHEDULE, not convergence -- which is why diag/sigma is logged on
 # mean_sd's axis. Plot them together, always. The grid's own floor here is
 # w/sqrt(12) ~ 0.0029, so the schedule binds for anything above ~0.003.
-# HL_FINAL_SIGMA is the axis of the C2 sweep; keep everything else fixed across it.
+# HL_FINAL_SIGMA is the axis of the sigma sweep; keep everything else fixed across it.
 #
-# SELECTION (D2, written down BEFORE any number exists). Rank on prior_dist/crps
+# SELECTION (written down BEFORE any number exists). Rank on prior_dist/crps
 # (proper, so it ranks; but it mixes calibration and sharpness and diagnoses
 # neither). REJECT any candidate with:
 #     prior_dist/sd_over_rmse outside [0.90, 1.15]
@@ -38,7 +38,7 @@
 #   out_of_grid_frac -> sd_over_rmse -> pit_ks_pooled vs its band (then p90)
 #   -> crps vs crps_over_oracle -> diag/sigma vs mean_sd -> prior_point/* vs synt_point/*
 #
-# Cost (D4, still unmeasured at production sizes): every eval episode re-encodes
+# Cost (still unmeasured at production sizes): every eval episode re-encodes
 # the full n_max = 2048 context. *_max_episodes subsamples deterministically (a
 # prefix of the set's episode order); score the full sets at milestones with
 # `python -m prior_eval.score`, not at training cadence.

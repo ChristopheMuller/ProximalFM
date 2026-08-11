@@ -1,4 +1,4 @@
-"""Streaming distributional evaluation of the CATE posterior (EVAL_PLAN step 5).
+"""Streaming distributional evaluation of the CATE posterior.
 
 Point **and** distributional metrics on a set carrying a low-noise ``tau_star``
 and a ``frozen_meta.pt`` sidecar. Two such sets exist, and ``score_frozen_set``
@@ -514,7 +514,7 @@ def score_episode(
 
     ``dist_evaluators``/``point_evaluators`` fan the *same* forward pass out to
     additional accumulators, each with an optional boolean row mask: the
-    stratified evaluation of ROADMAP A2 scores every cut without predicting
+    stratified evaluation in ``prior_eval.score_strata`` scores every cut without predicting
     more than once, because :class:`PosteriorEvaluator` accumulates row-weighted
     sums and is therefore exactly additive over disjoint row subsets. A ``None``
     mask means every row. Both default to empty, so the training path is
@@ -617,7 +617,7 @@ def score_frozen_set(
 
     ``prefix_point``/``prefix_dist`` namespace the two returned surfaces. The
     defaults are the prior set's, so every existing caller is unchanged. The
-    trainer's *realistic* replicate pass (ROADMAP B4) passes
+    trainer's *realistic* replicate pass passes
     ``prefix_point="synt_point/"``, ``prefix_dist="synt_dist/"`` -- both metric
     kinds from this one call, since point metrics are a side effect of the same
     per-episode forward pass that produces the distributional ones

@@ -212,7 +212,7 @@ ones: `score_episode`'s evaluator fan-out reads both off the same `probs`/`edges
 **Only a replicate-bearing set (`--mc_cate K`, `K > 1`) can be scored here.** The gate is the
 sidecar's absence — a plain `--mc_cate 1` set has no `frozen_meta.pt`, and `score_frozen_set` refuses
 it (`FileNotFoundError`) at `Trainer.__init__` rather than silently scoring either metric kind against
-sampled ITEs. There is no fallback point-only pass over an unreplicated set: before B4, `synt_point/*`
+sampled ITEs. There is no fallback point-only pass over an unreplicated set: `synt_point/*` once
 came from a separate batched pass (`point_validate()`) over `--val_dir` that would happily score
 against `Y1 − Y0` when `MU0`/`MU1` were absent — that path is gone, along with the inflated
 `cate/rmse ≈ √(PEHE² + Var(noise))` numbers it produced. See
@@ -467,7 +467,7 @@ look merely extreme.
 
 ### Stratified cuts — offline only, **no wandb producer**
 
-ROADMAP A2. The same `prior_dist/*` keys, recomputed per stratum of the frozen set, by
+The same `prior_dist/*` keys, recomputed per stratum of the frozen set, by
 `python -m prior_eval.score_strata`. Cuts are defined in `prior_eval/strata.py` and stored as
 a `strata.pt` manifest of per-episode (or per-query-row) membership beside `frozen_meta.pt`; nothing
 about the 365 MB set is duplicated or rebuilt.
@@ -499,7 +499,7 @@ fragile, which is worse than merely being inaccurate there.
 
 ### The `n`-sweep — offline only, **no wandb producer**
 
-ROADMAP A6. The same `prior_dist/*` keys at nested context prefixes, by
+The same `prior_dist/*` keys at nested context prefixes, by
 `python -m prior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
 per metric is a table, not a dashboard. The set needs no rebuild — prefix `n` is the first `n`
 context rows of an episode that already exists, and `prior_dist/grid_scale` (above) is what puts
@@ -512,7 +512,7 @@ Reported per `n` beyond the standard keys:
 | `mean_sd_geo` | Geometric mean over episodes of the per-episode mean sd, **frozen units**. The geometric mean, not the row-weighted one, because episodes differ in `tau` scale by orders of magnitude and the pooled mean is whatever the largest-scale episodes do |
 | `mean_sd_head_geo` | Same, divided by each episode's `grid_scale`, i.e. in the model's **own** units |
 | `rmse_pooled` | `√(mse_obs − mean_s2)` — the target-noise-corrected error, i.e. the *denominator of `sd_over_rmse`*, not `prior_point/cate/rmse_pooled` |
-| `sd_floor` | `√(σ² + w²/12) × grid_scale`. **`σ` comes from `--hl_sigma` (head units, = `loss/hl_sigma` at that step); a checkpoint does not carry it.** Omit the flag and this is the grid term alone, typically ~1e-3 and two orders of magnitude under the real floor — at which point a schedule-pinned flat width curve is indistinguishable from a converged one (C2). `sd_floor_is_grid_only` flags it |
+| `sd_floor` | `√(σ² + w²/12) × grid_scale`. **`σ` comes from `--hl_sigma` (head units, = `loss/hl_sigma` at that step); a checkpoint does not carry it.** Omit the flag and this is the grid term alone, typically ~1e-3 and two orders of magnitude under the real floor — at which point a schedule-pinned flat width curve is indistinguishable from a converged one. `sd_floor_is_grid_only` flags it |
 | `within_frac` | `E[Var per row] / Var(mixture)` — what the model still does not know, over the total. Runs **1 at the prior limit → 0 as context accumulates**. This is the key that discriminates the prior limit |
 | `between_sd` | `√Var(row means)` — the complement: variation the model has resolved |
 | `mixture_sd` | Sd of the pooled mixture, by the law of total variance — **not** the mean of the per-row sds. At the shortest prefix it should approach `prior.tau_sd` |
@@ -533,7 +533,8 @@ Three traps, all specific to this pass:
   with the head. Frozen units are what the posterior *claims* (and the only units commensurable with
   the RMSE, hence with `sd_over_rmse`); head units are what the head *learned*. `β(sd) − β(sd_head)`
   is the size of the standardization effect, and it is not noise.
-- **Do not fit through either end.** The upper end lands on `sd_floor` (that is C2, not convergence)
+- **Do not fit through either end.** The upper end lands on `sd_floor` (that is the schedule, not
+  convergence)
   and the lower end plateaus at the prior — which is the *other* question, not an input to it.
   `fit_window` drops prefixes within `3×` the floor automatically; the small-`n` plateau is left in
   and excluded by hand with `--fit_min` once the table shows where it starts.
@@ -662,7 +663,8 @@ inference. `ate/rmse`, `ate/r2` and `ate/bias_norm` are all point accuracy. (Not
 ## 7. `synt_dist/*` and the set it may be scored on
 
 **The line is drawn at the dataset, not at the surface.** This section used to say `val/dist/*`
-cannot exist at all; ROADMAP B1–B3 changed what is true, and the reasoning is worth keeping because
+cannot exist at all; replicate mode in the realistic generator changed what is true, and the
+reasoning is worth keeping because
 the failure it describes is still one command away.
 
 ### The error
@@ -694,12 +696,12 @@ Two consequences worth internalising:
   posterior against a *different* conditional makes a calibrated model read as systematically
   over-wide, which is the same class of error as scoring the ITE, just subtler.
 - `K` there is moderate, not the prior set's 4000, so `synt_dist/s_over_sd` is **not** negligible the
-  way `prior_dist/s_over_sd` is. It is the series that decides ROADMAP C4; see [§7 of
-  ROADMAP](../../docs/notes/ROADMAP.md).
+  way `prior_dist/s_over_sd` is. It is the series that decides whether the predictive-side
+  noise convolution is needed; the trigger is a sustained value above ~0.15.
 
 ### The point surface is gated by exactly the same thing
 
-Before B4 wired the two together, `synt_point/*` came from a separate batched pass
+Before the two were wired together, `synt_point/*` came from a separate batched pass
 (`point_validate()`) over `--val_dir`, which would run on *any* set — `LoadPriorDataset` substitutes
 `Y0`/`Y1` for `MU0`/`MU1` only when the latter are absent, so a `mc_cate=1` set still produced a number,
 just one inflated by outcome noise (`cate/rmse` estimating `√(PEHE² + Var(noise))` rather than `PEHE`).
@@ -738,7 +740,7 @@ under it.
 
 Default `synt_point/cate/npehe`, with `--best_metric_mode min`. Any key from the val or prior surface
 works, and the comparison is gated on the step where *that surface's pass* actually ran, so
-`--prior_eval_interval` and `--synt_eval_interval` need not coincide. B4 renamed this surface from
+`--prior_eval_interval` and `--synt_eval_interval` need not coincide. This surface was renamed from
 `val/point/*`, and the old spelling is simply gone — a run resumed with it monitors a key nothing
 emits, which `_check_best_metric_config` reports at startup along with two other configurations that
 silently no-op:

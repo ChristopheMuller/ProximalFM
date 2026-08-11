@@ -198,7 +198,7 @@ def test_the_set_has_a_uniform_and_usable_noise_estimate(frozen):
     assert s2.numel() == cfg.n_datasets * cfg.n_q
 
 
-# --- content digest / silent-mutation guard (ROADMAP A4) --------------------
+# --- content digest / silent-mutation guard ---------------------------------
 #
 # The digest is the identity a wandb curve is pinned to, so what matters is not
 # that it exists but that it moves exactly when episode *content* moves --

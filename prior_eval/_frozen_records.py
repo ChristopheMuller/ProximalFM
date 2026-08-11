@@ -1,6 +1,6 @@
 """Adapters from a frozen evaluation set to ``analysis_prior``'s record type.
 
-`analysis_prior` already measures everything ROADMAP A2 wants to cut on --
+`analysis_prior` already measures everything the stratified cuts need --
 proxy relevance, delivered confounding share, overlap, heterogeneity -- but it
 speaks :class:`analysis_prior.generate.PriorDatasetRecord`, built from its own
 cache. The frozen set holds the same information in a different container: the

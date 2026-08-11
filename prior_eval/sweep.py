@@ -1,4 +1,4 @@
-"""ROADMAP A6 -- the ``n``-sweep: does the posterior actually contract?
+"""The ``n``-sweep: does the posterior actually contract?
 
     uv run python -m prior_eval.sweep \\
         --dir data/prior_eval/frozen_prod_v1 --ckpt path/to/model.ckpt
@@ -66,7 +66,7 @@ Two ends of the curve are not power law and must not be fitted through:
 
 - **Upper end, the floor.** Predicted sd cannot go below
   ``sqrt(sigma^2 + w^2/12)`` -- the schedule's smoothing and the bin grid, adding
-  in quadrature (C2). Points within ``FLOOR_MARGIN`` of ``sd_floor`` are flagged
+  in quadrature. Points within ``FLOOR_MARGIN`` of ``sd_floor`` are flagged
   and excluded from the default fit window, because a curve flattening onto the
   floor attenuates ``beta`` toward 0 and reads as "contraction stopped".
   **Pass ``--hl_sigma``**: a checkpoint does not carry the schedule, so without
@@ -287,7 +287,7 @@ def sweep_n(
     A checkpoint does not carry it, and without it ``sd_floor`` is only the grid
     term ``w/sqrt(12)`` -- typically two orders of magnitude below the real
     floor, which makes a schedule-pinned flat curve look like a model that
-    stopped learning (C2). This is the single most consequential optional
+    stopped learning. This is the single most consequential optional
     argument here.
     """
     out = Path(out)
@@ -479,7 +479,7 @@ def fit_window(result: Dict[str, Any], floor_margin: float = FLOOR_MARGIN) -> Li
     Drops the floor-bound upper end (``mean_sd`` within ``floor_margin`` of the
     reported ``sd_floor``): a curve flattening onto the floor attenuates ``beta``
     toward 0, and reading that as "contraction stopped" is the single most
-    likely misreading of this table (C2). The small-``n`` plateau is *not*
+    likely misreading of this table. The small-``n`` plateau is *not*
     dropped automatically -- where it starts is the answer to question 2, not an
     input to it -- so if ``prior_ks`` is already at its floor over several
     prefixes, refit with an explicit ``--fit_min``.
@@ -557,7 +557,7 @@ def _fmt(value: Optional[float], width: int = 9, prec: int = 4) -> str:
 def print_report(result: Dict[str, Any]) -> None:
     by_n = result["by_n"]
     print("\n" + "=" * 92)
-    print("n-sweep: posterior contraction (ROADMAP A6)")
+    print("n-sweep: posterior contraction")
     print("=" * 92)
     print(
         f"\n{result['episodes']} episodes, n_max={result['n_max']}, "
@@ -619,7 +619,7 @@ def _print_verdict(result: Dict[str, Any]) -> None:
         print(
             f"  fit window {fit['window']}; dropped {fit['dropped']} as within "
             f"{FLOOR_MARGIN}x the sd floor (the schedule/grid floor flattens the "
-            "curve; that is C2, not convergence)."
+            "curve; that is the sigma schedule, not convergence)."
         )
     per_sd = fit.get("per_episode_sd")
     if per_sd:
