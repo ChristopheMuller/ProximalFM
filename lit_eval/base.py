@@ -310,6 +310,19 @@ class ProximalDataset(ABC):
             if nm != "U" and not torch.isfinite(t).all():
                 raise ValueError(f"{self.name}: {nm} contains non-finite values")
 
+        # X, W and Z must each be at least one column wide. A zero-width block
+        # is not a smaller version of the format, it is outside it: the sparse
+        # writer's `X.view(-1, 0)` raises an unreadable reshape error, and a
+        # design with no covariates has to say so with an inert column rather
+        # than an absent one. Caught here, before generation time is spent.
+        for nm, d in (("X", raw.d_X), ("W", raw.d_W), ("Z", raw.d_Z)):
+            if d < 1:
+                raise ValueError(
+                    f"{self.name}: d_{nm}={d}; the on-disk format has no "
+                    f"zero-width block. A design with no {nm} needs one inert "
+                    "column (independent noise), not zero columns."
+                )
+
         # Categorical completeness, the structural precondition for proximal
         # identification. Heuristic, exactly as in the prior: necessary, not
         # sufficient -- but a violation here is unambiguous.
