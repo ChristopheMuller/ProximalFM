@@ -561,11 +561,12 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
     "different": callers should degrade to the directory name, not treat it as
     a mismatch.
 
-    Realistic replicate sets (``synthetic/``) share this sidecar schema so the
-    evaluator needs no branch, but their generative config is a different
-    dataclass; ``set_kind`` dispatches the recompute to it. Without that, the
-    ``BuildConfig(**subset)`` below raises ``TypeError`` on the missing required
-    fields and a perfectly good set reports "no stable identity".
+    Realistic replicate sets (``synt_eval``) and literature sets (``lit_eval``)
+    share this sidecar schema so the evaluator needs no branch, but their
+    generative config is a different dataclass; ``set_kind`` dispatches the
+    recompute to it. Without that, the ``BuildConfig(**subset)`` below raises
+    ``TypeError`` on the missing required fields and a perfectly good set
+    reports "no stable identity".
     """
     g = meta.get("global", {})
     stored = g.get("content_digest")
@@ -575,11 +576,17 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
         try:
             from synt_eval.realistic_sidecar import realistic_content_digest
         except ImportError:
-            # synthetic/ is a namespace package resolved from the repo root, so
-            # this can miss when running from elsewhere. "Unknown", not
-            # "different" -- the caller degrades to the directory name.
+            # synt_eval/ is resolved from the repo root, so this can miss when
+            # running from elsewhere. "Unknown", not "different" -- the caller
+            # degrades to the directory name.
             return None
         return realistic_content_digest(meta)
+    if g.get("set_kind") == "literature":
+        try:
+            from lit_eval.sidecar import lit_content_digest
+        except ImportError:
+            return None
+        return lit_content_digest(meta)
     fields = set(BuildConfig.__dataclass_fields__)
     try:
         return BuildConfig(
