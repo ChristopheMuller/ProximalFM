@@ -688,9 +688,67 @@ def build_parser():
     )
 
     parser.add_argument(
+        "--hl_final_sigma_bins",
+        type=float,
+        default=2.0,
+        help="Final HL sigma expressed in BIN WIDTHS of the grid the loss smooths "
+        "over. This is the flag to set: sigma is a floor (cate_single) or a bias "
+        "(cate_single_noise_aware) on the learnable posterior width, and only its "
+        "ratio to the bin width is meaningful. Ignored when --hl_final_sigma is "
+        "given explicitly.",
+    )
+
+    parser.add_argument(
         "--hl_final_sigma",
         type=float,
-        default=0.01,
+        default=None,
+        help="Final HL sigma in absolute (standardized) units, overriding "
+        "--hl_final_sigma_bins. Leave unset unless you have a reason to decouple "
+        "sigma from the grid -- that decoupling is how sigma once ended up 8x a "
+        "bin width, which under cate_single_noise_aware is a permanent deficit in "
+        "the learned width, not something training longer removes.",
     )
 
     return parser
+
+
+def hl_bin_width(config) -> float:
+    """Width of one bin of the grid the HL sigma is applied to.
+
+    Which grid that is depends on the loss: the ``cate_single*`` heads smooth
+    over the tau grid (``--cate_vmin/--cate_vmax``), everything else over the
+    potential-outcome grid (``--vmin/--vmax``). Both share ``--nbins``.
+    """
+    if getattr(config, "loss_type", "") in ("cate_single", "cate_single_noise_aware"):
+        lo, hi = config.cate_vmin, config.cate_vmax
+    else:
+        lo, hi = config.vmin, config.vmax
+
+    nbins = int(config.nbins)
+    if nbins <= 0:
+        raise ValueError(f"--nbins must be positive, got {nbins}")
+    if float(hi) <= float(lo):
+        raise ValueError(f"Empty bin grid: [{lo}, {hi}]")
+
+    return (float(hi) - float(lo)) / nbins
+
+
+def resolve_hl_final_sigma(config) -> float:
+    """Final HL sigma, derived from the grid unless set explicitly.
+
+    ``sigma`` and the bin width are not independent quantities: the head cannot
+    represent a width below ``w/sqrt(12)``, and ``sigma`` sits on top of that as
+    a floor (``cate_single``: learned var = ``sd(Pi)^2 + s^2 + sigma^2``) or,
+    under ``cate_single_noise_aware``, as a *bias* the deconvolution subtracts
+    (``sd(Pi)^2 - sigma^2``, i.e. too narrow). Expressing it in bin widths keeps
+    the two coupled when the grid changes.
+    """
+    explicit = getattr(config, "hl_final_sigma", None)
+    if explicit is not None:
+        return float(explicit)
+
+    n_bins = float(getattr(config, "hl_final_sigma_bins", 2.0))
+    if n_bins <= 0:
+        raise ValueError(f"--hl_final_sigma_bins must be positive, got {n_bins}")
+
+    return n_bins * hl_bin_width(config)

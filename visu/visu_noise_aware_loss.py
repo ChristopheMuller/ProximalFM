@@ -48,7 +48,7 @@ from proximalfm.train._losses import (
     compute_cate_noise_aware_nll,
     compute_cate_distribution_loss,
 )
-from proximalfm.train._train_config import build_parser
+from proximalfm.train._train_config import build_parser, resolve_hl_final_sigma
 
 # %%
 # 1. Configuration
@@ -59,6 +59,9 @@ VMIN, VMAX = -3.0, 3.0
 EPS = 1e-12
 
 DEFAULTS = build_parser().parse_args([])
+# --hl_final_sigma defaults to None (derived from the grid); resolve it here so
+# the schedule panel plots the number a real run would use.
+DEFAULTS.hl_final_sigma = resolve_hl_final_sigma(DEFAULTS)
 
 bin_edges = torch.linspace(VMIN, VMAX, NBINS + 1)
 bin_width = float(bin_edges[1] - bin_edges[0])

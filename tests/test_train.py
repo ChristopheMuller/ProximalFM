@@ -3,7 +3,11 @@ import os
 from pathlib import Path
 
 import pytest
-from proximalfm.train._train_config import build_parser
+from proximalfm.train._train_config import (
+    build_parser,
+    hl_bin_width,
+    resolve_hl_final_sigma,
+)
 from proximalfm.train import _run
 from proximalfm.train._run import Trainer
 from proximalfm.train._dist_eval import UnsupportedLossTypeError
@@ -120,6 +124,52 @@ def tiny_replicate_set(tmp_path_factory):
 def _parse_args(tmp_path, extra):
     parser = build_parser()
     return parser.parse_args(_dummy_args_list(tmp_path) + extra)
+
+
+# ---------------------------------------------------------------------------
+# hl_final_sigma <-> grid coupling
+# ---------------------------------------------------------------------------
+
+
+def test_hl_final_sigma_derives_from_the_grid_it_smooths():
+    """sigma and the bin width are one quantity, not two.
+
+    Under cate_single_noise_aware the deconvolution makes sigma a *bias* on the
+    learned width (sd(Pi)^2 - sigma^2), so a sigma set independently of the grid
+    -- as it once was, at 8 bin widths -- bakes a width deficit into the
+    objective's optimum that training longer cannot remove.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "--loss_type",
+            "cate_single_noise_aware",
+            "--nbins",
+            "2000",
+            "--cate_vmin",
+            "-5",
+            "--cate_vmax",
+            "5",
+            "--hl_final_sigma_bins",
+            "2.5",
+        ]
+    )
+    # w = 10 / 2000 = 0.005
+    assert hl_bin_width(args) == pytest.approx(0.005)
+    assert resolve_hl_final_sigma(args) == pytest.approx(0.0125)
+
+    # The two-head losses smooth over the potential-outcome grid, not tau's.
+    args_hl = parser.parse_args(
+        ["--loss_type", "hl", "--nbins", "1000", "--vmin", "-10", "--vmax", "10"]
+    )
+    assert hl_bin_width(args_hl) == pytest.approx(0.02)
+
+    # An explicit absolute sigma still wins, so old configs replay unchanged.
+    args_explicit = parser.parse_args(
+        ["--loss_type", "cate_single", "--nbins", "2000", "--hl_final_sigma", "0.05"]
+    )
+    assert resolve_hl_final_sigma(args_explicit) == pytest.approx(0.05)
 
 
 # The prior samples propensity_shift ~ U(-2.5, 2.5) and a log-scaled

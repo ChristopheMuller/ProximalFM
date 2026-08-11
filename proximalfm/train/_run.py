@@ -23,7 +23,7 @@ from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.train._optim import get_scheduler
-from proximalfm.train._train_config import build_parser
+from proximalfm.train._train_config import build_parser, resolve_hl_final_sigma
 from proximalfm.train._dist_eval import require_single_cate_head, score_frozen_set
 from proximalfm.train._logger import ExperimentLogger
 from proximalfm.train._losses import (
@@ -63,7 +63,11 @@ class Trainer:
         self.hl_start_sigma = getattr(self.config, "hl_start_sigma", 0.3)
         self.hl_warmup_sigma_steps = getattr(self.config, "hl_warmup_sigma_steps", 1000)
         self.hl_linear_decay_steps = getattr(self.config, "hl_linear_decay_steps", 5000)
-        self.hl_final_sigma = getattr(self.config, "hl_final_sigma", 0.01)
+        # Derived from the grid (--hl_final_sigma_bins) unless --hl_final_sigma
+        # was passed explicitly. Written back onto the config so the number the
+        # loss actually uses is the number the run's wandb config shows.
+        self.hl_final_sigma = resolve_hl_final_sigma(self.config)
+        self.config.hl_final_sigma = self.hl_final_sigma
 
         self.configure_run()
         self.logger = ExperimentLogger(self.config)

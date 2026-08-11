@@ -114,6 +114,16 @@ Direction: all `loss/*` lower is better, except `loss/hl_sigma`, which is not a 
 all — it follows `--hl_start_sigma` → `--hl_final_sigma` over
 `--hl_warmup_sigma_steps` / `--hl_linear_decay_steps` regardless of the model.
 
+The endpoint is set in **bin widths**, not absolute units: `--hl_final_sigma_bins` (default `2`)
+times the width of the grid the loss smooths over — tau's (`--cate_vmin/--cate_vmax`) for
+`cate_single*`, the potential-outcome grid (`--vmin/--vmax`) for `hl`, both over `--nbins`
+(`_train_config.resolve_hl_final_sigma`). `--hl_final_sigma` still takes an absolute value and
+overrides it, but only its ratio to the bin width is meaningful: sigma is a floor on the learnable
+width under `cate_single` and a *bias* (too narrow) under `cate_single_noise_aware`, and a sigma
+chosen independently of the grid is how it once ended up at 8 bin widths — a width deficit at the
+objective's optimum, which no amount of further training removes. The resolved value is what lands
+in the run's wandb config.
+
 ### `target/*` — what the batch actually contained
 
 Diagnostics of the generated targets, not of the model. They catch a broken prior or a mis-scaled
