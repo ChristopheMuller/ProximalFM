@@ -962,6 +962,48 @@ def test_val_dist_best_metric_only_saves_best_on_steps_that_pass_ran(
     assert not trainer._monitored_surface_ran(ran_prior_eval=True, ran_synt_eval=False)
 
 
+def test_checkpoint_names_are_zero_padded_and_still_parse_unpadded(dummy_args):
+    """Padding is for lexical sorting; parsing must survive a mixed directory.
+
+    A run started before the padding landed and resumed after it holds both
+    spellings, and ``get_latest_checkpoint`` sorts on the parsed step.
+    """
+    trainer = Trainer(dummy_args)
+    assert trainer._checkpoint_name(1) == "step-000001.ckpt"
+    assert trainer._checkpoint_name(100000) == "step-100000.ckpt"
+
+    mixed = ["step-000001.ckpt", "step-1000.ckpt", "step-020000.ckpt"]
+    assert [trainer._checkpoint_step(n) for n in mixed] == [1, 1000, 20000]
+
+    padded = ["step-000001.ckpt", "step-001000.ckpt", "step-020000.ckpt"]
+    assert sorted(padded) == sorted(padded, key=trainer._checkpoint_step)
+
+
+def test_step_one_checkpoint_is_permanent(dummy_args, tmp_path):
+    """Step 1 is the initialization -- the left end of every training curve --
+    so ``manage_checkpoint`` must not garbage-collect it as a temp."""
+    dummy_args.save_perm_every = 1000
+    dummy_args.max_checkpoints = 1
+    trainer = Trainer(dummy_args)
+
+    assert trainer._is_perm_step(1)
+    assert trainer._is_perm_step(1000)
+    assert not trainer._is_perm_step(2)
+
+    ckpt_dir = dummy_args.checkpoint_dir
+    for step in (1, 50, 100, 1000):
+        Path(ckpt_dir, trainer._checkpoint_name(step)).write_bytes(b"x")
+
+    trainer.manage_checkpoint()
+
+    remaining = sorted(trainer._list_step_checkpoints(ckpt_dir))
+    assert trainer._checkpoint_name(1) in remaining
+    assert trainer._checkpoint_name(1000) in remaining
+    # One temp kept (max_checkpoints=1), the older one dropped.
+    assert trainer._checkpoint_name(50) not in remaining
+    assert trainer._checkpoint_name(100) in remaining
+
+
 def test_atomic_checkpoint_save(dummy_args):
     trainer = Trainer(dummy_args)
     ckpt_name = "test_atomic.ckpt"

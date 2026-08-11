@@ -368,8 +368,33 @@ class Trainer:
 
     @staticmethod
     def _checkpoint_step(filename: str) -> int:
-        """Parse step index from checkpoint filename."""
+        """Parse step index from checkpoint filename.
+
+        ``int`` ignores leading zeros, so this reads both the zero-padded names
+        written today and the unpadded ``step-1000.ckpt`` written before the
+        padding landed -- a directory holding both sorts correctly.
+        """
         return int(filename.split("-")[1].split(".")[0])
+
+    @staticmethod
+    def _checkpoint_name(step: int) -> str:
+        """Checkpoint filename for ``step``, zero-padded so names sort lexically.
+
+        Six digits covers the 100k-step production run with room to spare;
+        beyond 999999 the name simply grows and only lexical sorting degrades,
+        never parsing (see ``_checkpoint_step``).
+        """
+        return f"step-{step:06d}.ckpt"
+
+    def _is_perm_step(self, step: int) -> bool:
+        """Whether ``step``'s checkpoint is permanent (never garbage-collected).
+
+        Step 1 is permanent by construction: it is the initialization, the
+        left-hand end of every training curve in the appendix, and the only
+        state from which "what did the pretrained backbone start from" can be
+        answered after the fact. It costs one checkpoint.
+        """
+        return step == 1 or step % self.config.save_perm_every == 0
 
     def get_latest_checkpoint(self):
         """Returns the latest checkpoint from `checkpoint_dir`
@@ -582,7 +607,7 @@ class Trainer:
         for ckpt in checkpoints:
             try:
                 step = self._checkpoint_step(ckpt)
-                if step % self.config.save_perm_every != 0:
+                if not self._is_perm_step(step):
                     temp_checkpoints.append((step, ckpt))
             except (ValueError, IndexError):
                 continue
@@ -626,10 +651,10 @@ class Trainer:
         results.update({"prior_time": prior_time, "train_time": train_time})
 
         is_temp_save = self.curr_step % self.config.save_temp_every == 0
-        is_perm_save = self.curr_step % self.config.save_perm_every == 0
+        is_perm_save = self._is_perm_step(self.curr_step)
 
         if is_temp_save or is_perm_save:
-            ckpt_name = f"step-{self.curr_step}.ckpt"
+            ckpt_name = self._checkpoint_name(self.curr_step)
             self.save_checkpoint(name=ckpt_name)
 
             if is_temp_save and not is_perm_save and self.config.max_checkpoints > 0:
