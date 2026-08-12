@@ -11,7 +11,12 @@ import numpy as np
 import torch
 
 import proximalfm.prior._dataset as _dataset_mod
-from proximalfm.prior._dataset import SCMPrior, PriorDataset, DisablePrinting
+from proximalfm.prior._dataset import (
+    SCMPrior,
+    PriorDataset,
+    DisablePrinting,
+    _mc_reduce,
+)
 from proximalfm.prior._reg2cls import BlockProfile, dominates
 from proximalfm.prior._genload import (
     SavePriorDataset,
@@ -445,6 +450,141 @@ def test_completeness_give_up_terminates():
     d_X, d_W, d_Z = out[12], out[13], out[14]
     # Basic validity is always required, even when giving up on completeness.
     assert (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+
+
+# ---------------------------------------------------------------------------
+# dim_X == 0 -- the no-backdoor-covariate prior
+# ---------------------------------------------------------------------------
+
+
+def _make_prior_no_covariates(batch_size=8, mc_cate=8):
+    """A prior with an empty covariate block.
+
+    ``batch_size`` spans several datasets on purpose: ``block_wise_dropout`` is
+    a sampled hyperparameter, and only its ``True`` branch reaches the
+    zero-width weight initialisation, so a single dataset would exercise it only
+    half the time.
+    """
+    return SCMPrior(
+        batch_size=batch_size,
+        batch_size_per_gp=1,
+        min_dim_U=2,
+        max_dim_U=4,
+        min_dim_W=2,
+        max_dim_W=4,
+        min_dim_Z=2,
+        max_dim_Z=4,
+        min_dim_X=0,
+        max_dim_X=0,
+        min_seq_len=200,
+        max_seq_len=201,
+        prior_type="mlp_scm",
+        mc_cate=mc_cate,
+        fixed_hp=DEFAULT_FIXED_HP,
+        sampled_hp=DEFAULT_SAMPLED_HP,
+        n_jobs=1,
+    )
+
+
+def _query_rows(mu0, mu1, s2):
+    """Split off the query suffix, which is where MU0/MU1 are not NaN."""
+    tau = mu1 - mu0
+    query = ~torch.isnan(tau)
+    assert query.any(), "no query rows carry a Monte Carlo target"
+    return tau[query], s2[query]
+
+
+def test_dim_x_zero_generates_an_empty_covariate_block():
+    # Regression guard on two ways dim_X = 0 used to fail: a ValueError from
+    # randint(1, 0) when initialising a zero-width weight, and a non-terminating
+    # resample loop from a validity check that demanded d_X > 0 unconditionally.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    random.seed(0)
+
+    out = _make_prior_no_covariates().get_batch()
+    X, d_X = out[1], out[12]
+
+    assert X.shape[-1] == 0
+    assert (d_X == 0).all()
+    # The other blocks are still held to the usual validity requirements.
+    assert (out[13] > 0).all() and (out[14] > 0).all()
+
+
+def test_dim_x_zero_gives_every_query_row_the_same_cate():
+    # With no covariates there is no x to condition on: tau*(x) = E[Y1 - Y0] is
+    # a single scalar, so the target reduction pools across rows and every query
+    # row must carry exactly that value -- not merely values that agree to
+    # within Monte Carlo noise.
+    torch.manual_seed(0)
+    np.random.seed(0)
+    random.seed(0)
+
+    out = _make_prior_no_covariates().get_batch()
+    MU0, MU1, S2 = out[9], out[10], out[17]
+
+    for i in range(MU0.shape[0]):
+        tau, s2 = _query_rows(MU0[i], MU1[i], S2[i])
+        assert torch.unique(tau).numel() == 1, f"episode {i}: CATE varies by row"
+        # The sampling variance is a property of the one pooled estimate, so it
+        # is shared too -- a per-row S2 here would over-state the target noise
+        # by a factor of n_q and mislead the noise-aware loss.
+        assert torch.unique(s2).numel() == 1, f"episode {i}: S2 varies by row"
+        assert torch.isfinite(tau).all() and (s2 >= 0).all()
+
+
+def test_dim_x_positive_keeps_the_per_row_cate_reduction():
+    # The guard that matters: pooling with a non-empty covariate block would
+    # estimate the ATE in place of the CATE, with no shape change and no error
+    # to notice it by. Every row must keep its own reduction. (This holds even
+    # for a draw whose outcome mechanism happens to subsample zero covariate
+    # columns -- the per-row Monte Carlo noise alone separates the rows.)
+    torch.manual_seed(0)
+    np.random.seed(0)
+    random.seed(0)
+
+    out = _make_prior(DEFAULT_FIXED_HP, batch_size=4).get_batch()
+    MU0, MU1, S2, d_X = out[9], out[10], out[17], out[12]
+
+    assert (d_X > 0).all()
+    for i in range(MU0.shape[0]):
+        tau, s2 = _query_rows(MU0[i], MU1[i], S2[i])
+        assert torch.unique(tau).numel() > 1, f"episode {i}: CATE collapsed to ATE"
+        assert torch.unique(s2).numel() > 1, f"episode {i}: S2 collapsed"
+
+
+def test_mc_reduce_pooling_matches_the_per_row_reduction_in_expectation():
+    # Pooling must not move the estimand: with equal-size blocks the pooled mean
+    # is exactly the mean of the per-row means. What it buys is precision --
+    # rows * K draws behind one number instead of K -- so S2 shrinks by `rows`.
+    torch.manual_seed(0)
+    rows, K = 7, 11
+    y0 = torch.randn(rows * K)
+    y1 = torch.randn(rows * K) + 2.0
+    cate = y1 - y0
+
+    mu0_r, mu1_r, s2_r = _mc_reduce(y0, y1, cate, rows, K, pool_rows=False)
+    mu0_p, mu1_p, s2_p = _mc_reduce(y0, y1, cate, rows, K, pool_rows=True)
+
+    for per_row, pooled in ((mu0_r, mu0_p), (mu1_r, mu1_p)):
+        assert pooled.shape == (rows,)
+        assert torch.unique(pooled).numel() == 1
+        assert torch.allclose(pooled[0], per_row.mean(), atol=1e-6)
+
+    assert torch.allclose(s2_p[0], cate.var(unbiased=True) / (rows * K), atol=1e-9)
+    # Not an identity (the per-row variances are themselves noisy), but the
+    # factor is `rows` up to that noise.
+    assert 0.5 * rows < float(s2_r.mean() / s2_p[0]) < 2.0 * rows
+
+
+def test_mc_reduce_pooled_output_is_materialised():
+    # The pooled value is broadcast to `rows`; it must not leak a stride-0 view,
+    # which every downstream writer (torch.cat, stack, the sparse batch writer)
+    # would have to defend against.
+    y = torch.randn(6)
+    mu0, mu1, s2 = _mc_reduce(y, y + 1.0, torch.ones(6), 3, 2, pool_rows=True)
+    for t in (mu0, mu1, s2):
+        assert t.is_contiguous() and t.shape == (3,)
 
 
 # ---------------------------------------------------------------------------

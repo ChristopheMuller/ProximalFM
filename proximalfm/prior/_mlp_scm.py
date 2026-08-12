@@ -212,6 +212,11 @@ class MLPSCM(nn.Module):
     def initialize_with_block_dropout(self, param, index):
         """Initializes parameters using block-wise dropout."""
         nn.init.zeros_(param)
+        if param.numel() == 0:
+            # A zero-width weight (in_dim == 0, e.g. the covariate mechanism of a
+            # dim_X = 0 prior) has nothing to initialize, and would otherwise ask
+            # for randint(1, 0) -- min(param.shape) is 0, so is its sqrt.
+            return
         n_blocks = random.randint(1, math.ceil(math.sqrt(min(param.shape))))
         block_size = [dim // n_blocks for dim in param.shape]
         keep_prob = (n_blocks * block_size[0] * block_size[1]) / param.numel()

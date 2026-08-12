@@ -145,6 +145,60 @@ def _mc_mean_var(replicates: Tensor, K: int) -> Tensor:
     return replicates.var(dim=1, unbiased=True) / K
 
 
+def _mc_reduce(
+    y0_block: Tensor,
+    y1_block: Tensor,
+    cate_block: Tensor,
+    rows: int,
+    K: int,
+    pool_rows: bool,
+) -> Tuple[Tensor, Tensor, Tensor]:
+    """Reduce a contiguous ``(rows * K,)`` replicate block to per-row targets.
+
+    Returns ``(MU0, MU1, S2)``, each of shape ``(rows,)``.
+
+    ``pool_rows=False`` is the general case. Each row's ``K`` replicates share
+    that row's covariates, so they -- and only they -- estimate
+    ``tau*(x_i) = E[Y1 - Y0 | X = x_i]``. The reduction is per row and the
+    result holds ``rows`` distinct values.
+
+    ``pool_rows=True`` is admissible **only when the covariate block is empty**
+    (``dim_X == 0``). Replication exists to hold ``X`` fixed while the latent
+    and noise world varies; with no ``X`` to hold fixed there is nothing to
+    condition on, ``tau*`` is the constant ATE, and the ``(rows, K)`` grid is a
+    shape without meaning -- all ``rows * K`` draws are i.i.d. from one
+    distribution. Pooling estimates that single scalar from every draw at once
+    and broadcasts it, cutting the target's sampling variance by a further
+    factor of ``rows`` over the per-row reduction. It is free: the same
+    replicates, simply not discarded one row at a time.
+
+    Pooling when ``dim_X > 0`` would silently estimate the ATE in place of the
+    CATE -- same shapes, same dtypes, no NaN, no error, and nothing downstream
+    could tell. Callers must gate on the structural condition, never on a
+    "looks homogeneous" test of the realised targets.
+
+    ``K_eff`` is deliberately *not* redefined under pooling: it stays the
+    per-row replicate count, which is what the memory cap bounds and what
+    ``prior_eval`` asserts against ``mc_cate``. The precision actually achieved
+    lives in ``S2`` (here ``Var(.) / (rows * K)``), which is the only place any
+    consumer should read it from.
+    """
+    if pool_rows:
+        M = rows * K
+        mu0 = y0_block.mean().expand(rows).contiguous()
+        mu1 = y1_block.mean().expand(rows).contiguous()
+        # One estimate over all M draws: reuse _mc_mean_var so the paired
+        # variance semantics stay in a single place.
+        s2 = _mc_mean_var(cate_block.view(1, M), M).expand(rows).contiguous()
+        return mu0, mu1, s2
+
+    return (
+        y0_block.view(rows, K).mean(dim=1),
+        y1_block.view(rows, K).mean(dim=1),
+        _mc_mean_var(cate_block.view(rows, K), K),
+    )
+
+
 class Prior:
     """Abstract base class for dataset prior generators (Proximal Causal Learning).
 
@@ -811,7 +865,13 @@ class SCMPrior(Prior):
             ``MU1 - MU0`` (see :func:`_mc_mean_var`), NaN on the context prefix
             wherever ``MU0``/``MU1`` are. ``K_eff`` is the realised replicate
             count after :meth:`_cap_mc_samples`, which may be below the
-            requested ``mc_cate``. ``diagnostics`` is ``None`` unless the
+            requested ``mc_cate``.
+
+            At ``dim_X == 0`` the target reduction pools across rows rather than
+            running per row -- ``tau*`` is then the constant ATE and every
+            replicate estimates it, so ``MU0``/``MU1`` are one value broadcast
+            over the rows and ``S2`` is correspondingly ``rows`` times smaller.
+            ``K_eff`` is unchanged by this; see :func:`_mc_reduce`. ``diagnostics`` is ``None`` unless the
             ``collect_mechanism_diagnostics`` fixed HP is set.
         """
 
@@ -905,7 +965,9 @@ class SCMPrior(Prior):
             # Row layout of every N-row tensor below:
             #   [ context rows 0..T_ctx-1 ] [ query row 0 x K ] [ query row 1 x K ] ...
             # i.e. the replicate block is a contiguous suffix, so the MU
-            # reduction is a single view(T_q, K).mean(1) and no gather is needed.
+            # reduction is a single view(T_q, K).mean(1) and no gather is needed
+            # (or one mean over the whole block when dim_X == 0, see
+            # :func:`_mc_reduce`).
             # Built by broadcasting straight into one preallocated buffer: an
             # expand().reshape() plus a cat would copy the query block twice.
             X_rep_ = X_.new_empty((N, params["dim_X"]))
@@ -1146,12 +1208,16 @@ class SCMPrior(Prior):
             # deconvolves. See :func:`_mc_mean_var` for why this is paired.
             cate_mc = y1_mc - y0_mc
 
+            # With no covariate block there is no x to condition on: tau* is the
+            # constant ATE and every replicate estimates it, so the reduction
+            # pools across rows instead of per row. Gated on the structural
+            # condition -- see :func:`_mc_reduce` for why nothing weaker will do.
+            pool_rows = params["dim_X"] == 0
+
             # The query block is contiguous by construction, so ``view`` (which
             # would raise on a non-contiguous layout) doubles as an assertion.
             if T_ctx == 0:
-                MU0 = y0_mc.view(T, K).mean(dim=1)
-                MU1 = y1_mc.view(T, K).mean(dim=1)
-                S2 = _mc_mean_var(cate_mc.view(T, K), K)
+                MU0, MU1, S2 = _mc_reduce(y0_mc, y1_mc, cate_mc, T, K, pool_rows)
             else:
                 # Context rows have no K-average to report. NaN rather than the
                 # single realised draw: any consumer that reads MU outside
@@ -1161,9 +1227,17 @@ class SCMPrior(Prior):
                 nan_pad = torch.full(
                     (T_ctx,), float("nan"), device=self.device, dtype=y0_mc.dtype
                 )
-                MU0 = torch.cat([nan_pad, y0_mc[T_ctx:].view(T_q, K).mean(dim=1)])
-                MU1 = torch.cat([nan_pad, y1_mc[T_ctx:].view(T_q, K).mean(dim=1)])
-                S2 = torch.cat([nan_pad, _mc_mean_var(cate_mc[T_ctx:].view(T_q, K), K)])
+                mu0_q, mu1_q, s2_q = _mc_reduce(
+                    y0_mc[T_ctx:],
+                    y1_mc[T_ctx:],
+                    cate_mc[T_ctx:],
+                    T_q,
+                    K,
+                    pool_rows,
+                )
+                MU0 = torch.cat([nan_pad, mu0_q])
+                MU1 = torch.cat([nan_pad, mu1_q])
+                S2 = torch.cat([nan_pad, s2_q])
 
             U = U_mc[obs_idx]
             W = W_mc[obs_idx]
@@ -1209,8 +1283,14 @@ class SCMPrior(Prior):
             Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
 
             # Basic validity: every observed block needs at least one active
-            # (non-constant) column, else the dataset is unusable.
-            basic_ok = (d_X > 0).all() and (d_W > 0).all() and (d_Z > 0).all()
+            # (non-constant) column, else the dataset is unusable. X is the one
+            # block allowed to be empty *by request*: dim_X = 0 is the
+            # no-backdoor-covariate prior, where d_X = 0 is the intended state
+            # rather than a degenerate draw. Without this exemption the loop
+            # below can never accept -- basic_ok is not covered by `give_up` --
+            # and generation spins forever.
+            x_ok = (d_X > 0).all() or params["dim_X"] == 0
+            basic_ok = bool(x_ok) and (d_W > 0).all() and (d_Z > 0).all()
 
             # Proximal validity: the completeness heuristic must survive column
             # filtering. dim_W, dim_Z >= dim_U holds at sampling time, but the
