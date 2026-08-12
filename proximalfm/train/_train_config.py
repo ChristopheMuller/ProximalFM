@@ -393,7 +393,7 @@ def build_parser():
     parser.add_argument(
         "--col_nhead",
         type=int,
-        default=4,
+        default=8,
         help="Number of attention heads in column embedder",
     )
     parser.add_argument(
@@ -457,7 +457,7 @@ def build_parser():
     parser.add_argument(
         "--icl_nhead",
         type=int,
-        default=4,
+        default=8,
         help="Number of attention heads in ICL predictor",
     )
     parser.add_argument(
