@@ -17,9 +17,17 @@
 #
 # Select a different file with --transfer_rules; transfer_rules_rung{0,1,2,3}.yaml are
 # the unfreezing ladder for fitting a new head on a frozen backbone.
+#
+# ---------------------------------------------------------------------------------
+# Measured transfer (production config: scripts/pretrain_prod.sh, 29,692,920 params)
+# ---------------------------------------------------------------------------------
+#   loaded from checkpoint          26,888,776   90.56%
+#   scratch by rule below            2,575,312    8.67%   icl_predictor.decoder.* (new head; scales with --nbins)
+#   random, shape mismatch             210,656    0.71%   nhead mismatch (col/icl_nhead=4 here vs 8 in ckpt) + in_linear (scalar vs 3-feature input)
+#   random, absent from checkpoint      18,176    0.06%   LayerNorm biases, y0/y1_encoder (vs ckpt's single y_encoder), role_embedding
+# The last two rows are silent (load_state_dict(strict=False), no rule needed) --
+# don't read 90.56% as "the whole backbone transferred".
 
 transfer_rules:
   default: "finetune"
-  # Final decoder Linear (d_model*2 -> out_dim): the only layer whose shape changes
-  # when the head changes, e.g. bins_po (2*nbins) -> cate_single (nbins).
-  "icl_predictor.decoder.2.": "finetune"
+  "icl_predictor.decoder.": "scratch"
