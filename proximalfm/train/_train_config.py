@@ -15,6 +15,16 @@ def nullable_int(value):
     return int(value)
 
 
+def int_list(value):
+    """Parse a comma-separated list of ints into a sorted tuple of unique steps.
+
+    Empty entries are ignored so ``"1,50,"`` and ``""`` are both accepted.
+    """
+    if value is None:
+        return ()
+    return tuple(sorted({int(v) for v in str(value).split(",") if v.strip()}))
+
+
 def build_parser():
     """Build an argument parser with all Proximal TabICL training arguments.
 
@@ -476,6 +486,16 @@ def build_parser():
         default=5000,
         type=int,
         help="Steps between permanent checkpoints",
+    )
+    parser.add_argument(
+        "--save_perm_steps",
+        default=(),
+        type=int_list,
+        help="Comma-separated extra steps whose checkpoints are permanent, in "
+        "addition to step 1 and every --save_perm_every steps "
+        "(e.g. 1,50,100,150,200,300,500,750,1000). Checkpoints at these steps "
+        "are written even if the step is not a --save_temp_every multiple, and "
+        "are never garbage-collected by --max_checkpoints.",
     )
     parser.add_argument(
         "--max_checkpoints",

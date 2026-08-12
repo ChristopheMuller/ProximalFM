@@ -23,7 +23,11 @@ from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._genload import LoadPriorDataset
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP
 from proximalfm.train._optim import get_scheduler
-from proximalfm.train._train_config import build_parser, resolve_hl_final_sigma
+from proximalfm.train._train_config import (
+    build_parser,
+    int_list,
+    resolve_hl_final_sigma,
+)
 from proximalfm.train._dist_eval import require_single_cate_head, score_frozen_set
 from proximalfm.train._logger import ExperimentLogger
 from proximalfm.train._losses import (
@@ -67,6 +71,12 @@ class Trainer:
     def __init__(self, config):
         self.config = config
         self.loss_type = getattr(self.config, "loss_type", "bins_po")
+        # Accepts the parsed tuple as well as a raw "1,50,100" string, so a
+        # config loaded from a checkpoint or a dict still resolves.
+        perm_steps = getattr(self.config, "save_perm_steps", None) or ()
+        if isinstance(perm_steps, str):
+            perm_steps = int_list(perm_steps)
+        self._perm_steps = frozenset(int(s) for s in perm_steps)
 
         self.hl_start_sigma = getattr(self.config, "hl_start_sigma", 0.3)
         self.hl_warmup_sigma_steps = getattr(self.config, "hl_warmup_sigma_steps", 1000)
@@ -403,8 +413,17 @@ class Trainer:
         left-hand end of every training curve in the appendix, and the only
         state from which "what did the pretrained backbone start from" can be
         answered after the fact. It costs one checkpoint.
+
+        ``--save_perm_steps`` adds an explicit list of steps of interest (early
+        steps, say, where the periodic grid is too coarse); they are permanent
+        for the same reason, and being permanent is also what makes them get
+        *written* at all when they fall off the ``--save_temp_every`` grid.
         """
-        return step == 1 or step % self.config.save_perm_every == 0
+        return (
+            step == 1
+            or step % self.config.save_perm_every == 0
+            or step in self._perm_steps
+        )
 
     def get_latest_checkpoint(self):
         """Returns the latest checkpoint from `checkpoint_dir`

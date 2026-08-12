@@ -37,7 +37,7 @@ python -m proximalfm.train \
     --np_seed 1234 --torch_seed 1234 \
     --device cuda:0 --prior_device cuda:0 --dtype bfloat16 \
     --model_compile False \
-    --max_steps 50000 --batch_size 64 --micro_batch_size 16 \
+    --max_steps 75000 --batch_size 64 --micro_batch_size 16 \
     --min_seq_len 64 \
     --max_seq_len 2048 \
     --log_seq_len False \
@@ -66,4 +66,5 @@ python -m proximalfm.train \
     --prior_eval_interval "${PRIOR_EVAL_INTERVAL}" --prior_eval_max_episodes "${PRIOR_MAX_EP}" \
     --synt_eval_dir "${SYNT_EVAL_DIR}" \
     --synt_eval_interval "${SYNT_EVAL_INTERVAL}" --synt_eval_max_episodes "${SYNT_MAX_EP}" \
-    --wandb_log True --wandb_name "${RUN}" --wandb_mode online
+    --wandb_log True --wandb_name "${RUN}" --wandb_mode online \
+    --save_perm_steps 1,50,100,200,300,500,750,1000,1500
