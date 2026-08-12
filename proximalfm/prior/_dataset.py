@@ -816,6 +816,10 @@ class SCMPrior(Prior):
 
         def safe_normalize(tensor: Tensor) -> Tensor:
             """Normalize a tensor while avoiding division by zero."""
+            # dim_X == 0 is allowed, and reducing over an empty column set warns
+            # about degrees of freedom while returning the same empty tensor.
+            if tensor.shape[-1] == 0:
+                return tensor
             # One fused reduction for both stats instead of two separate scans;
             # runs on the N-row U/W/Z blocks.
             std, mean = torch.std_mean(tensor, dim=0, keepdim=True)
