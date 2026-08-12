@@ -37,13 +37,13 @@ set -euo pipefail
 # shellcheck source=scripts/_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
-NAME=${NAME:-realistic_prod_v1}
+NAME=${NAME:-synt_val_v1}
 OUT_ROOT=${OUT_ROOT:-data/synt_eval}
 
 N_DATASETS=${N_DATASETS:-480}
 N_MAX=${N_MAX:-2048}
 N_Q=${N_Q:-128}
-K=${K:-4000}
+K=${K:-10000}
 SEED=${SEED:-20260807}
 MEM_BUDGET=${MEM_BUDGET:-8000000000}
 

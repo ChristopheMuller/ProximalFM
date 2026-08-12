@@ -32,14 +32,14 @@ set -euo pipefail
 # shellcheck source=scripts/_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
-NAME=${NAME:-frozen_prod_v1}
+NAME=${NAME:-prior_val_v1}
 OUT_ROOT=${OUT_ROOT:-data/prior_eval}
 DEVICE=${DEVICE:-cuda:0}
 
-N_DATASETS=${N_DATASETS:-1000}
+N_DATASETS=${N_DATASETS:-500}
 N_MAX=${N_MAX:-2048}
 N_Q=${N_Q:-128}
-K=${K:-4000}
+K=${K:-10000}
 SEED=${SEED:-20260806}
 MEM_BUDGET=${MEM_BUDGET:-8000000000}
 

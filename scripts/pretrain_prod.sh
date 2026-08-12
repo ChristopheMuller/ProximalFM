@@ -7,8 +7,8 @@ CUDA=${CUDA:-0}
 CKPT=${CKPT:-ckpt_tabicl/tabicl-regressor-v2-20260212.ckpt}
 TRANSFER=${TRANSFER:-ckpt_tabicl/transfer_rules.yaml}
 
-PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/frozen_prod_v1}
-SYNT_EVAL_DIR=${SYNT_EVAL_DIR:-data/synt_eval/realistic_prod_v1}
+PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_v1}
+SYNT_EVAL_DIR=${SYNT_EVAL_DIR:-data/synt_eval/synt_val_v1}
 SYNT_EVAL_INTERVAL=${SYNT_EVAL_INTERVAL:-100}
 PRIOR_EVAL_INTERVAL=${PRIOR_EVAL_INTERVAL:-200}
 PRIOR_MAX_EP=${PRIOR_MAX_EP:-500}
