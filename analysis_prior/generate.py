@@ -242,9 +242,15 @@ def _generate_one(spec: PriorSpec, index: int) -> PriorDatasetRecord:
         min_dim_X=spec.min_dim_X,
         max_dim_X=spec.max_dim_X,
         # min_seq_len=None makes the generator use max_seq_len exactly, so every
-        # dataset has the same T and the cache stays a dense array.
+        # dataset has the same T and the cache stays a dense array. The
+        # generator composes T = n_ctx + n_query, so the two are split here to
+        # keep T at spec.seq_len; *where* the split falls is inert for this
+        # module, because mc_targets_on_context=True forces T_ctx to 0 and the
+        # returned train_sizes are discarded. PriorSpec therefore has no split
+        # field, and n_query is not part of the cache key.
         min_seq_len=None,
-        max_seq_len=spec.seq_len,
+        max_seq_len=spec.seq_len - 1,
+        n_query=1,
         log_seq_len=False,
         seq_len_per_gp=False,
         replay_small=False,

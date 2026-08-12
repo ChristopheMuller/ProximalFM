@@ -119,10 +119,10 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
             "existing data file, or install proximalfm to generate new data."
         )
 
-    n_rows = data_cfg["n_rows"]
+    n_context = data_cfg["n_context"]
+    n_query = data_cfg["n_query"]
     n_batch = data_cfg["n_batch"]
     prior_kw = data_cfg.get("prior", {}).copy()
-    prop_train = data_cfg.get("prop_train", 0.75)
     seed = run_cfg.get("seed", 42)
 
     # Force dimensions for the benchmark chunk
@@ -130,16 +130,15 @@ def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
         {
             "batch_size": n_batch,
             "min_seq_len": None,
-            "max_seq_len": n_rows,
-            "min_train_size": prop_train,
-            "max_train_size": prop_train + 0.001,
+            "max_seq_len": n_context,
+            "n_query": n_query,
             "device": "cpu",
         }
     )
 
     console.print(
         f"    Generating [bold]{n_batch}[/] datasets "
-        f"(n_rows={n_rows}, seed={seed})…"
+        f"(n_context={n_context}, n_query={n_query}, seed={seed})…"
     )
 
     # Generate reproducible batch

@@ -32,10 +32,8 @@ def _dummy_args_list(tmp_path):
         "10",
         "--max_seq_len",
         "20",
-        "--min_train_size",
+        "--n_query",
         "5",
-        "--max_train_size",
-        "15",
         "--embed_dim",
         "16",
         "--row_nhead",
@@ -206,11 +204,10 @@ def _overlap_prior(args, *, mc_cate, mc_targets_on_context=False):
         min_dim_X=2,
         max_dim_X=args.max_dim_X,
         min_seq_len=None,
-        max_seq_len=64,
-        # A wide context, so both arms are well populated under a balanced
-        # propensity rather than merely likely to be.
-        min_train_size=24,
-        max_train_size=25,
+        max_seq_len=56,
+        # A wide context (64 - 8 rows), so both arms are well populated under a
+        # balanced propensity rather than merely likely to be.
+        n_query=8,
         prior_type="mlp_scm",
         mc_cate=mc_cate,
         mc_targets_on_context=mc_targets_on_context,
@@ -1074,6 +1071,32 @@ def test_row_permutation_declines_heterogeneous_batches(dummy_args):
     batch = list(_widths_batch([4, 5], [4, 5], [4, 5]))
     batch[15] = torch.tensor([20, 18])
     assert trainer._batch_row_permutation(tuple(batch)) is None
+
+
+def test_trainer_passes_n_query_through_to_the_prior(tmp_path):
+    # The prior is what enforces the split; a flag that never reaches it would
+    # leave the default in place and look like nothing had changed.
+    trainer = Trainer(build_parser().parse_args(_dummy_args_list(tmp_path)))
+
+    batch = trainer.dataloader.dataset.prior.get_batch(2)
+    assert (batch[15] - batch[16] == 5).all()
+
+
+def test_row_permutation_survives_the_fixed_query_split(tmp_path):
+    """A fixed ``n_query`` must not make a batch look heterogeneous.
+
+    Both ``seq_len`` and ``train_size`` still come from one draw per batch at
+    ``seq_len_per_gp=False``, so the width sort still applies. A regression here
+    would cost ~10% throughput silently rather than raising.
+    """
+    trainer = Trainer(build_parser().parse_args(_dummy_args_list(tmp_path)))
+    assert trainer.config.n_query == 5
+
+    widths = [1, 1, 9, 9]
+    batch = list(_widths_batch(widths, widths, widths))
+    batch[15] = torch.full((4,), 25)
+    batch[16] = torch.full((4,), 20)  # 25 - 20 == n_query
+    assert trainer._batch_row_permutation(tuple(batch)) is not None
 
 
 def test_micro_batch_grouping_does_not_change_the_gradient(dummy_args):

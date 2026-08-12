@@ -36,7 +36,12 @@ from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 # 2: f_Z / f_A moved off the Monte Carlo replicate block (they are leaves w.r.t.
 #    MU0/MU1). Same distribution, but a given seed no longer reproduces the same
 #    draw, so appending to a v1 cache would mix generator versions.
-CACHE_FORMAT_VERSION = 2
+# 3: the ratio row split (min/max_train_size) was replaced by a fixed n_query,
+#    removing one np.random draw per batch. This module never set those knobs and
+#    forces mc_targets_on_context=True, so the split was inert here -- but the
+#    dropped draw shifts the seeded stream, and the split is not in the cache key,
+#    so a v2 cache and a fresh one would be different data under the same key.
+CACHE_FORMAT_VERSION = 3
 
 #: Spec fields that do not affect the content of any individual dataset, and so
 #: are excluded from the per-dataset seed. ``name`` is a label; ``n_datasets`` is

@@ -235,21 +235,19 @@ class Prior:
         Maximum dimensionality of the observed baseline covariates X.
 
     min_seq_len : int, optional
-        Minimum samples per dataset. If None, uses max_seq_len.
+        Minimum *context* rows per dataset. If None, uses max_seq_len.
 
     max_seq_len : int, default=1024
-        Maximum samples per dataset.
+        Maximum *context* rows per dataset. The row total is
+        ``n_ctx + n_query``, so this does not bound the stored sequence.
 
     log_seq_len : bool, default=False
-        If True, sample sequence length from a log-uniform distribution.
+        If True, sample the context size from a log-uniform distribution.
 
-    min_train_size : int or float, default=0.1
-        Position or ratio for train/test split start. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
-
-    max_train_size : int or float, default=0.9
-        Position or ratio for train/test split end. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
+    n_query : int, default=128
+        Number of query rows per dataset, the same for every dataset. See
+        :meth:`_sample_split` for why this is the fixed side of the split and
+        the context is the random one.
 
     replay_small : bool, default=False
         If True, occasionally sample smaller sequence lengths with
@@ -270,8 +268,7 @@ class Prior:
         min_seq_len: Optional[int] = None,
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
+        n_query: int = 128,
         replay_small: bool = False,
     ):
         self.batch_size = batch_size
@@ -294,51 +291,26 @@ class Prior:
         self.max_seq_len = max_seq_len
         self.log_seq_len = log_seq_len
 
-        self.validate_train_size_range(min_train_size, max_train_size)
-        self.min_train_size = min_train_size
-        self.max_train_size = max_train_size
+        self.validate_n_query(n_query)
+        self.n_query = int(n_query)
         self.replay_small = replay_small
 
     @staticmethod
-    def validate_train_size_range(
-        min_train_size: Union[int, float], max_train_size: Union[int, float]
-    ) -> None:
-        """Check if the training size range is valid.
+    def validate_n_query(n_query) -> None:
+        """Check the fixed query count.
 
-        Parameters
-        ----------
-        min_train_size : int or float
-            Minimum training size (position or ratio).
-
-        max_train_size : int or float
-            Maximum training size (position or ratio).
-
-        Raises
-        ------
-        AssertionError
-            If training size range is invalid.
-
-        ValueError
-            If training size types are mismatched or invalid.
+        ``bool`` is rejected explicitly: ``isinstance(True, int)`` is ``True``,
+        so a stray flag would otherwise silently mean one query row.
         """
-        # Check for numeric types only
-        if not isinstance(min_train_size, (int, float)) or not isinstance(
-            max_train_size, (int, float)
-        ):
-            raise TypeError("Training sizes must be int or float")
-
-        # Check for valid ranges based on type
-        if isinstance(min_train_size, int) and isinstance(max_train_size, int):
-            assert (
-                0 < min_train_size < max_train_size
-            ), "0 < min_train_size < max_train_size"
-        elif isinstance(min_train_size, float) and isinstance(max_train_size, float):
-            assert (
-                0 < min_train_size < max_train_size < 1
-            ), "0 < min_train_size < max_train_size < 1"
-        else:
+        if isinstance(n_query, bool) or not isinstance(n_query, (int, np.integer)):
             raise ValueError(
-                "Both training sizes must be of the same type (int or float)"
+                "n_query must be a positive int (the number of query rows per "
+                f"dataset); got {n_query!r}."
+            )
+        if int(n_query) < 1:
+            raise ValueError(
+                "n_query must be >= 1: it is the number of query rows per "
+                f"dataset, so seq_len = n_ctx + n_query; got {n_query}."
             )
 
     @staticmethod
@@ -348,18 +320,19 @@ class Prior:
         log: bool = False,
         replay_small: bool = False,
     ) -> int:
-        """Select a random sequence length within the specified range.
+        """Select a random context size within the specified range.
 
-        This method provides flexible sampling strategies for dataset sizes, including
-        occasional re-sampling of smaller sequence lengths for better training diversity.
+        This is the random side of the row split: the query count is fixed at
+        ``n_query``, and the total is ``n_ctx + n_query`` (see
+        :meth:`_sample_split`).
 
         Parameters
         ----------
         min_seq_len : int, optional
-            Minimum sequence length. If None, returns max_seq_len directly.
+            Minimum context size. If None, returns max_seq_len directly.
 
         max_seq_len : int
-            Maximum sequence length.
+            Maximum context size (exclusive: ``np.random.randint`` is half-open).
 
         log : bool, default=False
             If True, sample from a log-uniform distribution to better
@@ -372,7 +345,7 @@ class Prior:
         Returns
         -------
         int
-            The sampled sequence length.
+            The sampled context size.
         """
         if min_seq_len is None:
             return max_seq_len
@@ -393,53 +366,15 @@ class Prior:
         else:
             return seq_len
 
-    @staticmethod
-    def sample_train_size(
-        min_train_size: Union[int, float],
-        max_train_size: Union[int, float],
-        seq_len: int,
-    ) -> int:
-        """Select a random training size within the specified range.
-
-        This method handles both absolute position and fractional ratio approaches
-        for determining the training/test split point.
-
-        Parameters
-        ----------
-        min_train_size : int or float
-            Minimum training size. If int, used as absolute position.
-            If float between 0 and 1, used as ratio of sequence length.
-
-        max_train_size : int or float
-            Maximum training size. If int, used as absolute position.
-            If float between 0 and 1, used as ratio of sequence length.
-
-        seq_len : int
-            Total sequence length.
-
-        Returns
-        -------
-        int
-            The sampled training size position.
-
-        Raises
-        ------
-        ValueError
-            If training size range has incompatible types.
-        """
-        if isinstance(min_train_size, int) and isinstance(max_train_size, int):
-            train_size = np.random.randint(min_train_size, max_train_size)
-        elif isinstance(min_train_size, float) and isinstance(max_train_size, float):
-            train_size = np.random.uniform(min_train_size, max_train_size)
-            train_size = int(seq_len * train_size)
-        else:
-            raise ValueError(
-                "Invalid training size range: min_train_size and max_train_size "
-                "must both be int (absolute positions) or both be float (ratios "
-                f"of seq_len); got {type(min_train_size).__name__} and "
-                f"{type(max_train_size).__name__}."
-            )
-        return train_size
+    def _sample_split(self) -> Tuple[int, int]:
+        """Draw one dataset's ``(seq_len, train_size)``."""
+        n_ctx = self.sample_seq_len(
+            self.min_seq_len,
+            self.max_seq_len,
+            log=self.log_seq_len,
+            replay_small=self.replay_small,
+        )
+        return n_ctx + self.n_query, n_ctx
 
     @staticmethod
     def adjust_max_features(
@@ -580,22 +515,20 @@ class SCMPrior(Prior):
         Minimum and maximum dimensionality for observed covariates X.
 
     min_seq_len, max_seq_len : int or None
-        Minimum and maximum samples per dataset. If ``min_seq_len`` is None
-        the generator will use ``max_seq_len`` directly.
+        Minimum and maximum *context* rows per dataset. If ``min_seq_len`` is
+        None the generator will use ``max_seq_len`` directly. The row total is
+        ``n_ctx + n_query``.
 
     log_seq_len : bool, default=False
-        If True, sample sequence length from a log-uniform distribution.
+        If True, sample the context size from a log-uniform distribution.
 
     seq_len_per_gp : bool, default=False
         If True, sample sequence length per group, allowing variable-sized datasets.
 
-    min_train_size : int or float, default=0.1
-        Position or ratio for train/test split start. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
-
-    max_train_size : int or float, default=0.9
-        Position or ratio for train/test split end. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
+    n_query : int, default=128
+        Number of query rows per dataset, the same for every dataset;
+        ``min_seq_len``/``max_seq_len`` bound the *context* size and the row
+        total is ``n_ctx + n_query``. See :meth:`Prior._sample_split`.
 
     replay_small : bool, default=False
         If True, occasionally sample smaller sequence lengths with
@@ -652,8 +585,7 @@ class SCMPrior(Prior):
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
         seq_len_per_gp: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
+        n_query: int = 128,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mc_cate: int = 200,
@@ -677,8 +609,7 @@ class SCMPrior(Prior):
             min_seq_len=min_seq_len,
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
-            min_train_size=min_train_size,
-            max_train_size=max_train_size,
+            n_query=n_query,
             replay_small=replay_small,
         )
 
@@ -799,8 +730,8 @@ class SCMPrior(Prior):
                 f"to {K_eff} for T_ctx={T_ctx}, T_q={T_q} (estimated {per_row} "
                 "cols/row). MU0/MU1 will use fewer Monte Carlo samples (still "
                 "unbiased, just noisier). Raise prior_mc_mem_budget if you have "
-                "more RAM, or lower max_seq_len / hidden_dim / num_layers to keep "
-                "K high.",
+                "more RAM, or lower n_query / hidden_dim / num_layers to keep "
+                "K high -- the cap divides the row budget by T_q.",
                 RuntimeWarning,
                 stacklevel=2,
             )
@@ -820,8 +751,9 @@ class SCMPrior(Prior):
         * ``True`` (default) -- all ``T`` rows; the mechanisms see ``T * K`` rows.
         * ``False`` -- only the ``T_q = T - train_size`` query rows; the
           mechanisms see ``T_ctx + T_q * K`` rows and MU0/MU1 are ``NaN`` on the
-          context prefix. At the default ``train_size ~ U(0.1, 0.9) * T`` this
-          roughly halves generation compute and peak memory.
+          context prefix. The saving is large and grows with the context,
+          because ``T_q`` is pinned at ``n_query``: the ``K``-fold factor
+          applies to those rows alone rather than to the whole sequence.
 
         With ``T_ctx > 0`` the pooled row set is dominated by the query
         replicates, so the statistics computed over it -- ``safe_normalize`` on
@@ -1519,15 +1451,7 @@ class SCMPrior(Prior):
 
         # Determine global seq_len/train_size if not per-group
         if not self.seq_len_per_gp:
-            global_seq_len = self.sample_seq_len(
-                self.min_seq_len,
-                self.max_seq_len,
-                log=self.log_seq_len,
-                replay_small=self.replay_small,
-            )
-            global_train_size = self.sample_train_size(
-                self.min_train_size, self.max_train_size, global_seq_len
-            )
+            global_seq_len, global_train_size = self._sample_split()
 
         # Generate parameters for each group
         for gp_idx in range(num_gps):
@@ -1540,16 +1464,9 @@ class SCMPrior(Prior):
 
             # Sequence Length & Max Dimension Scaling
             if self.seq_len_per_gp:
-                gp_seq_len = self.sample_seq_len(
-                    self.min_seq_len,
-                    self.max_seq_len,
-                    log=self.log_seq_len,
-                    replay_small=self.replay_small,
-                )
-                gp_train_size = self.sample_train_size(
-                    self.min_train_size, self.max_train_size, gp_seq_len
-                )
+                gp_seq_len, gp_train_size = self._sample_split()
                 # Adjust maximum dimensions proportionally if sequence is huge to avoid OOM
+                # (keyed off the row total, which is what gets stored and padded)
                 gp_max_X, gp_max_W, gp_max_Z = self.adjust_max_features(
                     gp_seq_len, self.max_dim_X, self.max_dim_W, self.max_dim_Z
                 )
@@ -1823,13 +1740,10 @@ class PriorDataset(IterableDataset):
     seq_len_per_gp : bool, default=False
         If True, sample sequence length per group, allowing variable-sized datasets.
 
-    min_train_size : int or float, default=0.1
-        Position or ratio for train/test split start. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
-
-    max_train_size : int or float, default=0.9
-        Position or ratio for train/test split end. If int, absolute position.
-        If float between 0 and 1, specifies a fraction of sequence length.
+    n_query : int, default=128
+        Number of query rows per dataset, the same for every dataset;
+        ``min_seq_len``/``max_seq_len`` bound the *context* size and the row
+        total is ``n_ctx + n_query``. See :meth:`Prior._sample_split`.
 
     replay_small : bool, default=False
         If True, occasionally sample smaller sequence lengths with
@@ -1848,10 +1762,10 @@ class PriorDataset(IterableDataset):
     mc_targets_on_context : bool, default=False
         If False (the default), replicate only the query rows
         ``[train_size:]`` and leave MU0/MU1 as ``NaN`` on the context prefix.
-        Roughly halves generation cost at the default
-        ``train_size ~ U(0.1, 0.9) * seq_len``. Training never reads context
-        MU; set True for analysis/visualisation code that needs full-sequence
-        MU0/MU1.
+        The ``K``-fold replication then applies to ``n_query`` rows rather than
+        the whole sequence, which is most of the generation cost. Training never
+        reads context MU; set True for analysis/visualisation code that needs
+        full-sequence MU0/MU1.
 
     scm_fixed_hp : dict, default=DEFAULT_FIXED_HP
         Fixed structural configuration parameters for the SCM.
@@ -1886,8 +1800,7 @@ class PriorDataset(IterableDataset):
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
         seq_len_per_gp: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
+        n_query: int = 128,
         replay_small: bool = False,
         prior_type: str = "mlp_scm",
         mc_cate: int = 200,
@@ -1916,8 +1829,7 @@ class PriorDataset(IterableDataset):
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
             seq_len_per_gp=seq_len_per_gp,
-            min_train_size=min_train_size,
-            max_train_size=max_train_size,
+            n_query=n_query,
             replay_small=replay_small,
             prior_type=prior_type,
             mc_cate=mc_cate,
@@ -1944,8 +1856,7 @@ class PriorDataset(IterableDataset):
         self.max_seq_len = max_seq_len
         self.log_seq_len = log_seq_len
         self.seq_len_per_gp = seq_len_per_gp
-        self.min_train_size = min_train_size
-        self.max_train_size = max_train_size
+        self.n_query = n_query
         self.device = device
         self.prior_type = prior_type
         self.mc_cate = mc_cate
@@ -2027,9 +1938,9 @@ class PriorDataset(IterableDataset):
             f"  features W: {self.min_dim_W} - {self.max_dim_W}\n"
             f"  features Z: {self.min_dim_Z} - {self.max_dim_Z}\n"
             f"  features X: {self.min_dim_X} - {self.max_dim_X}\n"
-            f"  seq_len: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
-            f"  sequence length varies across groups: {self.seq_len_per_gp}\n"
-            f"  train_size: {self.min_train_size} - {self.max_train_size}\n"
+            f"  n_ctx: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
+            f"  context size varies across groups: {self.seq_len_per_gp}\n"
+            f"  n_query: {self.n_query} (seq_len = n_ctx + n_query)\n"
             f"  mc_cate: {self.mc_cate}\n"
             f"  mc_targets_on_context: {self.mc_targets_on_context}\n"
             f"  device: {self.device}\n"

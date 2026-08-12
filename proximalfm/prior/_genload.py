@@ -846,10 +846,10 @@ class LoadPriorDataset(IterableDataset):
             repr_str += f"    dim_W: {self.metadata.get('min_dim_W', 'N/A')} - {self.metadata.get('max_dim_W', 'N/A')}\n"
             repr_str += f"    dim_Z: {self.metadata.get('min_dim_Z', 'N/A')} - {self.metadata.get('max_dim_Z', 'N/A')}\n"
             repr_str += f"    dim_X: {self.metadata.get('min_dim_X', 'N/A')} - {self.metadata.get('max_dim_X', 'N/A')}\n"
-            repr_str += f"    seq_len: {self.metadata.get('min_seq_len', 'N/A') or 'None'} - {self.metadata.get('max_seq_len', 'N/A')}\n"
+            repr_str += f"    n_ctx: {self.metadata.get('min_seq_len', 'N/A') or 'None'} - {self.metadata.get('max_seq_len', 'N/A')}\n"
             repr_str += f"    log_seq_len: {self.metadata.get('log_seq_len', 'N/A')}\n"
-            repr_str += f"    sequence length varies across groups: {self.metadata.get('seq_len_per_gp', 'N/A')}\n"
-            repr_str += f"    train_size: {self.metadata.get('min_train_size', 'N/A')} - {self.metadata.get('max_train_size', 'N/A')}\n"
+            repr_str += f"    context size varies across groups: {self.metadata.get('seq_len_per_gp', 'N/A')}\n"
+            repr_str += f"    n_query: {self.metadata.get('n_query', 'N/A')}\n"
             repr_str += (
                 f"    replay_small: {self.metadata.get('replay_small', 'N/A')}\n"
             )
@@ -986,8 +986,7 @@ class SavePriorDataset:
             max_seq_len=self.args.max_seq_len,
             log_seq_len=self.args.log_seq_len,
             seq_len_per_gp=self.args.seq_len_per_gp,
-            min_train_size=self.args.min_train_size,
-            max_train_size=self.args.max_train_size,
+            n_query=self.args.n_query,
             replay_small=self.args.replay_small,
             prior_type=self.args.prior_type,
             mc_cate=self.args.mc_cate,
@@ -1018,8 +1017,7 @@ class SavePriorDataset:
             "max_dim_Z": self.args.max_dim_Z,
             "min_dim_X": self.args.min_dim_X,
             "max_dim_X": self.args.max_dim_X,
-            "min_train_size": self.args.min_train_size,
-            "max_train_size": self.args.max_train_size,
+            "n_query": self.args.n_query,
             "replay_small": self.args.replay_small,
             "mc_cate": self.args.mc_cate,
             "mc_targets_on_context": getattr(self.args, "mc_targets_on_context", False),
@@ -1158,19 +1156,6 @@ if __name__ == "__main__":
     def str2bool(value):
         return value.lower() == "true"
 
-    def train_size_type(value):
-        """Custom type function to handle both int and float train sizes."""
-        value = float(value)
-        if 0 < value < 1:
-            return value
-        elif value.is_integer():
-            return int(value)
-        else:
-            raise argparse.ArgumentTypeError(
-                "Train size must be either an integer (absolute position) "
-                "or a float between 0 and 1 (ratio of sequence length)."
-            )
-
     parser = argparse.ArgumentParser(description="Generate training prior datasets")
     parser.add_argument(
         "--save_dir",
@@ -1238,10 +1223,18 @@ if __name__ == "__main__":
         help="Maximum dimensionality of baseline covariates X",
     )
     parser.add_argument(
-        "--min_seq_len", type=int, default=None, help="Minimum sequence length"
+        "--min_seq_len",
+        type=int,
+        default=None,
+        help="Minimum context rows per dataset. This bounds n_ctx, not the "
+        "row total, which is n_ctx + n_query",
     )
     parser.add_argument(
-        "--max_seq_len", type=int, default=1024, help="Maximum sequence length"
+        "--max_seq_len",
+        type=int,
+        default=1024,
+        help="Maximum context rows per dataset. This bounds n_ctx, not the "
+        "row total, which is n_ctx + n_query",
     )
     parser.add_argument(
         "--log_seq_len",
@@ -1256,16 +1249,11 @@ if __name__ == "__main__":
         help="If True, sample sequence length independently for each group",
     )
     parser.add_argument(
-        "--min_train_size",
-        type=train_size_type,
-        default=0.1,
-        help="Minimum training size position/ratio",
-    )
-    parser.add_argument(
-        "--max_train_size",
-        type=train_size_type,
-        default=0.9,
-        help="Maximum training size position/ratio",
+        "--n_query",
+        type=int,
+        default=128,
+        help="Number of query rows per dataset, the same for every dataset. "
+        "min/max_seq_len bound the context size, so seq_len = n_ctx + n_query",
     )
     parser.add_argument(
         "--replay_small",

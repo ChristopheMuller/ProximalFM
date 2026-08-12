@@ -98,7 +98,7 @@ One draw per dataset (or per group of datasets sharing an SCM family); ranges fr
 | `covariate_share_of_X_in_{W,Z,A,Y}` | $\mathrm{Beta}(1,1)$ | per-column keep probability of the direct $X \to \{W,Z,A,Y\}$ edges |
 | `cat_col_prob` | $\mathrm{Beta}(1, 3)$, mean 0.25 | per-column probability a feature is discretized (categorical-like); shared across blocks per dataset |
 | $d_U, d_X, d_W, d_Z$ | uniform in `--min_dim_*`/`--max_dim_*` (with $d_W, d_Z \ge d_U$) | variable dimensions |
-| `seq_len`, `train_size` | `--min/max_seq_len`, `--min/max_train_size` | episode length and context/query split |
+| `n_ctx`, `n_query` | `--min/max_seq_len`, `--n_query` | context/query split. The drawn value is the *context* size and `seq_len = n_ctx + n_query`, so every episode carries the same number of query rows |
 
 All of these are exposed as CLI flags of the trainer (`proximalfm/train/_train_config.py`). The prior can be consumed **on the fly** (`PriorDataset`, an infinite iterator) or **pre-generated to disk** with `python -m proximalfm.prior` ([`_genload.py`](proximalfm/prior/_genload.py): `SavePriorDataset` writes the sparse `batch_*.pt` stream, `LoadPriorDataset` replays it during training — the same format used by the fixed validation/benchmark builds below).
 
@@ -198,7 +198,7 @@ Rather than relying entirely on a static configuration, the orchestration enviro
 | `--min_dim_X` / `--max_dim_X` | `int` | Dimensionality boundaries for baseline covariates $X$. |
 | `--min_dim_Z` / `--max_dim_Z` | `int` | Dimensionality boundaries for treatment proxies $Z$. |
 | `--min_dim_W` / `--max_dim_W` | `int` | Dimensionality boundaries for outcome proxies $W$. |
-| `--min_train_size` / `--max_train_size` | `float` | Proportion range of sequence allocated for training context. |
+| `--n_query` | `int` | Query rows per episode (default 128), the same for every episode. `--min/max_seq_len` bound the context, so `seq_len = n_ctx + n_query`. |
 
 ---
 

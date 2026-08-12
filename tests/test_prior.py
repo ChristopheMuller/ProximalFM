@@ -16,6 +16,7 @@ from proximalfm.prior._dataset import (
     PriorDataset,
     DisablePrinting,
     _mc_reduce,
+    _mc_mean_var,
 )
 from proximalfm.prior._reg2cls import BlockProfile, dominates
 from proximalfm.prior._genload import (
@@ -65,8 +66,7 @@ def test_scm_prior_get_batch():
         max_dim_X=5,
         min_seq_len=20,
         max_seq_len=30,
-        min_train_size=0.1,
-        max_train_size=0.8,
+        n_query=8,
         prior_type="mlp_scm",
         mc_cate=FAST_mc_cate,
         fixed_hp=FAST_FIXED_HP,
@@ -126,8 +126,7 @@ def test_scm_prior_seq_len_per_gp():
         max_dim_X=5,
         min_seq_len=20,
         max_seq_len=30,
-        min_train_size=0.1,
-        max_train_size=0.8,
+        n_query=8,
         seq_len_per_gp=True,
         prior_type="mlp_scm",
         mc_cate=FAST_mc_cate,
@@ -231,8 +230,7 @@ def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):
         max_seq_len=30,
         log_seq_len=False,
         seq_len_per_gp=True,
-        min_train_size=5,
-        max_train_size=15,
+        n_query=10,
         replay_small=False,
         prior_type="mlp_scm",
         mc_cate=2,
@@ -1259,7 +1257,8 @@ def test_mechanisms_receive_only_the_dither_layer_noise():
 
 
 def _make_mc_split_prior(mc_targets_on_context, train_frac=0.5, seq_len=96, K=3):
-    """A small prior with the train/test split pinned to ``train_frac``."""
+    """A small prior whose context/query split is pinned at ``train_frac``."""
+    n_ctx = max(1, round(train_frac * seq_len))
     return SCMPrior(
         batch_size=2,
         batch_size_per_gp=2,
@@ -1272,9 +1271,8 @@ def _make_mc_split_prior(mc_targets_on_context, train_frac=0.5, seq_len=96, K=3)
         min_dim_X=1,
         max_dim_X=5,
         min_seq_len=None,
-        max_seq_len=seq_len,
-        min_train_size=train_frac,
-        max_train_size=train_frac + 0.001,
+        max_seq_len=n_ctx,
+        n_query=seq_len - n_ctx,
         prior_type="mlp_scm",
         mc_cate=K,
         mc_targets_on_context=mc_targets_on_context,
@@ -1471,6 +1469,7 @@ def test_target_leaf_mechanisms_skip_mc_replicates():
     # (it costs ~40% of generation time).
     _seed(0)
     T, K = 64, 8
+    N_Q = 8
     prior = SCMPrior(
         batch_size=1,
         batch_size_per_gp=1,
@@ -1484,8 +1483,9 @@ def test_target_leaf_mechanisms_skip_mc_replicates():
         max_dim_Z=5,
         min_dim_X=6,
         max_dim_X=6,
-        min_seq_len=T,
-        max_seq_len=T + 1,
+        min_seq_len=T - N_Q,
+        max_seq_len=T - N_Q + 1,
+        n_query=N_Q,
         prior_type="mlp_scm",
         mc_cate=K,
         mc_targets_on_context=True,
@@ -1547,11 +1547,10 @@ def test_save_and_load_prior_dataset_query_only_mc(tmp_path):
         min_dim_X=5,
         max_dim_X=5,
         min_seq_len=None,
-        max_seq_len=40,
+        max_seq_len=train_size,
         log_seq_len=False,
         seq_len_per_gp=False,
-        min_train_size=train_size,
-        max_train_size=train_size + 1,
+        n_query=28,
         replay_small=False,
         prior_type="mlp_scm",
         mc_cate=3,
@@ -1602,8 +1601,7 @@ def _save_args(tmp_path, num_batches=1, mc_cate=4, **overrides):
         max_seq_len=40,
         log_seq_len=False,
         seq_len_per_gp=False,
-        min_train_size=0.5,
-        max_train_size=0.51,
+        n_query=8,
         replay_small=False,
         prior_type="mlp_scm",
         mc_cate=mc_cate,
@@ -1652,25 +1650,36 @@ def test_s2_is_zero_without_replicates():
 
 
 def test_s2_scales_as_one_over_k():
-    # The defining property of a Monte Carlo mean's sampling variance. Held on
-    # one fixed mechanism (same params, same seed) so only K varies -- across
-    # independently drawn mechanisms the comparison would be meaningless.
-    prior = _make_mc_split_prior(mc_targets_on_context=True, K=8)
+    # The defining property of a Monte Carlo mean's sampling variance.
+    #
+    # Checked on _mc_mean_var rather than end to end, because a generator-level
+    # version cannot hold the mechanism fixed: changing ``mc_cate`` changes how
+    # many draws generate_dataset takes, so the same seed yields a *different*
+    # SCM (measured: corr(MU0_K=8, MU0_K=64) ~ 0). A test that reseeds and
+    # varies K is comparing two unrelated mechanisms and passes or fails on
+    # luck, which is what this one used to do.
     _seed(0)
-    params = _capture_params(prior)
+    replicates = torch.randn(64, 64)
 
-    means = {}
-    for K in (8, 64):
-        _seed(11)
-        out = prior.generate_dataset({**params, "mc_cate": K})
-        means[K] = float(out[15].mean())
-        assert int(out[16]) == K
+    s2_full = _mc_mean_var(replicates, 64)
+    s2_eighth = _mc_mean_var(replicates[:, :8], 8)
 
-    ratio = means[8] / means[64]
-    # 8x more replicates. Both endpoints are themselves noisy estimates, so this
-    # is a wide band around 8 -- it catches a wrong normalisation (e.g. dividing
-    # by K^2 or not at all), not a few percent of bias.
+    # Same rows, same draws, only the replicate count differs, so the ratio is
+    # 8 up to the variance estimate's own error on 8 vs 64 samples.
+    ratio = float(s2_eighth.mean() / s2_full.mean())
     assert 4.0 < ratio < 16.0
+
+
+def test_s2_is_the_generators_realised_target_noise():
+    # The end-to-end half of the property above: S2 must be positive, finite,
+    # and small relative to the spread of the target it describes.
+    prior = _make_mc_split_prior(mc_targets_on_context=True, K=64)
+    _seed(0)
+    out = prior.get_batch()
+
+    S2, cate = out[17], out[10] - out[9]
+    assert torch.isfinite(S2).all() and (S2 >= 0).all()
+    assert float(S2.mean()) < float(cate.var())
 
 
 def test_s2_is_the_paired_variance_not_the_sum_of_arm_variances():
@@ -1853,47 +1862,154 @@ def test_legacy_batches_without_s2_load_as_noise_free(tmp_path):
     assert (K_eff == 0).all()
 
 
-# sample_train_size type handling
+# sample_seq_len
 # ---------------------------------------------------------------------------
 
 
-def test_sample_train_size_accepts_matching_int_bounds():
+def test_sample_seq_len_without_min_returns_max():
+    assert SCMPrior.sample_seq_len(None, 512) == 512
+
+
+def test_sample_seq_len_never_returns_max():
+    # np.random.randint is half-open, so max_seq_len is an exclusive bound. Under
+    # the n_query spelling that reads as "the largest context is never drawn".
     _seed(0)
-    train_size = SCMPrior.sample_train_size(10, 50, seq_len=100)
-    assert isinstance(train_size, (int, np.integer))
-    assert 10 <= train_size < 50
+    draws = [SCMPrior.sample_seq_len(10, 13) for _ in range(200)]
+    assert set(draws) == {10, 11, 12}
 
 
-def test_sample_train_size_accepts_matching_float_bounds():
+def test_sample_seq_len_log_stays_in_range_and_skews_small():
     _seed(0)
-    train_size = SCMPrior.sample_train_size(0.1, 0.9, seq_len=100)
-    assert isinstance(train_size, int)
-    assert 10 <= train_size <= 90
+    log_draws = [SCMPrior.sample_seq_len(64, 4096, log=True) for _ in range(200)]
+    _seed(0)
+    flat_draws = [SCMPrior.sample_seq_len(64, 4096) for _ in range(200)]
+
+    assert all(64 <= n <= 4096 for n in log_draws)
+    assert np.median(log_draws) < np.median(flat_draws)
 
 
-@pytest.mark.parametrize("bounds", [(0.1, 50), (10, 0.9)])
-def test_sample_train_size_rejects_mixed_bounds(bounds):
-    # The float branch used to test `min_train_size` twice, so a (float, int)
-    # pair fell through to the *ratio* branch and returned
-    # int(seq_len * uniform(0.1, 50)) -- a train_size far past the end of the
-    # sequence, silently. Only (int, float) reached the guard.
-    with pytest.raises(ValueError, match="must both be int"):
-        SCMPrior.sample_train_size(*bounds, seq_len=100)
+@pytest.mark.parametrize(
+    "p, low, high",
+    [(0.01, 200, 1000), (0.2, 1000, 10000)],
+)
+def test_sample_seq_len_replay_small_escapes_the_range(monkeypatch, p, low, high):
+    # replay_small ignores min/max_seq_len entirely on its two replay branches.
+    # It therefore also escapes the n_query spelling's context bounds -- the
+    # invariant that survives is `seq_len - train_size == n_query`, not the range.
+    _seed(0)
+    monkeypatch.setattr(np.random, "random", lambda: p)
+    draw = SCMPrior.sample_seq_len(10, 20, replay_small=True)
+    assert low <= draw <= high
 
 
-def test_sample_train_size_error_names_both_types():
-    with pytest.raises(ValueError) as excinfo:
-        SCMPrior.sample_train_size(0.1, 50, seq_len=100)
-
-    message = str(excinfo.value)
-    assert "float" in message and "int" in message
+def test_sample_seq_len_replay_small_passthrough(monkeypatch):
+    _seed(0)
+    monkeypatch.setattr(np.random, "random", lambda: 0.9)
+    assert 10 <= SCMPrior.sample_seq_len(10, 20, replay_small=True) < 20
 
 
-def test_validate_train_size_range_is_the_first_line_of_defence():
-    # sample_train_size's guard is a backstop: the constructor rejects mixed
-    # bounds up front, which is why the fall-through went unnoticed.
-    with pytest.raises(ValueError):
-        SCMPrior.validate_train_size_range(0.1, 50)
+# _sample_split: the two spellings of the row split
+# ---------------------------------------------------------------------------
+
+
+def _make_split_prior(**kwargs):
+    """A small, fast prior for exercising the row split end to end."""
+    params = dict(
+        batch_size=4,
+        batch_size_per_gp=2,
+        min_dim_U=1,
+        max_dim_U=2,
+        min_dim_W=1,
+        max_dim_W=2,
+        min_dim_Z=1,
+        max_dim_Z=2,
+        min_dim_X=1,
+        max_dim_X=2,
+        min_seq_len=32,
+        max_seq_len=64,
+        mc_cate=2,
+        mc_targets_on_context=False,
+        n_jobs=1,
+    )
+    params.update(kwargs)
+    return SCMPrior(**params)
+
+
+def test_sample_split_composes_the_total_from_the_context_draw():
+    prior = SCMPrior(min_seq_len=64, max_seq_len=256, n_query=16)
+
+    _seed(0)
+    n_ctx = SCMPrior.sample_seq_len(64, 256, log=False, replay_small=False)
+    _seed(0)
+    seq_len, train_size = prior._sample_split()
+
+    # One draw, and it is the context: the total is composed, never carved up.
+    assert (seq_len, train_size) == (n_ctx + 16, n_ctx)
+
+
+def test_sample_split_with_n_query_holds_the_query_count_exactly():
+    prior = SCMPrior(min_seq_len=8, max_seq_len=512, n_query=128)
+    _seed(0)
+    splits = [prior._sample_split() for _ in range(200)]
+
+    assert all(seq_len - train_size == 128 for seq_len, train_size in splits)
+    # ... and the context is what varies, including below n_query itself.
+    contexts = {train_size for _, train_size in splits}
+    assert len(contexts) > 1 and min(contexts) < 128
+
+
+def test_sample_split_with_n_query_survives_replay_small(monkeypatch):
+    _seed(0)
+    monkeypatch.setattr(np.random, "random", lambda: 0.01)
+    prior = SCMPrior(min_seq_len=10, max_seq_len=20, n_query=4, replay_small=True)
+
+    seq_len, train_size = prior._sample_split()
+    assert seq_len - train_size == 4
+    assert 200 <= train_size <= 1000  # the replayed value became the context
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "8"])
+def test_n_query_must_be_a_positive_int(bad):
+    with pytest.raises(ValueError, match="n_query"):
+        SCMPrior(n_query=bad)
+
+
+def test_n_query_batch_metadata_and_no_clamp():
+    # generate_dataset clamps T_ctx to T - 1; with n_query >= 1 that clamp can
+    # never bite, so the MU0/MU1 NaN prefix lands exactly on the context and the
+    # finite tail is exactly n_query rows long.
+    prior = _make_split_prior(n_query=8)
+    _seed(0)
+    batch = prior.get_batch(4)
+
+    seq_lens, train_sizes = batch[15], batch[16]
+    assert (seq_lens - train_sizes == 8).all()
+
+    MU0 = batch[9]
+    for i in range(len(seq_lens)):
+        train_size, seq_len = int(train_sizes[i]), int(seq_lens[i])
+        row = MU0[i, :seq_len]
+        assert torch.isnan(row[:train_size]).all()
+        assert torch.isfinite(row[train_size:]).all()
+        assert row[train_size:].numel() == 8
+
+
+def test_n_query_holds_when_seq_len_varies_per_group():
+    prior = _make_split_prior(batch_size=8, n_query=8, seq_len_per_gp=True)
+    _seed(0)
+    batch = prior.get_batch(8)
+
+    seq_lens, train_sizes = batch[15], batch[16]
+    assert len(torch.unique(seq_lens)) > 1
+    assert (seq_lens - train_sizes == 8).all()
+
+
+def test_prior_dataset_repr_reports_n_query():
+    dataset = PriorDataset(batch_size=2, max_seq_len=64, n_query=8)
+    text = repr(dataset)
+    assert "n_query: 8" in text
+    assert "n_ctx:" in text
+    assert "train_size:" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -1925,6 +2041,47 @@ def test_cli_prior_type_defaults_to_mlp_scm(tmp_path):
     assert result.returncode == 0, result.stderr
     metadata = json.loads((tmp_path / "metadata.json").read_text())
     assert metadata["prior_type"] == "mlp_scm"
+
+
+def _run_prior_cli(tmp_path, *args):
+    return subprocess.run(
+        [sys.executable, "-m", "proximalfm.prior", "--save_dir", str(tmp_path), *args],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_cli_n_query_has_a_default(tmp_path):
+    result = _run_prior_cli(tmp_path, "--num_batches", "0")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "metadata.json").read_text())["n_query"] == 128
+
+
+def test_cli_n_query_reaches_the_generated_batch(tmp_path):
+    result = _run_prior_cli(
+        tmp_path,
+        "--num_batches", "1",
+        "--n_query", "8",
+        "--batch_size", "2",
+        "--batch_size_per_gp", "1",
+        "--min_seq_len", "32",
+        "--max_seq_len", "64",
+        "--mc_cate", "2",
+        "--min_dim_U", "1", "--max_dim_U", "2",
+        "--min_dim_W", "1", "--max_dim_W", "2",
+        "--min_dim_Z", "1", "--max_dim_Z", "2",
+        "--min_dim_X", "1", "--max_dim_X", "2",
+        "--n_jobs", "1",
+    )  # fmt: skip
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "metadata.json").read_text())["n_query"] == 8
+
+    (batch_file,) = tmp_path.glob("batch_*.pt")
+    batch = torch.load(batch_file, weights_only=False)
+    assert (batch["seq_lens"] - batch["train_sizes"] == 8).all()
 
 
 def test_scm_prior_and_cli_agree_on_the_default_prior_type():

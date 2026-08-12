@@ -15,20 +15,6 @@ def nullable_int(value):
     return int(value)
 
 
-def train_size_type(value):
-    """Custom type function to handle both int and float train sizes."""
-    value = float(value)
-    if 0 < value < 1:
-        return value
-    elif value.is_integer():
-        return int(value)
-    else:
-        raise argparse.ArgumentTypeError(
-            "Train size must be either an integer (absolute position) "
-            "or a float between 0 and 1 (ratio of sequence length)."
-        )
-
-
 def build_parser():
     """Build an argument parser with all Proximal TabICL training arguments.
 
@@ -257,34 +243,37 @@ def build_parser():
 
     # Sequence Length and Split
     parser.add_argument(
-        "--min_seq_len", type=int, default=None, help="Minimum samples per dataset"
+        "--min_seq_len",
+        type=int,
+        default=None,
+        help="Minimum context rows per dataset. This bounds n_ctx, not the "
+        "row total, which is n_ctx + n_query",
     )
     parser.add_argument(
-        "--max_seq_len", type=int, default=1024, help="Maximum samples per dataset"
+        "--max_seq_len",
+        type=int,
+        default=1024,
+        help="Maximum context rows per dataset. This bounds n_ctx, not the "
+        "row total, which is n_ctx + n_query",
     )
     parser.add_argument(
         "--log_seq_len",
         default=False,
         type=str2bool,
-        help="If True, sample sequence length from log-uniform distribution between min_seq_len and max_seq_len",
+        help="If True, sample the context size from a log-uniform distribution between min_seq_len and max_seq_len",
     )
     parser.add_argument(
         "--seq_len_per_gp",
         default=False,
         type=str2bool,
-        help="If True, sample sequence length independently for each group",
+        help="If True, sample the context size independently for each group",
     )
     parser.add_argument(
-        "--min_train_size",
-        type=train_size_type,
-        default=0.1,
-        help="Starting position/ratio for train/test split. If int, absolute position. If float (0-1), ratio of seq_len",
-    )
-    parser.add_argument(
-        "--max_train_size",
-        type=train_size_type,
-        default=0.9,
-        help="Ending position/ratio for train/test split. If int, absolute position. If float (0-1), ratio of seq_len",
+        "--n_query",
+        type=int,
+        default=128,
+        help="Number of query rows per dataset, the same for every dataset. "
+        "min/max_seq_len bound the context size, so seq_len = n_ctx + n_query",
     )
     parser.add_argument(
         "--replay_small",
@@ -320,8 +309,8 @@ def build_parser():
         "only the query rows [train_size:] are Monte-Carlo replicated and "
         "MU0/MU1 are NaN on the context prefix. Training only ever reads the "
         "query slice, so False is the recommended setting for the on-the-fly "
-        "SCM prior: it roughly halves generation cost at the default "
-        "train_size range.",
+        "SCM prior: the K-fold replication then applies to n_query rows rather "
+        "than the whole sequence.",
     )
     parser.add_argument(
         "--prior_mc_mem_budget",

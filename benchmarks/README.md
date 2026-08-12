@@ -135,6 +135,21 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 
 `prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
 
+**Keys the `data:` block takes per `source:`.**
+
+| `source:` | keys |
+|---|---|
+| `load` | `val_dir` |
+| `generate` | `n_context`, `n_query`, `n_batch`, and a `prior:` block of `PriorDataset` kwargs |
+| `csv` | `csv_path`, `columns`, `prop_train`, `shuffle`, `normalize_treatment` |
+
+Under `generate` the row split is stated the way the prior composes it — a context size and a query
+count, `seq_len = n_context + n_query` — matching the trainer's `--max_seq_len`/`--n_query` and
+`prior_eval`/`synt_eval`'s `--n_max`/`--n_q`. The older `n_rows` + `prop_train` spelling is **refused
+with an error** rather than ignored, since a silently different dataset size would leave the config
+file still reading as though it had asked for the old one. `prop_train` survives only under `csv`,
+where the row count is a property of the file and a ratio is the only thing there is to give.
+
 **Common method keys.** `name` (display + output filename), `cls` (dispatch), `base`
 (`linear` | `rf` | `tabicl`), `use_W`/`use_Z` (whether proxies enter the design matrix — **default
 `True`** for the learners and the PFN wrappers), `interactions`, `is_oracle: true` (concatenates the
