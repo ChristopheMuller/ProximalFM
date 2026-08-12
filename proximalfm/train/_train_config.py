@@ -502,7 +502,7 @@ def build_parser():
     )
     parser.add_argument(
         "--transfer_rules",
-        default="transfer_rules.yaml",
+        default="ckpt_tabicl/transfer_rules.yaml",
         type=str,
         help="Path to the yaml of per-parameter transfer/freeze rules "
         "(finetune / freeze / scratch, longest matching prefix wins). Resolved "
