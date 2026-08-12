@@ -188,17 +188,16 @@ class Trainer:
         model = ProximalFM(**self.model_config)
         model.to(device=self.config.device)
 
-        checkpoint_path = None
-        if hasattr(self.config, "checkpoint_path") and self.config.checkpoint_path:
-            checkpoint_path = self.config.checkpoint_path
-        elif hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
-            checkpoint_path = self.get_latest_checkpoint()
+        checkpoint_path, is_resume = self._resolve_startup_checkpoint()
 
         loaded_params_count = 0
         total_model_params = sum(p.numel() for p in model.parameters())
 
         if checkpoint_path and os.path.exists(checkpoint_path):
-            print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
+            if is_resume:
+                print(f"Resuming from {checkpoint_path}")
+            else:
+                print(f"Applying Surgical Transfer Learning from {checkpoint_path}")
 
             checkpoint = torch.load(
                 checkpoint_path, map_location=self.config.device, weights_only=True
@@ -225,8 +224,12 @@ class Trainer:
                     name in model_state_dict
                     and weight.shape == model_state_dict[name].shape
                 ):
+                    # The transfer rules select which parts of a *foreign*
+                    # backbone to keep; on a resume they must not apply, or the
+                    # 'scratch' parameters (the CATE head) would be reinitialized
+                    # mid-run.
                     state = get_parameter_state(name, transfer_rules)
-                    if state in ["finetune", "freeze"]:
+                    if is_resume or state in ["finetune", "freeze"]:
                         filtered_state_dict[name] = weight
                         loaded_params_count += weight.numel()
 
@@ -429,19 +432,50 @@ class Trainer:
             print(f"Error parsing checkpoint filenames: {e}")
             return None
 
+    def _resolve_startup_checkpoint(self) -> tuple[str | None, bool]:
+        """Pick the checkpoint to start from; returns ``(path, is_resume)``.
+
+        A ``step-*.ckpt`` already sitting in ``--checkpoint_dir`` **wins over**
+        ``--checkpoint_path``, because the two answer different questions: the
+        flag names the foreign backbone this run transfers from at a cold start,
+        the directory holds the run itself. Re-running an unchanged command
+        after a crash must therefore continue the run -- under the older
+        flag-first precedence it silently restarted from the backbone at step 1
+        while ``_load_best_metric_value`` kept the dead run's best value, so the
+        restart also wrote no ``best_model.ckpt`` until it beat a run it had
+        just discarded. ``--resume never`` restores the old precedence.
+
+        Memoized: both :meth:`build_model` and :meth:`load_checkpoint` ask, and
+        they must not disagree.
+        """
+        if getattr(self, "_startup_checkpoint", None) is not None:
+            return self._startup_checkpoint
+
+        resolved: tuple[str | None, bool] = (None, False)
+        if getattr(self.config, "resume", "auto") != "never":
+            if getattr(self.config, "checkpoint_dir", None):
+                latest = self.get_latest_checkpoint()
+                if latest and os.path.exists(latest):
+                    resolved = (latest, True)
+
+        if resolved[0] is None and getattr(self.config, "checkpoint_path", None):
+            resolved = (self.config.checkpoint_path, False)
+
+        self._startup_checkpoint = resolved
+        return resolved
+
     def load_checkpoint(self):
         """Load optimizer and scheduler state from checkpoint (Weights are handled in build_model)."""
-        checkpoint_path = None
-        if hasattr(self.config, "checkpoint_path") and self.config.checkpoint_path:
-            checkpoint_path = self.config.checkpoint_path
-        elif hasattr(self.config, "checkpoint_dir") and self.config.checkpoint_dir:
-            checkpoint_path = self.get_latest_checkpoint()
+        checkpoint_path, is_resume = self._resolve_startup_checkpoint()
 
         if checkpoint_path is None or not os.path.exists(checkpoint_path):
             return
 
-        # If you are doing transfer learning, you almost NEVER want to load the old optimizer states.
-        if self.config.only_load_model:
+        # If you are doing transfer learning, you almost NEVER want to load the
+        # old optimizer states. A resume is not transfer learning: it continues
+        # this run's own optimizer, schedule and step counter, so
+        # --only_load_model does not apply to it.
+        if self.config.only_load_model and not is_resume:
             print("Transfer learning active: Starting with a fresh optimizer.")
             return
 
@@ -536,10 +570,18 @@ class Trainer:
             )
 
     def _load_best_metric_value(self):
-        """Recover best metric value from existing best_model.ckpt."""
+        """Recover best metric value from existing best_model.ckpt.
+
+        Only on a resume: a cold start into a directory that already holds a
+        ``best_model.ckpt`` is a *different* run, and inheriting the old
+        threshold would keep it from writing any best checkpoint until it beat a
+        run whose weights it never loaded.
+        """
         if not self.save_best:
             return
         if not getattr(self.config, "checkpoint_dir", None):
+            return
+        if not self._resolve_startup_checkpoint()[1]:
             return
 
         best_path = os.path.join(self.config.checkpoint_dir, "best_model.ckpt")

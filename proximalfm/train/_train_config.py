@@ -480,14 +480,31 @@ def build_parser():
     parser.add_argument(
         "--max_checkpoints",
         type=int,
-        default=3,
+        default=2,
         help="Maximum number of temporary checkpoints to keep. Permanent checkpoints are not counted.",
     )
     parser.add_argument(
         "--checkpoint_path",
         default=None,
         type=str,
-        help="Path to specific checkpoint file to load",
+        help="Checkpoint to *start from* -- the backbone a run transfers from, "
+        "read through --transfer_rules and with a fresh optimizer. It only "
+        "applies to a cold start: once --checkpoint_dir holds a step-*.ckpt of "
+        "this run's own, that checkpoint wins and the run resumes (see "
+        "--resume).",
+    )
+    parser.add_argument(
+        "--resume",
+        default="auto",
+        choices=["auto", "never"],
+        help="'auto' (the default): if --checkpoint_dir already holds a "
+        "step-*.ckpt, resume from it -- every parameter, the optimizer, the "
+        "scheduler and the step counter -- ignoring --checkpoint_path and "
+        "--only_load_model, so re-running the same command after a crash "
+        "continues the run instead of silently restarting it from the backbone. "
+        "'never' always cold-starts from --checkpoint_path; use it to relaunch "
+        "into a directory that already has checkpoints, which will overwrite "
+        "them.",
     )
     parser.add_argument(
         "--transfer_rules",
@@ -496,6 +513,14 @@ def build_parser():
         help="Path to the yaml of per-parameter transfer/freeze rules "
         "(finetune / freeze / scratch, longest matching prefix wins). Resolved "
         "relative to the CWD, then to the repository root.",
+    )
+    parser.add_argument(
+        "--only_load_model",
+        default=True,
+        type=str2bool,
+        help="Whether to only load model weights (fresh optimizer, scheduler and "
+        "step counter) when starting from --checkpoint_path. Ignored on a "
+        "resume, which always restores the full training state.",
     )
     parser.add_argument(
         "--save_best",
@@ -519,12 +544,6 @@ def build_parser():
         choices=["min", "max"],
         help="Whether a lower ('min', e.g. an RMSE) or higher ('max', e.g. an R2) "
         "value of --best_metric is considered better.",
-    )
-    parser.add_argument(
-        "--only_load_model",
-        default=True,
-        type=str2bool,
-        help="Whether to only load model weights",
     )
 
     ###########################################################################

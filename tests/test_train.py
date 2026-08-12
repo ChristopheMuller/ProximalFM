@@ -1014,6 +1014,90 @@ def test_atomic_checkpoint_save(dummy_args):
     assert "state_dict" in loaded
 
 
+def test_resume_wins_over_checkpoint_path(dummy_args, tmp_path):
+    """A step checkpoint of this run outranks the backbone it started from.
+
+    Re-running an unchanged command after a crash must continue the run; under
+    the old flag-first precedence it silently restarted from ``--checkpoint_path``
+    at step 1.
+    """
+    trainer = Trainer(dummy_args)
+    trainer.curr_step = 7
+    trainer.save_checkpoint(trainer._checkpoint_name(7))
+
+    backbone = tmp_path / "backbone.ckpt"
+    backbone.write_bytes(b"x")
+
+    args = build_parser().parse_args(
+        _dummy_args_list(tmp_path) + ["--checkpoint_path", str(backbone)]
+    )
+    resumed = Trainer(args)
+    assert resumed._resolve_startup_checkpoint() == (
+        os.path.join(str(tmp_path), resumed._checkpoint_name(7)),
+        True,
+    )
+    # --only_load_model (True by default) applies to transfer, not to a resume.
+    assert resumed.config.only_load_model
+    assert resumed.curr_step == 7
+
+
+def test_resume_never_falls_back_to_the_backbone(dummy_args, tmp_path):
+    """The escape hatch keeps the old precedence for a deliberate cold start."""
+    trainer = Trainer(dummy_args)
+    trainer.curr_step = 7
+    trainer.save_checkpoint(trainer._checkpoint_name(7))
+
+    backbone = tmp_path / "backbone.ckpt"
+    backbone.write_bytes(b"x")
+
+    args = build_parser().parse_args(
+        _dummy_args_list(tmp_path)
+        + ["--checkpoint_path", str(backbone), "--resume", "never"]
+    )
+    assert _make_uninitialized(args)._resolve_startup_checkpoint() == (
+        str(backbone),
+        False,
+    )
+
+
+def test_resume_restores_scratch_parameters(dummy_args, tmp_path):
+    """Transfer rules select from a *foreign* backbone; on a resume they must
+    not apply, or the from-scratch CATE head is reinitialized mid-run."""
+    trainer = Trainer(dummy_args)
+    trainer.curr_step = 3
+    with torch.no_grad():
+        for p in trainer.model.parameters():
+            p.add_(0.123)
+    trainer.save_checkpoint(trainer._checkpoint_name(3))
+    saved = {k: v.clone() for k, v in trainer.model.state_dict().items()}
+
+    resumed = Trainer(build_parser().parse_args(_dummy_args_list(tmp_path)))
+    for name, param in resumed.model.state_dict().items():
+        assert torch.equal(param, saved[name]), name
+
+
+def test_cold_start_does_not_inherit_a_stale_best_metric(dummy_args, tmp_path):
+    """A run that did not load the old weights must not inherit its threshold,
+    or it writes no best checkpoint until it beats a run it discarded."""
+    trainer = Trainer(dummy_args)
+    trainer.save_checkpoint("best_model.ckpt", extra={"best_metric_value": 0.01})
+
+    cold = Trainer(build_parser().parse_args(_dummy_args_list(tmp_path)))
+    assert cold.best_metric_value is None
+
+    trainer.curr_step = 5
+    trainer.save_checkpoint(trainer._checkpoint_name(5))
+    resumed = Trainer(build_parser().parse_args(_dummy_args_list(tmp_path)))
+    assert resumed.best_metric_value == 0.01
+
+
+def _make_uninitialized(config):
+    """A Trainer shell carrying only ``config`` -- enough for the resolver."""
+    shell = Trainer.__new__(Trainer)
+    shell.config = config
+    return shell
+
+
 def _widths_batch(d_X, d_W, d_Z, seq_len=20, train_size=10):
     """A minimal well-formed batch whose only interesting content is the widths."""
     n = len(d_X)
