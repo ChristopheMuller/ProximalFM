@@ -1015,3 +1015,117 @@ def test_atomic_checkpoint_save(dummy_args):
     assert os.path.exists(target_path)
     loaded = torch.load(target_path, weights_only=False)
     assert "state_dict" in loaded
+
+
+def _widths_batch(d_X, d_W, d_Z, seq_len=20, train_size=10):
+    """A minimal well-formed batch whose only interesting content is the widths."""
+    n = len(d_X)
+    max_dim = 10
+    A = torch.zeros(n, seq_len, 1)
+    A[:, ::2] = 1.0  # both arms present in every context
+    return (
+        torch.randn(n, seq_len, max_dim),  # U
+        torch.randn(n, seq_len, max_dim),  # X
+        torch.randn(n, seq_len, max_dim),  # W
+        torch.randn(n, seq_len, max_dim),  # Z
+        A,
+        torch.full((n, seq_len, 1), 0.5),  # A_probs
+        torch.randn(n, seq_len),  # Y_obs
+        torch.randn(n, seq_len),  # Y0
+        torch.randn(n, seq_len),  # Y1
+        torch.randn(n, seq_len),  # MU0
+        torch.randn(n, seq_len),  # MU1
+        torch.full((n,), 3),  # d_U
+        torch.tensor(d_X),
+        torch.tensor(d_W),
+        torch.tensor(d_Z),
+        torch.full((n,), seq_len),
+        torch.full((n,), train_size),
+        torch.rand(n, seq_len),  # S2
+        torch.full((n,), 8),  # K_eff
+    )
+
+
+def test_row_permutation_groups_similar_feature_widths(dummy_args):
+    """The ordering must make ``align_micro_batch``'s trim bite.
+
+    Widths are interleaved on purpose, so the identity ordering pads every
+    micro-batch to the global max and the trim is a no-op. Groups of two share
+    a width, matching how the prior samples dims per subgroup.
+    """
+    trainer = Trainer(dummy_args)
+    widths = [1, 1, 9, 9, 2, 2, 8, 8]
+    batch = _widths_batch(widths, widths, widths)
+
+    perm = trainer._batch_row_permutation(batch)
+    ordered = torch.tensor(widths)[perm.cpu()]
+
+    # Jitter (1.5) may swap 1<->2 and 8<->9 but cannot move a narrow dataset
+    # past a wide one, which is all the trim needs.
+    chunk_max = [int(ordered[i : i + 2].max()) for i in range(0, 8, 2)]
+    assert max(chunk_max[:2]) <= 2, chunk_max
+    assert min(chunk_max[2:]) >= 8, chunk_max
+    # Without grouping every chunk would be padded to 9.
+    assert sum(chunk_max) < 4 * 9
+
+
+def test_row_permutation_declines_heterogeneous_batches(dummy_args):
+    trainer = Trainer(dummy_args)
+    batch = list(_widths_batch([4, 5], [4, 5], [4, 5]))
+    batch[15] = torch.tensor([20, 18])
+    assert trainer._batch_row_permutation(tuple(batch)) is None
+
+
+def test_micro_batch_grouping_does_not_change_the_gradient(dummy_args):
+    """Micro-batches are accumulation chunks, so the partition is immaterial.
+
+    ``run_batch`` averages each chunk and divides by the chunk count; with equal
+    chunk sizes, homogeneous seq_len/train_size and per-dataset standardisation
+    that is the batch mean whatever the grouping. This pins that property, which
+    is what lets ``_batch_row_permutation`` sort by width without touching what
+    the step learns.
+    """
+    dummy_args.batch_size = 8
+    dummy_args.micro_batch_size = 2
+    trainer = Trainer(dummy_args)
+
+    torch.manual_seed(0)
+    widths = [1, 1, 9, 9, 2, 2, 8, 8]
+    batch = _widths_batch(widths, widths, widths)
+
+    model_state = {k: v.clone() for k, v in trainer.model.state_dict().items()}
+
+    def grads_for(perm):
+        # ``run_batch`` clears the gradients on its way out, so snapshot them
+        # where they are complete: the clip call, after the last micro-batch has
+        # accumulated and before anything rescales them.
+        captured = {}
+        real_clip = torch.nn.utils.clip_grad_norm_
+
+        def spy(parameters, max_norm, *args, **kwargs):
+            captured.update(
+                {
+                    name: p.grad.detach().clone()
+                    for name, p in trainer.model.named_parameters()
+                    if p.grad is not None
+                }
+            )
+            return real_clip(parameters, max_norm, *args, **kwargs)
+
+        trainer.model.load_state_dict(model_state)
+        with patch.object(torch.nn.utils, "clip_grad_norm_", spy):
+            trainer.run_batch(batch, row_perm=perm)
+        return captured
+
+    identity = torch.arange(8)
+    sorted_perm = trainer._batch_row_permutation(batch)
+    assert not torch.equal(sorted_perm.cpu(), identity), "orderings must differ"
+
+    g_identity = grads_for(identity)
+    g_sorted = grads_for(sorted_perm)
+
+    assert g_identity and g_identity.keys() == g_sorted.keys()
+    for name in g_identity:
+        torch.testing.assert_close(
+            g_identity[name], g_sorted[name], rtol=1e-4, atol=1e-6, msg=name
+        )

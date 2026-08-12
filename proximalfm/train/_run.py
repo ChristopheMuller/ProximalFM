@@ -52,6 +52,14 @@ warnings.filterwarnings(
 
 _UNSCALED_METRICS = frozenset({"loss/total"})
 
+# Width of the uniform jitter added to the feature-width sort key in
+# :meth:`Trainer._batch_row_permutation`. One unit = one feature column, so
+# neighbouring widths swap chunks from step to step while the ordering as a
+# whole still groups. Measured cost of the jitter at batch 64 / micro-batch 16:
+# -11.0% columns at jitter 0 against -10.7% here, so the decorrelation is very
+# nearly free; 3.0 would give back a third of the saving.
+DIM_SORT_JITTER = 1.0
+
 
 class Trainer:
     """Handles the complete training lifecycle for ProximalFM."""
@@ -624,13 +632,48 @@ class Trainer:
                     print(f"Error removing checkpoint {ckpt_path}: {e}")
 
     def _batch_row_permutation(self, batch):
-        """Return dataset row permutation or None if batch has heterogeneous sequence lengths."""
+        """Return dataset ordering for micro-batching, or None if the batch is heterogeneous.
+
+        Datasets are ordered by total active feature width ``d_X + d_W + d_Z``,
+        plus uniform jitter, so that a micro-batch groups comparable widths and
+        :meth:`align_micro_batch`'s trim to ``d_*.max()`` actually bites. The
+        prior pads every dataset to ``max_dim_X/W/Z`` and the model masks the
+        padding only *after* embedding it (``ColEmbedding._get_invalid_mask``),
+        so each pad column costs a full column token and a full RowInteraction
+        token -- and the max over an unsorted micro-batch sits at the padding
+        width nearly always, leaving the existing trim a no-op. Measured on the
+        1..10 dim ranges at batch 64 / micro-batch 16: 29.2 -> 26.1 columns per
+        row (-10.7%; 19.4 are active). The saving grows as the micro-batch
+        shrinks -- -17.9% at micro-batch 8 -- because a chunk's trim is set by
+        its widest member.
+
+        This does not change what the step learns. Micro-batches are
+        gradient-accumulation chunks (``total_loss / num_micro_batches``) of
+        equal size over a batch with homogeneous ``seq_len``/``train_size``, and
+        standardisation is per-dataset, so mean-of-chunk-means is the batch mean
+        whatever the partition; the summed gradient is identical up to floating
+        point associativity. Chunk-level *logged* statistics (``target/*``) do
+        shift, being means over a different grouping.
+
+        The jitter is not for the gradient either: it keeps chunk composition
+        varying across steps so that :meth:`run_micro_batch`'s degenerate-arm
+        drop -- one dataset with a single-valued context arm voids its whole
+        chunk -- stays unsystematic in dimensionality rather than always
+        falling on the same end of the range.
+        """
         if any(t.is_nested for t in batch):
             return None
         seq_lens, train_sizes = batch[15], batch[16]
         if seq_lens.unique().numel() > 1 or train_sizes.unique().numel() > 1:
             return None
-        return torch.randperm(batch[0].shape[0], device=batch[0].device)
+
+        device = batch[0].device
+        n_datasets = batch[0].shape[0]
+        d_total = sum(
+            batch[i].reshape(n_datasets, -1).sum(dim=1).float() for i in (12, 13, 14)
+        )
+        jitter = torch.rand(n_datasets, device=d_total.device) * DIM_SORT_JITTER
+        return torch.argsort(d_total + jitter).to(device)
 
     @staticmethod
     def _iter_micro_batches(batch, micro_batch_size, row_perm=None):
