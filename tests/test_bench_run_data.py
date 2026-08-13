@@ -148,3 +148,31 @@ def test_get_data_builds_from_csv_and_caches(tmp_path):
     # Later runs reuse the cache even if the CSV disappears.
     csv_path.unlink()
     assert_dicts_equal(run.get_data(cfg, output_dir), data)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_batches
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_build_batches_trims_each_episode_to_its_own_dims():
+    """The pool is padded to its widest episode; a batch is not.
+
+    Episodes are fit independently, so the padding is nothing but zero columns
+    that every method has to ignore — and an estimator that needs to know how
+    many columns are real (ProximalFM) would otherwise have to be told
+    separately from the array it describes.
+    """
+    data = build_from_pool(make_pool())
+    batches = run.build_batches(data)
+
+    n_train, n_test = data["N_TRAIN"], data["N_TEST"]
+    for b, batch in enumerate(batches):
+        for key, dim_key in (("X", "d_X"), ("W", "d_W"), ("Z", "d_Z")):
+            d = int(data[dim_key][b])
+            assert batch[f"{key}_ctx"].shape == (n_train, d)
+            assert batch[f"{key}_q"].shape == (n_test, d)
+            # Trimmed, not re-sliced: the surviving columns are the leading ones.
+            expected = data[key][b, :, :d].numpy()
+            assert (batch[f"{key}_ctx"] == expected[:n_train]).all()
+            assert (batch[f"{key}_q"] == expected[n_train:]).all()

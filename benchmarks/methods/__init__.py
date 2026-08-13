@@ -1,5 +1,18 @@
 """
-methods.py — CATE estimator classes for the benchmark.
+benchmarks.methods — CATE estimator classes for the benchmark.
+
+This module is the registry: the thin wrappers that adapt an implementation to
+the benchmark's interface, plus `build_method` (config dict → estimator) and
+`method_estimand` (config dict → what the output answers). The implementations
+themselves are the sibling modules — `kpv.py`, `pmmr.py`, `nmmr.py`, `dfpv.py`,
+`plearner.py` (+ the shared `kernels.py`), and `proximalfm.py`. The interface
+they all implement is in `base.py`.
+
+ProximalFM is one of them. It is *this* project's model, but it is not a
+privileged one: it is configured under `methods:` like everything else, takes
+its device from the same resolved `ComputeConfig`, and its predictions land in
+the same cache. The `models:` block and `run.run_neural_model` that used to give
+it a separate pipeline are gone.
 
 Design principles
 ─────────────────
@@ -32,6 +45,7 @@ import warnings
 # than here: metrics must not import this module, which drags in torch,
 # sklearn and the competitor submodules.
 from benchmarks.metrics import canonical_estimand, format_estimand
+from benchmarks.methods.base import CATEEstimator, FeatureBuilder
 
 # Add this at the very top of your script
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -117,7 +131,8 @@ def _switch_src_context(target_repo_name: str, competitor_repo_name: str):
     import importlib
     from pathlib import Path
 
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    # …/<repo>/benchmarks/methods/__init__.py → <repo>
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
     target_path = str(PROJECT_ROOT / target_repo_name)
     competitor_path = str(PROJECT_ROOT / competitor_repo_name)
 
@@ -137,122 +152,6 @@ def _switch_src_context(target_repo_name: str, competitor_repo_name: str):
 
     # 4. Invalidate filesystem cache: Forces Python to look at sys.path[0] again
     importlib.invalidate_caches()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Feature construction
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class FeatureBuilder:
-    """Centralises feature-stacking so every estimator sees the same matrix.
-
-    Having this as a standalone object (rather than a method on each class)
-    guarantees that S_Learner and T_Learner build identical feature vectors
-    for a given config — important for fair comparisons.
-
-    Args:
-        use_W          : include outcome proxy W columns.
-        use_Z          : include treatment proxy Z columns.
-        interaction_AX : append element-wise A * X_j for each covariate.
-                         Useful in stage-2 of 2SLS to allow heterogeneous
-                         treatment effects.
-    """
-
-    def __init__(
-        self,
-        use_W: bool = True,
-        use_Z: bool = True,
-        interaction_AX: bool = False,
-    ):
-        self.use_W = use_W
-        self.use_Z = use_Z
-        self.interaction_AX = interaction_AX
-
-    def build(
-        self,
-        X: np.ndarray,
-        *,
-        A: Optional[np.ndarray] = None,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Stack selected columns into one (n, d) design matrix.
-
-        Args:
-            X : covariates,          shape (n, d_x).
-            A : treatment indicator, shape (n,) or (n, 1).  Optional.
-            W : outcome proxy,       shape (n, d_w).         Optional.
-            Z : treatment proxy,     shape (n, d_z).         Optional.
-
-        Returns:
-            np.ndarray of shape (n, d_total).
-        """
-        parts: list[np.ndarray] = [X]
-
-        if self.use_W and W is not None:
-            parts.append(W)
-        if self.use_Z and Z is not None:
-            parts.append(Z)
-
-        if A is not None:
-            a = np.asarray(A, dtype=float)
-            if a.ndim == 1:
-                a = a[:, None]
-            parts.append(a)
-
-            if self.interaction_AX:
-                parts.append(a * X)
-
-        return np.hstack(parts)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Base interface
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class CATEEstimator:
-    def fit(
-        self,
-        X: np.ndarray,
-        A: np.ndarray,
-        Y: np.ndarray,
-        *,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> "CATEEstimator":
-        raise NotImplementedError
-
-    def predict(
-        self,
-        X: np.ndarray,
-        *,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Return estimated ITE (τ̂) for each row of X, shape (n,)."""
-        raise NotImplementedError
-
-    def predict_variants(
-        self,
-        X: np.ndarray,
-        *,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> dict[Optional[str], np.ndarray]:
-        """Return one or more named prediction sets from a single fitted model.
-
-        This is the generic "one fit → many outputs" entry point used by the
-        benchmark runner. The default implementation yields a single output
-        under the key ``None``; the runner maps that to the config's ``name``.
-
-        Multi-output estimators (e.g. NMMR producing paired / independent /
-        conditional CATE from one trained network) override this to return
-        several arrays keyed by their full output display names, reusing the
-        model trained in a single ``fit()`` call — no retraining per variant.
-        """
-        return {None: self.predict(X, W=W, Z=Z)}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -475,7 +374,7 @@ class P2SLS(CATEEstimator):
         return np.full(X.shape[0], self.ate_)
 
 
-from benchmarks.baselines.plearner import (
+from benchmarks.methods.plearner import (
     BridgeParams,
     PLearner as BasePLearner,
     RegressorMixin,
@@ -559,7 +458,7 @@ class KPV_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.baselines.kpv import KPVConfig, KPVEstimator
+        from benchmarks.methods.kpv import KPVConfig, KPVEstimator
 
         cfg = KPVConfig(
             split_ratio=kwargs.get("split_ratio", 0.5),
@@ -635,7 +534,7 @@ class PMMR_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.baselines.pmmr import PMMRConfig, PMMREstimator
+        from benchmarks.methods.pmmr import PMMRConfig, PMMREstimator
 
         cfg = PMMRConfig(
             kernel_scale=kwargs.get("kernel_scale", 1.0),
@@ -699,7 +598,7 @@ class NMMR_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.baselines.nmmr import NMMRConfig, NMMREstimator
+        from benchmarks.methods.nmmr import NMMRConfig, NMMREstimator
         from benchmarks.tuning import TuningConfig
 
         self._NMMREstimator = NMMREstimator
@@ -825,7 +724,7 @@ class DFPV_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.baselines.dfpv import DFPVConfig, DFPVEstimator
+        from benchmarks.methods.dfpv import DFPVConfig, DFPVEstimator
 
         # Device comes from the method's resolved ComputeConfig (build_method injects
         # it). This used to force CPU unconditionally, because concurrent
@@ -1225,6 +1124,10 @@ _CLS_ESTIMAND = {
     "PLearner": ("cate", ("x",)),
     # W/Z go into EconML's nuisance controls, not effect()
     "CausalForest": ("cate", ("x",)),
+    # Reads the query rows' W/Z only in the sense that they are in the sequence
+    # it is handed: the model masks them (`_hide_query_proxies`), so the
+    # prediction is a function of x and the context alone.
+    "ProximalFM": ("cate", ("x",)),
 }
 
 # Classes that stack W/Z into the design matrix used at *predict* time, so
@@ -1299,6 +1202,40 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
     # uses the query proxies and is scored as tau(x) merely looks bad on the
     # primary track; the reverse would hand it an unearned advantage.
     return format_estimand("cate", inputs)
+
+
+def _make_proximalfm(cfg: dict, compute) -> CATEEstimator:
+    """Instantiate the ProximalFM estimator (imported lazily: it needs torch)."""
+    from benchmarks.methods.proximalfm import ProximalFM_Estimator
+
+    return ProximalFM_Estimator(
+        checkpoint=cfg["checkpoint"],
+        device=compute.device,
+        # Number of feature-transformed views averaged at inference; <= 1 is a
+        # single plain predict.
+        ensemble=int(cfg.get("ensemble", 1) or 1),
+        # Bijective value transforms cycled across those views (e.g. [sign,
+        # signed_log, arcsinh, quantile]); unset means permutation-only.
+        transforms=cfg.get("transforms") or None,
+        outputs=cfg.get("outputs") or None,
+        all=cfg.get("all", False),
+    )
+
+
+def normalize_method_cfg(cfg: dict) -> dict:
+    """Resolve a config entry's shorthands before the run acts on it.
+
+    Called once per `methods:` entry, ahead of everything else, because a few
+    shorthands decide how many prediction sets an entry yields — and the output
+    *names* are what the runner pre-allocates and what the skip-if-cached check
+    globs for. Today the only one is ProximalFM's `all: true` (score every
+    checkpoint in a directory), which expands into an ordinary `outputs:` list.
+    """
+    if cfg.get("cls") == "ProximalFM":
+        from benchmarks.methods.proximalfm import normalize_cfg
+
+        return normalize_cfg(cfg)
+    return cfg
 
 
 def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
@@ -1383,6 +1320,9 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
             use_Z=cfg.get("use_Z", True),
             device=compute.device,
         ),
+        # This project's own model. Device comes from `compute` like everywhere
+        # else; the checkpoint is loaded once per process, not once per episode.
+        "ProximalFM": lambda: _make_proximalfm(cfg, compute),
         "CausalForest": lambda: CausalForest_Wrapper(
             n_trees=cfg.get("n_trees", 200),
             min_leaf_size=cfg.get("min_leaf_size", 10),

@@ -322,9 +322,8 @@ uv run benchmarks/run.py --config benchmarks/config_val.yaml
 What happens:
 
 1. **Data** — on the first run the standardized benchmark dict is built from `val/` and cached as `<output_dir>/data.pt`; later runs reuse the cache (pass `--force` to rebuild and recompute predictions).
-2. **Methods** — every entry under `methods:` (S/T/X-learners, proximal baselines, tabular causal models…) is fit per episode in parallel; predictions are saved incrementally to `<output_dir>/preds/`, so finished methods are skipped on re-runs.
-3. **Models** — every checkpoint under `models:` (e.g. a `best_model.ckpt` selected in Step 2) is evaluated on the same episodes.
-4. **Report** — ATE and CATE summary tables are printed and written to `<output_dir>/results/`.
+2. **Methods** — every entry under `methods:` (S/T/X-learners, proximal baselines, tabular causal models, and ProximalFM itself via `cls: ProximalFM` + a `checkpoint:` — e.g. the `best_model.ckpt` selected in Step 2) is fit per episode in parallel; predictions are saved incrementally to `<output_dir>/preds/`, so finished methods are skipped on re-runs.
+3. **Report** — ATE and CATE summary tables are printed and written to `<output_dir>/results/`.
 
 Enable or disable baselines by (un)commenting entries in the `methods:` list of the config. For final held-out numbers, benchmark the *test* batch instead: copy the config and change `val_dir`/`output_dir` to the `--name test_data` build from Step 1.
 

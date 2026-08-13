@@ -1,8 +1,9 @@
 # `benchmarks/` — method comparison
 
 Runs a fixed set of datasets through every CATE estimator (baselines, proximal methods,
-foundation-model competitors, ProximalFM checkpoints) and reports how well each one recovers the
-treatment effect. One YAML drives the whole thing.
+foundation-model competitors, ProximalFM itself) and reports how well each one recovers the
+treatment effect. One YAML drives the whole thing. ProximalFM has no separate pipeline: it is an
+entry under `methods:` like the rest — see §4.
 
 ```bash
 uv run benchmarks/run.py --config benchmarks/config_val.yaml
@@ -99,19 +100,18 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 
 | file | what it does |
 |---|---|
-| **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, runs the ProximalFM checkpoints, scores all three tracks, writes `results/`. |
+| **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, scores all three tracks, writes `results/`. |
 | **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from a single real-world CSV (Causal Chambers), given a column→variable-block mapping. Always one episode. No CATE target exists here, so this path is ITE-only by construction. |
-| **[`methods.py`](methods.py)** | Every estimator behind one `CATEEstimator` interface (`fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`), instantiated by `build_method(cfg, compute)` from the config's `cls:` — the device and `n_jobs` an estimator gets come from that second argument and nowhere else. Also `method_estimand`, the estimand derivation. |
+| **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `dfpv.py`, `plearner.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring: per-episode metrics, track selection, the summary tables, the rich console table. No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. |
 | **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. |
 | **[`plots.py`](plots.py)** | Figures from `results.csv`: nPEHE and Shape R² boxplots, ATE scatter, bias-vs-nPEHE, critical-difference diagram, and per-episode true-vs-predicted scatters. `--target {cate,ite}` picks the track; outputs are suffixed with it. |
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the grid/random enumeration and the selection. Used by NMMR's `tune:` block. |
-| **[`baselines/`](baselines/)** | The heavy proximal implementations: `kpv.py`, `pmmr.py`, `nmmr.py`, `dfpv.py`, `plearner.py`, plus the shared `kernels.py`. `methods.py` wraps them; the estimator maths lives here. |
 | **[`causal_chambers/`](causal_chambers/)** | Real-data benchmark (Causal Chambers), notebook/Rmd driven, separate from the main run. `prepare_chamber_csv.py` turns a raw export into the canonical CSV. |
-| `config_val.yaml` | The main config: a fixed synthetic build, the full method list, ProximalFM checkpoints. |
+| `config_val.yaml` | The main config: a fixed synthetic build and the full method list (ProximalFM checkpoints included). |
 | `config_chamber.yaml` | The single-CSV real-data path. |
 
 ---
@@ -141,11 +141,11 @@ methods:                                        # baselines; comment one out to 
     use_W: false
     use_Z: false
 
-models:                                         # ProximalFM checkpoints
-  - name: ProximalFM5-last
-    checkpoint: mc_run_5/step-70000.ckpt
+  - name: ProximalFM5-last                      # this project's model: a method like any other
+    cls: ProximalFM
+    checkpoint: mc_run_5/step-70000.ckpt        # a file, or a directory (best_model.ckpt / top step)
     all: false                                  # true: score every ckpt in the directory
-    compute: { device: mps }                    # always single-process; see §3.1
+    compute: { device: mps }                    # → execution: inline; see §3.1
 ```
 
 Build a set to point `val_dir` at with **`--mc_cate K` (K > 1)**, or there is no CATE track:
@@ -212,7 +212,7 @@ grabbed MPS inside every pool worker while DFPV hardcoded an mps→cpu downgrade
 Control is inverted relative to the old `run_method_parallel`: `run.py` resolves a `ComputeConfig`
 per method and calls it, and the method decides whether to fan its episodes out through the
 session-wide `WorkerManager` or to hold a device in-process. `run.compute` is the run-wide default;
-any `methods:` or `models:` entry may overlay its own `compute:` block, and unset fields inherit.
+any `methods:` entry may overlay its own `compute:` block, and unset fields inherit.
 
 | key | meaning |
 |---|---|
@@ -228,8 +228,9 @@ more than one worker is refused** — concurrent multi-process Metal/CUDA access
 GPU" and "fanned out over processes" are mutually exclusive. And **the pre-`compute:` spellings
 raise**: `run.n_workers`, `run.device`, and per-method `torch_threads:` / `n_jobs:` are errors with
 a message naming the replacement, not silently-accepted aliases. `run.device` in particular used to
-reach the `models:` block *only*, so the honest translation is a `compute:` block on each model
-entry rather than a global default.
+reach the (now removed) `models:` block *only*, so the honest translation is a `compute:` block on
+each ProximalFM method entry rather than a global default. A config still carrying `models:` is
+likewise refused, with the `cls: ProximalFM` translation.
 
 Pools are shared across the whole session, one per distinct `(n_workers, blas_threads)`, created on
 first use. That is why `torch_threads` is deliberately *not* part of a pool's identity: it is
@@ -290,12 +291,12 @@ one fit via an `outputs:` list — much cheaper than four separate entries:
 | `CausalForest` | EconML `DROrthoForest.effect(X)` | `cate(x)` | `use_W`/`use_Z` feed EconML's *nuisance controls*, not the heterogeneity features |
 | `P2SLS` | a single fitted ATE, broadcast | `ate(x)` | proximal two-stage least squares |
 | `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `cate(x)` | `ProximalPLearner`; W/Z used at fit, discarded at predict |
-| `KernelPV` | kernel proxy-variable bridge | per strategy | `baselines/kpv.py` |
-| `PMMR` | proximal maximum-moment-restriction bridge | per strategy | `baselines/pmmr.py` |
-| `NMMR` | neural MMR bridge | per strategy | `baselines/nmmr.py`; supports `tune:`; no `marginal`; torch — for a GPU give it `compute: { device: mps, execution: inline }` |
-| `DFPV` | deep feature proxy variable | per strategy | `baselines/dfpv.py`; torch, same GPU note as NMMR (it used to be pinned to CPU unconditionally) |
+| `KernelPV` | kernel proxy-variable bridge | per strategy | `methods/kpv.py` |
+| `PMMR` | proximal maximum-moment-restriction bridge | per strategy | `methods/pmmr.py` |
+| `NMMR` | neural MMR bridge | per strategy | `methods/nmmr.py`; supports `tune:`; no `marginal`; torch — for a GPU give it `compute: { device: mps, execution: inline }` |
+| `DFPV` | deep feature proxy variable | per strategy | `methods/dfpv.py`; torch, same GPU note as NMMR (it used to be pinned to CPU unconditionally) |
 | `CausalFM`, `DoPFN`, `CausalPFN` | in-context tabular causal FMs | `cate(x…)` | imported from the git submodules via `_switch_src_context`; init them first. `CausalFM` and `CausalPFN` honour `compute.device`; `DoPFN` is CPU-only because `DoPFNRegressor` exposes no device argument |
-| *(`models:` block)* | ProximalFM | `cate(x)` | receives the full sequence but **masks the query rows' proxies** (`_hide_query_proxies`), so it answers `tau(x)` using `W`/`Z` only through the context |
+| `ProximalFM` | this project's model, in-context | `cate(x)` | receives the full sequence but **masks the query rows' proxies** (`_hide_query_proxies`), so it answers `tau(x)` using `W`/`Z` only through the context. `checkpoint:` (file or directory), `all: true` (one output per checkpoint in the directory, all sharing one stored context), `ensemble: N` + `transforms:`. CPU: fans out over the episode pool like everything else. GPU: `compute: { device: mps }` |
 
 **Strategies** (the four proximal bridge methods) decide what is done with `W` at prediction time:
 

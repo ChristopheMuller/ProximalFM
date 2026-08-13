@@ -12,9 +12,9 @@ Compute
 ───────
     Device and thread counts belong to `benchmarks.compute`, not to this script and
     not to the estimators. `run.compute` in the YAML is the run-wide default; each
-    method (and each checkpoint under `models:`) may overlay a `compute:` block on
-    it. A method is handed its resolved budget and decides for itself whether to fan
-    its episodes out through the shared WorkerManager or hold a device in-process.
+    method may overlay a `compute:` block on it. A method is handed its resolved
+    budget and decides for itself whether to fan its episodes out through the shared
+    WorkerManager or hold a device in-process.
 
 Pipeline
 ────────
@@ -24,8 +24,12 @@ Pipeline
        b. Fit + predict across all batches in parallel
        c. Save predictions to disk immediately on completion
        d. Print running ATE metrics after each method finishes
-    3. (Optional) Run neural model checkpoints
-    4. Print final ATE table + CATE table
+    3. Print final ATE table + CATE table
+
+ProximalFM is a method like any other — `cls: ProximalFM` under `methods:`,
+implemented in `benchmarks/methods/proximalfm.py`. The `models:` block and the
+`run_neural_model` step that used to run it through a parallel pipeline of its
+own are gone; a config still carrying `models:` is refused with the translation.
 """
 
 from __future__ import annotations
@@ -41,9 +45,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import yaml
-import re
 
 from rich.console import Console
 from rich.padding import Padding
@@ -62,15 +64,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.compute import (
     INLINE,
-    ComputeConfig,
     WorkerManager,
-    apply_compute,
     parse_global_compute,
     resolve_method_compute,
 )
 from benchmarks.data import load_benchmark_from_val_dir
 from benchmarks.data_csv import load_benchmark_from_csv
-from benchmarks.methods import method_estimand
+from benchmarks.methods import method_estimand, normalize_method_cfg
 from benchmarks.runners import method_output_names, run_method
 from benchmarks.metrics import (
     ATE_RICH_COLUMNS,
@@ -83,14 +83,6 @@ from benchmarks.metrics import (
 # Above this share of the CATE target's variance being Monte-Carlo sampling
 # noise, the set is too coarsely built to rank methods on and we say so.
 _S2_WARN_THRESHOLD = 0.05
-
-# ── Optional: neural model support ───────────────────────────────────────────
-try:
-    from proximalfm._model.proximalfm import ProximalFM
-
-    _PROXFM_AVAILABLE = True
-except ImportError:
-    _PROXFM_AVAILABLE = False
 
 console = Console()
 
@@ -106,18 +98,20 @@ def load_config(path: str) -> dict:
     for key in ("data", "run"):
         if key not in cfg:
             raise KeyError(f"config_*.yaml is missing required section '{key}'.")
+
+    # Refused rather than aliased: `models:` entries ran through a separate
+    # pipeline with its own device handling and its own prediction loop, and
+    # ProximalFM is now an ordinary method. Translating silently would leave the
+    # config claiming a distinction that no longer exists.
+    if cfg.get("models"):
+        raise ValueError(
+            "config `models:` is gone — ProximalFM is a method like any other. "
+            "Move each entry into `methods:` and give it `cls: ProximalFM`; "
+            "`checkpoint:`, `all:`, `ensemble:`, `transforms:` and `compute:` "
+            "all keep their meaning."
+        )
+    cfg["methods"] = [normalize_method_cfg(m) for m in cfg.get("methods") or []]
     return cfg
-
-
-def _empty_accelerator_cache(device: torch.device) -> None:
-    """Free cached accelerator memory (CUDA or MPS); no-op on CPU."""
-    import gc
-
-    gc.collect()
-    if device.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    elif device.type == "mps" and torch.backends.mps.is_available():
-        torch.mps.empty_cache()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,7 +194,14 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 
 
 def build_batches(data: dict) -> list[dict]:
-    """Slice the full data tensor into a list of per-batch numpy dicts."""
+    """Slice the full data tensor into a list of per-batch numpy dicts.
+
+    ``X``/``W``/``Z`` are stored zero-padded to the pool's widest episode, so
+    each episode's arrays are trimmed back to its own ``d_X``/``d_W``/``d_Z``
+    here. Episodes are fit independently, so nothing downstream wants the
+    padding: a method sees exactly the columns its episode has, and no estimator
+    needs to be told a dimension count separately from the array it describes.
+    """
     N_TRAIN = data["N_TRAIN"]
     U_np = data["U"].numpy()
     X_np = data["X"].numpy()
@@ -208,11 +209,17 @@ def build_batches(data: dict) -> list[dict]:
     W_np = data["W"].numpy()
     A_np = data["A"].numpy()
     Y_np = data["Y"].numpy()
+    d_X = data["d_X"].tolist()
+    d_W = data["d_W"].tolist()
+    d_Z = data["d_Z"].tolist()
     true_ITEs_np = data["true_ITEs"]
     true_CATEs_np = data.get("true_CATEs")
 
     batches = []
     for b in range(data["N_BATCH"]):
+        X_b = X_np[b, :, : d_X[b]]
+        W_b = W_np[b, :, : d_W[b]]
+        Z_b = Z_np[b, :, : d_Z[b]]
         A_ctx = A_np[b, :N_TRAIN]
         Y_ctx = Y_np[b, :N_TRAIN]
 
@@ -226,276 +233,21 @@ def build_batches(data: dict) -> list[dict]:
             {
                 "b": b,
                 "U_ctx": U_np[b, :N_TRAIN],
-                "X_ctx": X_np[b, :N_TRAIN],
-                "W_ctx": W_np[b, :N_TRAIN],
-                "Z_ctx": Z_np[b, :N_TRAIN],
+                "X_ctx": X_b[:N_TRAIN],
+                "W_ctx": W_b[:N_TRAIN],
+                "Z_ctx": Z_b[:N_TRAIN],
                 "A_ctx": A_ctx,
                 "Y_ctx": Y_ctx,
                 "U_q": U_np[b, N_TRAIN:],
-                "X_q": X_np[b, N_TRAIN:],
-                "W_q": W_np[b, N_TRAIN:],
-                "Z_q": Z_np[b, N_TRAIN:],
+                "X_q": X_b[N_TRAIN:],
+                "W_q": W_b[N_TRAIN:],
+                "Z_q": Z_b[N_TRAIN:],
                 "true_ITE_std": true_ITEs_np[b],
                 "true_CATE_std": (None if true_CATEs_np is None else true_CATEs_np[b]),
             }
         )
 
     return batches
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step 3 (optional) — Neural model inference
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def run_neural_model(
-    model_cfg: dict,
-    data: dict,
-    compute: ComputeConfig,
-    preds_dir: Path,
-    force: bool,
-) -> list[tuple[str, np.ndarray, np.ndarray]] | None:
-    """Load ProximalFM checkpoint(s) and run inference.
-
-    Always device-resident and single-process: it batches episodes into the model's
-    own batch dimension, which is a better use of a GPU than any episode fan-out, so
-    only `compute.device` and `compute.torch_threads` matter here. It reads the same
-    resolved `ComputeConfig` as the `methods:` entries, so a checkpoint can pin its
-    own device with a `compute:` block.
-
-    Returns a list of tuples containing (output_name, preds, times).
-    """
-    if not _PROXFM_AVAILABLE:
-        console.print(
-            "    [yellow]⚠[/] proximalfm not installed — skipping neural models."
-        )
-        return None
-
-    name = model_cfg["name"]
-    ckpt_dir = Path(model_cfg["checkpoint"])
-    run_all = model_cfg.get("all", False)
-    # Number of feature-transformed views to average over at inference.
-    # <= 1 (or unset) means a single plain predict; > 1 enables ensemble prediction.
-    n_ensemble = int(model_cfg.get("ensemble", 1) or 1)
-    # Optional bijective value transforms cycled across ensemble views (e.g.
-    # [sign, signed_log, arcsinh, quantile]). Unset/empty => permutation-only.
-    ensemble_transforms = model_cfg.get("transforms", None) or None
-
-    # 1. Identify which checkpoints we want to process
-    targets = []  # Elements: (display_suffix, target_ckpt_path)
-
-    if ckpt_dir.is_file():
-        targets.append(("", ckpt_dir))
-    elif run_all:
-        # Collect ALL checkpoints inside the directory
-        ckpt_files = list(ckpt_dir.glob("*.ckpt"))
-        valid_ckpts = []
-        for f in ckpt_files:
-            match = re.search(r"(\d+)", f.name)
-            step_val = int(match.group(1)) if match else -1
-            valid_ckpts.append((step_val, f))
-
-        # Sort chronologically/numerically by step count
-        valid_ckpts.sort(key=lambda x: x[0])
-
-        if not valid_ckpts:
-            console.print(
-                f"    [red]✗[/] No checkpoints found in directory: {ckpt_dir}"
-            )
-            return None
-
-        for step, path in valid_ckpts:
-            suffix = f"_step_{step}" if step != -1 else f"_{path.stem}"
-            targets.append((suffix, path))
-        console.print(
-            f"    [dim]Found 'all: true'. Queueing {len(targets)} checkpoints from {ckpt_dir}...[/]"
-        )
-    else:
-        # Default behavior: look for best_model.ckpt or fall back to highest numerical step
-        best_path = ckpt_dir / "best_model.ckpt"
-        if best_path.exists():
-            targets.append(("", best_path))
-        else:
-            ckpt_files = list(ckpt_dir.glob("*.ckpt"))
-            valid_ckpts = []
-            for f in ckpt_files:
-                match = re.search(r"(\d+)", f.name)
-                if match:
-                    valid_ckpts.append((int(match.group(1)), f))
-
-            if valid_ckpts:
-                highest_step, fallback_path = max(valid_ckpts, key=lambda x: x[0])
-                targets.append((f"_{highest_step}", fallback_path))
-                console.print(
-                    f"    [dim]best_model.ckpt not found. Selected highest step: {fallback_path.name}[/]"
-                )
-            else:
-                console.print(f"    [red]✗[/] No checkpoints found in: {ckpt_dir}")
-                return None
-
-    # 2. Iterate through determined targets sequentially
-    completed_runs = []
-    apply_compute(compute)
-    device = torch.device(compute.device)
-
-    N_TRAIN = data["N_TRAIN"]
-    N_TEST = data["N_TEST"]
-    N_BATCH = data["N_BATCH"]
-
-    x_t = data["X"].to(device)
-    z_t = data["Z"].to(device)
-    w_t = data["W"].to(device)
-    a_t = data["A"].to(device)
-    y_t = data["Y"].to(device)
-    d_x = data["d_X"].to(device, dtype=torch.long)
-    d_z = data["d_Z"].to(device, dtype=torch.long)
-    d_w = data["d_W"].to(device, dtype=torch.long)
-
-    if a_t.ndim == 3:
-        a_t = a_t.squeeze(-1)
-    if y_t.ndim == 3:
-        y_t = y_t.squeeze(-1)
-
-    for suffix, ckpt_path in targets:
-        output_name = f"{name}{suffix}"
-        pred_file = preds_dir / f"{output_name}_preds.npz"
-
-        if pred_file.exists() and not force:
-            console.print(
-                f"    [dim]Skip {output_name!r} — predictions already saved.[/]"
-            )
-            loaded = np.load(pred_file)
-            preds = loaded["preds"]
-            times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
-            completed_runs.append((output_name, preds, times))
-            continue
-
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-
-        # Initialize model architecture matching checkpoint parameters
-        mcfg = ckpt.get("config", {})
-        model = ProximalFM(**mcfg).to(device)
-
-        # Safely map state weights (handling explicit/implicit module boundaries)
-        state_dict = ckpt.get("state_dict", ckpt)
-        clean_state_dict = {
-            k.replace("_orig_mod.", "").replace("module.", ""): v
-            for k, v in state_dict.items()
-        }
-
-        model.load_state_dict(clean_state_dict, strict=False)
-        model.eval()
-
-        if n_ensemble > 1:
-            tf_note = (
-                f" [{'+'.join(ensemble_transforms)}]" if ensemble_transforms else ""
-            )
-            ensemble_note = f", ensemble×{n_ensemble}{tf_note}"
-        else:
-            ensemble_note = ""
-        console.print(
-            f"    [green]✓[/] Processing {output_name!r} (step {ckpt.get('curr_step', '?')}{ensemble_note})"
-        )
-
-        preds = np.zeros((N_BATCH, N_TEST), dtype=np.float32)
-        times = np.zeros(N_BATCH, dtype=np.float32)
-        chunk = 3
-
-        neural_progress = Progress(
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(bar_width=30),
-            MofNCompleteColumn(),
-            TextColumn("·"),
-            TimeElapsedColumn(),
-            console=console,
-            transient=False,
-        )
-
-        with torch.no_grad(), neural_progress:
-            task = neural_progress.add_task(
-                f"    [magenta]{output_name:<28}[/]", total=N_BATCH
-            )
-            for start in range(0, N_BATCH, chunk):
-                end = min(start + chunk, N_BATCH)
-                t0 = time.perf_counter()
-
-                micro_X = x_t[start:end]
-                micro_Z = z_t[start:end]
-                micro_W = w_t[start:end]
-                micro_A = a_t[start:end]
-                micro_Y_obs = y_t[start:end]
-                micro_d_X = d_x[start:end]
-                micro_d_Z = d_z[start:end]
-                micro_d_W = d_w[start:end]
-
-                # Truncate active dimensions for execution efficiency
-                max_X = micro_d_X.max().item()
-                if micro_X.shape[-1] > max_X:
-                    micro_X = micro_X[..., :max_X]
-
-                max_W = micro_d_W.max().item()
-                if micro_W.shape[-1] > max_W:
-                    micro_W = micro_W[..., :max_W]
-
-                max_Z = micro_d_Z.max().item()
-                if micro_Z.shape[-1] > max_Z:
-                    micro_Z = micro_Z[..., :max_Z]
-
-                y_ctx = micro_Y_obs[:, :N_TRAIN]
-
-                if n_ensemble > 1:
-                    # Average CATE over `n_ensemble` feature-transformed views.
-                    pred_cate = model.predict_ensemble(
-                        X=micro_X,
-                        Z=micro_Z,
-                        W=micro_W,
-                        A=micro_A,
-                        y_train=y_ctx,
-                        d_X=micro_d_X,
-                        d_Z=micro_d_Z,
-                        d_W=micro_d_W,
-                        target="cate",
-                        output_type="mean",
-                        n_estimators=n_ensemble,
-                        value_transforms=ensemble_transforms,
-                    )
-                else:
-                    pred_cate = model.predict(
-                        X=micro_X,
-                        Z=micro_Z,
-                        W=micro_W,
-                        A=micro_A,
-                        y_train=y_ctx,
-                        d_X=micro_d_X,
-                        d_Z=micro_d_Z,
-                        d_W=micro_d_W,
-                        target="cate",
-                        output_type="mean",
-                    )
-
-                t1 = time.perf_counter()
-
-                chunk_size = end - start
-                avg_time = (t1 - t0) / chunk_size
-                times[start:end] = avg_time
-                preds[start:end] = pred_cate.cpu().numpy()
-
-                neural_progress.advance(task, chunk_size)
-
-        np.savez(pred_file, preds=preds, times=times)
-        console.print(f"    [green]✓[/] {output_name} saved → {pred_file}")
-        completed_runs.append((output_name, preds, times))
-
-        # Release the model and free accelerator memory before the next
-        # checkpoint/model. Without this, sequentially loaded checkpoints (and
-        # the extra forward passes done by ensemble runs) accumulate on the
-        # device; on MPS this can surface as spurious "index out of bounds"
-        # errors once memory is exhausted.
-        del model
-        _empty_accelerator_cache(device)
-
-    return completed_runs
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -811,23 +563,8 @@ def main() -> None:
 
             print_partial_results(accumulated, estimands, targets)
 
-    # ── Step 3 (optional): Neural model checkpoints ──────────────────────────
-    model_cfgs = cfg.get("models", [])
-    if model_cfgs:
-        console.print(Rule(f"[bold]Step 3  Neural Models ({len(model_cfgs)})[/]"))
-
-        for mcfg in model_cfgs:
-            # Same resolution as a method, so a checkpoint carries its own
-            # `compute: {device: mps}` rather than depending on a global default.
-            model_compute = resolve_method_compute(global_compute, mcfg)
-            results = run_neural_model(mcfg, data, model_compute, preds_dir, force)
-            if results is not None:
-                for name, preds, times in results:
-                    accumulated[name] = (preds, times)
-                    print_partial_results(accumulated, estimands, targets)
-
-    # ── Step 4: Final evaluation ─────────────────────────────────────────────
-    console.print(Rule("[bold]Step 4  Evaluation[/]"))
+    # ── Step 3: Final evaluation ─────────────────────────────────────────────
+    console.print(Rule("[bold]Step 3  Evaluation[/]"))
     console.print()
 
     if not accumulated:

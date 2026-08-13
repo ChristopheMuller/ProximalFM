@@ -34,7 +34,7 @@ from typing import Optional
 import numpy as np
 from scipy.linalg import solve
 
-from benchmarks.baselines.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
+from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
