@@ -10,7 +10,7 @@ Usage
 
 Pipeline
 ────────
-    1. Load or generate datasets            (Step 1)
+    1. Load the datasets                    (Step 1)
     2. For each method:
        a. Skip if predictions already exist (unless --force)
        b. Fit + predict across all batches in parallel
@@ -53,7 +53,7 @@ from rich.rule import Rule
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.data import build_benchmark_dict, load_benchmark_from_val_dir
+from benchmarks.data import load_benchmark_from_val_dir
 from benchmarks.data_csv import load_benchmark_from_csv
 from benchmarks.methods import build_method, method_estimand
 from benchmarks.metrics import (
@@ -71,8 +71,6 @@ _S2_WARN_THRESHOLD = 0.05
 # ── Optional: neural model support ───────────────────────────────────────────
 try:
     from proximalfm._model.proximalfm import ProximalFM
-    from proximalfm.prior._dataset import PriorDataset
-    from proximalfm.prior._linear_dataset import LinearPriorDataset
 
     _PROXFM_AVAILABLE = True
 except ImportError:
@@ -111,105 +109,19 @@ def _empty_accelerator_cache(device: torch.device) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _generate_data(data_cfg: dict, run_cfg: dict, output_dir: Path) -> dict:
-    """Generate synthetic datasets from the prior, standardize, and save to disk."""
-    if not _PROXFM_AVAILABLE:
-        raise RuntimeError(
-            "proximalfm is not installed. Set data.source: load to use an "
-            "existing data file, or install proximalfm to generate new data."
-        )
-
-    n_context = data_cfg["n_context"]
-    n_query = data_cfg["n_query"]
-    n_batch = data_cfg["n_batch"]
-    prior_kw = data_cfg.get("prior", {}).copy()
-    seed = run_cfg.get("seed", 42)
-
-    # Force dimensions for the benchmark chunk
-    prior_kw.update(
-        {
-            "batch_size": n_batch,
-            "min_seq_len": None,
-            "max_seq_len": n_context,
-            "n_query": n_query,
-            "device": "cpu",
-        }
-    )
-
-    console.print(
-        f"    Generating [bold]{n_batch}[/] datasets "
-        f"(n_context={n_context}, n_query={n_query}, seed={seed})…"
-    )
-
-    # Generate reproducible batch
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    dataset = PriorDataset(**prior_kw)
-    # dataset = LinearPriorDataset(**prior_kw)
-    batch = next(iter(dataset))
-
-    # SCMPrior.get_batch yields 19 elements; S2 and K_eff are appended last, so
-    # the leading 17 keep the order older readers assumed.
-    (
-        U,
-        X,
-        W,
-        Z,
-        A,
-        A_probs,
-        Y_obs,
-        Y0,
-        Y1,
-        MU0,
-        MU1,
-        d_U,
-        d_X,
-        d_W,
-        d_Z,
-        seq_len,
-        train_size,
-        S2,
-        K_eff,
-    ) = batch
-
-    # Standardize (context-only stats, no test leakage) and package into the
-    # benchmark dict; the shared builder is also used when loading val-format
-    # directories, so both data paths produce an identical schema.
-    data = build_benchmark_dict(
-        U=U,
-        X=X,
-        W=W,
-        Z=Z,
-        A=A,
-        Y_obs=Y_obs,
-        Y0=Y0,
-        Y1=Y1,
-        d_X=d_X,
-        d_W=d_W,
-        d_Z=d_Z,
-        train_size=int(train_size[0].item()),
-        MU0=MU0,
-        MU1=MU1,
-        S2=S2,
-        K_eff=K_eff,
-    )
-
-    torch.save(data, output_dir / "data.pt")
-    with open(output_dir / "prior_config.yaml", "w") as f:
-        yaml.dump(data_cfg.get("prior", {}), f)
-
-    console.print(f"    [green]✓[/] Saved (Normalized) → {output_dir / 'data.pt'}")
-    return data
-
-
 def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
-    """Return dataset dict — generate or load depending on config.
+    """Return the standardized dataset dict named by the config.
+
+    Every benchmark run scores a *pre-built* set — one of the three builders
+    (`prior_eval`, `synt_eval`, `lit_eval`), or a single real-world CSV. There
+    is no on-the-fly prior sampling: a set that only exists inside one run is
+    one nobody else can score against.
 
     Loading resolves in this order:
       1. ``data.val_dir`` set and no cached ``data.pt`` (or --force): build the
          standardized dict from the raw val-format directory (``batch_*.pt``,
-         as written by synt_eval/build_proximal_datasets.py) and cache it as
-         ``data.pt`` in the run's output dir (plots.py reads it there).
+         as written by ``proximalfm.prior._genload.write_batch_file``) and cache
+         it as ``data.pt`` in the run's output dir (plots.py reads it there).
       2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
          standardized dict from a single real-world CSV (e.g. a Causal
          Chambers export) via ``data.csv_path`` + ``data.columns``, a
@@ -222,11 +134,19 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     """
     data_path = output_dir / "data.pt"
     data_cfg = cfg["data"]
-    source = data_cfg.get("source", "generate")
+    source = data_cfg.get("source", "load")
     val_dir = data_cfg.get("val_dir")
 
-    if source == "generate" and (force_regen or not data_path.exists()):
-        return _generate_data(data_cfg, cfg["run"], output_dir)
+    # Refused rather than ignored: a config still saying `generate` asks for
+    # datasets nobody else can score against, and falling through to "no data
+    # file found" would read as a missing path rather than a removed feature.
+    if source == "generate":
+        raise ValueError(
+            "data.source: generate has been removed — the benchmark scores "
+            "pre-built sets only. Build one first (prior_eval.build, "
+            "synt_eval/build_proximal_datasets.py or lit_eval.build) and point "
+            "data.val_dir at its val/ directory with data.source: load."
+        )
 
     if source == "csv" and (force_regen or not data_path.exists()):
         csv_path = data_cfg["csv_path"]
@@ -258,9 +178,8 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
 
     raise FileNotFoundError(
         f"Data file not found at {data_path}. "
-        "Set data.source: generate, point data.val_dir at a directory of "
-        "batch_*.pt files, or set data.source: csv with data.csv_path + "
-        "data.columns in config_*.yaml."
+        "Point data.val_dir at a directory of batch_*.pt files, or set "
+        "data.source: csv with data.csv_path + data.columns in config_*.yaml."
     )
 
 
@@ -895,7 +814,7 @@ def print_partial_results(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="CATE benchmark — generate data, run methods, evaluate."
+        description="CATE benchmark — load data, run methods, evaluate."
     )
     default_config = Path(__file__).resolve().parent / "config_val.yaml"
     parser.add_argument(

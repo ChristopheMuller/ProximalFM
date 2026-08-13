@@ -1,7 +1,7 @@
 """
 metrics.py — Evaluation metrics for CATE benchmarks.
 
-All datasets are standardised upstream (run._generate_data) using
+All datasets are standardised upstream (benchmarks/data.py) using
 context-only statistics, so every episode is already on the same outcome scale
 before any method runs.  The metrics below are *additionally* scale-free w.r.t.
 the treatment effect itself (everything is expressed relative to SD(τ)), so the

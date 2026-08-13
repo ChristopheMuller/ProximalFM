@@ -99,7 +99,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 
 | file | what it does |
 |---|---|
-| **[`run.py`](run.py)** | The entry point. Loads/generates data, fits every method over every episode in a process pool, runs the ProximalFM checkpoints, scores all three tracks, writes `results/`. |
+| **[`run.py`](run.py)** | The entry point. Loads the data, fits every method over every episode in a process pool, runs the ProximalFM checkpoints, scores all three tracks, writes `results/`. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from a single real-world CSV (Causal Chambers), given a column→variable-block mapping. Always one episode. No CATE target exists here, so this path is ITE-only by construction. |
 | **[`methods.py`](methods.py)** | Every estimator behind one `CATEEstimator` interface (`fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`), instantiated by `build_method` from the config's `cls:`. Also `method_estimand`, the estimand derivation. |
@@ -110,7 +110,6 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 | **[`baselines/`](baselines/)** | The heavy proximal implementations: `kpv.py`, `pmmr.py`, `nmmr.py`, `dfpv.py`, `plearner.py`, plus the shared `kernels.py`. `methods.py` wraps them; the estimator maths lives here. |
 | **[`causal_chambers/`](causal_chambers/)** | Real-data benchmark (Causal Chambers), notebook/Rmd driven, separate from the main run. `prepare_chamber_csv.py` turns a raw export into the canonical CSV. |
 | `config_val.yaml` | The main config: a fixed synthetic build, the full method list, ProximalFM checkpoints. |
-| `config_gen.yaml` | Generates episodes from the prior on the fly instead of loading a build. |
 | `config_chamber.yaml` | The single-CSV real-data path. |
 
 ---
@@ -119,7 +118,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 
 ```yaml
 data:
-  source: load                                  # load | generate | csv
+  source: load                                  # load | csv
   val_dir: data/synt_eval/<name>/val            # a build's val/ directory
   output_dir: data/synt_eval/<name>/bench       # where data.pt, preds/, results/ go
 
@@ -155,15 +154,15 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 
 | `source:` | keys |
 |---|---|
-| `load` | `val_dir` |
-| `generate` | `n_context`, `n_query`, `n_batch`, and a `prior:` block of `PriorDataset` kwargs |
+| `load` *(default)* | `val_dir` |
 | `csv` | `csv_path`, `columns`, `prop_train`, `shuffle`, `normalize_treatment` |
 
-Under `generate` the row split is stated the way the prior composes it — a context size and a query
-count, `seq_len = n_context + n_query` — matching the trainer's `--max_seq_len`/`--n_query` and
-`prior_eval`/`synt_eval`'s `--n_max`/`--n_q`. The older `n_rows` + `prop_train` spelling is **refused
-with an error** rather than ignored, since a silently different dataset size would leave the config
-file still reading as though it had asked for the old one. `prop_train` survives only under `csv`,
+The benchmark scores **pre-built sets only**. There is no on-the-fly prior sampling: a set that
+exists only inside one run is one nobody else can score against, so the row split, the replicate
+count and the seed belong to a builder (`prior_eval.build`, `synt_eval/build_proximal_datasets.py`,
+`lit_eval.build`) whose output is on disk and has a `content_digest`. `source: generate` and its
+`n_context`/`n_query`/`n_batch`/`prior:` keys are gone; a config still asking for it is **refused
+with an error** rather than quietly falling back to a cache. `prop_train` survives only under `csv`,
 where the row count is a property of the file and a ratio is the only thing there is to give.
 
 **Common method keys.** `name` (display + output filename), `cls` (dispatch), `base`

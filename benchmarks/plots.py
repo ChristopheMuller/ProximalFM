@@ -537,9 +537,9 @@ def resolve_exp_dir(exp: str) -> Path:
     """Resolve an experiment name to its benchmark output directory.
 
     Two layouts exist:
-      * fixed synthetic builds  -> data/synt_eval/<exp>/bench (config_val.yaml)
-      * generated-data runs     -> results/<exp>              (config_gen.yaml)
-    The synthetic layout wins if both are present; `synthetic/<exp>/bench` is
+      * a build's own bench dir -> data/synt_eval/<exp>/bench (config_val.yaml)
+      * an explicit output_dir  -> results/<exp>
+    The build layout wins if both are present; `synthetic/<exp>/bench` is
     still accepted for builds made before the default moved under `data/`.
     """
     candidates = [
