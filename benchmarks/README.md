@@ -24,11 +24,13 @@ the single most important thing to understand before reading any number here:
 | **`ite`** *(secondary)* | the realized draw `Y1 − Y0` for that row, carrying its own `U` and noise | irreducibly noisy: `E[Var(Y1−Y0 \| X)]` is typically ~95% of `Var(ITE)`, which flattens every method onto nPEHE ≈ 1 |
 
 The CATE target only exists when the set was built with replicates (`--mc_cate K`, `K > 1`).
-Without them the run falls back to the ITE track and says so on the console.
+Without them the run falls back to the ITE task and says so on the console.
 
-### The three tracks
+### The three tasks
 
-Methods do not all answer the same question, so they are not all ranked in the same table. Every
+Methods do not all answer the same question, so they are not all ranked in the same table. Each
+table is one `Task` object in [`metrics.py`](metrics.py) — the single place that says which target it
+scores, which methods it admits, what it ranks on and which columns it shows. Every
 prediction output carries an **estimand tag** that spells out what it answers — a *kind* and the
 variables the prediction reads at **predict** time, in the canonical order `x,w,z,u`:
 
@@ -52,23 +54,28 @@ in the parenthesis:
 | `cate(…)` with `w` or `z` — e.g. `cate(x,w)`, `cate(x,w,z)` | `summary_ite.csv`, `summary_ate.csv` |
 | `ate(…)` | `summary_ate.csv` only |
 
-`u` is deliberately *not* disqualifying: an oracle row is in the headline table as an upper bound,
-which is the whole reason it is computed.
+The routing applies to *methods*; the reference rows below bypass it.
 
 `cate(x,w)` is a genuinely finer conditional, not a better estimate of `tau(x)`. On the ITE target that
 extra information is a real advantage; on the CATE target it is answering a different question. It
 therefore gets its own row in the ITE table and none in the CATE ranking — the "they had the
 advantage and still lost" comparison.
 
-**Reference rows** are computed with no fitting and appear in every table, shown but never
-ranked (and never eligible for a bolded best-of cell):
+**Reference rows** are computed with no fitting. Unlike every other output they are **not** routed by
+their tag: the table above is a fairness rule for competitors, and a reference row competes with
+nobody, so all three oracles appear in all three tables — shown but never ranked, and never eligible
+for a bolded best-of cell. Anchoring each table with all three is the point: reading `Oracle-ITE` and
+`Oracle-ATE` beside each other on the CATE table brackets what a `tau(x)` method should even attempt.
 
-- **`Oracle-CATE(X)`** — the true `tau*(x)`. Scores nPEHE ≈ 0 on the cate track (a self-check on the
+- **`Oracle-CATE(X)`** — the true `tau*(x)`. Scores nPEHE ≈ 0 on the cate task (a self-check on the
   whole pipeline; if it does not, something is wrong with the target plumbing) and the **irreducible
-  noise floor** on the ite track. That floor is what makes the `cate(x,w)` methods' advantage readable.
-- **`Oracle-ATE`** — the best per-episode constant. The nPEHE = 1 / Shape R² = 0 anchor.
+  noise floor** on the ite task. That floor is what makes the `cate(x,w)` methods' advantage readable.
+- **`Oracle-ATE`** — the best per-episode constant, and so the nPEHE = 1 / Shape R² = 0 anchor. Its
+  tag is `ate(x)`; a *method* with that tag would be routed to `summary_ate.csv` only, but as a
+  reference row it is drawn in all three, which is where the "1.0 is the do-nothing baseline" claim
+  becomes something you can read off the same column rather than take on faith.
 - **`Oracle-ITE`** — the realized `Y1 − Y0` itself, the mirror image of `Oracle-CATE(X)`. Perfect on
-  the ite track (nPEHE = 0) and, on the cate track, the **price of the noise**: it predicts
+  the ite task (nPEHE = 0) and, on the cate task, the **price of the noise**: it predicts
   `tau*(x)` plus that row's own `U` and noise, so its nPEHE is `SD(ITE − tau*)/SD(tau*)`, normally
   well above 1, with a strongly negative Shape R². Read beside `Oracle-ATE` it says how much of
   `Var(ITE)` no `tau(x)` method should be trying to explain — and it is the reason a good method can
@@ -76,6 +83,9 @@ ranked (and never eligible for a bolded best-of cell):
   is near-unbiased (only the row-average of the noise survives), so its `ATE RMSE` is the
   per-episode sampling floor for that column. Only emitted when the set carries a Monte-Carlo CATE
   target; without one it would duplicate `Oracle-CATE(X)` exactly.
+
+`u` in a reference row's tag is therefore never disqualifying, and neither is the `ate` kind — those
+rows are anchors for reading a table, which is the whole reason they are computed.
 
 ### Metrics
 
@@ -91,7 +101,7 @@ Per episode, everything relative to `SD(tau)` so episodes can be pooled
   5%; past that, every method scores worse than it is and the set wants a larger `--mc_cate`.
 
 Episodes with `Var(tau) < 1e-6` are dropped from the scale-free metrics (same cutoff as the
-trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track nPEHE and wandb's
+trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task nPEHE and wandb's
 `synt_point/cate/npehe` are the same quantity).
 
 ---
@@ -100,15 +110,16 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 
 | file | what it does |
 |---|---|
-| **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, scores all three tracks, writes `results/`. |
+| **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, scores all three tasks, writes `results/`. |
 | **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from a single real-world CSV (Causal Chambers), given a column→variable-block mapping. Always one episode. No CATE target exists here, so this path is ITE-only by construction. |
 | **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `dfpv.py`, `plearner.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
-| **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring: per-episode metrics, track selection, the summary tables, the rich console table. No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. |
-| **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. |
-| **[`plots.py`](plots.py)** | Figures from `results.csv`: nPEHE and Shape R² boxplots, ATE scatter, bias-vs-nPEHE, critical-difference diagram, and per-episode true-vs-predicted scatters. `--target {cate,ite}` picks the track; outputs are suffixed with it. |
+| **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
+| **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
+| **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each through `TaskReport.latex()`, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. It holds no column spec of its own — the columns, formats, bolding direction and caption all live on the `Task`. |
+| **[`plots.py`](plots.py)** | Figures from `results.csv`: nPEHE and Shape R² boxplots, ATE scatter, bias-vs-nPEHE, critical-difference diagram, and per-episode true-vs-predicted scatters. `--target {cate,ite}` picks the task; outputs are suffixed with it. |
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the grid/random enumeration and the selection. Used by NMMR's `tune:` block. |
 | **[`causal_chambers/`](causal_chambers/)** | Real-data benchmark (Causal Chambers), notebook/Rmd driven, separate from the main run. `prepare_chamber_csv.py` turns a raw export into the canonical CSV. |
 | `config_val.yaml` | The main config: a fixed synthetic build and the full method list (ProximalFM checkpoints included). |
@@ -148,7 +159,7 @@ methods:                                        # baselines; comment one out to 
     compute: { device: mps }                    # → execution: inline; see §3.1
 ```
 
-Build a set to point `val_dir` at with **`--mc_cate K` (K > 1)**, or there is no CATE track:
+Build a set to point `val_dir` at with **`--mc_cate K` (K > 1)**, or there is no CATE task:
 
 ```bash
 uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
@@ -317,19 +328,30 @@ Written under `output_dir`:
 ```
 data.pt                     the standardized dict (cached; see below)
 preds/<output>_preds.npz    per-method `preds` [B, n_test] + `times` [B]
-results/results.csv         long-form: one row per (method, episode, target)
+results/results.csv         long-form: one row per (method, episode, task)
 results/summary_cate.csv    the headline table
-results/summary_ite.csv     the ITE track (adds the `xw` methods)
+results/summary_ite.csv     the ITE task (adds the proxy-conditioned methods)
 results/summary_ate.csv     level only (where `ate` methods live)
-results/summary.csv         a copy of the primary track's table
+results/summary.csv         a copy of the primary task's table
 results/plot_*_{cate,ite}.png
 ```
+
+`results.csv` carries a row only for the tasks whose table can rank that method
+(§1), so its `target` column names the **task** and the rows in it are exactly the rows the tables
+show. Each row carries only that task's metrics — the `ate` rows have no `npehe`, because a
+level-only view has no shape.
+
+Every metric summarized as a median also carries `<label> p25` / `<label> p75` companions in
+`summary_*.csv` — the same convention as the trainer's `synt_point/*` keys, and for the same reason:
+the R²-style metrics are unbounded below, so a mean is not robust and a single median hides the
+spread. `ATE RMSE` is the exception, declared `pooled_rms`: it already pools the bias and the
+episode-to-episode spread, so it is not a quantile of anything and gets no companions.
 
 **Everything is resumable and cached.** `data.pt` is reused if present, per-method predictions land
 in `preds/` incrementally and finished methods are skipped on re-run. `--force` (or
 `run.force_rerun`) recomputes. **When results look stale, suspect the cache first** — and note that a
 `data.pt` cached before the CATE target existed has no `true_CATEs`, so the run silently drops to the
-ITE track (it does print the banner); delete it or pass `--force`.
+ITE task (it does print the banner); delete it or pass `--force`.
 
 Predictions are per-episode and independent, so a method that raises on some episodes leaves NaN
 there and is reported with a non-zero failure rate rather than taking the run down.

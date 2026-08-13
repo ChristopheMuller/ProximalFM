@@ -41,10 +41,10 @@ from dataclasses import replace
 from typing import Callable, Optional
 import warnings
 
-# The estimand taxonomy lives in the metrics layer (numpy/pandas only) rather
-# than here: metrics must not import this module, which drags in torch,
-# sklearn and the competitor submodules.
-from benchmarks.metrics import canonical_estimand, format_estimand
+# The estimand taxonomy has its own module: both this package and the metrics
+# layer need it, and neither may import the other (metrics must stay free of
+# torch, sklearn and the competitor submodules that this file drags in).
+from benchmarks.estimands import canonical_estimand, format_estimand
 from benchmarks.methods.base import CATEEstimator, FeatureBuilder
 
 # Add this at the very top of your script

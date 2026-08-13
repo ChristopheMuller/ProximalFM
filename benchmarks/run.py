@@ -72,13 +72,7 @@ from benchmarks.data import load_benchmark_from_val_dir
 from benchmarks.data_csv import load_benchmark_from_csv
 from benchmarks.methods import method_estimand, normalize_method_cfg
 from benchmarks.runners import method_output_names, run_method
-from benchmarks.metrics import (
-    ATE_RICH_COLUMNS,
-    DEFAULT_RICH_COLUMNS,
-    compute_all_metrics,
-    build_summary_table,
-    make_summary_rich_table,
-)
+from benchmarks.metrics import TASKS, TaskReport, primary_task, score_method
 
 # Above this share of the CATE target's variance being Monte-Carlo sampling
 # noise, the set is too coarsely built to rank methods on and we say so.
@@ -260,17 +254,11 @@ ORACLE_ATE = "Oracle-ATE"
 ORACLE_ITE = "Oracle-ITE"
 
 # The reference rows answer no config, so they declare their own tags. Oracle-ITE
-# is the realized Y1-Y0, which carries that row's own U and noise — hence the u.
+# is the realized Y1-Y0, which carries that row's own U, W and noise — hence the u.
 REFERENCE_ESTIMANDS = {
     ORACLE_CATE: "cate(x)",
     ORACLE_ATE: "ate(x)",
-    ORACLE_ITE: "cate(x,u)",
-}
-
-TRACK_TITLES = {
-    "cate": "CATE  —  scored against tau*(x) = E[Y1-Y0 | X]",
-    "ite": "ITE  —  scored against the realized Y1-Y0",
-    "ate": "ATE  —  level only",
+    ORACLE_ITE: "cate(x,w,u)",
 }
 
 
@@ -333,19 +321,20 @@ def method_output_estimands(method_cfg: dict) -> dict[str, str]:
     return {method_cfg["name"]: method_estimand(method_cfg)}
 
 
-def primary_track(targets: dict) -> str:
-    """The track the live table and the default plots speak in."""
-    return "cate" if "cate" in targets else "ite"
-
-
 def reference_predictions(targets: dict) -> dict[str, np.ndarray]:
     """Oracle rows: predictions that need no fitting.
+
+    All three are scored on all three tasks — they are never ranked, so the
+    admissibility rules that keep the *methods* honest do not apply to them, and
+    an anchor is worth having in every table.
 
     ``Oracle-CATE(X)`` is tau*(x) itself. On the CATE track it must score ~0 —
     a self-check on the target plumbing — and on the ITE track it is the
     irreducible noise floor, i.e. the best any method conditioning on X alone
     can do, which is what makes the tau(x, w) methods' advantage readable.
-    ``Oracle-ATE`` is the best per-episode constant, the nPEHE = 1 anchor.
+    ``Oracle-ATE`` is the best per-episode constant, the nPEHE = 1 / Shape R² = 0
+    anchor on both row-level tables and the unbiased-by-construction row on the
+    ATE one.
 
     ``Oracle-ITE`` is the realized Y1-Y0 itself — the mirror image of
     ``Oracle-CATE(X)``, and only emitted when the two targets differ (without a
@@ -375,34 +364,48 @@ def score_everything(
     s2: Optional[np.ndarray] = None,
     references: Optional[dict[str, np.ndarray]] = None,
 ) -> pd.DataFrame:
-    """Score every method against every available target, into one long frame.
+    """Score every method for every available task, into one long frame.
 
-    One row per (method, episode, target). Scoring is pure numpy over arrays
-    already in memory, so there is no reason to be selective here — the tables
-    decide which rows they can rank fairly.
+    One row per (method, episode, task) — and only for the tasks whose table can
+    rank that method fairly (``Task.admits``), so the frame the CSV carries and
+    the rows each table shows are the same thing. Which per-row target a task
+    scores is the task's own business (``Task.target_kind``): ``ate`` reads the
+    Monte-Carlo CATE when the set has one and the realized ITE otherwise.
+
+    The reference rows are the exception: ``admits`` is a fairness rule for
+    *competitors*, and an oracle is never ranked, so all three appear in all
+    three tables. That is the informative part — ``Oracle-ITE`` on the CATE
+    track prices the noise no tau(x) method should try to explain, and
+    ``Oracle-ATE`` puts the nPEHE = 1 anchor on the row-level tables.
     """
     frames = []
-    for kind, target in targets.items():
+    for task in TASKS.values():
+        kind = task.target_kind(targets)
+        if kind is None:
+            continue
+        target = targets[kind]
         rows = dict(accumulated)
         if references:
             zeros = np.zeros(len(target), dtype=np.float32)
             rows.update({n: (p, zeros) for n, p in references.items()})
         for name, (preds, times) in rows.items():
+            is_reference = bool(references and name in references)
+            tag = estimands.get(name, REFERENCE_ESTIMANDS.get(name, "cate(x)"))
+            if not is_reference and not task.admits(tag):
+                continue
             frames.append(
-                compute_all_metrics(
+                score_method(
                     preds,
                     target,
                     times,
                     name,
-                    target_kind=kind,
-                    estimand=estimands.get(
-                        name, REFERENCE_ESTIMANDS.get(name, "cate(x)")
-                    ),
-                    is_reference=bool(references and name in references),
+                    task,
+                    estimand=tag,
+                    is_reference=is_reference,
                     s2=s2 if kind == "cate" else None,
                 )
             )
-    return pd.concat(frames, ignore_index=True)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
 def print_partial_results(
@@ -412,16 +415,13 @@ def print_partial_results(
 ) -> None:
     if not accumulated:
         return
-    track = primary_track(targets)
-    all_df = score_everything(accumulated, estimands, {track: targets[track]})
-    summary = build_summary_table(all_df, track)
-    if summary.empty:
+    task = TASKS[primary_task(targets)]
+    all_df = score_everything(accumulated, estimands, {task.name: targets[task.name]})
+    report = TaskReport.from_results(all_df, task)
+    if report.empty:
         return
     console.print(
-        Padding(
-            make_summary_rich_table(summary, title="Live Results So Far"),
-            (1, 4),
-        )
+        Padding(report.rich_table(title="Live Results So Far"), (1, 4)),
     )
 
 
@@ -579,29 +579,20 @@ def main() -> None:
         accumulated, estimands, targets, s2=cate_s2, references=references
     )
 
-    # One table per track. `cate` is the headline; `ite` is where the methods
+    # One table per task. `cate` is the headline; `ite` is where the methods
     # that read the query rows' proxies are allowed their advantage; `ate` is
     # the level-only view, and the only place a constant-prediction method says
     # anything.
-    tracks = [t for t in ("cate", "ite", "ate") if t in targets or t == "ate"]
-    for track in tracks:
-        summary = build_summary_table(all_results, track)
-        if summary.empty:
+    for task in TASKS.values():
+        report = TaskReport.from_results(all_results, task)
+        if report.empty:
             continue
-        columns = ATE_RICH_COLUMNS if track == "ate" else DEFAULT_RICH_COLUMNS
-        console.print(
-            Padding(
-                make_summary_rich_table(
-                    summary, title=TRACK_TITLES[track], columns=columns
-                ),
-                (1, 4),
-            )
-        )
-        summary.to_csv(results_dir / f"summary_{track}.csv")
+        console.print(Padding(report.rich_table(), (1, 4)))
+        report.summary().to_csv(results_dir / f"summary_{task.name}.csv")
 
     # summary.csv keeps its name and its meaning "the headline table", so
-    # anything downstream that globs for it still finds the primary track.
-    build_summary_table(all_results, primary_track(targets)).to_csv(
+    # anything downstream that globs for it still finds the primary task.
+    TaskReport.from_results(all_results, TASKS[primary_task(targets)]).summary().to_csv(
         results_dir / "summary.csv"
     )
 
