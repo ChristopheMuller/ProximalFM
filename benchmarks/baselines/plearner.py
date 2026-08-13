@@ -340,6 +340,7 @@ class PLearner(BaseEstimator, RegressorMixin):
         random_state: Optional[int] = None,
         q_clip: Optional[Tuple[float, float]] = None,
         refit_full_nuisance: bool = False,
+        n_jobs: int = 1,
     ):
         self.bridge_params = (
             bridge_params if bridge_params is not None else BridgeParams()
@@ -349,6 +350,11 @@ class PLearner(BaseEstimator, RegressorMixin):
         self.random_state = random_state
         self.q_clip = q_clip
         self.refit_full_nuisance = refit_full_nuisance
+        # Only reaches the default final model below. It used to be a hardcoded -1,
+        # which nests "every core" inside whatever process the learner is running in
+        # — harmless while `build_method` always supplies a `final_model`, and an
+        # oversubscription bomb the day it doesn't.
+        self.n_jobs = n_jobs
 
     def fit(
         self, X: ArrayLike, Z: ArrayLike, W: ArrayLike, A: ArrayLike, Y: ArrayLike
@@ -403,7 +409,7 @@ class PLearner(BaseEstimator, RegressorMixin):
                 n_estimators=300,
                 min_samples_leaf=10,
                 random_state=self.random_state,
-                n_jobs=-1,
+                n_jobs=self.n_jobs,
             )
         else:
             model = clone(self.final_model)

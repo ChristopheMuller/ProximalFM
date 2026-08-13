@@ -99,10 +99,12 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-track 
 
 | file | what it does |
 |---|---|
-| **[`run.py`](run.py)** | The entry point. Loads the data, fits every method over every episode in a process pool, runs the ProximalFM checkpoints, scores all three tracks, writes `results/`. |
+| **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, runs the ProximalFM checkpoints, scores all three tracks, writes `results/`. |
+| **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
+| **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from a single real-world CSV (Causal Chambers), given a column→variable-block mapping. Always one episode. No CATE target exists here, so this path is ITE-only by construction. |
-| **[`methods.py`](methods.py)** | Every estimator behind one `CATEEstimator` interface (`fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`), instantiated by `build_method` from the config's `cls:`. Also `method_estimand`, the estimand derivation. |
+| **[`methods.py`](methods.py)** | Every estimator behind one `CATEEstimator` interface (`fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`), instantiated by `build_method(cfg, compute)` from the config's `cls:` — the device and `n_jobs` an estimator gets come from that second argument and nowhere else. Also `method_estimand`, the estimand derivation. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring: per-episode metrics, track selection, the summary tables, the rich console table. No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. |
 | **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. |
 | **[`plots.py`](plots.py)** | Figures from `results.csv`: nPEHE and Shape R² boxplots, ATE scatter, bias-vs-nPEHE, critical-difference diagram, and per-episode true-vs-predicted scatters. `--target {cate,ite}` picks the track; outputs are suffixed with it. |
@@ -124,9 +126,13 @@ data:
 
 run:
   seed: 999999999
-  n_workers: 6
-  device: mps                                   # for the neural models only
   force_rerun: false
+  compute:                                      # the run-wide default budget
+    device: cpu                                 # cpu | mps | cuda
+    n_workers: 6                                # episode fan-out width
+    torch_threads: 1
+    blas_threads: 1
+    n_jobs: 1
 
 methods:                                        # baselines; comment one out to disable
   - name: S-OLS
@@ -139,6 +145,7 @@ models:                                         # ProximalFM checkpoints
   - name: ProximalFM5-last
     checkpoint: mc_run_5/step-70000.ckpt
     all: false                                  # true: score every ckpt in the directory
+    compute: { device: mps }                    # always single-process; see §3.1
 ```
 
 Build a set to point `val_dir` at with **`--mc_cate K` (K > 1)**, or there is no CATE track:
@@ -187,16 +194,53 @@ pass at `fit()` time and reproduces the uncached predictions **bit for bit**. 48
     cls:   S_Learner
     base:  tabicl
     tabicl: { kv_cache: true }      # 1.8x, at float32 accumulation noise
-    torch_threads: 2                # a further 1.2x; see below
+    compute: { torch_threads: 2 }   # a further 1.2x; see §3.1
 ```
 
 `kv_cache: true` additionally caches the ICL layers' KV projections; the residual difference is
 accumulation order, not a change of estimator. Check the memory column against `n_workers` before
 using it.
 
-`torch_threads:` (any method, default 1) raises the per-worker torch thread count that `_worker`
-otherwise pins to 1. It only matters for the torch-heavy methods — the sklearn ones don't use torch
-threads.
+### 3.1 Compute
+
+**[`compute.py`](compute.py) is the single owner of device and thread settings.** Nothing below it
+picks either for itself: no estimator calls `torch.set_num_threads`, no estimator auto-selects a
+device, and the BLAS thread count is a config field rather than an import-time side effect. That
+was not true before — three layers used to set threads without knowing about each other, and NMMR
+grabbed MPS inside every pool worker while DFPV hardcoded an mps→cpu downgrade to survive it.
+
+Control is inverted relative to the old `run_method_parallel`: `run.py` resolves a `ComputeConfig`
+per method and calls it, and the method decides whether to fan its episodes out through the
+session-wide `WorkerManager` or to hold a device in-process. `run.compute` is the run-wide default;
+any `methods:` or `models:` entry may overlay its own `compute:` block, and unset fields inherit.
+
+| key | meaning |
+|---|---|
+| `device` | `cpu` \| `mps` \| `cuda`. Validated on startup — an unavailable device falls back to CPU with a warning instead of failing inside a worker. |
+| `n_workers` | Episode fan-out width. `1` runs in the calling process with no pool at all. |
+| `torch_threads` | Per-process torch threads. Only the torch-backed methods care; the sklearn ones don't use them. |
+| `blas_threads` | OMP/MKL/OpenBLAS per process. Set in the pool initializer, so it is part of a pool's identity. |
+| `n_jobs` | Intra-method sklearn/joblib fan-out (CausalForest, the P-learner's forest). Nests *inside* a worker: what lands on the machine is `n_workers × n_jobs`. |
+| `execution` | `pool` \| `inline`. Defaults to `inline` for a non-CPU device or a single worker. |
+
+Two rules the config enforces rather than documents. **A non-CPU device with `execution: pool` and
+more than one worker is refused** — concurrent multi-process Metal/CUDA access stalls, so "on the
+GPU" and "fanned out over processes" are mutually exclusive. And **the pre-`compute:` spellings
+raise**: `run.n_workers`, `run.device`, and per-method `torch_threads:` / `n_jobs:` are errors with
+a message naming the replacement, not silently-accepted aliases. `run.device` in particular used to
+reach the `models:` block *only*, so the honest translation is a `compute:` block on each model
+entry rather than a global default.
+
+Pools are shared across the whole session, one per distinct `(n_workers, blas_threads)`, created on
+first use. That is why `torch_threads` is deliberately *not* part of a pool's identity: it is
+applied per task, so one pool serves methods that want different thread counts, and consecutive
+methods on the same budget reuse warm workers with their module and checkpoint caches intact. The
+cost is that a worker which ran CausalFM may later be handed NMMR — `methods._switch_src_context`
+exists to unpick exactly that, and is the first thing to suspect if a submodule-backed method
+misbehaves under a shared pool.
+
+`--no-parallel` is now an override of the global budget (`n_workers=1`, `execution=inline`), not a
+separate code path; the duplicated sequential runner is gone.
 
 **Don't bother chasing the device.** Once the context pass is cached, every arrangement converges on
 the same ceiling, because the irreducible work is one forward of 8 ensemble members over the 2048
@@ -210,7 +254,9 @@ context rows per episode. Real episodes, 480 of them:
 | mps, 2–3 workers × 2 threads, `kv`   | 0.55  | 14.5 min     |
 | mps, 1 process × 4 threads, `kv`     | 0.569 | 14.1 min     |
 
-`device: mps` is ~5x faster *per episode* than one CPU worker (2.1 s vs 15.0 s), which is why a
+(The two mps rows predate the `execution` rule and are no longer expressible for a *method* — a
+non-CPU device now implies `inline`. They are kept because they are what the ceiling argument rests
+on.) `device: mps` is ~5x faster *per episode* than one CPU worker (2.1 s vs 15.0 s), which is why a
 single GPU process keeps up with six CPU ones — but it does not beat them, so it is worth choosing
 only for its memory profile (one 2.4 GiB process instead of six). Breaking the ~0.57 ep/s ceiling
 needs episodes batched into the model's batch dimension, the way the ProximalFM path already does
@@ -246,9 +292,9 @@ one fit via an `outputs:` list — much cheaper than four separate entries:
 | `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `cate(x)` | `ProximalPLearner`; W/Z used at fit, discarded at predict |
 | `KernelPV` | kernel proxy-variable bridge | per strategy | `baselines/kpv.py` |
 | `PMMR` | proximal maximum-moment-restriction bridge | per strategy | `baselines/pmmr.py` |
-| `NMMR` | neural MMR bridge | per strategy | `baselines/nmmr.py`; supports `tune:`; no `marginal` |
-| `DFPV` | deep feature proxy variable | per strategy | `baselines/dfpv.py`; forced to CPU inside the pool |
-| `CausalFM`, `DoPFN`, `CausalPFN` | in-context tabular causal FMs | `cate(x…)` | imported from the git submodules via `_switch_src_context`; init them first |
+| `NMMR` | neural MMR bridge | per strategy | `baselines/nmmr.py`; supports `tune:`; no `marginal`; torch — for a GPU give it `compute: { device: mps, execution: inline }` |
+| `DFPV` | deep feature proxy variable | per strategy | `baselines/dfpv.py`; torch, same GPU note as NMMR (it used to be pinned to CPU unconditionally) |
+| `CausalFM`, `DoPFN`, `CausalPFN` | in-context tabular causal FMs | `cate(x…)` | imported from the git submodules via `_switch_src_context`; init them first. `CausalFM` and `CausalPFN` honour `compute.device`; `DoPFN` is CPU-only because `DoPFNRegressor` exposes no device argument |
 | *(`models:` block)* | ProximalFM | `cate(x)` | receives the full sequence but **masks the query rows' proxies** (`_hide_query_proxies`), so it answers `tau(x)` using `W`/`Z` only through the context |
 
 **Strategies** (the four proximal bridge methods) decide what is done with `W` at prediction time:

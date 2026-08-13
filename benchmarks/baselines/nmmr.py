@@ -14,7 +14,7 @@ Tuning entry point: NMMRConfig — every knob lives there with sensible defaults
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 import torch
@@ -53,8 +53,16 @@ class NMMRConfig:
     # CATE prediction marginalises over W_train in chunks to avoid OOM.
     predict_batch_size: int = 128
 
-    # ── Reproducibility ───────────────────────────────────────────────────────
+    # ── Reproducibility / device ──────────────────────────────────────────────
     seed: int = 42
+    # "cpu", "cuda", "mps", or None to auto-select (cuda > mps > cpu).
+    #
+    # Inside the benchmark this is always set explicitly, from the method's
+    # resolved ComputeConfig. It has to be: auto-selection grabbed MPS in *every*
+    # process of a spawn pool, and concurrent multi-process Metal access stalls.
+    # `benchmarks.compute` owns the choice now; None is kept for direct use of
+    # NMMREstimator outside the harness.
+    device: Optional[str] = None
 
     # ── CATE prediction / W marginalisation ──────────────────────────────────
     w_strategy: Literal["independent", "conditional"] = "independent"
@@ -175,7 +183,7 @@ class NMMREstimator:
         self._X_train: torch.Tensor | None = None
         self._W_train: torch.Tensor | None = None
         self._dim_A: int = 1
-        self._device = self._select_device()
+        self._device = self._select_device(self.cfg.device)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -338,7 +346,9 @@ class NMMREstimator:
     # ── Internals ─────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _select_device() -> torch.device:
+    def _select_device(device: str | None = None) -> torch.device:
+        if device is not None:
+            return torch.device(device)
         if torch.cuda.is_available():
             return torch.device("cuda")
         if torch.backends.mps.is_available():

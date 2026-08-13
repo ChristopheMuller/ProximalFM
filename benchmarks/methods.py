@@ -67,10 +67,15 @@ except ImportError:
 try:
     import os
 
-    # Prevent PyTorch/FAISS thread collisions (crucial for benchmark stability)
-    for k in ["OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"]:
-        os.environ[k] = "1"
-    os.environ["KMP_DUPLICATE_OK"] = "True"
+    # FAISS and torch each ship their own OpenMP; loading both trips a
+    # duplicate-runtime abort on macOS unless this is set. The BLAS *thread counts*
+    # used to be pinned here too, unconditionally and invisibly from the config —
+    # they now belong to `compute._pool_init`, which runs early enough in a spawned
+    # worker to still have an effect and takes its value from `compute.blas_threads`.
+    # (The original spelling `KMP_DUPLICATE_OK` is a typo for the variable OpenMP
+    # actually reads; both are set so the behaviour is at least the intended one.)
+    os.environ.setdefault("KMP_DUPLICATE_OK", "True")
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "True")
 
     from causalpfn import CATEEstimator as CausalPFN_Model
 
@@ -492,6 +497,7 @@ class ProximalPLearner(CATEEstimator):
         random_state: Optional[int] = None,
         q_clip: Optional[tuple[float, float]] = None,
         refit_full_nuisance: bool = False,
+        n_jobs: int = 1,
     ):
         self.bridge_params = (
             bridge_params if bridge_params is not None else BridgeParams()
@@ -501,6 +507,7 @@ class ProximalPLearner(CATEEstimator):
         self.random_state = random_state
         self.q_clip = q_clip
         self.refit_full_nuisance = refit_full_nuisance
+        self.n_jobs = n_jobs
 
         # Instantiate the underlying execution engine
         self.estimator_ = BasePLearner(
@@ -510,6 +517,7 @@ class ProximalPLearner(CATEEstimator):
             random_state=self.random_state,
             q_clip=self.q_clip,
             refit_full_nuisance=self.refit_full_nuisance,
+            n_jobs=self.n_jobs,
         )
 
     def fit(
@@ -710,6 +718,9 @@ class NMMR_Wrapper(CATEEstimator):
             x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
             x_cond_top_k=kwargs.get("x_cond_top_k", 512),
             seed=kwargs.get("seed", 42),
+            # From the resolved ComputeConfig; NMMR used to auto-grab MPS in every
+            # pool worker, which is exactly the collision ComputeConfig now refuses.
+            device=kwargs.get("device", None),
         )
         # Base config; a hyperparameter search (if enabled) overrides fields on
         # a copy of this and refits the winner on the full context.
@@ -814,22 +825,15 @@ class DFPV_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        import warnings
-
         from benchmarks.baselines.dfpv import DFPVConfig, DFPVEstimator
 
-        # The benchmark fans batches out across a `spawn` ProcessPool. Concurrent
-        # multi-process MPS/Metal access stalls (each worker also does many
-        # MPS↔CPU solve round-trips), so MPS is unsafe here: force CPU. MPS is
-        # still fine for single-process use of DFPVEstimator directly.
+        # Device comes from the method's resolved ComputeConfig (build_method injects
+        # it). This used to force CPU unconditionally, because concurrent
+        # multi-process Metal access from the episode pool stalls — that constraint
+        # now lives in ComputeConfig, which refuses a non-CPU device combined with
+        # pool fan-out, so `compute: {device: mps, execution: inline}` is a legal and
+        # useful configuration here rather than something to silently undo.
         device = kwargs.get("device", None)
-        if device == "mps":
-            warnings.warn(
-                "DFPV_Wrapper: ignoring device='mps' — it deadlocks inside the "
-                "benchmark's multiprocess pool. Falling back to CPU.",
-                stacklevel=2,
-            )
-            device = "cpu"
 
         cfg = DFPVConfig(
             feature_dim=kwargs.get("feature_dim", kwargs.get("feat_dim", 8)),
@@ -983,7 +987,13 @@ _CAUSALPFN_CACHE = {}
 
 
 class CausalFM_Estimator(CATEEstimator):
-    def __init__(self, checkpoint_path: str, use_W: bool = True, use_Z: bool = True):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        use_W: bool = True,
+        use_Z: bool = True,
+        device: str = "cpu",
+    ):
         # Lock in CausalFM, kick out NMMR
         _switch_src_context(target_repo_name="CausalFM", competitor_repo_name="NMMR")
 
@@ -992,15 +1002,21 @@ class CausalFM_Estimator(CATEEstimator):
         except ImportError as e:
             raise ImportError(f"CausalFM import failed even after switch: {e}")
 
-        torch.set_num_threads(1)
+        # No torch.set_num_threads here: `compute.apply_compute` owns thread counts
+        # and has already run for this task. This call used to sit here and silently
+        # undo the per-method `torch_threads` the worker had just set.
+        self.device = torch.device(device)
 
-        if checkpoint_path not in _CAUSALFM_CACHE:
+        # Keyed by device as well as checkpoint: the same weights on two devices are
+        # two distinct loaded models, and a shared session-wide pool can be asked for
+        # both.
+        key = (checkpoint_path, str(self.device))
+        if key not in _CAUSALFM_CACHE:
             with silent():
-                _CAUSALFM_CACHE[checkpoint_path] = StandardCATEModel.from_pretrained(
-                    checkpoint_path
-                )
+                model = StandardCATEModel.from_pretrained(checkpoint_path)
+                _CAUSALFM_CACHE[key] = model.to(self.device)
 
-        self.model = _CAUSALFM_CACHE[checkpoint_path]
+        self.model = _CAUSALFM_CACHE[key]
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
         self.ctx_x = None
@@ -1012,9 +1028,9 @@ class CausalFM_Estimator(CATEEstimator):
         feat = self.fb.build(X, W=W, Z=Z)
 
         # Store as PyTorch tensors with correct shapes (n, 1) for A and Y
-        self.ctx_x = torch.Tensor(feat)
-        self.ctx_a = torch.Tensor(A).reshape(-1, 1)
-        self.ctx_y = torch.Tensor(Y).reshape(-1, 1)
+        self.ctx_x = torch.Tensor(feat).to(self.device)
+        self.ctx_a = torch.Tensor(A).reshape(-1, 1).to(self.device)
+        self.ctx_y = torch.Tensor(Y).reshape(-1, 1).to(self.device)
         return self
 
     def predict(self, X, *, W=None, Z=None):
@@ -1023,7 +1039,7 @@ class CausalFM_Estimator(CATEEstimator):
 
         # Build test covariate matrix
         feat = self.fb.build(X, W=W, Z=Z)
-        x_test = torch.Tensor(feat)
+        x_test = torch.Tensor(feat).to(self.device)
 
         with torch.no_grad():
             result = self.model.estimate_cate(
@@ -1052,8 +1068,10 @@ class DoPFN_Estimator(CATEEstimator):
                 "Ensure it is installed and sys.path is correct."
             )
 
-        torch.set_num_threads(1)
-
+        # `DoPFNRegressor.__init__` takes no arguments — the submodule exposes no
+        # device knob — so this one is CPU whatever the method's compute says, and
+        # `compute.device` is deliberately not accepted here rather than accepted
+        # and ignored. Thread counts come from `compute.apply_compute`.
         with silent():
             self.model = DoPFNRegressor()
 
@@ -1088,21 +1106,17 @@ class DoPFN_Estimator(CATEEstimator):
 
 
 class CausalPFN_Estimator(CATEEstimator):
-    def __init__(self, use_W: bool = True, use_Z: bool = True):
+    def __init__(self, use_W: bool = True, use_Z: bool = True, device: str = "cpu"):
         if not _CAUSALPFN_AVAILABLE:
             raise ImportError("causalpfn is not installed.")
 
-        import torch
-
-        torch.set_num_threads(1)
-
-        if "default" not in _CAUSALPFN_CACHE:
+        # Was hardcoded to CPU, which was the only safe choice while every method
+        # ran under the episode pool. Thread counts come from `apply_compute`.
+        if device not in _CAUSALPFN_CACHE:
             with silent():
-                _CAUSALPFN_CACHE["default"] = CausalPFN_Model(
-                    device="cpu", verbose=False
-                )
+                _CAUSALPFN_CACHE[device] = CausalPFN_Model(device=device, verbose=False)
 
-        self.model = _CAUSALPFN_CACHE["default"]
+        self.model = _CAUSALPFN_CACHE[device]
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
@@ -1287,7 +1301,7 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
     return format_estimand("cate", inputs)
 
 
-def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
+def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
     """Instantiate a CATE estimator from a single YAML method-config dict.
 
     This is the bridge between the config file and the estimator objects.
@@ -1295,15 +1309,29 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
 
     Args:
         cfg : one entry from the 'methods' list in config_*.yaml.
+        compute : the method's resolved `compute.ComputeConfig`. Device and
+            intra-method job counts come from here and *only* from here — an
+            estimator never picks a device for itself, which is what stopped the
+            episode pool from putting six processes on the same GPU. Defaults to a
+            single-threaded CPU budget so direct calls (tests, notebooks) still work.
 
     Returns:
         (display_name, estimator_instance)
     """
+    from benchmarks.compute import ComputeConfig
+
+    if compute is None:
+        compute = ComputeConfig()
+
     name = cfg["name"]
     cls = cfg["cls"]
 
     # Inference knobs for a `base: tabicl` method; see _TABICL_DEFAULTS.
     tabicl_opts = cfg.get("tabicl") or None
+
+    # The `**cfg` wrappers below read `device` out of the config dict; inject the
+    # resolved one so a stale `device:` left in a YAML cannot outrank it.
+    cfg = {**cfg, "device": compute.device}
 
     def base_factory(default: str = "linear") -> Callable[[], object]:
         bn = cfg.get("base", default)
@@ -1333,6 +1361,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             random_state=cfg.get("random_state", 42),
             q_clip=cfg.get("q_clip", None),
             refit_full_nuisance=cfg.get("refit_full_nuisance", False),
+            n_jobs=compute.n_jobs,
         ),
         "KernelPV": lambda: KPV_Wrapper(**cfg),
         "PMMR": lambda: PMMR_Wrapper(**cfg),
@@ -1342,7 +1371,9 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             checkpoint_path=cfg["checkpoint"],
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+            device=compute.device,
         ),
+        # No device: DoPFNRegressor exposes none. See DoPFN_Estimator.__init__.
         "DoPFN": lambda: DoPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
@@ -1350,6 +1381,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
         "CausalPFN": lambda: CausalPFN_Estimator(
             use_W=cfg.get("use_W", True),
             use_Z=cfg.get("use_Z", True),
+            device=compute.device,
         ),
         "CausalForest": lambda: CausalForest_Wrapper(
             n_trees=cfg.get("n_trees", 200),
@@ -1359,7 +1391,7 @@ def build_method(cfg: dict) -> tuple[str, CATEEstimator]:
             use_W=cfg.get("use_W", False),
             use_Z=cfg.get("use_Z", False),
             random_state=cfg.get("random_state", 42),
-            n_jobs=cfg.get("n_jobs", 1),
+            n_jobs=compute.n_jobs,
         ),
     }
     if cls not in factories:

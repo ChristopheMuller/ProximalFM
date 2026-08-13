@@ -8,6 +8,14 @@ Usage
     python run.py --force                  # rerun even if preds exist
     python run.py --no-parallel            # single-process (debug)
 
+Compute
+───────
+    Device and thread counts belong to `benchmarks.compute`, not to this script and
+    not to the estimators. `run.compute` in the YAML is the run-wide default; each
+    method (and each checkpoint under `models:`) may overlay a `compute:` block on
+    it. A method is handed its resolved budget and decides for itself whether to fan
+    its episodes out through the shared WorkerManager or hold a device in-process.
+
 Pipeline
 ────────
     1. Load the datasets                    (Step 1)
@@ -24,11 +32,10 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
-import os
 import sys
 import time
+from dataclasses import replace
 from typing import Optional
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -53,9 +60,18 @@ from rich.rule import Rule
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from benchmarks.compute import (
+    INLINE,
+    ComputeConfig,
+    WorkerManager,
+    apply_compute,
+    parse_global_compute,
+    resolve_method_compute,
+)
 from benchmarks.data import load_benchmark_from_val_dir
 from benchmarks.data_csv import load_benchmark_from_csv
-from benchmarks.methods import build_method, method_estimand
+from benchmarks.methods import method_estimand
+from benchmarks.runners import method_output_names, run_method
 from benchmarks.metrics import (
     ATE_RICH_COLUMNS,
     DEFAULT_RICH_COLUMNS,
@@ -228,163 +244,6 @@ def build_batches(data: dict) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 2 — Parallel method runner
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def method_output_names(method_cfg: dict) -> list[str]:
-    """Return the list of prediction-set names a single method config yields.
-
-    A plain config produces one output named after ``cfg['name']``. A config
-    with an ``outputs`` list (multi-output methods, e.g. NMMR emitting several
-    CATE variants from one trained model) produces one output per entry.
-    """
-    outputs = method_cfg.get("outputs")
-    if outputs:
-        return [o["name"] for o in outputs]
-    return [method_cfg["name"]]
-
-
-def _worker(args: tuple) -> tuple[int, dict[str, np.ndarray] | None, float, str | None]:
-    b, method_cfg, U_ctx, X_ctx, A_ctx, Y_ctx, W_ctx, Z_ctx, U_q, X_q, W_q, Z_q = args
-    try:
-        # One torch thread per worker keeps n_workers processes from oversubscribing
-        # the machine, but it also throttles the torch-heavy methods to a single
-        # core. `torch_threads:` on the method config lifts that: for `base: tabicl`
-        # (6 workers, 12 logical cores) 1 -> 2 threads is a measured 0.47 -> 0.56
-        # episodes/s, and the sklearn methods do not use torch threads at all.
-        try:
-            torch.set_num_threads(int(method_cfg.get("torch_threads", 1)))
-            torch.set_num_interop_threads(1)
-        except RuntimeError:
-            pass
-
-        t0 = time.perf_counter()
-        _, method = build_method(method_cfg)
-
-        # --- ORACLE INJECTION ---
-        if method_cfg.get("is_oracle", False):
-            X_ctx = np.concatenate([X_ctx, U_ctx], axis=-1)
-            X_q = np.concatenate([X_q, U_q], axis=-1)
-        # ------------------------
-
-        method.fit(X_ctx, A_ctx, Y_ctx, W=W_ctx, Z=Z_ctx)
-
-        # One fit → one or more named prediction sets. The default estimator
-        # returns a single output keyed by None, which we map to the config name.
-        variants = method.predict_variants(X_q, W=W_q, Z=Z_q)
-        name = method_cfg["name"]
-        result = {
-            (name if k is None else k): np.asarray(v).astype(np.float32)
-            for k, v in variants.items()
-        }
-        t1 = time.perf_counter()
-        return b, result, t1 - t0, None
-    except Exception as exc:
-        return b, None, 0.0, str(exc)
-
-
-def run_method_parallel(
-    method_cfg: dict,
-    batches: list[dict],
-    n_test: int,
-    n_workers: int,
-    progress: Progress,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    n_batch = len(batches)
-    output_names = method_output_names(method_cfg)
-    preds = {
-        name: np.full((n_batch, n_test), np.nan, dtype=np.float32)
-        for name in output_names
-    }
-    times = {name: np.zeros(n_batch, dtype=np.float32) for name in output_names}
-    n_errors = 0
-
-    task = progress.add_task(f"  [cyan]{method_cfg['name']:<28}[/]", total=n_batch)
-    args_list = [
-        (
-            b["b"],
-            method_cfg,
-            b["U_ctx"],
-            b["X_ctx"],
-            b["A_ctx"],
-            b["Y_ctx"],
-            b["W_ctx"],
-            b["Z_ctx"],
-            b["U_q"],
-            b["X_q"],
-            b["W_q"],
-            b["Z_q"],
-        )
-        for b in batches
-    ]
-
-    with ProcessPoolExecutor(max_workers=n_workers) as pool:
-        futures = {pool.submit(_worker, args): args[0] for args in args_list}
-        for future in as_completed(futures):
-            b_idx, result, elapsed, err = future.result()
-            if result is not None:
-                # All variants share the single fit, so record the same elapsed.
-                for name, arr in result.items():
-                    preds[name][b_idx] = arr
-                    times[name][b_idx] = elapsed
-            else:
-                n_errors += 1
-            progress.advance(task)
-
-    if n_errors:
-        console.print(
-            f"    [yellow]⚠[/] {method_cfg['name']}: {n_errors}/{n_batch} batches failed (NaN filled)."
-        )
-    return preds, times
-
-
-def run_method_sequential(
-    method_cfg: dict,
-    batches: list[dict],
-    n_test: int,
-    progress: Progress,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    n_batch = len(batches)
-    output_names = method_output_names(method_cfg)
-    preds = {
-        name: np.full((n_batch, n_test), np.nan, dtype=np.float32)
-        for name in output_names
-    }
-    times = {name: np.zeros(n_batch, dtype=np.float32) for name in output_names}
-
-    task = progress.add_task(
-        f"  [cyan]{method_cfg['name']:<28}[/] [dim](sequential)[/]", total=n_batch
-    )
-
-    for b_dict in batches:
-        args = (
-            b_dict["b"],
-            method_cfg,
-            b_dict["U_ctx"],
-            b_dict["X_ctx"],
-            b_dict["A_ctx"],
-            b_dict["Y_ctx"],
-            b_dict["W_ctx"],
-            b_dict["Z_ctx"],
-            b_dict["U_q"],
-            b_dict["X_q"],
-            b_dict["W_q"],
-            b_dict["Z_q"],
-        )
-        b_idx, result, elapsed, err = _worker(args)
-        if result is not None:
-            for name, arr in result.items():
-                preds[name][b_idx] = arr
-                times[name][b_idx] = elapsed
-        if err:
-            console.print(f"    [red]✗[/] batch {b_idx}: {err}")
-        progress.advance(task)
-
-    return preds, times
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Step 3 (optional) — Neural model inference
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -392,11 +251,17 @@ def run_method_sequential(
 def run_neural_model(
     model_cfg: dict,
     data: dict,
-    device_str: str,
+    compute: ComputeConfig,
     preds_dir: Path,
     force: bool,
 ) -> list[tuple[str, np.ndarray, np.ndarray]] | None:
     """Load ProximalFM checkpoint(s) and run inference.
+
+    Always device-resident and single-process: it batches episodes into the model's
+    own batch dimension, which is a better use of a GPU than any episode fan-out, so
+    only `compute.device` and `compute.torch_threads` matter here. It reads the same
+    resolved `ComputeConfig` as the `methods:` entries, so a checkpoint can pin its
+    own device with a `compute:` block.
 
     Returns a list of tuples containing (output_name, preds, times).
     """
@@ -470,7 +335,8 @@ def run_neural_model(
 
     # 2. Iterate through determined targets sequentially
     completed_runs = []
-    device = torch.device(device_str)
+    apply_compute(compute)
+    device = torch.device(compute.device)
 
     N_TRAIN = data["N_TRAIN"]
     N_TEST = data["N_TEST"]
@@ -825,7 +691,11 @@ def main() -> None:
         action="store_true",
         help="Recompute predictions even if they are already saved.",
     )
-    parser.add_argument("--no-parallel", action="store_true", help="Run sequentially.")
+    parser.add_argument(
+        "--no-parallel",
+        action="store_true",
+        help="Debug: force every method to run in this process (compute.n_workers=1).",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -837,12 +707,17 @@ def main() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
     force = args.force or cfg["run"].get("force_rerun", False)
-    n_workers = cfg["run"].get("n_workers", max(1, (os.cpu_count() or 4) - 2))
+
+    # The run-wide default. Each method overlays its own `compute:` block on this;
+    # `--no-parallel` is now just an override of it, not a second code path.
+    global_compute = parse_global_compute(cfg["run"])
+    if args.no_parallel:
+        global_compute = replace(global_compute, n_workers=1, execution=INLINE)
 
     console.print(Rule("[bold blue]CATE Benchmark[/]"))
     console.print(f"  Config   : [cyan]{args.config}[/]")
     console.print(f"  Output   : [cyan]{output_dir}[/]")
-    console.print(f"  Workers  : [cyan]{n_workers}[/]")
+    console.print(f"  Compute  : [cyan]{global_compute.describe()}[/]")
     console.print()
 
     # ── Step 1: Data ─────────────────────────────────────────────────────────
@@ -884,7 +759,10 @@ def main() -> None:
         transient=False,
     )
 
-    with progress:
+    # One manager for the whole session. It hands out pools lazily and keeps them,
+    # so consecutive methods that agree on a budget reuse warm workers instead of
+    # paying respawn + re-import + checkpoint load each.
+    with WorkerManager() as manager, progress:
         for mcfg in method_cfgs:
             name = mcfg["name"]
             output_names = method_output_names(mcfg)
@@ -901,14 +779,25 @@ def main() -> None:
                     accumulated[out_name] = (preds, times)
                 continue
 
+            method_compute = resolve_method_compute(global_compute, mcfg)
+            task = progress.add_task(
+                f"  [cyan]{name:<28}[/] [dim]{method_compute.describe()}[/]",
+                total=len(batches),
+            )
+
             t0 = time.perf_counter()
-            if args.no_parallel:
-                preds_map, times_map = run_method_sequential(
-                    mcfg, batches, N_TEST, progress
-                )
-            else:
-                preds_map, times_map = run_method_parallel(
-                    mcfg, batches, N_TEST, n_workers, progress
+            preds_map, times_map, n_errors = run_method(
+                mcfg,
+                batches,
+                N_TEST,
+                method_compute,
+                manager,
+                on_progress=lambda: progress.advance(task),
+            )
+            if n_errors:
+                console.print(
+                    f"    [yellow]⚠[/] {name}: {n_errors}/{len(batches)} "
+                    "batches failed (NaN filled)."
                 )
 
             elapsed = time.perf_counter() - t0
@@ -926,10 +815,12 @@ def main() -> None:
     model_cfgs = cfg.get("models", [])
     if model_cfgs:
         console.print(Rule(f"[bold]Step 3  Neural Models ({len(model_cfgs)})[/]"))
-        device = cfg["run"].get("device", "cpu")
 
         for mcfg in model_cfgs:
-            results = run_neural_model(mcfg, data, device, preds_dir, force)
+            # Same resolution as a method, so a checkpoint carries its own
+            # `compute: {device: mps}` rather than depending on a global default.
+            model_compute = resolve_method_compute(global_compute, mcfg)
+            results = run_neural_model(mcfg, data, model_compute, preds_dir, force)
             if results is not None:
                 for name, preds, times in results:
                     accumulated[name] = (preds, times)
