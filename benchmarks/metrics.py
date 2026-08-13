@@ -103,26 +103,96 @@ import pandas as pd
 # trainer's synt_point/* curves and this table drop the same episodes.
 TARGET_VAR_THRESHOLD = 1e-6
 
-# The three estimands a method output can answer, and the tracks they route to.
-#   x   — τ(x): the primary CATE track (and, capped by the noise floor, the ITE
-#         track too).
-#   xw  — τ(x, w[, z]): uses the query row's proxies, so it answers a strictly
-#         finer conditional. Scored on the ITE track only, where that extra
-#         conditioning is a genuine advantage rather than a category error.
-#   ate — a single scalar per episode. Scored on the ATE track only; its nPEHE
-#         would be ~1 by construction and would say nothing.
-ESTIMANDS = ("x", "xw", "ate")
+# ─────────────────────────────────────────────────────────────────────────────
+# The estimand tag
+# ─────────────────────────────────────────────────────────────────────────────
+# A method output is labelled by what it answers, spelled out in full:
+#
+#   cate(x)        per-row effect conditioning on X alone — the primary target
+#   cate(x,w)      ... and on the query row's own W: a strictly finer conditional
+#   cate(x,w,z)
+#   cate(x,u)      an oracle handed the true confounder
+#   ate(x)         one scalar per episode
+#
+# The *kind* says whether the output varies per row (``cate``) or is a constant
+# (``ate``). The parenthesis lists the variables the prediction reads at
+# **predict** time — using a variable only to fit a nuisance does not count,
+# which is why ProximalPLearner is ``cate(x)`` despite being fitted on both
+# proxies. That is exactly the property the tables need to route on.
+ESTIMAND_KINDS = ("cate", "ate")
+# Canonical order, so the same conditioning set always prints the same string.
+ESTIMAND_INPUTS = ("x", "w", "z", "u")
 
-# Which estimands each *table* shows. Scoring is not filtered — every method is
-# scored against every available target, since that is pure numpy over
-# predictions already in memory — but a table only shows the methods whose
-# estimand it can rank fairly. The ATE table shows everyone: its columns are
-# ATE-level only, which is meaningful for a τ(x) method too.
-TRACK_ESTIMANDS = {
-    "cate": ("x",),
-    "ite": ("x", "xw"),
-    "ate": ("x", "xw", "ate"),
-}
+# The pre-spelled-out tags. Old configs (`estimand: x|xw|ate`), old results.csv
+# files and old preds caches keep meaning exactly what they did.
+LEGACY_ESTIMANDS = {"x": "cate(x)", "xw": "cate(x,w)", "ate": "ate(x)"}
+
+TRACKS = ("cate", "ite", "ate")
+
+
+def format_estimand(kind: str, inputs) -> str:
+    """``("cate", ["w", "x"]) -> "cate(x,w)"`` — the canonical spelling."""
+    if kind not in ESTIMAND_KINDS:
+        raise ValueError(f"estimand kind must be one of {ESTIMAND_KINDS}, got {kind!r}")
+    seen = set(inputs)
+    unknown = seen - set(ESTIMAND_INPUTS)
+    if unknown:
+        raise ValueError(
+            f"unknown estimand input(s) {sorted(unknown)}; "
+            f"expected a subset of {ESTIMAND_INPUTS}"
+        )
+    return f"{kind}({','.join(i for i in ESTIMAND_INPUTS if i in seen)})"
+
+
+def parse_estimand(tag: str) -> tuple[str, tuple[str, ...]]:
+    """``"cate(x,w)" -> ("cate", ("x", "w"))``, inputs in canonical order.
+
+    Accepts the legacy tags too, so a config or a results.csv written before the
+    inputs were spelled out still parses.
+    """
+    tag = str(tag).strip()
+    tag = LEGACY_ESTIMANDS.get(tag, tag)
+    if not tag.endswith(")") or "(" not in tag:
+        raise ValueError(
+            f"estimand must look like 'cate(x,w)' or be one of "
+            f"{sorted(LEGACY_ESTIMANDS)}, got {tag!r}"
+        )
+    kind, _, rest = tag[:-1].partition("(")
+    inputs = {p.strip() for p in rest.split(",") if p.strip()}
+    format_estimand(kind, inputs)  # validates both halves; raises on garbage
+    return kind, tuple(i for i in ESTIMAND_INPUTS if i in inputs)
+
+
+def canonical_estimand(tag: str) -> str:
+    """Validate a tag and return its canonical spelling (legacy tags included)."""
+    return format_estimand(*parse_estimand(tag))
+
+
+def estimand_in_track(tag: str, track: str) -> bool:
+    """Whether the ``track`` table can rank an output tagged ``tag``.
+
+    Two checks, and nothing more: is it a per-row effect or a scalar, and does
+    it read the proxies of the row it is predicting?
+
+    ``cate`` (the headline) shows only per-row methods that condition on X
+    alone — a ``cate(x,w)`` output estimates E[Y1-Y0 | X, W], a different
+    quantity, and ranking it against tau*(x) would be a category error. The
+    ``u`` of an oracle row is deliberately *not* disqualifying: those rows are
+    in the table as upper bounds, which is the whole point of computing them.
+    ``ite`` admits every per-row method, since that is where conditioning on the
+    proxies is a genuine advantage. ``ate`` shows everyone: its columns are
+    level-only, which is meaningful for a tau(x) method too, and it is the one
+    table where a constant-prediction method says anything.
+    """
+    if track not in TRACKS:
+        raise ValueError(f"unknown track {track!r}; expected one of {list(TRACKS)}")
+    kind, inputs = parse_estimand(tag)
+    if track == "ate":
+        return True
+    if kind != "cate":
+        return False
+    return track == "ite" or not ({"w", "z"} & set(inputs))
+
 
 # Small epsilon added to denominators to guard against zero-SD episodes.
 _EPS = 1e-8
@@ -140,7 +210,7 @@ class EpisodeMetrics:
 
     # ── What was scored, and by whom ─────────────────────────────────────────
     target: str  # "cate" (MU1−MU0) or "ite" (Y1−Y0)
-    estimand: str  # one of ESTIMANDS: what this method output answers
+    estimand: str  # what this output answers, e.g. "cate(x)", "cate(x,w)", "ate(x)"
     is_reference: bool  # an oracle row: shown, but never ranked against
 
     # ── ATE level ────────────────────────────────────────────────────────────
@@ -177,7 +247,7 @@ def compute_episode_metrics(
     target_var_threshold: float = TARGET_VAR_THRESHOLD,
     *,
     target_kind: str = "cate",
-    estimand: str = "x",
+    estimand: str = "cate(x)",
     is_reference: bool = False,
     s2: Optional[np.ndarray] = None,
 ) -> EpisodeMetrics:
@@ -189,6 +259,9 @@ def compute_episode_metrics(
     variance of a Monte-Carlo target; it is *reported* (as ``s2_over_var``) and
     never subtracted.
     """
+    # Store the canonical spelling, so a legacy tag from an old config lands in
+    # the frame as the tag every consumer of the frame now expects.
+    estimand = canonical_estimand(estimand)
     failed = bool(np.all(np.isnan(pred)))
 
     ate_true = float(target.mean())
@@ -258,7 +331,7 @@ def compute_all_metrics(
     target_var_threshold: float = TARGET_VAR_THRESHOLD,
     *,
     target_kind: str = "cate",
-    estimand: str = "x",
+    estimand: str = "cate(x)",
     is_reference: bool = False,
     s2: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
@@ -292,15 +365,14 @@ def select_track(all_results: pd.DataFrame, track: str) -> pd.DataFrame:
     """The rows of the per-episode frame that the ``track`` table shows.
 
     ``cate``/``ite`` select on the scored target *and* on which estimands can be
-    ranked fairly against it. ``ate`` is not a third scoring pass: it reuses the
-    CATE-target rows (the ITE ones when the set has no CATE target) and simply
-    shows every method, because the ATE-level columns are meaningful for all of
-    them — it is where a method that only ever returns a scalar belongs.
+    ranked fairly against it (:func:`estimand_in_track`). ``ate`` is not a third
+    scoring pass: it reuses the CATE-target rows (the ITE ones when the set has
+    no CATE target) and simply shows every method, because the ATE-level columns
+    are meaningful for all of them — it is where a method that only ever returns
+    a scalar belongs.
     """
-    if track not in TRACK_ESTIMANDS:
-        raise ValueError(
-            f"unknown track {track!r}; expected one of {list(TRACK_ESTIMANDS)}"
-        )
+    if track not in TRACKS:
+        raise ValueError(f"unknown track {track!r}; expected one of {list(TRACKS)}")
 
     df = all_results
     if track == "ate":
@@ -310,7 +382,8 @@ def select_track(all_results: pd.DataFrame, track: str) -> pd.DataFrame:
     df = df[df["target"] == source]
     # Reset: the frame is a concat of one block per (method, target), so its
     # index repeats — and the rank assignment below aligns on it.
-    return df[df["estimand"].isin(TRACK_ESTIMANDS[track])].reset_index(drop=True)
+    keep = df["estimand"].map(lambda tag: estimand_in_track(tag, track))
+    return df[keep].reset_index(drop=True)
 
 
 def build_summary_table(
@@ -452,7 +525,9 @@ def make_summary_rich_table(
 
     tbl = Table(title=title, box=box.SIMPLE_HEAD, show_footer=False)
     tbl.add_column("Method", style="bold cyan", no_wrap=True)
-    tbl.add_column("Est.", justify="center")
+    # Wide enough for the longest tag ("cate(x,w,z,u)"): rich shrinks flexible
+    # columns on a narrow terminal, and a truncated "cate…" says nothing.
+    tbl.add_column("Est.", justify="center", no_wrap=True, min_width=13)
     for label in columns:
         tbl.add_column(label, justify="right")
 

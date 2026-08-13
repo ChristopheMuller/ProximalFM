@@ -28,17 +28,33 @@ Without them the run falls back to the ITE track and says so on the console.
 ### The three tracks
 
 Methods do not all answer the same question, so they are not all ranked in the same table. Every
-prediction output carries an **estimand tag**, derived from the config by
-[`methods.method_estimand`](methods.py) (override with `estimand: x|xw|ate` on a method or an
-`outputs[]` entry):
+prediction output carries an **estimand tag** that spells out what it answers — a *kind* and the
+variables the prediction reads at **predict** time, in the canonical order `x,w,z,u`:
 
-| tag | means | appears in |
-|---|---|---|
-| `x` | `tau(x)` — predicts from covariates alone | **`summary_cate.csv`** (headline) and `summary_ite.csv` |
-| `xw` | `tau(x, w[, z])` — evaluated at the *query row's own* proxies, i.e. `E[Y1−Y0 \| X, W]` | `summary_ite.csv` only |
-| `ate` | one scalar per episode | `summary_ate.csv` only |
+```
+cate(x)   cate(x,w)   cate(x,z)   cate(x,w,z)   cate(x,u)   cate(x,w,z,u)   ate(x)   ate(x,w,z)
+```
 
-`xw` is a genuinely finer conditional, not a better estimate of `tau(x)`. On the ITE target that
+`cate` means the prediction varies per row, `ate` that it is one scalar per episode. Only
+*predict-time* use counts: `PLearner` fits nuisances on both proxies and is still `cate(x)`, because
+its prediction is a function of `x` alone. `u` appears when `is_oracle: true` concatenates the true
+confounder onto `X`. Tags are derived from the config by
+[`methods.method_estimand`](methods.py) (override with e.g. `estimand: cate(x)` on a method or an
+`outputs[]` entry; the legacy `x`/`xw`/`ate` spellings still parse, as `cate(x)`/`cate(x,w)`/`ate(x)`).
+
+Which table a tag lands in is then two checks and nothing more — the kind, and whether `w` or `z` is
+in the parenthesis:
+
+| tag | appears in |
+|---|---|
+| `cate(…)` without `w`/`z` — e.g. `cate(x)`, `cate(x,u)` | **`summary_cate.csv`** (headline), `summary_ite.csv`, `summary_ate.csv` |
+| `cate(…)` with `w` or `z` — e.g. `cate(x,w)`, `cate(x,w,z)` | `summary_ite.csv`, `summary_ate.csv` |
+| `ate(…)` | `summary_ate.csv` only |
+
+`u` is deliberately *not* disqualifying: an oracle row is in the headline table as an upper bound,
+which is the whole reason it is computed.
+
+`cate(x,w)` is a genuinely finer conditional, not a better estimate of `tau(x)`. On the ITE target that
 extra information is a real advantage; on the CATE target it is answering a different question. It
 therefore gets its own row in the ITE table and none in the CATE ranking — the "they had the
 advantage and still lost" comparison.
@@ -48,7 +64,7 @@ ranked (and never eligible for a bolded best-of cell):
 
 - **`Oracle-CATE(X)`** — the true `tau*(x)`. Scores nPEHE ≈ 0 on the cate track (a self-check on the
   whole pipeline; if it does not, something is wrong with the target plumbing) and the **irreducible
-  noise floor** on the ite track. That floor is what makes the `xw` methods' advantage readable.
+  noise floor** on the ite track. That floor is what makes the `cate(x,w)` methods' advantage readable.
 - **`Oracle-ATE`** — the best per-episode constant. The nPEHE = 1 / Shape R² = 0 anchor.
 - **`Oracle-ITE`** — the realized `Y1 − Y0` itself, the mirror image of `Oracle-CATE(X)`. Perfect on
   the ite track (nPEHE = 0) and, on the cate track, the **price of the noise**: it predicts
@@ -223,25 +239,25 @@ one fit via an `outputs:` list — much cheaper than four separate entries:
 
 | `cls` | prediction | estimand | notes |
 |---|---|---|---|
-| `S_Learner` | `f(x,·,1) − f(x,·,0)` | `x` / `xw` | one model with `A` as a feature; `interactions: true` adds `A·X` |
-| `T_Learner` | one model per arm | `x` / `xw` | |
-| `X_Learner` | propensity-weighted two-stage | `x` / `xw` | |
-| `CausalForest` | EconML `DROrthoForest.effect(X)` | `x` | `use_W`/`use_Z` feed EconML's *nuisance controls*, not the heterogeneity features |
-| `P2SLS` | a single fitted ATE, broadcast | `ate` | proximal two-stage least squares |
-| `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `x` | `ProximalPLearner`; W/Z used at fit, discarded at predict |
+| `S_Learner` | `f(x,·,1) − f(x,·,0)` | `cate(x…)` | one model with `A` as a feature; `interactions: true` adds `A·X` |
+| `T_Learner` | one model per arm | `cate(x…)` | |
+| `X_Learner` | propensity-weighted two-stage | `cate(x…)` | |
+| `CausalForest` | EconML `DROrthoForest.effect(X)` | `cate(x)` | `use_W`/`use_Z` feed EconML's *nuisance controls*, not the heterogeneity features |
+| `P2SLS` | a single fitted ATE, broadcast | `ate(x)` | proximal two-stage least squares |
+| `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `cate(x)` | `ProximalPLearner`; W/Z used at fit, discarded at predict |
 | `KernelPV` | kernel proxy-variable bridge | per strategy | `baselines/kpv.py` |
 | `PMMR` | proximal maximum-moment-restriction bridge | per strategy | `baselines/pmmr.py` |
 | `NMMR` | neural MMR bridge | per strategy | `baselines/nmmr.py`; supports `tune:`; no `marginal` |
 | `DFPV` | deep feature proxy variable | per strategy | `baselines/dfpv.py`; forced to CPU inside the pool |
-| `CausalFM`, `DoPFN`, `CausalPFN` | in-context tabular causal FMs | `x` / `xw` | imported from the git submodules via `_switch_src_context`; init them first |
-| *(`models:` block)* | ProximalFM | `x` | receives the full sequence but **masks the query rows' proxies** (`_hide_query_proxies`), so it answers `tau(x)` using `W`/`Z` only through the context |
+| `CausalFM`, `DoPFN`, `CausalPFN` | in-context tabular causal FMs | `cate(x…)` | imported from the git submodules via `_switch_src_context`; init them first |
+| *(`models:` block)* | ProximalFM | `cate(x)` | receives the full sequence but **masks the query rows' proxies** (`_hide_query_proxies`), so it answers `tau(x)` using `W`/`Z` only through the context |
 
 **Strategies** (the four proximal bridge methods) decide what is done with `W` at prediction time:
 
-- `paired` → `h(1,x,w) − h(0,x,w)` at the query row's own `w`. **`xw`.**
-- `independent` → marginalizes `W` over its context empirical marginal (assumes `W ⟂ X`). **`x`.**
-- `conditional` → marginalizes over `W|X` by kernel smoothing on `X`. **`x`.**
-- `marginal` → averages over the empirical joint `(X, W)`: one scalar. **`ate`.**
+- `paired` → `h(1,x,w) − h(0,x,w)` at the query row's own `w`. **`cate(x,w)`.**
+- `independent` → marginalizes `W` over its context empirical marginal (assumes `W ⟂ X`). **`cate(x)`.**
+- `conditional` → marginalizes over `W|X` by kernel smoothing on `X`. **`cate(x)`.**
+- `marginal` → averages over the empirical joint `(X, W)`: one scalar. **`ate(x)`.**
 
 Note that `independent`/`conditional`/`marginal` marginalize over the **context** sample, so they
 assume the query rows come from the same distribution.

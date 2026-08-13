@@ -31,7 +31,7 @@ import warnings
 # The estimand taxonomy lives in the metrics layer (numpy/pandas only) rather
 # than here: metrics must not import this module, which drags in torch,
 # sklearn and the competitor submodules.
-from benchmarks.metrics import ESTIMANDS
+from benchmarks.metrics import canonical_estimand, format_estimand
 
 # Add this at the very top of your script
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -1191,22 +1191,26 @@ def _make_base_model(name: str, tabicl_options: dict | None = None):
     return factories[name]()
 
 
-# Estimand of each strategy supported by the proximal bridge methods. This is a
-# property of the *strategy*, not of the method: `paired` evaluates the bridge at
-# the query row's own W, the two marginalisations integrate W out and land back
-# on tau(x), and `marginal` collapses to one scalar per episode.
+# (kind, predict-time inputs) of each strategy supported by the proximal bridge
+# methods. This is a property of the *strategy*, not of the method: `paired`
+# evaluates the bridge at the query row's own W, the two marginalisations
+# integrate W out and land back on tau(x), and `marginal` collapses to one
+# scalar per episode.
 _STRATEGY_ESTIMAND = {
-    "paired": "xw",
-    "independent": "x",
-    "conditional": "x",
-    "marginal": "ate",
+    "paired": ("cate", ("x", "w")),
+    "independent": ("cate", ("x",)),
+    "conditional": ("cate", ("x",)),
+    "marginal": ("ate", ("x",)),
 }
 
 # Classes whose estimand does not depend on any config flag.
 _CLS_ESTIMAND = {
-    "P2SLS": "ate",  # predict() broadcasts a single fitted ATE
-    "PLearner": "x",  # regresses the proximal score on X; W/Z discarded at predict
-    "CausalForest": "x",  # W/Z go into EconML's nuisance controls, not effect()
+    # predict() broadcasts a single fitted ATE
+    "P2SLS": ("ate", ("x",)),
+    # regresses the proximal score on X; W/Z discarded at predict
+    "PLearner": ("cate", ("x",)),
+    # W/Z go into EconML's nuisance controls, not effect()
+    "CausalForest": ("cate", ("x",)),
 }
 
 # Classes that stack W/Z into the design matrix used at *predict* time, so
@@ -1222,28 +1226,37 @@ _PROXY_FEATURE_CLASSES = (
 
 
 def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
-    """Which conditional a method output answers: ``"x"``, ``"xw"`` or ``"ate"``.
+    """What a method output answers, spelled out: ``"cate(x,w)"``, ``"ate(x)"``, …
+
+    The kind (``cate``/``ate``) says whether the prediction varies per row; the
+    parenthesis lists the variables it reads at **predict** time. Fitting a
+    nuisance on the proxies does not count — ``PLearner`` is ``cate(x)`` — since
+    what a table needs to know is which conditional the *prediction* answers.
 
     This is what routes an output to the benchmark's tracks, so it is derived
     from the config rather than declared: every pre-existing config file keeps
     working and keeps meaning what it did. An explicit ``estimand:`` key (on the
     method entry, or on the ``outputs[]`` entry for a multi-output method) wins
-    — it is the escape hatch for a method whose wiring this function cannot see.
+    — it is the escape hatch for a method whose wiring this function cannot see
+    — and accepts the legacy ``x``/``xw``/``ate`` spellings.
 
-    The distinction that matters: an ``xw`` output is evaluated at the query
-    row's *own* proxies, so it estimates ``E[Y1 - Y0 | X, W]`` — a finer
-    conditional than the benchmark's primary target, and one that no ``x``
+    The distinction that matters: a ``cate(x,w)`` output is evaluated at the
+    query row's *own* proxies, so it estimates ``E[Y1 - Y0 | X, W]`` — a finer
+    conditional than the benchmark's primary target, and one that no ``cate(x)``
     method can match on ITE data. It is not a better estimate of tau(x); it is an
     estimate of something else.
     """
     for source in (output_cfg, cfg):
         if source and source.get("estimand"):
-            declared = source["estimand"]
-            if declared not in ESTIMANDS:
-                raise ValueError(
-                    f"estimand must be one of {ESTIMANDS}, got {declared!r}"
-                )
-            return declared
+            try:
+                return canonical_estimand(source["estimand"])
+            except ValueError as exc:
+                raise ValueError(f"estimand must be a valid tag: {exc}") from None
+
+    # `is_oracle: true` concatenates the true U onto X in run._worker, so the
+    # prediction really does condition on it — the tag says so. It is not
+    # disqualifying: an oracle row is in the table as an upper bound.
+    inputs = ["x"] + (["u"] if cfg.get("is_oracle", False) else [])
 
     strategy = (output_cfg or {}).get("strategy") or cfg.get("strategy")
     if strategy:
@@ -1252,22 +1265,26 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
                 f"unknown strategy {strategy!r}; expected one of "
                 f"{list(_STRATEGY_ESTIMAND)}"
             )
-        return _STRATEGY_ESTIMAND[strategy]
+        kind, strategy_inputs = _STRATEGY_ESTIMAND[strategy]
+        return format_estimand(kind, inputs + list(strategy_inputs))
 
     cls = cfg.get("cls")
     if cls in _CLS_ESTIMAND:
-        return _CLS_ESTIMAND[cls]
+        kind, cls_inputs = _CLS_ESTIMAND[cls]
+        return format_estimand(kind, inputs + list(cls_inputs))
     if cls in _PROXY_FEATURE_CLASSES:
         # Mirror the factory defaults below: use_W/use_Z default to True for
         # every class in this tuple, so an entry that says neither is tau(x, w, z).
-        use_W = cfg.get("use_W", True)
-        use_Z = cfg.get("use_Z", True)
-        return "xw" if (use_W or use_Z) else "x"
+        if cfg.get("use_W", True):
+            inputs.append("w")
+        if cfg.get("use_Z", True):
+            inputs.append("z")
+        return format_estimand("cate", inputs)
 
     # Unknown class: assume the conservative reading. A method that secretly
     # uses the query proxies and is scored as tau(x) merely looks bad on the
     # primary track; the reverse would hand it an unearned advantage.
-    return "x"
+    return format_estimand("cate", inputs)
 
 
 def build_method(cfg: dict) -> tuple[str, CATEEstimator]:

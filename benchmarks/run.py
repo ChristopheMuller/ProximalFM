@@ -722,6 +722,14 @@ ORACLE_CATE = "Oracle-CATE(X)"
 ORACLE_ATE = "Oracle-ATE"
 ORACLE_ITE = "Oracle-ITE"
 
+# The reference rows answer no config, so they declare their own tags. Oracle-ITE
+# is the realized Y1-Y0, which carries that row's own U and noise — hence the u.
+REFERENCE_ESTIMANDS = {
+    ORACLE_CATE: "cate(x)",
+    ORACLE_ATE: "ate(x)",
+    ORACLE_ITE: "cate(x,u)",
+}
+
 TRACK_TITLES = {
     "cate": "CATE  —  scored against tau*(x) = E[Y1-Y0 | X]",
     "ite": "ITE  —  scored against the realized Y1-Y0",
@@ -850,7 +858,9 @@ def score_everything(
                     times,
                     name,
                     target_kind=kind,
-                    estimand=estimands.get(name, "x"),
+                    estimand=estimands.get(
+                        name, REFERENCE_ESTIMANDS.get(name, "cate(x)")
+                    ),
                     is_reference=bool(references and name in references),
                     s2=s2 if kind == "cate" else None,
                 )

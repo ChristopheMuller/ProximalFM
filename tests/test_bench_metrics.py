@@ -18,8 +18,12 @@ import torch
 from benchmarks.metrics import (
     TARGET_VAR_THRESHOLD,
     build_summary_table,
+    canonical_estimand,
     compute_all_metrics,
     compute_episode_metrics,
+    estimand_in_track,
+    format_estimand,
+    parse_estimand,
     select_track,
 )
 
@@ -137,13 +141,13 @@ def frame():
     for kind, target in (("cate", tau), ("ite", ite)):
         blocks += [
             compute_all_metrics(
-                good, target, times, "S-OLS", target_kind=kind, estimand="x"
+                good, target, times, "S-OLS", target_kind=kind, estimand="cate(x)"
             ),
             compute_all_metrics(
-                good, target, times, "PMMR-XW", target_kind=kind, estimand="xw"
+                good, target, times, "PMMR-XW", target_kind=kind, estimand="cate(x,w)"
             ),
             compute_all_metrics(
-                const, target, times, "P2SLS", target_kind=kind, estimand="ate"
+                const, target, times, "P2SLS", target_kind=kind, estimand="ate(x)"
             ),
             compute_all_metrics(
                 tau,
@@ -151,11 +155,62 @@ def frame():
                 times,
                 "Oracle-CATE(X)",
                 target_kind=kind,
-                estimand="x",
+                estimand="cate(x)",
                 is_reference=True,
             ),
         ]
     return pd.concat(blocks, ignore_index=True)
+
+
+@pytest.mark.parametrize(
+    "tag,expected",
+    [
+        ("cate(w,x)", "cate(x,w)"),  # canonical order, not the order given
+        ("cate(u,z,w,x)", "cate(x,w,z,u)"),
+        ("ate( x , w )", "ate(x,w)"),
+        ("x", "cate(x)"),  # the legacy spellings still parse
+        ("xw", "cate(x,w)"),
+        ("ate", "ate(x)"),
+    ],
+)
+def test_estimand_tags_round_trip_to_a_canonical_spelling(tag, expected):
+    assert canonical_estimand(tag) == expected
+    kind, inputs = parse_estimand(tag)
+    assert format_estimand(kind, inputs) == expected
+
+
+@pytest.mark.parametrize("tag", ["cate", "cate(x", "cate(x,q)", "tau(x)", ""])
+def test_malformed_estimand_tags_are_refused(tag):
+    with pytest.raises(ValueError):
+        parse_estimand(tag)
+
+
+@pytest.mark.parametrize(
+    "tag,cate,ite,ate",
+    [
+        ("cate(x)", True, True, True),
+        ("cate(x,w)", False, True, True),
+        ("cate(x,z)", False, True, True),
+        ("cate(x,w,z)", False, True, True),
+        # An oracle's u is not disqualifying: those rows are upper bounds, and
+        # dropping them from the headline table is exactly what they are for.
+        ("cate(x,u)", True, True, True),
+        ("cate(x,w,u)", False, True, True),
+        ("ate(x)", False, False, True),
+    ],
+)
+def test_track_membership_is_kind_plus_a_proxy_check(tag, cate, ite, ate):
+    assert estimand_in_track(tag, "cate") is cate
+    assert estimand_in_track(tag, "ite") is ite
+    assert estimand_in_track(tag, "ate") is ate
+
+
+def test_legacy_tags_are_stored_in_the_new_spelling(frame):
+    """A pre-existing config's `estimand: xw` lands in the frame as cate(x,w)."""
+    df = compute_all_metrics(
+        np.zeros((2, 5)), np.ones((2, 5)), np.zeros(2), "m", estimand="xw"
+    )
+    assert set(df["estimand"]) == {"cate(x,w)"}
 
 
 def test_cate_track_excludes_proxy_conditioned_and_ate_methods(frame):
