@@ -1,4 +1,4 @@
-"""Tests for run.py's data step (get_data / _generate_data wiring)."""
+"""Tests for run.py's data step (get_data)."""
 
 import pytest
 import torch
@@ -65,6 +65,25 @@ def test_get_data_load_without_any_source_raises(tmp_path):
         run.get_data(cfg, tmp_path / "exp")
 
 
+def test_get_data_refuses_the_removed_generate_source(tmp_path):
+    """`source: generate` is gone. A config still asking for it must say so —
+    falling through to "no data file found" would read as a missing path."""
+    cfg = {"data": {"source": "generate", "n_context": 768}, "run": {"seed": 0}}
+    with pytest.raises(ValueError, match="has been removed"):
+        run.get_data(cfg, tmp_path / "exp")
+
+
+def test_source_defaults_to_load(tmp_path):
+    """No `source:` at all resolves through the val_dir/cache path, not generate."""
+    pool = make_pool()
+    val_dir = tmp_path / "val"
+    val_dir.mkdir()
+    write_val_file(val_dir / "batch_000000.pt", pool)
+
+    data = run.get_data({"data": {"val_dir": str(val_dir)}, "run": {}}, tmp_path / "e")
+    assert_dicts_equal(data, build_from_pool(pool))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # get_data: single-CSV loading (source: csv)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,84 +148,3 @@ def test_get_data_builds_from_csv_and_caches(tmp_path):
     # Later runs reuse the cache even if the CSV disappears.
     csv_path.unlink()
     assert_dicts_equal(run.get_data(cfg, output_dir), data)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# _generate_data uses the shared builder (schema identical to the load path)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-class _FakePriorDataset:
-    """Stands in for PriorDataset: yields one fixed 19-field batch."""
-
-    def __init__(self, batch, **kwargs):
-        self.batch = batch
-        self.kwargs = kwargs
-
-    def __iter__(self):
-        return iter([self.batch])
-
-
-def _pool_batch(pool):
-    """The 19-field tuple SCMPrior.get_batch yields, from a test pool."""
-    return tuple(
-        pool[k]
-        for k in (
-            "U", "X", "W", "Z", "A", "A_probs", "Y_obs", "Y0", "Y1",
-            "MU0", "MU1", "d_U", "d_X", "d_W", "d_Z",
-            "seq_lens", "train_sizes", "S2", "K_eff",
-        )
-    )  # fmt: skip
-
-
-def test_generate_data_matches_shared_builder(tmp_path, monkeypatch):
-    B, T, train_size = 6, 32, 24
-    pool = make_pool(B=B, T=T, train_size=train_size)
-    batch = _pool_batch(pool)
-    monkeypatch.setattr(run, "_PROXFM_AVAILABLE", True)
-    monkeypatch.setattr(
-        run, "PriorDataset", lambda **kw: _FakePriorDataset(batch, **kw)
-    )
-
-    data_cfg = {"n_context": train_size, "n_query": T - train_size, "n_batch": B}
-    data = run._generate_data(data_cfg, {"seed": 0}, tmp_path)
-
-    assert_dicts_equal(data, build_from_pool(pool))
-    assert (tmp_path / "data.pt").exists()
-    assert (tmp_path / "prior_config.yaml").exists()
-
-
-def test_generate_data_passes_the_split_to_the_prior_verbatim(tmp_path, monkeypatch):
-    # n_context/n_query are the prior's own spelling, so they must arrive
-    # untranslated: max_seq_len bounds the context and the prior composes the
-    # total. A config saying 768/256 that produced anything else would be a
-    # silent size change no output records.
-    seen = {}
-
-    class _Capture(_FakePriorDataset):
-        def __init__(self, batch, **kwargs):
-            super().__init__(batch, **kwargs)
-            seen.update(kwargs)
-
-    monkeypatch.setattr(run, "_PROXFM_AVAILABLE", True)
-    batch = _pool_batch(make_pool(B=2, T=8, train_size=6))
-    monkeypatch.setattr(run, "PriorDataset", lambda **kw: _Capture(batch, **kw))
-
-    run._generate_data(
-        {"n_context": 768, "n_query": 256, "n_batch": 2}, {"seed": 0}, tmp_path
-    )
-
-    assert seen["max_seq_len"] == 768
-    assert seen["n_query"] == 256
-    assert seen["min_seq_len"] is None  # every dataset shares the context size
-
-
-@pytest.mark.parametrize(
-    "legacy",
-    [{"n_rows": 1024}, {"prop_train": 0.75}, {"n_rows": 1024, "prop_train": 0.75}],
-)
-def test_generate_data_refuses_the_old_row_spelling(tmp_path, legacy):
-    # Silently ignoring n_rows/prop_train would generate datasets of a size
-    # nobody asked for, and the config file would still look like it said 1024.
-    with pytest.raises(KeyError, match="n_context"):
-        run._generate_data({"n_batch": 2, **legacy}, {"seed": 0}, tmp_path)
