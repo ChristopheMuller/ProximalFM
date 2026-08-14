@@ -1,8 +1,9 @@
 import contextlib
+import io
 import json
 import math
 import random
-import subprocess
+import runpy
 import sys
 import warnings
 from pathlib import Path
@@ -1823,8 +1824,17 @@ def test_dataloader_workers_claim_disjoint_batch_files(tmp_path, num_workers):
     loader = LoadPriorDataset(
         data_dir=str(tmp_path), batch_size=B, max_batches=num_files, timeout=0
     )
+    # "fork" instead of macOS's default "spawn" context: spawn re-imports
+    # torch from scratch in every worker process (~6-10s each), while fork
+    # reuses the already-imported parent via copy-on-write. The sharding
+    # logic under test does not depend on the start method.
+    mp_context = "fork" if num_workers and sys.platform != "win32" else None
     dl = torch.utils.data.DataLoader(
-        loader, batch_size=None, num_workers=num_workers, shuffle=False
+        loader,
+        batch_size=None,
+        num_workers=num_workers,
+        shuffle=False,
+        multiprocessing_context=mp_context,
     )
 
     # Y_obs carries the index of the file each episode came from.
@@ -2017,39 +2027,54 @@ def test_prior_dataset_repr_reports_n_query():
 # ---------------------------------------------------------------------------
 
 
+class _CliResult:
+    def __init__(self, returncode, stderr=""):
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+def _run_prior_cli(tmp_path, *args):
+    # Drives the real CLI argparse/main in-process via runpy instead of a
+    # `python -m proximalfm.prior` subprocess: a fresh interpreter re-pays
+    # torch's import cost (~15-20s) on every call, while runpy re-executes
+    # the already-imported module's top level (a few ms) since sys.modules
+    # is shared with the test process. Equivalent coverage (real argparse,
+    # real SavePriorDataset.run, metadata.json written from parsed args).
+    argv = ["proximalfm.prior", "--save_dir", str(tmp_path), *args]
+    old_argv = sys.argv
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    torch_state = torch.random.get_rng_state()
+    sys.argv = argv
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            runpy.run_module(
+                "proximalfm.prior._genload", run_name="__main__", alter_sys=True
+            )
+    except SystemExit as exc:
+        return _CliResult(returncode=exc.code or 0)
+    except Exception as exc:  # noqa: BLE001 - mirror subprocess's nonzero exit
+        return _CliResult(returncode=1, stderr=repr(exc))
+    else:
+        return _CliResult(returncode=0)
+    finally:
+        sys.argv = old_argv
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+        torch.random.set_rng_state(torch_state)
+
+
 def test_cli_prior_type_defaults_to_mlp_scm(tmp_path):
     # The CLI defaulted to "mix_scm" while SCMPrior itself defaults to
     # "mlp_scm", so `python -m proximalfm.prior` with no --prior_type sent ~30%
     # of datasets through the unmaintained TreeSCM branch -- visible only in
     # the generated data. Driven through the real argparse (metadata.json is
     # written from the parsed args), with num_batches=0 so nothing is generated.
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "proximalfm.prior",
-            "--save_dir",
-            str(tmp_path),
-            "--num_batches",
-            "0",
-        ],
-        cwd=Path(__file__).resolve().parent.parent,
-        capture_output=True,
-        text=True,
-    )
+    result = _run_prior_cli(tmp_path, "--num_batches", "0")
 
     assert result.returncode == 0, result.stderr
     metadata = json.loads((tmp_path / "metadata.json").read_text())
     assert metadata["prior_type"] == "mlp_scm"
-
-
-def _run_prior_cli(tmp_path, *args):
-    return subprocess.run(
-        [sys.executable, "-m", "proximalfm.prior", "--save_dir", str(tmp_path), *args],
-        cwd=Path(__file__).resolve().parent.parent,
-        capture_output=True,
-        text=True,
-    )
 
 
 def test_cli_n_query_has_a_default(tmp_path):
