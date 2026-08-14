@@ -374,79 +374,88 @@ class P2SLS(CATEEstimator):
         return np.full(X.shape[0], self.ate_)
 
 
-from benchmarks.methods.plearner import (
-    BridgeParams,
-    PLearner as BasePLearner,
-    RegressorMixin,
-)
+def _make_plearner(cfg: dict, compute) -> CATEEstimator:
+    """Instantiate the P-learner from a config entry.
 
+    The `outputs:` list is what makes this method worth its cost: every entry
+    shares one cross-fit of the bridges, which is the whole expense. Each entry is
+    either
 
-class ProximalPLearner(CATEEstimator):
-    """Wrapper for the Ghassami & Sverdrup style proximal P-Learner.
+        { name: …, base: rf|linear|tabicl }   a final-stage CATE model, or
+        { name: …, kind: ate }                the proximal ATE, broadcast
 
-    Adapts the native cross-fitting and kernel bridge estimation steps
-    to match the benchmark's unified API interface.
+    With no `outputs:`, the entry is a single CATE output named after the method
+    and using the top-level `base:` (default `rf`).
     """
+    from benchmarks.methods.plearner import PLearner
 
-    def __init__(
-        self,
-        bridge_params: Optional[BridgeParams] = None,
-        final_model: Optional[RegressorMixin] = None,
-        n_splits: int = 3,
-        random_state: Optional[int] = None,
-        q_clip: Optional[tuple[float, float]] = None,
-        refit_full_nuisance: bool = False,
-        n_jobs: int = 1,
+    for gone, fix in (
+        ("refit_full_nuisance", "drop it; the bridge is never refit on all rows"),
+        ("bridge_params.kernel_sigma", "use `bandwidth_scale` (median heuristic)"),
     ):
-        self.bridge_params = (
-            bridge_params if bridge_params is not None else BridgeParams()
-        )
-        self.final_model = final_model
-        self.n_splits = n_splits
-        self.random_state = random_state
-        self.q_clip = q_clip
-        self.refit_full_nuisance = refit_full_nuisance
-        self.n_jobs = n_jobs
-
-        # Instantiate the underlying execution engine
-        self.estimator_ = BasePLearner(
-            bridge_params=self.bridge_params,
-            final_model=self.final_model,
-            n_splits=self.n_splits,
-            random_state=self.random_state,
-            q_clip=self.q_clip,
-            refit_full_nuisance=self.refit_full_nuisance,
-            n_jobs=self.n_jobs,
-        )
-
-    def fit(
-        self,
-        X: np.ndarray,
-        A: np.ndarray,
-        Y: np.ndarray,
-        *,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> "ProximalPLearner":
-        """Unpack proxy arguments and route them to the native P-Learner signature."""
-        if W is None or Z is None:
+        if gone.split(".")[0] in cfg and (
+            "." not in gone or gone.split(".")[1] in (cfg.get("bridge_params") or {})
+        ):
             raise ValueError(
-                "ProximalPLearner requires both an outcome proxy (W) and a treatment proxy (Z)."
+                f"`{gone}` belonged to the removed kernel-matrix P-learner. {fix}. "
+                "See benchmarks/methods/plearner.py for the current knobs."
+            )
+    if isinstance(cfg.get("q_clip"), (list, tuple)):
+        raise ValueError(
+            "`q_clip` is now a single magnitude, not a (lo, hi) window: write "
+            f"`q_clip: {max(abs(float(v)) for v in cfg['q_clip'])}`. A symmetric "
+            "window let a sign flip through untouched; a magnitude cap does not."
+        )
+
+    tabicl_opts = cfg.get("tabicl") or None
+    default_base = cfg.get("base", "rf")
+
+    outputs = cfg.get("outputs") or [{"name": cfg["name"], "base": default_base}]
+    final_models: dict[str, object] = {}
+    ate_outputs: list[str] = []
+    for o in outputs:
+        if o.get("kind", "cate") == "ate":
+            ate_outputs.append(o["name"])
+        else:
+            final_models[o["name"]] = _make_base_model(
+                o.get("base", default_base), tabicl_opts
             )
 
-        # Route arguments to fit(X, Z, W, A, Y)
-        self.estimator_.fit(X=X, Z=Z, W=W, A=A, Y=Y)
+    learner = PLearner(
+        bridge=cfg.get("bridge", "kernel"),
+        bridge_params=cfg.get("bridge_params") or None,
+        final_models=final_models,
+        n_splits=cfg.get("n_splits", 3),
+        random_state=cfg.get("random_state", 42),
+        q_clip=cfg.get("q_clip", None),
+    )
+    return _PLearner_Estimator(learner, ate_outputs)
+
+
+class _PLearner_Estimator(CATEEstimator):
+    """Adapts `plearner.PLearner` to the runner's one-fit-many-outputs contract.
+
+    Thin on purpose: `PLearner` already implements the benchmark's `fit` /
+    `predict` / `predict_variants` signatures, so all this adds is broadcasting
+    the scalar ATE into the outputs that asked for it.
+    """
+
+    def __init__(self, learner, ate_outputs: list[str]):
+        self.learner = learner
+        self.ate_outputs = ate_outputs
+
+    def fit(self, X, A, Y, *, W=None, Z=None) -> "_PLearner_Estimator":
+        self.learner.fit(X, A, Y, W=W, Z=Z)
         return self
 
-    def predict(
-        self,
-        X: np.ndarray,
-        *,
-        W: Optional[np.ndarray] = None,
-        Z: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        """Predict the CATE (tau) for covariates X."""
-        return self.estimator_.predict(X)
+    def predict(self, X, *, W=None, Z=None) -> np.ndarray:
+        return next(iter(self.predict_variants(X, W=W, Z=Z).values()))
+
+    def predict_variants(self, X, *, W=None, Z=None) -> dict[str, np.ndarray]:
+        out = self.learner.predict_variants(X)
+        for name in self.ate_outputs:
+            out[name] = self.learner.predict_ate(X)
+        return out
 
 
 class KPV_Wrapper(CATEEstimator):
@@ -1175,6 +1184,12 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
     # disqualifying: an oracle row is in the table as an upper bound.
     inputs = ["x"] + (["u"] if cfg.get("is_oracle", False) else [])
 
+    # PLearner spells its ATE output as `kind: ate` on the outputs entry — the
+    # same flag the factory reads to decide what to broadcast. Deriving the tag
+    # from it keeps the config from having to say the same thing twice and drift.
+    if (output_cfg or {}).get("kind") == "ate":
+        return format_estimand("ate", inputs)
+
     strategy = (output_cfg or {}).get("strategy") or cfg.get("strategy")
     if strategy:
         if strategy not in _STRATEGY_ESTIMAND:
@@ -1292,14 +1307,7 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
             use_Z=cfg.get("use_Z", True),
         ),
         "P2SLS": lambda: P2SLS(),
-        "PLearner": lambda: ProximalPLearner(
-            final_model=base_factory("rf")(),
-            n_splits=cfg.get("n_splits", 3),
-            random_state=cfg.get("random_state", 42),
-            q_clip=cfg.get("q_clip", None),
-            refit_full_nuisance=cfg.get("refit_full_nuisance", False),
-            n_jobs=compute.n_jobs,
-        ),
+        "PLearner": lambda: _make_plearner(cfg, compute),
         "KernelPV": lambda: KPV_Wrapper(**cfg),
         "PMMR": lambda: PMMR_Wrapper(**cfg),
         "NMMR": lambda: NMMR_Wrapper(**cfg),

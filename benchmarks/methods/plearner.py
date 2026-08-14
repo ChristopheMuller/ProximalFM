@@ -1,30 +1,82 @@
-"""P-learner with Ghassami-style kernel bridge nuisances.
+"""P-learner (Sverdrup & Cui, 2023) — proximal CATE by pseudo-outcome regression.
 
-This module is a compact Python port of the kernel bridge estimator used in
-Ghassami et al. style proximal causal learning code and wraps it in the
-P-learner pseudo-outcome regression of Sverdrup & Cui (2023).
+The method is two independent halves, and this module is built so they stay that
+way:
 
-Arrays convention:
-    X: (n, d_x) CATE covariates
-    Z: (n, d_z) treatment-inducing proxies
-    W: (n, d_w) outcome-inducing proxies
-    A: (n,) binary treatment in {0, 1}
-    Y: (n,) observed outcome
+1. **The bridges.** Estimate the confounding bridge functions ``h(w, a, x)`` and
+   ``q(z, a, x)`` from the proximal moment conditions. This is the hard,
+   method-defining half, and it is the only part that changes between the
+   literature's proposals (kernel minimax, 2SLS, deep features, …).
+2. **The driver.** Cross-fit those bridges, form the doubly robust proximal
+   score, and regress it on ``X``. This is Algorithm 1 of the paper and it is
+   fixed: it does not care how the bridges were obtained.
+
+Everything below the ``Bridge`` interface is half 1; everything above it is
+half 2. A new bridge is one class and one registry entry.
+
+The score (paper eq. 10), for cross-fit nuisances::
+
+    Gamma_i = (-1)^(1 - A_i) q(Z_i, A_i, X_i) (Y_i - h(W_i, A_i, X_i))
+              + h(W_i, 1, X_i) - h(W_i, 0, X_i)
+
+and the estimator is ``tau(x) = E[Gamma | X = x]``, fit by ordinary regression.
+The sample mean of ``Gamma`` is the semiparametric-efficient proximal ATE, so it
+comes out of the same fit for free and is exposed as ``ate_``.
+
+Arrays convention, matching the rest of ``benchmarks.methods``::
+
+    X: (n, d_x) covariates       A: (n,) binary treatment in {0, 1}
+    W: (n, d_w) outcome proxy    Y: (n,) observed outcome
+    Z: (n, d_z) treatment proxy
+
+**Bridges, in increasing order of ambition.** Each is one class and one registry
+entry, and each is a complete estimator on its own:
+
+- Step 1, ``bridge="constant"`` — the architecture, with a bridge that ignores
+  the proxies and therefore recovers the *unadjusted* difference in means. Not an
+  estimator; a plumbing check with an exact invariant. See :class:`ConstantBridge`.
+- Step 2, ``bridge="linear"`` — the first bridge that actually de-confounds:
+  both bridge conditions in a linear basis, i.e. just-identified IV. Closed form,
+  one regularizer, exact when the mechanisms are linear. See
+  :class:`LinearBridge`.
+- Step 3, ``bridge="kernel"`` — the minimax RKHS bridge of the proximal
+  literature, solved in an explicit Nyström feature space so no ``n x n`` matrix
+  is ever formed. See :class:`KernelBridge`.
+- Step 4, ``bridge="kernel"`` with ``lam_grid`` — the same bridge, with its two
+  regularizers picked per episode on a held-out *moment* loss rather than hand
+  set. See :class:`_MomentSystem` for the criterion and why it is not an MSE.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Optional, Tuple
+from abc import ABC, abstractmethod
+from typing import Optional, Sequence
 
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.linalg import cho_factor, cho_solve
 
-from sklearn.base import BaseEstimator, RegressorMixin, clone
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import pairwise_distances
-from sklearn.model_selection import KFold
+from sklearn.base import clone
+from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
+
+from benchmarks.methods.base import CATEEstimator
+
+__all__ = [
+    "Bridge",
+    "ConstantBridge",
+    "LinearBridge",
+    "KernelBridge",
+    "BRIDGES",
+    "build_bridge",
+    "proximal_scores",
+    "PLearner",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Input handling
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _as_2d(x: ArrayLike, name: str) -> np.ndarray:
@@ -32,395 +84,946 @@ def _as_2d(x: ArrayLike, name: str) -> np.ndarray:
     if arr.ndim == 1:
         arr = arr.reshape(-1, 1)
     if arr.ndim != 2:
-        raise ValueError(f"{name} must be a 1D or 2D array; got shape {arr.shape}")
+        raise ValueError(f"{name} must be 1D or 2D; got shape {arr.shape}")
     return arr
 
 
 def _as_1d(x: ArrayLike, name: str) -> np.ndarray:
-    arr = np.asarray(x, dtype=float).reshape(-1)
-    if arr.ndim != 1:
-        raise ValueError(f"{name} must be 1D")
+    return np.asarray(x, dtype=float).reshape(-1)
+
+
+def _as_binary(a: ArrayLike, name: str = "A") -> np.ndarray:
+    """Return A as a 0/1 float vector, refusing anything else.
+
+    Loud rather than lenient: every formula below indexes an arm with it, and a
+    silently-coerced {1, 2} or {-1, 1} encoding would flip the sign of the score
+    instead of raising.
+    """
+    arr = _as_1d(a, name)
+    if not np.all(np.isin(arr, (0.0, 1.0))):
+        raise ValueError(f"{name} must be binary and encoded as 0/1")
     return arr
 
 
-def _check_lengths(*arrays: np.ndarray) -> None:
-    n = arrays[0].shape[0]
-    if any(a.shape[0] != n for a in arrays):
-        raise ValueError("X, Z, W, A, and Y must have the same number of rows")
-
-
-def rbf_kernel(
-    X: np.ndarray, Y: Optional[np.ndarray] = None, sigma: float = 1.0
-) -> np.ndarray:
-    """Gaussian RBF kernel exp(-||x-y||^2 / (2 * sigma)).
-
-    This matches the `rdetools::rbfkernel` parameterization used by the
-    reference R implementation (Ghassami et al. style proximal code), namely
-    `K = exp(-D / (2 * sigma))` with D the squared Euclidean distance. Here
-    `sigma` is the width parameter in that R convention (not an inverse
-    length-scale), so `kernel_sigma` values suggested in the R code transfer
-    over directly.
-    """
-    if Y is None:
-        Y = X
-    d2 = pairwise_distances(X, Y, metric="sqeuclidean")
-    return np.exp(-d2 / (2.0 * float(sigma)))
-
-
-def _pinv(A: np.ndarray, rcond: float = 1e-10, hermitian: bool = False) -> np.ndarray:
-    A = np.asarray(A, dtype=float)
-    if hermitian:
-        A = 0.5 * (A + A.T)
-    return np.linalg.pinv(A, rcond=rcond, hermitian=hermitian)
-
-
-def _invsqrt_psd(A: np.ndarray, rcond: float = 1e-10) -> np.ndarray:
-    """Moore-Penrose inverse square-root of a symmetric PSD matrix."""
-    A = 0.5 * (A + A.T)
-    vals, vecs = np.linalg.eigh(A)
-    vmax = max(float(np.max(vals)), 1.0)
-    keep = vals > rcond * vmax
-    invsqrt_vals = np.zeros_like(vals)
-    invsqrt_vals[keep] = 1.0 / np.sqrt(vals[keep])
-    return (vecs * invsqrt_vals) @ vecs.T
-
-
-@dataclass
-class BridgeParams:
-    """Hyperparameters for the kernel bridge estimator.
-
-    The names mirror the R code: H is the RKHS for h(W, A, X), Q is the RKHS
-    for q(Z, A, X). For example, lm_Hh1 penalizes h at A=1, and lm_Qh1
-    penalizes the critic used to estimate h at A=1.
-    """
-
-    # RBF width in the rdetools convention: K = exp(-||.||^2 / (2 * kernel_sigma)).
-    kernel_sigma: float = 1.0
-
-    lm_Hh1: float = 1e-3
-    lm_Qh1: float = 1e-3
-    lm_Hh0: float = 1e-3
-    lm_Qh0: float = 1e-3
-
-    lm_Hq1: float = 1e-3
-    lm_Qq1: float = 1e-3
-    lm_Hq0: float = 1e-3
-    lm_Qq0: float = 1e-3
-
-    # The R snippets use n^0.8 in in-sample evaluation and n^0.7 in cross-fit
-    # evaluation. For P-learner cross-fitting, 0.7 is usually the closer port.
-    exponent: float = 0.7
-
-    # Full kernel is O(n^3). Nyström is often needed for n in the thousands.
-    nystroem: bool = False
-    appro_rate: float = 0.05
-    n_components: Optional[int] = None
-
-    # In practice, RBF kernels are sensitive to scale; set False for closer
-    # literal parity with already-standardized R code.
-    scale_kernel: bool = True
-
-    pinv_rcond: float = 1e-10
-    random_state: Optional[int] = None
-
-
-class KernelBridgeNuisance:
-    """Ghassami-style kernel estimates of h(w,a,x) and q(z,a,x)."""
-
-    def __init__(self, params: Optional[BridgeParams] = None):
-        self.params = params if params is not None else BridgeParams()
-
-    def fit(
-        self, X: ArrayLike, Z: ArrayLike, W: ArrayLike, A: ArrayLike, Y: ArrayLike
-    ) -> "KernelBridgeNuisance":
-        X = _as_2d(X, "X")
-        Z = _as_2d(Z, "Z")
-        W = _as_2d(W, "W")
-        A = _as_1d(A, "A")
-        Y = _as_1d(Y, "Y")
-        _check_lengths(X, Z, W, A.reshape(-1, 1), Y.reshape(-1, 1))
-        if not np.all(np.isin(A, [0.0, 1.0])):
-            raise ValueError("A must be binary and encoded as 0/1")
-
-        self.n_train_ = X.shape[0]
-        self.dx_ = X.shape[1]
-        self.dz_ = Z.shape[1]
-        self.dw_ = W.shape[1]
-
-        H_raw = np.column_stack([W, X])
-        Q_raw = np.column_stack([Z, X])
-        if self.params.scale_kernel:
-            self.h_scaler_ = StandardScaler().fit(H_raw)
-            self.q_scaler_ = StandardScaler().fit(Q_raw)
-            H = self.h_scaler_.transform(H_raw)
-            Q = self.q_scaler_.transform(Q_raw)
-        else:
-            self.h_scaler_ = None
-            self.q_scaler_ = None
-            H, Q = H_raw, Q_raw
-
-        self.H_train_ = H
-        self.Q_train_ = Q
-
-        K_H = rbf_kernel(H, sigma=self.params.kernel_sigma)
-        K_Q = rbf_kernel(Q, sigma=self.params.kernel_sigma)
-
-        if self.params.nystroem:
-            self._fit_nystroem(K_H, K_Q, A, Y)
-        else:
-            self._fit_full(K_H, K_Q, A, Y)
-        return self
-
-    def _gamma_full(self, K: np.ndarray, lm: float) -> np.ndarray:
-        n = K.shape[0]
-        reg = lm / (n**self.params.exponent)
-        return (
-            0.25
-            * K
-            @ _pinv(K / n + reg * np.eye(n), self.params.pinv_rcond, hermitian=True)
-        )
-
-    def _fit_full(
-        self, K_H: np.ndarray, K_Q: np.ndarray, A: np.ndarray, Y: np.ndarray
-    ) -> None:
-        n = len(A)
-        coef_scale = n**2 / (n**self.params.exponent)
-
-        def fit_h(a: int, lm_Hh: float, lm_Qh: float) -> np.ndarray:
-            d = (A == a).astype(float)
-            Gamma = self._gamma_full(K_Q, lm_Qh)
-            DGamD = (d[:, None] * Gamma) * d[None, :]
-            M = K_H @ DGamD @ K_H + coef_scale * lm_Hh * K_H
-            rhs = K_H @ (d * (Gamma @ (Y * d)))
-            return _pinv(M, self.params.pinv_rcond) @ rhs
-
-        def fit_q(a: int, lm_Hq: float, lm_Qq: float) -> np.ndarray:
-            d = (A == a).astype(float)
-            Gamma = self._gamma_full(K_H, lm_Hq)
-            DGamD = (d[:, None] * Gamma) * d[None, :]
-            M = K_Q @ DGamD @ K_Q + coef_scale * lm_Qq * K_Q
-            rhs = K_Q @ (d * (Gamma @ np.ones(n)))
-            return _pinv(M, self.params.pinv_rcond) @ rhs
-
-        self.alpha_h1_ = fit_h(1, self.params.lm_Hh1, self.params.lm_Qh1)
-        self.alpha_h0_ = fit_h(0, self.params.lm_Hh0, self.params.lm_Qh0)
-        self.alpha_q1_ = fit_q(1, self.params.lm_Hq1, self.params.lm_Qq1)
-        self.alpha_q0_ = fit_q(0, self.params.lm_Hq0, self.params.lm_Qq0)
-        self.mode_ = "full"
-
-    def _fit_nystroem(
-        self, K_H: np.ndarray, K_Q: np.ndarray, A: np.ndarray, Y: np.ndarray
-    ) -> None:
-        n = len(A)
-        rng = np.random.default_rng(self.params.random_state)
-        r = self.params.n_components
-        if r is None:
-            r = int(np.ceil(n * self.params.appro_rate))
-        r = max(2, min(int(r), n))
-        idx = np.sort(rng.choice(n, size=r, replace=False))
-        self.nys_idx_ = idx
-
-        invsqrt_H = _invsqrt_psd(K_H[np.ix_(idx, idx)], self.params.pinv_rcond)
-        invsqrt_Q = _invsqrt_psd(K_Q[np.ix_(idx, idx)], self.params.pinv_rcond)
-        V = K_H[:, idx] @ invsqrt_H  # h feature basis, n x r
-        D = K_Q[:, idx] @ invsqrt_Q  # q feature basis, n x r
-
-        self.invsqrt_H_ = invsqrt_H
-        self.invsqrt_Q_ = invsqrt_Q
-        self.V_train_ = V
-        self.D_train_ = D
-        coef_scale = n**2 / (n**self.params.exponent)
-
-        def gamma_lowrank(B: np.ndarray, lm: float) -> np.ndarray:
-            reg = lm / (n**self.params.exponent)
-            return (
-                0.25
-                * B
-                @ _pinv(
-                    B.T @ B / n + reg * np.eye(r),
-                    self.params.pinv_rcond,
-                    hermitian=True,
-                )
-                @ B.T
+def _check_lengths(n: int, **arrays: Optional[np.ndarray]) -> None:
+    for name, arr in arrays.items():
+        if arr is not None and arr.shape[0] != n:
+            raise ValueError(
+                f"{name} has {arr.shape[0]} rows, expected {n} — X, W, Z, A and Y "
+                "must all describe the same observations"
             )
 
-        def fit_h(a: int, lm_Hh: float, lm_Qh: float) -> np.ndarray:
-            d = (A == a).astype(float)
-            Gamma = gamma_lowrank(D, lm_Qh)
-            DV = d[:, None] * V
-            M = DV.T @ Gamma @ DV + coef_scale * lm_Hh * np.eye(r)
-            rhs = V.T @ (d * (Gamma @ (Y * d)))
-            return _pinv(M, self.params.pinv_rcond, hermitian=True) @ rhs
 
-        def fit_q(a: int, lm_Hq: float, lm_Qq: float) -> np.ndarray:
-            d = (A == a).astype(float)
-            Gamma = gamma_lowrank(V, lm_Hq)
-            DD = d[:, None] * D
-            M = DD.T @ Gamma @ DD + coef_scale * lm_Qq * np.eye(r)
-            rhs = D.T @ (d * (Gamma @ np.ones(n)))
-            return _pinv(M, self.params.pinv_rcond, hermitian=True) @ rhs
+# ─────────────────────────────────────────────────────────────────────────────
+# Half 1 — the bridges
+# ─────────────────────────────────────────────────────────────────────────────
 
-        self.alpha_h1_ = fit_h(1, self.params.lm_Hh1, self.params.lm_Qh1)
-        self.alpha_h0_ = fit_h(0, self.params.lm_Hh0, self.params.lm_Qh0)
-        self.alpha_q1_ = fit_q(1, self.params.lm_Hq1, self.params.lm_Qq1)
-        self.alpha_q0_ = fit_q(0, self.params.lm_Hq0, self.params.lm_Qq0)
-        self.mode_ = "nystroem"
 
-    def _transform_H(self, W: ArrayLike, X: ArrayLike) -> np.ndarray:
-        W = _as_2d(W, "W")
-        X = _as_2d(X, "X")
-        _check_lengths(W, X)
-        raw = np.column_stack([W, X])
-        return self.h_scaler_.transform(raw) if self.h_scaler_ is not None else raw
+class Bridge(ABC):
+    """Estimates of the two proximal confounding bridge functions.
 
-    def _transform_Q(self, Z: ArrayLike, X: ArrayLike) -> np.ndarray:
-        Z = _as_2d(Z, "Z")
-        X = _as_2d(X, "X")
-        _check_lengths(Z, X)
-        raw = np.column_stack([Z, X])
-        return self.q_scaler_.transform(raw) if self.q_scaler_ is not None else raw
+    A bridge is fit on one set of rows and evaluated on another (the driver
+    cross-fits it), so it must carry whatever it needs — scalers, kernel centres,
+    coefficients — from ``fit`` to ``predict_*``.
 
-    def predict_h1(self, W: ArrayLike, X: ArrayLike) -> np.ndarray:
-        H = self._transform_H(W, X)
-        if self.mode_ == "full":
-            K = rbf_kernel(H, self.H_train_, sigma=self.params.kernel_sigma)
-            return K @ self.alpha_h1_
-        K_idx = rbf_kernel(
-            H, self.H_train_[self.nys_idx_], sigma=self.params.kernel_sigma
+    Both predict methods return **both arms at once**, shape ``(n, 2)`` with
+    column ``a`` holding the function evaluated at ``A = a``. That is not a
+    convenience: the score needs ``h`` at the observed arm *and* at both
+    counterfactual arms, so a one-arm-per-call interface makes callers either
+    recompute shared work or cache it themselves. Returning the pair is the
+    cheapest correct shape, and it is what lets a kernel bridge build its
+    cross-kernel once.
+    """
+
+    #: Registry key; set by @register_bridge.
+    name: str = ""
+
+    @abstractmethod
+    def fit(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+    ) -> "Bridge":
+        """Estimate h and q from these rows."""
+
+    @abstractmethod
+    def predict_h(self, X: np.ndarray, W: np.ndarray) -> np.ndarray:
+        """Outcome bridge, ``(n, 2)``: column a is ``h(W_i, a, X_i)``."""
+
+    @abstractmethod
+    def predict_q(self, X: np.ndarray, Z: np.ndarray) -> np.ndarray:
+        """Treatment bridge, ``(n, 2)``: column a is ``q(Z_i, a, X_i)``."""
+
+
+BRIDGES: dict[str, type[Bridge]] = {}
+
+
+def register_bridge(name: str):
+    """Class decorator: make a Bridge reachable as ``bridge: <name>`` in YAML."""
+
+    def wrap(cls: type[Bridge]) -> type[Bridge]:
+        if name in BRIDGES:
+            raise ValueError(f"bridge {name!r} is already registered")
+        cls.name = name
+        BRIDGES[name] = cls
+        return cls
+
+    return wrap
+
+
+def build_bridge(name: str, params: Optional[dict] = None) -> Bridge:
+    """Instantiate a registered bridge by name.
+
+    Bridge hyperparameters travel as a plain dict from the config's
+    ``bridge_params:`` block, so every knob a bridge has is reachable from YAML
+    without this function knowing what any of them mean.
+    """
+    if name not in BRIDGES:
+        raise ValueError(f"unknown bridge {name!r}; registered: {sorted(BRIDGES)}")
+    return BRIDGES[name](**(params or {}))
+
+
+@register_bridge("constant")
+class ConstantBridge(Bridge):
+    """The trivial bridge: both functions constant within arm.
+
+    ``h(w, a, x) = mean(Y | A = a)`` and ``q(z, a, x) = 1 / P(A = a)``, ignoring
+    the proxies and the covariates entirely. This is **not** a proximal estimator
+    — it cannot be, since it never reads W or Z — and it is not meant to be used
+    for results.
+
+    It exists because it makes the driver testable. Plug it in and the score
+    collapses algebraically to the unadjusted difference in means: with
+    ``h_a = ybar_a`` and ``q_a = 1 / p_a`` estimated on the same rows,
+
+        mean(Gamma) = (1/n) sum_{A=1} (Y_i - ybar_1)/p_1
+                    - (1/n) sum_{A=0} (Y_i - ybar_0)/p_0
+                    + ybar_1 - ybar_0
+                    = ybar_1 - ybar_0
+
+    because each residual sum is exactly zero by construction. So a fit whose
+    ``ate_`` does not reproduce the naive difference has a bug in the
+    cross-fitting, the arm indexing, or the sign — and that is a check no real
+    bridge can give you, because for a real bridge there is no closed form to
+    check against. Under cross-fitting the identity holds up to the fold-to-fold
+    variation in ``ybar_a`` and ``p_a``, exactly at ``n_splits=1``.
+    """
+
+    def fit(self, X, A, Y, *, W, Z) -> "ConstantBridge":
+        self.h_ = np.empty(2, dtype=float)
+        self.q_ = np.empty(2, dtype=float)
+        for a in (0, 1):
+            mask = A == a
+            n_a = int(mask.sum())
+            if n_a == 0:
+                raise ValueError(
+                    f"no rows with A={a} in this fold; the constant bridge has "
+                    "nothing to estimate. Reduce n_splits or check the episode."
+                )
+            self.h_[a] = float(Y[mask].mean())
+            self.q_[a] = len(A) / n_a  # 1 / P(A = a)
+        return self
+
+    def predict_h(self, X, W) -> np.ndarray:
+        return np.tile(self.h_, (X.shape[0], 1))
+
+    def predict_q(self, X, Z) -> np.ndarray:
+        return np.tile(self.q_, (X.shape[0], 1))
+
+
+def _ridge_lstsq(M: np.ndarray, b: np.ndarray, ridge: float) -> np.ndarray:
+    """Least-norm solution of ``M v = b``, optionally Tikhonov-damped.
+
+    ``M`` is not square in general (the two bases have different widths whenever
+    ``d_W != d_Z``), so this is a least-squares solve rather than an inverse:
+    over-identified when the test basis is wider than the unknown, minimum-norm
+    when it is narrower. Damping is applied by stacking ``sqrt(ridge) * I``
+    rather than by forming ``M'M``, which would square the condition number.
+    """
+    if ridge > 0.0:
+        k = M.shape[1]
+        M = np.vstack([M, np.sqrt(ridge) * np.eye(k)])
+        b = np.concatenate([b, np.zeros(k)])
+    return np.linalg.lstsq(M, b, rcond=None)[0]
+
+
+@register_bridge("linear")
+class LinearBridge(Bridge):
+    """Both bridges in a linear basis — i.e. just-identified IV, in closed form.
+
+    Posit ``h(w, a, x) = beta_a' [1, w, x]`` and ``q(z, a, x) = gamma_a' [1, z, x]``.
+    Each bridge condition is then a *finite* set of moment equations rather than a
+    Fredholm equation, obtained by testing against the natural basis:
+
+        h:  E[ 1{A=a} (Y - h_a(W, X)) g(Z, X) ] = 0        for g = [1, Z, X]
+        q:  E[ 1{A=a} q_a(Z, X) g(W, X) ] = E[ g(W, X) ]   for g = [1, W, X]
+
+    which, writing ``F = [1, W, X]`` and ``G = [1, Z, X]`` for the two design
+    matrices and subscript ``a`` for the rows in arm ``a``, are
+
+        (G_a' F_a) beta_a = G_a' Y_a
+        (F_a' G_a) gamma_a = sum_i F_i          (the sum is over *all* rows)
+
+    The two matrices are transposes of one another, so one cross-product per arm
+    serves both bridges. The h equation is exactly two-stage least squares of Y on
+    (W, X) instrumenting W with Z, within arm; the q equation is its mirror, and
+    notably needs **no propensity model** — the right-hand side is a plain mean.
+
+    Why this bridge is worth having beyond being a stepping stone:
+
+    - **One hyperparameter, and it is not a sensitive one.** ``ridge`` sits in the
+      middle of a two-decade plateau (see below). So a disagreement between this
+      and the kernel bridge is about the function class, not about tuning.
+    - **Exact under linear mechanisms.** If ``E[Y | ...]`` is linear in ``(U, X)``
+      and ``W`` is linear in ``U``, the true ``h`` *is* in this class, whatever the
+      treatment mechanism looks like — the match ``lambda_a * b_1 = theta_U``
+      holds pointwise in ``E[U | Z, X, A=a]``, so a logistic assignment does not
+      break it. The score is doubly robust, so a correct ``h`` alone suffices.
+    - **Two sharp invariants**, from the intercept row of each system: within arm
+      the ``h``-residuals average to zero, and ``mean_i 1{A_i=a} q_a(Z_i, X_i) = 1``
+      — the sample version of ``E[1{A=a} q_a] = 1``. Both hold to solver precision
+      when the system is square (``d_W == d_Z``) and undamped, and are the
+      diagnostic to reach for when a real bridge misbehaves. Both are exact only
+      when ``ridge = 0``; damping trades them for stability, which is the right
+      trade but means they are checks on the *system*, not on a production fit.
+
+    Caveats worth knowing before reading a number out of it:
+
+    - **The moment matrix is generically rank-deficient and the damping is load
+      bearing.** Whenever the proxies are over-complete for the latent — more
+      columns of ``W`` (or ``Z``) than there are dimensions of ``U`` — the block
+      of ``F_a' G_a`` coupling them carries only ``dim(U)`` directions of signal,
+      and the rest is sampling noise. Measured on a 1-latent, 2-proxy draw at
+      n = 4000: singular values ``[1.47, 1.01, 0.95, 0.41, 0.0152]``. Undamped,
+      the solve inverts that last direction and the bridge explodes out of fold
+      (ATE 2.2 against a truth of 1.0, and a *spread* of 2.3 across seeds). This
+      is the common case, not a corner: the prior draws ``d_U``, ``d_W`` and
+      ``d_Z`` independently in 1..10.
+    - ``q`` is an inverse propensity in disguise but nothing here constrains it to
+      be positive, and a linear function on an unbounded ``z`` is unbounded. Pair
+      this bridge with ``q_clip`` on the driver.
+    - Identification of ``gamma_a`` needs the test basis at least as wide as the
+      unknown, i.e. ``d_W >= d_Z``; below that ``_ridge_lstsq`` returns the
+      minimum-norm solution, which is a *choice*, not an estimate.
+
+    Args:
+        ridge: Tikhonov damping on both solves, in the standardized basis — the
+            regularizer the point above says is required. The default is the
+            middle of a plateau two decades wide: on that same draw, ``1e-4``,
+            ``1e-3`` and ``1e-2`` all give ATE 1.00-1.02 with a seed-to-seed
+            spread of 0.03-0.07, while ``1e-1`` is visibly over-damped (1.31).
+            Set it to ``0.0`` to recover the exact moment identities for testing.
+        standardize: centre and scale the proxy/covariate block before adding the
+            intercept. At ``ridge = 0`` this is numerics only — the basis is
+            closed under affine reparametrisation and carries an intercept, so
+            the fitted functions come out unchanged. Once ``ridge > 0`` it is
+            *not* neutral, because the penalty is on the coefficients in whatever
+            parametrisation it finds: without scaling, a proxy measured in
+            millimetres is damped a thousand times harder than the same proxy in
+            metres. That is the reason it defaults to on.
+    """
+
+    def __init__(self, ridge: float = 1e-3, standardize: bool = True):
+        self.ridge = float(ridge)
+        self.standardize = bool(standardize)
+
+    # ── basis ────────────────────────────────────────────────────────────────
+
+    def _design(self, P: np.ndarray, X: np.ndarray, scaler) -> np.ndarray:
+        """``[1, P, X]`` with the proxy/covariate block scaled by ``scaler``."""
+        block = np.column_stack([P, X])
+        if scaler is not None:
+            block = scaler.transform(block)
+        return np.column_stack([np.ones(block.shape[0]), block])
+
+    def _fit_scaler(self, P: np.ndarray, X: np.ndarray):
+        if not self.standardize:
+            return None
+        # StandardScaler leaves zero-variance columns alone (scale_ = 1), so a
+        # constant proxy degrades to a duplicate intercept rather than a NaN.
+        return StandardScaler().fit(np.column_stack([P, X]))
+
+    # ── fit ──────────────────────────────────────────────────────────────────
+
+    def fit(self, X, A, Y, *, W, Z) -> "LinearBridge":
+        self.f_scaler_ = self._fit_scaler(W, X)
+        self.g_scaler_ = self._fit_scaler(Z, X)
+
+        F = self._design(W, X, self.f_scaler_)  # (n, p) — h basis / q test basis
+        G = self._design(Z, X, self.g_scaler_)  # (n, m) — q basis / h test basis
+        n = len(A)
+
+        self.beta_ = np.empty((2, F.shape[1]), dtype=float)
+        self.gamma_ = np.empty((2, G.shape[1]), dtype=float)
+
+        # Scaled so both systems have O(1) entries and `ridge` means the same
+        # thing in each: the q system is a mean over all rows, the h system a
+        # mean over the arm's rows.
+        F_mean = F.mean(axis=0)
+
+        for a in (0, 1):
+            in_arm = A == a
+            n_a = int(in_arm.sum())
+            if n_a == 0:
+                raise ValueError(
+                    f"no rows with A={a} in this fold; the linear bridge has "
+                    "nothing to estimate. Reduce n_splits or check the episode."
+                )
+            F_a, G_a = F[in_arm], G[in_arm]
+            C = F_a.T @ G_a  # (p, m) — serves both systems
+
+            self.beta_[a] = _ridge_lstsq(
+                C.T / n_a, (G_a.T @ Y[in_arm]) / n_a, self.ridge
+            )
+            self.gamma_[a] = _ridge_lstsq(C / n, F_mean, self.ridge)
+
+        return self
+
+    # ── predict ──────────────────────────────────────────────────────────────
+
+    def predict_h(self, X, W) -> np.ndarray:
+        return self._design(W, X, self.f_scaler_) @ self.beta_.T
+
+    def predict_q(self, X, Z) -> np.ndarray:
+        return self._design(Z, X, self.g_scaler_) @ self.gamma_.T
+
+
+# ── the kernel bridge, and the feature map that keeps it small ───────────────
+
+
+def _median_bandwidth(
+    P: np.ndarray, rng: np.random.Generator, max_pairs: int = 2000
+) -> float:
+    """RBF bandwidth by the median heuristic, from a *subsample* of pairs.
+
+    The heuristic wants the median pairwise distance, but computing it exactly
+    means an n x n distance matrix — the very thing this bridge is built to
+    avoid, and for a median of O(n^2) numbers the sampling error is negligible
+    anyway. So it draws ``max_pairs`` random pairs instead: O(max_pairs) memory
+    and an estimate whose relative error is a fraction of a percent.
+
+    Returns a strictly positive width; degenerate inputs (all rows identical)
+    fall back to 1.0 rather than producing a zero divisor.
+    """
+    n = P.shape[0]
+    if n < 2:
+        return 1.0
+    i = rng.integers(0, n, size=max_pairs)
+    j = rng.integers(0, n, size=max_pairs)
+    keep = i != j
+    if not np.any(keep):
+        return 1.0
+    d = np.linalg.norm(P[i[keep]] - P[j[keep]], axis=1)
+    med = float(np.median(d))
+    return med if med > 1e-12 else 1.0
+
+
+class _NystromFeatures:
+    """An explicit feature map ``Phi`` with ``Phi Phi' ~= K``, built in chunks.
+
+    This is the whole memory story. The textbook kernel bridge forms ``K`` at
+    ``n x n`` and solves against it; here we pick ``r`` landmark rows, form the
+    thin ``K_nr`` and the small ``K_rr``, and hand back
+
+        Phi = K_nr @ K_rr^(-1/2)          (n, r)
+
+    whose Gram is the Nystrom approximation of ``K``. Every downstream solve is
+    then ``r x r``. Two consequences worth stating plainly:
+
+    - **``rank=None`` is not a different algorithm.** It takes every row as a
+      landmark, so ``Phi Phi' = K`` exactly and the bridge becomes the textbook
+      one. That is the reference path — correct, and quadratic in memory. The
+      approximation is a dial, not a fork in the code.
+    - ``K_rr^(-1/2)`` is formed by eigendecomposition with a relative cutoff,
+      so a rank-deficient landmark set (duplicated rows, a tiny bandwidth)
+      truncates rather than blowing up. ``Phi`` may come back narrower than
+      ``r``; that is reported in ``rank_``.
+    """
+
+    def __init__(self, sigma: float, rcond: float = 1e-10, chunk: int = 1024):
+        self.sigma = float(sigma)
+        self.rcond = float(rcond)
+        self.chunk = int(chunk)
+
+    def _kernel_block(self, P: np.ndarray) -> np.ndarray:
+        """RBF kernel of ``P`` against the landmarks, ``(len(P), r)``."""
+        d2 = (
+            np.sum(P**2, axis=1)[:, None]
+            + self._land_sq[None, :]
+            - 2.0 * (P @ self.landmarks_.T)
         )
-        return K_idx @ self.invsqrt_H_ @ self.alpha_h1_
+        np.maximum(d2, 0.0, out=d2)
+        return np.exp(-d2 / (2.0 * self.sigma**2))
 
-    def predict_h0(self, W: ArrayLike, X: ArrayLike) -> np.ndarray:
-        H = self._transform_H(W, X)
-        if self.mode_ == "full":
-            K = rbf_kernel(H, self.H_train_, sigma=self.params.kernel_sigma)
-            return K @ self.alpha_h0_
-        K_idx = rbf_kernel(
-            H, self.H_train_[self.nys_idx_], sigma=self.params.kernel_sigma
+    def fit(self, P: np.ndarray, idx: np.ndarray) -> "_NystromFeatures":
+        self.landmarks_ = P[idx]
+        self._land_sq = np.sum(self.landmarks_**2, axis=1)
+
+        K_rr = self._kernel_block(self.landmarks_)
+        vals, vecs = np.linalg.eigh(K_rr)  # K_rr is PSD by construction
+        keep = vals > self.rcond * max(vals[-1], 1e-300)
+        self.whiten_ = vecs[:, keep] / np.sqrt(vals[keep])
+        self.rank_ = int(keep.sum())
+        return self
+
+    def transform(self, P: np.ndarray) -> np.ndarray:
+        """``Phi`` for new rows. Chunked, so the temporary is (chunk, r)."""
+        out = np.empty((P.shape[0], self.rank_), dtype=float)
+        for s in range(0, P.shape[0], self.chunk):
+            e = min(s + self.chunk, P.shape[0])
+            out[s:e] = self._kernel_block(P[s:e]) @ self.whiten_
+        return out
+
+
+def _solve_psd(M: np.ndarray, b: np.ndarray, ridge: float) -> np.ndarray:
+    """Solve ``(M + ridge I) v = b`` for symmetric PSD ``M``.
+
+    Cholesky, because every system this file hands it is a Gram matrix plus a
+    strictly positive multiple of the identity and is therefore positive
+    definite — no pseudo-inverse or SVD is warranted. Falls back to a symmetric
+    least-squares solve if the factorisation fails, which it can only do if the
+    caller passed ``ridge=0`` on a singular matrix.
+    """
+    A = M + ridge * np.eye(M.shape[0])
+    try:
+        return cho_solve(
+            cho_factor(A, lower=True, check_finite=False), b, check_finite=False
         )
-        return K_idx @ self.invsqrt_H_ @ self.alpha_h0_
-
-    def predict_h(self, W: ArrayLike, A: ArrayLike, X: ArrayLike) -> np.ndarray:
-        A = _as_1d(A, "A")
-        return A * self.predict_h1(W, X) + (1.0 - A) * self.predict_h0(W, X)
-
-    def predict_q1(self, Z: ArrayLike, X: ArrayLike) -> np.ndarray:
-        Q = self._transform_Q(Z, X)
-        if self.mode_ == "full":
-            K = rbf_kernel(Q, self.Q_train_, sigma=self.params.kernel_sigma)
-            return K @ self.alpha_q1_
-        K_idx = rbf_kernel(
-            Q, self.Q_train_[self.nys_idx_], sigma=self.params.kernel_sigma
-        )
-        return K_idx @ self.invsqrt_Q_ @ self.alpha_q1_
-
-    def predict_q0(self, Z: ArrayLike, X: ArrayLike) -> np.ndarray:
-        Q = self._transform_Q(Z, X)
-        if self.mode_ == "full":
-            K = rbf_kernel(Q, self.Q_train_, sigma=self.params.kernel_sigma)
-            return K @ self.alpha_q0_
-        K_idx = rbf_kernel(
-            Q, self.Q_train_[self.nys_idx_], sigma=self.params.kernel_sigma
-        )
-        return K_idx @ self.invsqrt_Q_ @ self.alpha_q0_
-
-    def predict_q(self, Z: ArrayLike, A: ArrayLike, X: ArrayLike) -> np.ndarray:
-        A = _as_1d(A, "A")
-        return A * self.predict_q1(Z, X) + (1.0 - A) * self.predict_q0(Z, X)
+    except np.linalg.LinAlgError:
+        return np.linalg.lstsq(A, b, rcond=None)[0]
 
 
-class PLearner(BaseEstimator, RegressorMixin):
-    """P-learner: cross-fit proximal scores, then regress scores on X."""
+class _MomentSystem:
+    """Everything the two saddle points need from a block of rows, with the
+    regularizers **not yet chosen** — and the held-out criterion that chooses them.
+
+    Fix the feature maps and this object is all that a candidate ``lam_h`` or
+    ``lam_q`` ever touches::
+
+        S_Q = (Phi_Q'Phi_Q/n + lam_g I)^-1     S_H = (Phi_H'Phi_H/n + lam_g I)^-1
+        B_a = Phi_Q' D_a Phi_H / n             c_a = Phi_Q' D_a Y / n
+        f   = Phi_H' 1 / n
+
+    all of them free of ``lam_h`` and ``lam_q``. A candidate therefore costs one
+    ``r x r`` Cholesky and two mat-vecs, against the ~0.4 s the feature build
+    costs — which is what makes per-episode tuning affordable at all, and is a
+    property of the step-3 rearrangement rather than of the tuner.
+
+    **The criterion.** The h-bridge is defined by a *conditional moment*,
+    ``E[Y - h(W, A, X) | Z, A, X] = 0``, not by a prediction target. Scoring a
+    candidate by held-out ``mean (Y - h)^2`` therefore selects the wrong function
+    outright: that loss is minimised by ``E[Y | W, A, X]``, the regression of Y on
+    the outcome proxy, which under confounding differs from the bridge by exactly
+    the quantity the method exists to remove. It would drive ``lam_h`` to zero and
+    hand back the naive answer.
+
+    What is well posed is the *violation* of the moment, measured against the same
+    test class the fit maximises over. Writing ``g = Phi_Q omega``, the empirical
+    moment is the vector ``v(theta) = c_a - B_a theta``, and
+
+        max_omega  2 v'omega - omega'(Phi_Q'Phi_Q/n + lam_g I) omega  =  v' S_Q v
+
+    in closed form. That is :meth:`loss_h`: the RKHS-smoothed
+    ``||E[Y - h | Z, A, X]||^2``. It is zero at the true bridge, non-negative
+    everywhere, and indifferent to how well ``h`` predicts Y. The q-side mirrors
+    it with ``v(gamma) = B_a' gamma - f`` and ``S_H``.
+
+    The reason to trust it is that it is not a new metric. Differentiating the
+    *penalised* criterion,
+
+        d/dtheta [ (c - B theta)' S_Q (c - B theta) + lam_h theta'theta ] = 0
+          <=>  (B' S_Q B + lam_h I) theta = B' S_Q c
+
+    reproduces :meth:`solve_h` exactly. So the selection score **is** the training
+    objective with the penalty term dropped, evaluated on rows the bridge never
+    saw — the penalty being precisely the term one must not grade a fit on.
+
+    Two consequences worth internalising before changing anything here:
+
+    - **The searches decouple.** ``theta`` depends only on ``lam_h`` and
+      ``loss_h`` only on ``theta``; likewise ``gamma``/``lam_q``/``loss_q``. So
+      tuning both is two 1-D searches costing ``|grid| + |grid|``, not a grid
+      costing ``|grid|^2``.
+    - **``lam_g`` must not be tuned.** ``S_Q`` *is* the norm the violation is
+      measured in, so a candidate carrying its own ``lam_g`` would be scored in
+      its own units, and the search would simply pick whichever value shrinks the
+      yardstick. It stays a fixed constant — which costs nothing, since it was
+      measured flat over two decades.
+    """
+
+    def __init__(self, Phi_H, Phi_Q, A, Y, lam_g: float):
+        n = len(A)
+        self.S_Q = np.linalg.inv(Phi_Q.T @ Phi_Q / n + lam_g * np.eye(Phi_Q.shape[1]))
+        self.S_H = np.linalg.inv(Phi_H.T @ Phi_H / n + lam_g * np.eye(Phi_H.shape[1]))
+        self.f = Phi_H.sum(axis=0) / n  # E[g(W, X)] — the q-system's RHS
+
+        self.B, self.c = [], []
+        for a in (0, 1):
+            in_arm = A == a
+            if not np.any(in_arm):
+                raise ValueError(
+                    f"no rows with A={a} in this block; the kernel bridge has "
+                    "nothing to estimate. Reduce n_splits (or tune_val_frac) or "
+                    "check the episode."
+                )
+            Ph_a, Pq_a = Phi_H[in_arm], Phi_Q[in_arm]
+            self.B.append(Pq_a.T @ Ph_a / n)  # (r_Q, r_H) — serves both systems
+            self.c.append(Pq_a.T @ Y[in_arm] / n)
+
+    # ── the two solves ───────────────────────────────────────────────────────
+
+    def solve_h(self, a: int, lam_h: float) -> np.ndarray:
+        BS = self.B[a].T @ self.S_Q  # (r_H, r_Q)
+        return _solve_psd(BS @ self.B[a], BS @ self.c[a], lam_h)
+
+    def solve_q(self, a: int, lam_q: float) -> np.ndarray:
+        SB = self.B[a] @ self.S_H  # (r_Q, r_H)
+        return _solve_psd(SB @ self.B[a].T, SB @ self.f, lam_q)
+
+    # ── the two held-out losses ──────────────────────────────────────────────
+
+    def loss_h(self, a: int, theta: np.ndarray) -> float:
+        v = self.c[a] - self.B[a] @ theta
+        return float(v @ self.S_Q @ v)
+
+    def loss_q(self, a: int, gamma: np.ndarray) -> float:
+        v = self.B[a].T @ gamma - self.f
+        return float(v @ self.S_H @ v)
+
+
+def _stratified_split(A: np.ndarray, val_frac: float, rng) -> tuple:
+    """(train, val) row indices, splitting **within each arm**.
+
+    Stratified for the same reason :meth:`PLearner._folds` is: every block handed
+    to :class:`_MomentSystem` needs both arms, and a plain permutation loses one
+    on an imbalanced episode — the failure mode being an exception mid-search
+    rather than a bad score.
+    """
+    train, val = [], []
+    for a in (0, 1):
+        idx = np.flatnonzero(A == a)
+        idx = idx[rng.permutation(len(idx))]
+        n_val = int(round(len(idx) * val_frac))
+        n_val = min(max(n_val, 1), len(idx) - 1)  # both halves keep this arm
+        val.append(idx[:n_val])
+        train.append(idx[n_val:])
+    return np.concatenate(train), np.concatenate(val)
+
+
+@register_bridge("kernel")
+class KernelBridge(Bridge):
+    """The minimax kernel bridge (Ghassami et al. 2022; Dikkala et al. 2020),
+    solved in an explicit feature space so nothing is ever ``n x n``.
+
+    Same three-step reasoning as :class:`LinearBridge` — bridge equation, then a
+    conditional moment restriction, then testing against a function class — with
+    the linear span replaced by an RKHS. Because the test class is now infinite
+    dimensional, "test against every ``g``" becomes a saddle-point problem,
+
+        min_h  max_g  (2/n) sum_i d_i (Y_i - h(F_i)) g(G_i)
+                      - (1/n) sum_i g(G_i)^2 - lam_g ||g||^2  + lam_h ||h||^2
+
+    whose inner maximisation is a quadratic with a closed form. Writing
+    ``h = Phi_H theta`` and ``g = Phi_Q omega`` and eliminating ``omega``:
+
+        theta_a = (B' S_Q B + lam_h I)^-1 B' S_Q c
+        gamma_a = (B  S_H B' + lam_q I)^-1 B  S_H f
+
+        B   = Phi_Q' D_a Phi_H / n        S_Q = (Phi_Q'Phi_Q/n + lam_g I)^-1
+        c   = Phi_Q' D_a Y     / n        S_H = (Phi_H'Phi_H/n + lam_g I)^-1
+        f   = Phi_H' 1         / n
+
+    Three structural facts this buys, all of which the archive's kernel-matrix
+    formulation gives up:
+
+    - **``B`` is shared.** The h-system uses ``B'`` and the q-system uses ``B``,
+      exactly as ``C = F_a' G_a`` was shared in the linear bridge. One
+      cross-product per arm, not four.
+    - **``S_Q`` and ``S_H`` do not depend on the arm**, so they are factored once
+      per fold rather than once per (arm, bridge). The archive recomputes the
+      equivalent object four times, and at the default lambdas two of the four
+      are bit-identical.
+    - **Every solve is ``r x r``** and every matrix is at most ``n x r``. At
+      n = 2048, r = 256 that is 4 MB of features and a 256-cubed factorisation,
+      against 565 MB and 1024-cubed for the archive.
+
+    The lambdas play the role ``ridge`` plays in :class:`LinearBridge`, and for
+    the same reason: the bridge equation is an ill-posed inverse problem, and
+    undamped it inverts sampling noise. ``lam_g`` regularises the *test* class,
+    which is what makes the inner maximisation well posed at all.
+
+    **On the lambdas: prefer ``lam_grid`` to the defaults.** ``lam_h = lam_q =
+    1e-4`` was chosen by sweeping on 25 episodes of the realistic validation set,
+    where it is the optimum (median nPEHE 0.88, against 1.01 at ``1e-5`` and 1.11
+    at ``1e-3``). That is tuning on an evaluation set — the thing one is not
+    supposed to do — and worse, **the optimum moves with n**, so no constant can
+    be right everywhere.
+
+    Passing ``lam_grid`` replaces both defects with a per-fit choice on held-out
+    moment loss (:class:`_MomentSystem`). Measured on those same episodes with
+    ``lam_grid = [1e-7 ... 1e-1]``, ``rank = 256``, median over 25 episodes:
+
+        n_ctx   fixed 1e-4      tuned          tuned picks
+        ─────   ──────────      ─────          ───────────
+          256   nPEHE 2.087     1.892          lam_h 1e-3
+          512         1.425     1.339          lam_h 1e-3
+         2048         0.884     0.866          lam_h 1e-4
+
+    Read that as the transport claim, not as a headline gain: at 2048 the tuner
+    *reproduces* the hand-picked value and so can only match it, which is the
+    correct outcome and the reason the last row moves so little. The gain appears
+    where the constant was never fitted, and it appears in the right direction —
+    less data, more damping. Cost is +25 to +50% wall clock (0.55 -> 0.70 s per
+    episode at n = 2048), which buys a value that no longer depends on having
+    seen the evaluation set. One number ran the other way and is worth watching:
+    at n = 512 the ATE error rose (0.094 against 0.063) while nPEHE fell, i.e.
+    the extra damping helped the shape and hurt the level.
+
+    ``lam_g``, by contrast, is genuinely flat — ``1e-4`` through ``1e-2`` move
+    nothing measurable — and is not tunable in any case; see
+    :class:`_MomentSystem` for why.
+
+    ``rank`` is close to free accuracy: on those episodes 256 landmarks reproduce
+    the exact bridge to within 2% of nPEHE (0.879 against 0.865) at a sixteenth
+    of the time (0.46 s against 7.45 s per episode) and ~600 MB less peak memory.
+    Even 64 landmarks give 0.948.
+
+    Args:
+        rank: Nystrom landmark count. ``None`` uses every row, giving the exact
+            kernel bridge at quadratic memory — the reference path, appropriate
+            for tests and small n, not for a 2048-row episode.
+        bandwidth_scale: multiplies the median-heuristic width. ``1.0`` is the
+            heuristic itself. This is the knob the archive got wrong by pinning
+            an absolute ``kernel_sigma = 1.0``, which is not a bandwidth at all
+            — it ignores the data scale and the proxy dimension.
+        lam_h, lam_q: Tikhonov damping on the two bridges. Used as given when
+            ``lam_grid`` is None, and as the fallback if every candidate scores
+            non-finite.
+        lam_g: damping on the test class, shared by both saddle points. Not
+            tunable by construction — it defines the units the selection
+            criterion is measured in (:class:`_MomentSystem`).
+        lam_grid: candidate values for ``lam_h`` and ``lam_q``, selected per fit
+            on held-out moment loss. ``None`` (the default) keeps the fixed
+            lambdas. The chosen values land in ``lam_h_``/``lam_q_`` and the full
+            curves in ``lam_scores_``.
+        tune_val_frac: fraction of the fold held out for that selection,
+            stratified on A. Only the *choice* uses the split; the returned
+            bridge is refit on every row.
+        random_state: seeds the landmark draw, the bandwidth subsample and the
+            tuning split.
+        chunk: row block size for the feature transform.
+    """
 
     def __init__(
         self,
-        bridge_params: Optional[BridgeParams] = None,
-        final_model: Optional[RegressorMixin] = None,
-        n_splits: int = 3,
-        random_state: Optional[int] = None,
-        q_clip: Optional[Tuple[float, float]] = None,
-        refit_full_nuisance: bool = False,
-        n_jobs: int = 1,
+        rank: Optional[int] = 256,
+        bandwidth_scale: float = 1.0,
+        lam_h: float = 1e-4,
+        lam_q: float = 1e-4,
+        lam_g: float = 1e-3,
+        lam_grid: Optional[Sequence[float]] = None,
+        tune_val_frac: float = 0.25,
+        random_state: Optional[int] = 0,
+        chunk: int = 1024,
     ):
-        self.bridge_params = (
-            bridge_params if bridge_params is not None else BridgeParams()
+        self.rank = rank
+        self.bandwidth_scale = float(bandwidth_scale)
+        self.lam_h = float(lam_h)
+        self.lam_q = float(lam_q)
+        self.lam_g = float(lam_g)
+        self.lam_grid = lam_grid
+        self.tune_val_frac = float(tune_val_frac)
+        self.random_state = random_state
+        self.chunk = int(chunk)
+
+    # ── feature construction ─────────────────────────────────────────────────
+
+    def _build(self, P: np.ndarray, rng) -> tuple:
+        """Scaler + feature map for one block, and the block's own bandwidth.
+
+        Standardization already removes the raw scale, so what a per-block
+        bandwidth buys is *dimension*: ``[W, X]`` and ``[Z, X]`` have widths
+        ``d_W + d_X`` and ``d_Z + d_X``, and the median pairwise distance grows
+        like the square root of that. With ``d_W`` and ``d_Z`` drawn
+        independently in 1..10 these routinely differ by a factor of two, and one
+        shared sigma then over-smooths the wider block and under-smooths the
+        narrower.
+        """
+        scaler = StandardScaler().fit(P)
+        Ps = scaler.transform(P)
+
+        sigma = _median_bandwidth(Ps, rng) * self.bandwidth_scale
+        n = Ps.shape[0]
+        r = n if self.rank is None else min(int(self.rank), n)
+        idx = np.arange(n) if r >= n else rng.choice(n, size=r, replace=False)
+
+        feats = _NystromFeatures(sigma, chunk=self.chunk).fit(Ps, idx)
+        return scaler, feats
+
+    # ── fit ──────────────────────────────────────────────────────────────────
+
+    def fit(self, X, A, Y, *, W, Z) -> "KernelBridge":
+        rng = np.random.default_rng(self.random_state)
+
+        self.h_scaler_, self.h_feats_ = self._build(np.column_stack([W, X]), rng)
+        self.q_scaler_, self.q_feats_ = self._build(np.column_stack([Z, X]), rng)
+
+        Phi_H = self.h_feats_.transform(
+            self.h_scaler_.transform(np.column_stack([W, X]))
         )
-        self.final_model = final_model
+        Phi_Q = self.q_feats_.transform(
+            self.q_scaler_.transform(np.column_stack([Z, X]))
+        )
+
+        self.lam_h_, self.lam_q_ = self.lam_h, self.lam_q
+        if self.lam_grid is not None:
+            self.lam_h_, self.lam_q_ = self._select_lambdas(Phi_H, Phi_Q, A, Y, rng)
+
+        # One system over all the rows, whether or not a split was used to pick
+        # the lambdas: selection is the only thing the held-out half is for.
+        full = _MomentSystem(Phi_H, Phi_Q, A, Y, self.lam_g)
+
+        self.theta_ = np.stack([full.solve_h(a, self.lam_h_) for a in (0, 1)])
+        self.gamma_ = np.stack([full.solve_q(a, self.lam_q_) for a in (0, 1)])
+        return self
+
+    # ── tuning ───────────────────────────────────────────────────────────────
+
+    def _select_lambdas(self, Phi_H, Phi_Q, A, Y, rng) -> tuple[float, float]:
+        """Pick ``(lam_h, lam_q)`` by held-out moment loss — see :class:`_MomentSystem`.
+
+        Two 1-D searches rather than one 2-D grid, because the objectives
+        decouple. Both are summed over arms: the two arms are separate systems
+        but share a regularizer, and the alternative — a per-arm lambda — would
+        halve the rows each choice is made on for no reason anyone has argued.
+
+        ``lam_scores_`` keeps the full curve. Reach for it before trusting a
+        selected value: a monotone curve means the grid does not bracket the
+        optimum, and that is invisible from the chosen lambda alone.
+        """
+        grid = sorted(float(v) for v in self.lam_grid)
+        if not grid:
+            raise ValueError("lam_grid is empty; pass None to disable tuning")
+
+        tr, va = _stratified_split(A, self.tune_val_frac, rng)
+        train = _MomentSystem(Phi_H[tr], Phi_Q[tr], A[tr], Y[tr], self.lam_g)
+        val = _MomentSystem(Phi_H[va], Phi_Q[va], A[va], Y[va], self.lam_g)
+
+        self.lam_scores_ = {
+            "lam_h": [
+                (lam, sum(val.loss_h(a, train.solve_h(a, lam)) for a in (0, 1)))
+                for lam in grid
+            ],
+            "lam_q": [
+                (lam, sum(val.loss_q(a, train.solve_q(a, lam)) for a in (0, 1)))
+                for lam in grid
+            ],
+        }
+        return tuple(
+            min(
+                (p for p in self.lam_scores_[k] if np.isfinite(p[1])),
+                key=lambda p: p[1],
+                default=(getattr(self, k), np.inf),
+            )[0]
+            for k in ("lam_h", "lam_q")
+        )
+
+    # ── predict ──────────────────────────────────────────────────────────────
+
+    def predict_h(self, X, W) -> np.ndarray:
+        Phi = self.h_feats_.transform(self.h_scaler_.transform(np.column_stack([W, X])))
+        return Phi @ self.theta_.T
+
+    def predict_q(self, X, Z) -> np.ndarray:
+        Phi = self.q_feats_.transform(self.q_scaler_.transform(np.column_stack([Z, X])))
+        return Phi @ self.gamma_.T
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Half 2 — the score and the driver
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def proximal_scores(
+    A: np.ndarray,
+    Y: np.ndarray,
+    h: np.ndarray,
+    q: np.ndarray,
+    *,
+    q_clip: Optional[float] = None,
+) -> np.ndarray:
+    """The doubly robust proximal score, paper eq. (10). One value per row.
+
+    Pure and array-only, so it can be tested against a hand-computed example
+    without constructing a bridge.
+
+    Args:
+        A: (n,) observed arm, 0/1.
+        Y: (n,) observed outcome.
+        h: (n, 2) outcome bridge at both arms.
+        q: (n, 2) treatment bridge at both arms.
+        q_clip: if given, cap ``|q|`` at this value. ``q`` is an inverse
+            propensity in disguise, so a badly estimated one is unbounded above
+            and dominates the score; the cap is on the *magnitude* rather than a
+            symmetric interval, which would otherwise let a clip pass a sign
+            change through untouched.
+
+    Returns:
+        (n,) array of scores. Its mean is the proximal ATE estimate; regressing
+        it on X is the P-learner.
+    """
+    arm = A.astype(np.intp)
+    rows = np.arange(len(A))
+
+    h_obs = h[rows, arm]  # h(W_i, A_i, X_i)
+    q_obs = q[rows, arm]  # q(Z_i, A_i, X_i)
+    if q_clip is not None:
+        q_obs = np.clip(q_obs, -abs(q_clip), abs(q_clip))
+
+    sign = np.where(A == 1.0, 1.0, -1.0)  # (-1)^(1 - A)
+    return sign * q_obs * (Y - h_obs) + h[:, 1] - h[:, 0]
+
+
+class PLearner(CATEEstimator):
+    """Algorithm 1: cross-fit the bridges, form the scores, regress them on X.
+
+    One ``fit`` produces one score vector, and any number of final-stage models
+    can be trained on it — the expensive half is the bridge, and it is shared.
+    That is what ``final_models`` is for: pass ``{"P-RF": RandomForestRegressor(),
+    "P-Linear": LinearRegression()}`` and both come back from a single
+    ``predict_variants`` call, having paid for the bridges once.
+
+    Args:
+        bridge: registered bridge name (see ``BRIDGES``).
+        bridge_params: keyword arguments for that bridge.
+        final_models: ``{output_name: unfitted sklearn regressor}``. Each is
+            cloned before fitting, so the caller's instances are untouched.
+        n_splits: cross-fitting folds. Stratified on A, so no fold can lose an
+            arm — an unstratified split does exactly that on imbalanced episodes
+            and takes the bridge down with it.
+        random_state: seeds the fold shuffle.
+        q_clip: magnitude cap on the observed-arm q; see ``proximal_scores``.
+
+    Attributes set by ``fit``:
+        scores_: (n,) the cross-fit Gamma.
+        ate_: float, ``mean(scores_)`` — the proximal ATE.
+        bridges_: the per-fold fitted bridges, kept for inspection.
+    """
+
+    def __init__(
+        self,
+        *,
+        bridge: str = "constant",
+        bridge_params: Optional[dict] = None,
+        final_models: Optional[dict[str, object]] = None,
+        n_splits: int = 3,
+        random_state: Optional[int] = 42,
+        q_clip: Optional[float] = None,
+    ):
+        self.bridge = bridge
+        self.bridge_params = bridge_params
+        self.final_models = final_models
         self.n_splits = n_splits
         self.random_state = random_state
         self.q_clip = q_clip
-        self.refit_full_nuisance = refit_full_nuisance
-        # Only reaches the default final model below. It used to be a hardcoded -1,
-        # which nests "every core" inside whatever process the learner is running in
-        # — harmless while `build_method` always supplies a `final_model`, and an
-        # oversubscription bomb the day it doesn't.
-        self.n_jobs = n_jobs
 
-    def fit(
-        self, X: ArrayLike, Z: ArrayLike, W: ArrayLike, A: ArrayLike, Y: ArrayLike
-    ) -> "PLearner":
+    # ── fit ──────────────────────────────────────────────────────────────────
+
+    def fit(self, X, A, Y, *, W=None, Z=None) -> "PLearner":
+        if W is None or Z is None:
+            raise ValueError(
+                "PLearner requires both proxies: W (outcome) and Z (treatment)."
+            )
+
         X = _as_2d(X, "X")
-        Z = _as_2d(Z, "Z")
         W = _as_2d(W, "W")
-        A = _as_1d(A, "A")
+        Z = _as_2d(Z, "Z")
+        A = _as_binary(A)
         Y = _as_1d(Y, "Y")
-        _check_lengths(X, Z, W, A.reshape(-1, 1), Y.reshape(-1, 1))
-
         n = X.shape[0]
-        kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=self.random_state)
-        gamma_hat = np.empty(n, dtype=float)
-        self.fold_nuisances_ = []
+        _check_lengths(n, W=W, Z=Z, A=A, Y=Y)
 
-        for fold, (train_idx, test_idx) in enumerate(kf.split(X)):
-            # Different Nyström subsamples by fold, reproducibly.
-            params = replace(
-                self.bridge_params,
-                random_state=None
-                if self.random_state is None
-                else self.random_state + 1009 * fold,
-            )
-            nuisance = KernelBridgeNuisance(params).fit(
-                X[train_idx], Z[train_idx], W[train_idx], A[train_idx], Y[train_idx]
-            )
-            self.fold_nuisances_.append(nuisance)
+        self.scores_ = self._cross_fit_scores(X, A, Y, W, Z)
+        self.ate_ = float(np.mean(self.scores_))
 
-            X_te, Z_te, W_te, A_te, Y_te = (
-                X[test_idx],
-                Z[test_idx],
-                W[test_idx],
-                A[test_idx],
-                Y[test_idx],
-            )
-            h_a = nuisance.predict_h(W_te, A_te, X_te)
-            h_1 = nuisance.predict_h1(W_te, X_te)
-            h_0 = nuisance.predict_h0(W_te, X_te)
-            q_a = nuisance.predict_q(Z_te, A_te, X_te)
-            if self.q_clip is not None:
-                lo, hi = self.q_clip
-                q_a = np.clip(q_a, lo, hi)
-            sign = np.where(A_te == 1.0, 1.0, -1.0)
-            gamma_hat[test_idx] = sign * q_a * (Y_te - h_a) + h_1 - h_0
-
-        self.gamma_ = gamma_hat
-        self.ate_ = float(np.mean(gamma_hat))
-
-        if self.final_model is None:
-            model = RandomForestRegressor(
-                n_estimators=300,
-                min_samples_leaf=10,
-                random_state=self.random_state,
-                n_jobs=self.n_jobs,
-            )
-        else:
-            model = clone(self.final_model)
-        self.final_model_ = model.fit(X, gamma_hat)
-
-        if self.refit_full_nuisance:
-            self.nuisance_full_ = KernelBridgeNuisance(self.bridge_params).fit(
-                X, Z, W, A, Y
-            )
+        models = self.final_models or {}
+        self.final_models_ = {
+            name: clone(m).fit(X, self.scores_) for name, m in models.items()
+        }
         return self
 
-    def predict(self, X: ArrayLike) -> np.ndarray:
+    def _cross_fit_scores(self, X, A, Y, W, Z) -> np.ndarray:
+        """Fit the bridge on each training fold, score its held-out fold.
+
+        The held-out half is what makes the score orthogonal: a bridge evaluated
+        on rows it was fit on carries its own overfitting into Gamma, and the
+        oracle bound in the paper (Thm 1) assumes it does not.
+        """
+        n = X.shape[0]
+        scores = np.empty(n, dtype=float)
+        self.bridges_ = []
+
+        for train_idx, test_idx in self._folds(A):
+            bridge = build_bridge(self.bridge, self.bridge_params).fit(
+                X[train_idx],
+                A[train_idx],
+                Y[train_idx],
+                W=W[train_idx],
+                Z=Z[train_idx],
+            )
+            self.bridges_.append(bridge)
+
+            h = bridge.predict_h(X[test_idx], W[test_idx])
+            q = bridge.predict_q(X[test_idx], Z[test_idx])
+            scores[test_idx] = proximal_scores(
+                A[test_idx], Y[test_idx], h, q, q_clip=self.q_clip
+            )
+
+        return scores
+
+    def _folds(self, A: np.ndarray):
+        """(train, test) index pairs. ``n_splits=1`` means no cross-fitting.
+
+        The degenerate split is supported on purpose: it is the setting in which
+        :class:`ConstantBridge`'s identity holds *exactly*, so the plumbing test
+        has something sharp to assert. It is not a sensible way to run the
+        estimator — the scores are then evaluated in-sample.
+        """
+        n = len(A)
+        if self.n_splits == 1:
+            everything = np.arange(n)
+            return [(everything, everything)]
+
+        skf = StratifiedKFold(
+            n_splits=self.n_splits, shuffle=True, random_state=self.random_state
+        )
+        return list(skf.split(np.zeros(n), A))
+
+    # ── predict ──────────────────────────────────────────────────────────────
+
+    def predict(self, X, *, W=None, Z=None) -> np.ndarray:
+        """CATE from the first configured final model.
+
+        W and Z are accepted and ignored: the P-learner's prediction is a
+        function of x alone, which is why its estimand tag is ``cate(x)``.
+        """
+        if not self.final_models_:
+            raise ValueError(
+                "PLearner was fit with no final models; nothing to predict."
+            )
+        return next(iter(self.predict_variants(X).values()))
+
+    def predict_variants(self, X, *, W=None, Z=None) -> dict[str, np.ndarray]:
         X = _as_2d(X, "X")
-        return self.final_model_.predict(X)
+        return {
+            name: np.asarray(model.predict(X), dtype=float)
+            for name, model in self.final_models_.items()
+        }
+
+    def predict_ate(self, X) -> np.ndarray:
+        """The single proximal ATE, broadcast to one value per row."""
+        return np.full(_as_2d(X, "X").shape[0], self.ate_, dtype=float)

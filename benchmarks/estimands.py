@@ -11,7 +11,7 @@ A method output is labelled by the quantity it estimates, in full:
 The *kind* says whether the output varies per row (``cate``) or is a constant
 (``ate``). The parenthesis lists the variables the prediction reads at
 **predict** time — using a variable only to fit a nuisance does not count, which
-is why ``ProximalPLearner`` is ``cate(x)`` despite being fitted on both proxies.
+is why ``PLearner`` is ``cate(x)`` despite being fitted on both proxies.
 That is exactly the property :mod:`benchmarks.metrics` routes its tables on.
 
 This lives in its own module because two packages need it and neither may import

@@ -607,7 +607,9 @@ def plot_decomposition(run: BenchmarkRun, task: Task, opts: Options) -> None:
     ax.set_title(
         f"{task.title}\nwhere the error comes from · a bar past the axis is clipped, "
         f"read its label\nworst {DECOMPOSITION_TRIM:.0%} of episodes trimmed per "
-        "method — the identity is linear in episodes, so it survives the trim",
+        "method — the identity is linear in episodes, so it survives the trim;\n"
+        "the summary tables are untrimmed and report nPEHE as a median, so these "
+        "totals are larger and do not match them",
         fontsize=10,
     )
     _finish(fig, 1.1)
@@ -639,7 +641,12 @@ def plot_iso_npehe(run: BenchmarkRun, task: Task, opts: Options) -> None:
     )
     cs = ax.contour(gx, gy, npehe, levels=levels, colors="gray", linewidths=0.7)
     ax.clabel(cs, fmt="%.2f", fontsize=7)
-    fig.colorbar(filled, ax=ax, shrink=0.8, label="nPEHE (rms over episodes)")
+    fig.colorbar(
+        filled,
+        ax=ax,
+        shrink=0.8,
+        label=f"nPEHE (rms over episodes, worst {DECOMPOSITION_TRIM:.0%} trimmed)",
+    )
 
     for m in dec.index:
         style = style_for(m)
@@ -668,13 +675,19 @@ def plot_iso_npehe(run: BenchmarkRun, task: Task, opts: Options) -> None:
             )
     ax.set_xlim(0, x_max)
     ax.set_ylim(y_min, 1.02)
-    ax.set_xlabel("ATE RMSE  =  sqrt(mean(b²))   — level error")
+    ax.set_xlabel(
+        f"ATE RMSE, worst {DECOMPOSITION_TRIM:.0%} trimmed  =  sqrt(mean(b²)),  "
+        "b = ATE bias ÷ SD(τ)   — level error"
+    )
     ax.set_ylabel("mean Shape R²   — heterogeneity recovered")
     ax.set_title(
         f"{task.title}\nnPEHE² = b² + (1 − Shape R²): the contours are exact, "
         "not fitted.\nUp-and-left is better; position *along* a contour says "
         "whether the error is level or shape.\n"
-        f"worst {DECOMPOSITION_TRIM:.0%} of episodes trimmed per method",
+        f"Both axes are means over the episodes left after trimming each "
+        f"method's worst {DECOMPOSITION_TRIM:.0%};\nthe summary tables report an "
+        "untrimmed pooled rms (ATE RMSE) and a median (nPEHE), so neither number "
+        "matches them.",
         fontsize=10,
     )
     ax.legend(bbox_to_anchor=(1.32, 1), loc="upper left", frameon=False, fontsize=8)
