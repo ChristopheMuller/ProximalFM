@@ -457,6 +457,9 @@ class _PLearner_Estimator(CATEEstimator):
             out[name] = self.learner.predict_ate(X)
         return out
 
+    def diagnostics(self) -> dict[str, float]:
+        return self.learner.diagnostics()
+
 
 class KPV_Wrapper(CATEEstimator):
     # Which prediction target the estimator returns. See KPVEstimator.predict:

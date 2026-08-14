@@ -68,6 +68,7 @@ class EpisodeResult:
     preds: Optional[dict[str, np.ndarray]]
     elapsed: float
     error: Optional[str]
+    diagnostics: Optional[dict[str, float]] = None
 
 
 def _run_episode(task: EpisodeTask) -> EpisodeResult:
@@ -102,7 +103,8 @@ def _run_episode(task: EpisodeTask) -> EpisodeResult:
             (name if k is None else k): np.asarray(v).astype(np.float32)
             for k, v in variants.items()
         }
-        return EpisodeResult(task.b, preds, time.perf_counter() - t0, None)
+        diagnostics = {k: float(v) for k, v in method.diagnostics().items()} or None
+        return EpisodeResult(task.b, preds, time.perf_counter() - t0, None, diagnostics)
     except Exception as exc:
         return EpisodeResult(task.b, None, 0.0, str(exc))
 
@@ -139,7 +141,7 @@ def run_method(
     *,
     on_progress: Any = None,
     on_error: Any = None,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], int]:
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], int]:
     """Run one method over every episode and return its predictions and timings.
 
     Args:
@@ -153,10 +155,14 @@ def run_method(
         on_error: called with `(b, message)` for each failed episode.
 
     Returns:
-        `(preds, times, n_errors)`. `preds` and `times` are dicts keyed by output
-        name: `preds[name]` is `(n_batch, n_test)` with NaN wherever an episode
-        failed, `times[name]` is `(n_batch,)` seconds. All of a multi-output method's
-        variants share one fit, so they share the recorded time.
+        `(preds, times, diagnostics, n_errors)`. `preds` and `times` are dicts keyed
+        by output name: `preds[name]` is `(n_batch, n_test)` with NaN wherever an
+        episode failed, `times[name]` is `(n_batch,)` seconds. All of a multi-output
+        method's variants share one fit, so they share the recorded time.
+        `diagnostics` is keyed by whatever names `CATEEstimator.diagnostics()`
+        chose to emit (the union across episodes — a key some episodes skip is
+        NaN there) and is shared across output names for the same reason as
+        `times`; it is `{}` for a method that emits none.
     """
     n_batch = len(batches)
     output_names = method_output_names(method_cfg)
@@ -168,12 +174,15 @@ def run_method(
 
     tasks = _build_tasks(method_cfg, compute, batches)
     n_errors = 0
+    diag_records: dict[int, dict[str, float]] = {}
 
     for result in manager.map(_run_episode, tasks, compute):
         if result.preds is not None:
             for name, arr in result.preds.items():
                 preds[name][result.b] = arr
                 times[name][result.b] = result.elapsed
+            if result.diagnostics:
+                diag_records[result.b] = result.diagnostics
         else:
             n_errors += 1
             if on_error is not None:
@@ -181,7 +190,16 @@ def run_method(
         if on_progress is not None:
             on_progress()
 
-    return preds, times, n_errors
+    diag_keys = sorted({k for d in diag_records.values() for k in d})
+    diagnostics = {
+        key: np.array(
+            [diag_records.get(b, {}).get(key, np.nan) for b in range(n_batch)],
+            dtype=np.float32,
+        )
+        for key in diag_keys
+    }
+
+    return preds, times, diagnostics, n_errors
 
 
 def is_inline(compute: ComputeConfig) -> bool:

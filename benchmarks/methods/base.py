@@ -118,3 +118,21 @@ class CATEEstimator:
         model trained in a single ``fit()`` call — no retraining per variant.
         """
         return {None: self.predict(X, W=W, Z=Z)}
+
+    def diagnostics(self) -> dict[str, float]:
+        """Scalar diagnostics from the most recent ``fit``, keyed by name.
+
+        A side channel alongside predictions: not something scored against a
+        target, but something worth tracking per episode about *how* the fit
+        behaved — a regularizer hitting a grid edge, a clip binding, a solver
+        falling back. Default is empty; an estimator opts in by overriding
+        this and populating whatever instance state it needs during ``fit``.
+
+        One fit produces one diagnostics dict, shared by every output of
+        :meth:`predict_variants` (the same way one fit shares one wall-clock
+        time across variants) — diagnostics describe the fit, not a
+        particular output. Values must be finite floats: the runner stores
+        one array per key across episodes, the same way it stores ``times``,
+        so a key that only some episodes emit is padded with NaN elsewhere.
+        """
+        return {}

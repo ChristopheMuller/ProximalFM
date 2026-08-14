@@ -408,6 +408,56 @@ def score_everything(
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def save_diagnostics_yaml(path: Path, diagnostics: dict[str, np.ndarray]) -> None:
+    """Diagnostics as YAML, saved next to a method's predictions.
+
+    Diagnostics are read, not scored, so text wins over npz here: a NaN-aware
+    mean-per-key ``summary`` up top for a human to glance at, and the full
+    per-episode values under ``episodes`` for anyone who needs to correlate a
+    diagnostic with a specific episode. ``preds``/``times`` stay npz — they are
+    the numbers everything downstream computes on, where size and dtype
+    fidelity matter and nobody reads the file directly.
+    """
+    # Rounded to float32's ~7 significant digits: the values are float32 already
+    # (see `runners.run_method`), so this drops noise from the float64 widening
+    # YAML's dumper would otherwise print (`0.800000011920929` for `0.8`).
+    summary: dict[str, Optional[float]] = {}
+    episodes: dict[str, list] = {}
+    for key, arr in sorted(diagnostics.items()):
+        finite = arr[~np.isnan(arr)]
+        summary[key] = round(float(finite.mean()), 6) if finite.size else None
+        episodes[key] = [None if np.isnan(v) else round(float(v), 6) for v in arr]
+    with open(path, "w") as f:
+        yaml.safe_dump({"summary": summary, "episodes": episodes}, f, sort_keys=False)
+
+
+def load_diagnostics_yaml(path: Path) -> dict[str, np.ndarray]:
+    """Inverse of `save_diagnostics_yaml`, for the cache-hit path."""
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return {
+        key: np.array([np.nan if v is None else v for v in vals], dtype=np.float32)
+        for key, vals in data.get("episodes", {}).items()
+    }
+
+
+def print_diagnostics(name: str, diagnostics: dict[str, np.ndarray]) -> None:
+    """One line per diagnostic key: the mean over episodes that reported it.
+
+    NaN-aware (a key some episodes skip is averaged over the ones that didn't),
+    and silent when a method emits no diagnostics at all.
+    """
+    if not diagnostics:
+        return
+    parts = []
+    for key, arr in sorted(diagnostics.items()):
+        finite = arr[~np.isnan(arr)]
+        if finite.size:
+            parts.append(f"{key}={finite.mean():.3g}")
+    if parts:
+        console.print(f"    [dim]diag ({name}): {'  '.join(parts)}[/]")
+
+
 def print_partial_results(
     accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
     estimands: dict[str, str],
@@ -520,6 +570,11 @@ def main() -> None:
             output_names = method_output_names(mcfg)
             estimands.update(method_output_estimands(mcfg))
             pred_files = {n: preds_dir / f"{n}_preds.npz" for n in output_names}
+            # One diagnostics file per output, named after its preds file: they
+            # describe the shared fit (like `times`), so a multi-output method's
+            # outputs get identical, duplicated content — the point is that a
+            # diagnostic is always found next to the predictions it explains.
+            diag_files = {n: preds_dir / f"{n}_preds_diag.yaml" for n in output_names}
 
             # Skip only when every output of this config is already cached.
             if not force and all(f.exists() for f in pred_files.values()):
@@ -529,6 +584,9 @@ def main() -> None:
                     times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
                     console.print(f"  [dim]↩  {out_name:<28} loaded from cache[/]")
                     accumulated[out_name] = (preds, times)
+                diag_path = next((p for p in diag_files.values() if p.exists()), None)
+                if diag_path is not None:
+                    print_diagnostics(name, load_diagnostics_yaml(diag_path))
                 continue
 
             method_compute = resolve_method_compute(global_compute, mcfg)
@@ -538,7 +596,7 @@ def main() -> None:
             )
 
             t0 = time.perf_counter()
-            preds_map, times_map, n_errors = run_method(
+            preds_map, times_map, diagnostics, n_errors = run_method(
                 mcfg,
                 batches,
                 N_TEST,
@@ -556,10 +614,13 @@ def main() -> None:
             for out_name in output_names:
                 preds, times = preds_map[out_name], times_map[out_name]
                 np.savez(pred_files[out_name], preds=preds, times=times)
+                if diagnostics:
+                    save_diagnostics_yaml(diag_files[out_name], diagnostics)
                 console.print(
                     f"  [green]✓[/] {out_name:<28} saved  [dim]({elapsed:.1f}s)[/]"
                 )
                 accumulated[out_name] = (preds, times)
+            print_diagnostics(name, diagnostics)
 
             print_partial_results(accumulated, estimands, targets)
 

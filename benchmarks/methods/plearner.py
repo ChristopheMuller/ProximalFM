@@ -947,6 +947,11 @@ class PLearner(CATEEstimator):
         n = X.shape[0]
         _check_lengths(n, W=W, Z=Z, A=A, Y=Y)
 
+        self._clip_hits_ = 0
+        self._clip_total_ = 0
+        self._lam_h_choices_: list[float] = []
+        self._lam_q_choices_: list[float] = []
+
         self.scores_ = self._cross_fit_scores(X, A, Y, W, Z)
         self.ate_ = float(np.mean(self.scores_))
 
@@ -982,8 +987,27 @@ class PLearner(CATEEstimator):
             scores[test_idx] = proximal_scores(
                 A[test_idx], Y[test_idx], h, q, q_clip=self.q_clip
             )
+            self._record_fold_diagnostics(bridge, A[test_idx], q)
 
         return scores
+
+    def _record_fold_diagnostics(self, bridge: Bridge, A_test, q) -> None:
+        """Accumulate this fold's contribution to :meth:`diagnostics`.
+
+        Mirrors, rather than reuses, the observed-arm selection inside
+        ``proximal_scores`` — that function stays pure and score-only; this is
+        purely a side-observation of the same ``q`` for reporting.
+        """
+        if self.q_clip is not None:
+            arm = A_test.astype(np.intp)
+            q_obs = q[np.arange(len(A_test)), arm]
+            self._clip_hits_ += int(np.sum(np.abs(q_obs) > abs(self.q_clip)))
+            self._clip_total_ += len(q_obs)
+
+        tuned = bool((self.bridge_params or {}).get("lam_grid"))
+        if tuned and hasattr(bridge, "lam_h_") and hasattr(bridge, "lam_q_"):
+            self._lam_h_choices_.append(float(bridge.lam_h_))
+            self._lam_q_choices_.append(float(bridge.lam_q_))
 
     def _folds(self, A: np.ndarray):
         """(train, test) index pairs. ``n_splits=1`` means no cross-fitting.
@@ -1027,3 +1051,47 @@ class PLearner(CATEEstimator):
     def predict_ate(self, X) -> np.ndarray:
         """The single proximal ATE, broadcast to one value per row."""
         return np.full(_as_2d(X, "X").shape[0], self.ate_, dtype=float)
+
+    # ── diagnostics ──────────────────────────────────────────────────────────
+
+    def diagnostics(self) -> dict[str, float]:
+        """How often ``q_clip`` bound, and where a tuned kernel bridge landed.
+
+        - ``q_clip_frac``: fraction of held-out, observed-arm ``q`` evaluations
+          across all folds whose magnitude exceeded ``q_clip`` before clipping.
+          Close to 0 means the cap is a safety net; close to 1 means it is
+          doing the estimating instead of the bridge. Only emitted when
+          ``q_clip`` is set.
+        - ``lam_h_frac@<v>`` / ``lam_q_frac@<v>``: for :class:`KernelBridge`
+          tuned with ``lam_grid``, the fraction of cross-fitting folds
+          (``n_splits``) whose held-out moment-loss search landed on grid
+          value ``v`` — one pair of keys per **configured grid value**
+          (explicit ``0.0`` for a value no fold picked), so a distribution
+          piled on the smallest or largest value flags a grid that does not
+          bracket the optimum (see :class:`KernelBridge`, "prefer lam_grid to
+          the defaults"). Only emitted when the bridge was actually tuned.
+          Emitting the full grid rather than only the values folds happened
+          to pick is load-bearing, not cosmetic: `run_method` accumulates
+          diagnostics across episodes by key, padding an episode that never
+          emitted a key with NaN rather than 0. A grid value silently
+          restricted to "values chosen this episode" would make each key's
+          across-episode NaN-mean run over a different subset of episodes,
+          so the printed fractions would no longer sum to 1 — the fractions
+          are exact per episode, but averaging fractions computed over
+          different populations is not.
+        """
+        diag: dict[str, float] = {}
+
+        if self.q_clip is not None and getattr(self, "_clip_total_", 0):
+            diag["q_clip_frac"] = self._clip_hits_ / self._clip_total_
+
+        lam_h = getattr(self, "_lam_h_choices_", [])
+        lam_q = getattr(self, "_lam_q_choices_", [])
+        grid = sorted(float(v) for v in (self.bridge_params or {}).get("lam_grid", []))
+        if lam_h and grid:
+            n_folds = len(lam_h)
+            for lam in grid:
+                diag[f"lam_h_frac@{lam:g}"] = lam_h.count(lam) / n_folds
+                diag[f"lam_q_frac@{lam:g}"] = lam_q.count(lam) / n_folds
+
+        return diag
