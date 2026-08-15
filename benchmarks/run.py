@@ -432,30 +432,19 @@ def save_diagnostics_yaml(path: Path, diagnostics: dict[str, np.ndarray]) -> Non
 
 
 def load_diagnostics_yaml(path: Path) -> dict[str, np.ndarray]:
-    """Inverse of `save_diagnostics_yaml`, for the cache-hit path."""
+    """Inverse of `save_diagnostics_yaml`, for reading a finished run back in.
+
+    Not called by the run loop — diagnostics are written and never re-read
+    during a run — but kept as the round-trip partner of the writer, so
+    analysis code has one place to parse the format rather than reaching into
+    the YAML itself.
+    """
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     return {
         key: np.array([np.nan if v is None else v for v in vals], dtype=np.float32)
         for key, vals in data.get("episodes", {}).items()
     }
-
-
-def print_diagnostics(name: str, diagnostics: dict[str, np.ndarray]) -> None:
-    """One line per diagnostic key: the mean over episodes that reported it.
-
-    NaN-aware (a key some episodes skip is averaged over the ones that didn't),
-    and silent when a method emits no diagnostics at all.
-    """
-    if not diagnostics:
-        return
-    parts = []
-    for key, arr in sorted(diagnostics.items()):
-        finite = arr[~np.isnan(arr)]
-        if finite.size:
-            parts.append(f"{key}={finite.mean():.3g}")
-    if parts:
-        console.print(f"    [dim]diag ({name}): {'  '.join(parts)}[/]")
 
 
 def print_partial_results(
@@ -584,9 +573,6 @@ def main() -> None:
                     times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
                     console.print(f"  [dim]↩  {out_name:<28} loaded from cache[/]")
                     accumulated[out_name] = (preds, times)
-                diag_path = next((p for p in diag_files.values() if p.exists()), None)
-                if diag_path is not None:
-                    print_diagnostics(name, load_diagnostics_yaml(diag_path))
                 continue
 
             method_compute = resolve_method_compute(global_compute, mcfg)
@@ -620,7 +606,6 @@ def main() -> None:
                     f"  [green]✓[/] {out_name:<28} saved  [dim]({elapsed:.1f}s)[/]"
                 )
                 accumulated[out_name] = (preds, times)
-            print_diagnostics(name, diagnostics)
 
             print_partial_results(accumulated, estimands, targets)
 

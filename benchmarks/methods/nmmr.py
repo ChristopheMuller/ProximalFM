@@ -184,6 +184,7 @@ class NMMREstimator:
         self._W_train: torch.Tensor | None = None
         self._dim_A: int = 1
         self._device = self._select_device(self.cfg.device)
+        self.diagnostics_: dict[str, float] = {}
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -225,6 +226,8 @@ class NMMREstimator:
         self._X_scale = torch.std(X_t, dim=0, unbiased=False, keepdim=True).clamp_min(
             1e-6
         )
+
+        self._record_kernel_diagnostics(A_t, Z_t, X_t)
 
         input_dim = self._dim_A + W_t.shape[1] + X_t.shape[1]
         self._model = _MLP(input_dim, cfg.hidden_dim, cfg.n_layers).to(self._device)
@@ -388,6 +391,61 @@ class NMMREstimator:
             t(W).view(n, -1) if W.ndim == 1 else t(W),
             t(Z).view(n, -1) if Z.ndim == 1 else t(Z),
         )
+
+    def _record_kernel_diagnostics(
+        self,
+        A_t: torch.Tensor,
+        Z_t: torch.Tensor,
+        X_t: torch.Tensor,
+    ) -> None:
+        """Measure how much moment signal the kernel actually carries.
+
+        ``length_scale`` is a fixed absolute width (1.0 by default, matching the
+        reference implementation, which never overrides ``rbf_kernel``'s
+        default). But it is applied to the concatenated ``(A, Z/sd, X/sd)``
+        vector, whose squared norms grow with ``1 + d_Z + d_X`` — so the same
+        width means something different in every episode, and past a handful of
+        dimensions ``K`` approaches the identity.
+
+        That matters because the whole moment condition lives in K's
+        **off-diagonal**. The V-statistic's diagonal term is just ``MSE/n``, so
+        a near-diagonal K quietly turns the objective into ordinary regression
+        on ``(A, W, X)`` — the confounded fit the method exists to avoid — while
+        the U-statistic, which zeroes the diagonal, keeps only a vanishing
+        remainder. Neither failure is visible in the loss curve: both look like
+        healthy convergence.
+
+        Hence these keys, measured once per fit on the leading
+        ``batch_size`` rows (no RNG — a permutation here would shift the
+        training minibatch stream and change results for a diagnostic):
+
+        - ``kernel_dim`` — ``1 + d_Z + d_X``, the width driving the effect.
+        - ``kernel_offdiag_median`` / ``kernel_offdiag_mean`` — the typical
+          off-diagonal entry against a diagonal of exactly 1. Small values mean
+          the moment condition is barely being enforced; read them before
+          reading an NMMR number.
+        """
+        m = min(A_t.shape[0], self.cfg.batch_size)
+        if m < 2:
+            return
+
+        with torch.no_grad():
+            k_input = torch.cat(
+                [
+                    A_t[:m],
+                    Z_t[:m] / self._Z_scale,
+                    X_t[:m] / self._X_scale,
+                ],
+                dim=1,
+            )
+            K = _rbf_kernel_matrix(k_input, length_scale=self.cfg.length_scale)
+            off = K[~torch.eye(m, dtype=torch.bool, device=self._device)]
+
+            self.diagnostics_ = {
+                "kernel_dim": float(k_input.shape[1]),
+                "kernel_offdiag_median": float(off.median()),
+                "kernel_offdiag_mean": float(off.mean()),
+            }
 
     def _predict_effect_paired_w(
         self,

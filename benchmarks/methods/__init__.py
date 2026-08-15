@@ -638,6 +638,7 @@ class NMMR_Wrapper(CATEEstimator):
         self._base_cfg = cfg
         self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
         self.model = NMMREstimator(cfg)
+        self._tune_diag: dict[str, float] = {}
 
         self.strategy = kwargs.get("strategy", "paired")
         if self.strategy not in self._VALID_STRATEGIES:
@@ -661,6 +662,7 @@ class NMMR_Wrapper(CATEEstimator):
             raise ValueError("NMMR requires W and Z proxies.")
 
         cfg = self._base_cfg
+        self._tune_diag = {}
         if self._tune_cfg.enabled and self._tune_cfg.grid:
             best = self._tune(X, A, Y, W, Z)
             cfg = replace(self._base_cfg, **best)
@@ -677,7 +679,12 @@ class NMMR_Wrapper(CATEEstimator):
         Candidates are trained on a train split and ranked by held-out moment
         loss (a fixed-kernel score, so bandwidth choices stay comparable).
         """
-        from benchmarks.tuning import sample_candidates, search, train_val_split
+        from benchmarks.tuning import (
+            sample_candidates,
+            search,
+            search_diagnostics,
+            train_val_split,
+        )
 
         tc = self._tune_cfg
         candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
@@ -703,7 +710,10 @@ class NMMR_Wrapper(CATEEstimator):
             est.fit(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
             return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
 
-        best, _, _ = search(candidates, fit_score)
+        best, best_score, results = search(candidates, fit_score)
+        self._tune_diag = search_diagnostics(
+            tc.grid, candidates, best, best_score, results
+        )
         return best
 
     def _predict_strategy(self, strategy, X, *, W=None):
@@ -723,6 +733,29 @@ class NMMR_Wrapper(CATEEstimator):
             o["name"]: self._predict_strategy(o["strategy"], X, W=W)
             for o in self._outputs
         }
+
+    def diagnostics(self) -> dict[str, float]:
+        """What the kernel carried, and where the search landed.
+
+        Two groups, worth reading in this order:
+
+        - ``kernel_*`` from :class:`NMMREstimator` — whether the moment
+          condition was enforced at all at this episode's dimension (see
+          ``NMMREstimator._record_kernel_diagnostics``). A
+          ``kernel_offdiag_median`` near zero means the number reported for the
+          episode is closer to a confounded regression on ``(A, W, X)`` than to
+          NMMR, so check it before reading anything else here.
+        - ``tune_*`` from :func:`benchmarks.tuning.search_diagnostics` — the
+          selected value per grid parameter, plus the candidate count and score
+          spread that say whether "selected" means anything. Absent when the
+          method was configured without a ``tune:`` block.
+
+        One fit backs every entry in ``outputs:``, so these describe the shared
+        model rather than any one of paired / independent / conditional.
+        """
+        diag = dict(getattr(self.model, "diagnostics_", {}) or {})
+        diag.update(self._tune_diag)
+        return diag
 
 
 class DFPV_Wrapper(CATEEstimator):

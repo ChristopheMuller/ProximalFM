@@ -116,3 +116,79 @@ def search(
             best_score, best_hparams = score, hp
 
     return best_hparams, best_score, results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Diagnostics
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _grid_key(value) -> str:
+    """A stable, printable spelling of a grid value for a diagnostic key."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return str(value)
+    return f"{value:g}"
+
+
+def search_diagnostics(
+    grid: dict,
+    candidates: list[dict],
+    best: dict,
+    best_score: float,
+    results: list[tuple[dict, float]],
+) -> dict[str, float]:
+    """Scalar record of what a search actually did, for ``CATEEstimator.diagnostics``.
+
+    Emitted keys:
+
+    - ``tune_n_candidates`` — how many candidates were *evaluated*, which is not
+      the grid size whenever ``n_trials`` is smaller than the Cartesian product.
+      This is the one that catches a search that has silently collapsed to a
+      single random draw.
+    - ``tune_best_score`` — the winning held-out score.
+    - ``tune_score_range`` — spread between the best and worst finite score. Near
+      zero means the criterion did not separate the candidates, so the "chosen"
+      value is arbitrary and reading it as a tuned optimum is a mistake.
+    - ``tune_n_failed`` — candidates whose score was NaN/inf and were skipped.
+    - ``tune_<param>_frac@<value>`` — 1.0 for the selected value of each grid
+      parameter, 0.0 for a value that was **offered to the search and lost**,
+      and *absent* for a configured value no candidate carried.
+
+    That last distinction matters as soon as ``n_trials`` is below the grid
+    size, because then the candidates are a random subset and most configured
+    values are never tried. Reporting those as 0.0 would read as "lost", which
+    is the opposite of the truth — it is the *grid* that failed to reach them,
+    not the value that failed. Omitting the key instead reuses the convention
+    the runner already has: ``run_method`` accumulates diagnostics by key and
+    pads an episode that did not emit one with NaN, and the summary mean is
+    NaN-aware, so a never-offered value surfaces as ``None`` rather than as a
+    confident zero. Read alongside ``tune_n_candidates``, which says how much of
+    the grid was reachable at all.
+
+    Within one episode the emitted fractions for a parameter still sum to 1, so
+    :meth:`PLearner.diagnostics`'s concern — averaging fractions computed over
+    different populations — is handled rather than dodged: with a fixed
+    ``tune.seed`` the candidate set is identical in every episode and the key
+    set therefore does not vary, and if the seed is ever varied per episode each
+    surviving key is the conditional rate "of the episodes where this value was
+    a candidate, how often it won", which is the number you would want.
+    """
+    finite = [s for _, s in results if np.isfinite(s)]
+
+    diag: dict[str, float] = {
+        "tune_n_candidates": float(len(candidates)),
+        "tune_n_failed": float(len(results) - len(finite)),
+    }
+    if finite:
+        diag["tune_best_score"] = float(best_score)
+        diag["tune_score_range"] = float(max(finite) - min(finite))
+
+    for param, values in grid.items():
+        values = list(values) if isinstance(values, (list, tuple)) else [values]
+        offered = {c.get(param) for c in candidates}
+        chosen = best.get(param)
+        for v in values:
+            if v in offered:
+                diag[f"tune_{param}_frac@{_grid_key(v)}"] = float(v == chosen)
+
+    return diag
