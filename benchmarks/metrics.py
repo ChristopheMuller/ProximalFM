@@ -301,7 +301,9 @@ class Task:
 
     * ``cate`` (the headline) shows only per-row methods that condition on X
       alone. A ``cate(x,w)`` output estimates E[Y1−Y0 | X, W], a *different*
-      quantity, and ranking it against τ*(x) would be a category error.
+      quantity, and ranking it against τ*(x) would be a category error — and
+      the same goes for ``cate(x,u)``, an ``is_oracle: true`` competitor
+      handed the true confounder.
     * ``ite`` admits every per-row method, since that is where conditioning on
       the proxies is a genuine advantage.
     * ``ate`` admits everyone: its columns are level-only, which is meaningful
@@ -329,7 +331,7 @@ class Task:
         kind, inputs = parse_estimand(tag)
         if kind not in self.kinds:
             return False
-        return self.allow_proxy_conditioning or not ({"w", "z"} & set(inputs))
+        return self.allow_proxy_conditioning or not ({"w", "z", "u"} & set(inputs))
 
     def target_kind(self, available: Sequence[str]) -> Optional[str]:
         """Which of the available per-row targets this task scores, or None."""

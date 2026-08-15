@@ -45,13 +45,13 @@ confounder onto `X`. Tags are derived from the config by
 [`methods.method_estimand`](methods.py) (override with e.g. `estimand: cate(x)` on a method or an
 `outputs[]` entry; the legacy `x`/`xw`/`ate` spellings still parse, as `cate(x)`/`cate(x,w)`/`ate(x)`).
 
-Which table a tag lands in is then two checks and nothing more — the kind, and whether `w` or `z` is
-in the parenthesis:
+Which table a tag lands in is then two checks and nothing more — the kind, and whether `w`, `z`, or
+`u` is in the parenthesis:
 
 | tag | appears in |
 |---|---|
-| `cate(…)` without `w`/`z` — e.g. `cate(x)`, `cate(x,u)` | **`summary_cate.csv`** (headline), `summary_ite.csv`, `summary_ate.csv` |
-| `cate(…)` with `w` or `z` — e.g. `cate(x,w)`, `cate(x,w,z)` | `summary_ite.csv`, `summary_ate.csv` |
+| `cate(x)` — no `w`/`z`/`u` | **`summary_cate.csv`** (headline), `summary_ite.csv`, `summary_ate.csv` |
+| `cate(…)` with `w`, `z`, or `u` — e.g. `cate(x,w)`, `cate(x,u)`, `cate(x,w,z)` | `summary_ite.csv`, `summary_ate.csv` |
 | `ate(…)` | `summary_ate.csv` only |
 
 The routing applies to *methods*; the reference rows below bypass it.
@@ -59,7 +59,9 @@ The routing applies to *methods*; the reference rows below bypass it.
 `cate(x,w)` is a genuinely finer conditional, not a better estimate of `tau(x)`. On the ITE target that
 extra information is a real advantage; on the CATE target it is answering a different question. It
 therefore gets its own row in the ITE table and none in the CATE ranking — the "they had the
-advantage and still lost" comparison.
+advantage and still lost" comparison. The same applies to `cate(x,u)`: an `is_oracle: true` competitor
+conditions on the true confounder, so it belongs in the ITE table (where the advantage is fair game)
+and not in the CATE ranking against `tau*(x)`.
 
 **Reference rows** are computed with no fitting. Unlike every other output they are **not** routed by
 their tag: the table above is a fairness rule for competitors, and a reference row competes with

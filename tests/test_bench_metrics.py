@@ -172,9 +172,9 @@ def test_malformed_estimand_tags_are_refused(tag):
         ("cate(x,w)", False, True, True),
         ("cate(x,z)", False, True, True),
         ("cate(x,w,z)", False, True, True),
-        # An oracle's u is not disqualifying: those rows are upper bounds, and
-        # dropping them from the headline table is exactly what they are for.
-        ("cate(x,u)", True, True, True),
+        # An oracle's u is disqualifying on the headline table, same as w/z:
+        # cate(x,u) estimates a different quantity than tau*(x).
+        ("cate(x,u)", False, True, True),
         ("cate(x,w,u)", False, True, True),
         ("ate(x)", False, False, True),
     ],
