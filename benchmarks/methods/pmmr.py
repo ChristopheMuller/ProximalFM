@@ -14,15 +14,22 @@ Let, over the n training points, with product kernels over (A, Z, X) and (A, W, 
 The bridge coefficients solve the regularised normal equations:
     α = (L Φ L + λ₁ n L + λ₂ n I)⁻¹ L Φ Y
 
-Prediction of E[Y | do(a)] marginalises over the empirical (W, X):
-    ŷ(a) = αᵀ [ k_A(A_train, a) ⊙ w̄ ⊙ x̄ ]
-    where w̄ = mean_row(K_W),  x̄ = mean_row(K_X)
+Prediction of E[Y | do(a)] marginalises over the *joint* empirical (W, X):
+    ŷ(a) = αᵀ [ k_A(A_train, a) ⊙ wx̄ ]
+    where wx̄ = mean_row(K_W ⊙ K_X)
+
+The mean is taken over the elementwise product, not of each gram separately —
+E_{W,X}[·] under the joint empirical measure is (1/n) Σ_j k_W(w_i,w_j) k_X(x_i,x_j),
+which is not mean_row(K_W) ⊙ mean_row(K_X) unless W ⊥ X in sample.
 
 CATE = ŷ(1) - ŷ(0)  (for binary treatment).
 
 All computation is pure numpy/scipy — no JAX dependency.
 
-Tuning entry point: PMMRConfig — every knob lives there with sensible defaults.
+Tuning entry point: PMMRConfig. Note that PMMR is *not* a fixed-hyperparameter
+method: the reference implementation grid-searches λ and selects on a held-out
+V-statistic. We do not, so the defaults here are unvalidated starting points
+rather than tuned values — see PMMRConfig for the mapping to the paper's λ.
 """
 
 from __future__ import annotations
@@ -49,9 +56,24 @@ class PMMRConfig:
     kernel_scale: float = 1.0
 
     # ── Regularisation ────────────────────────────────────────────────────────
-    # lam1 penalises the bridge gram L; lam2 is a small ridge on the identity
-    # for numerical stability. Both are fixed (PMMR has no internal CV loop).
+    # lam1 is the RKHS-norm penalty on the bridge (the αᵀLα term). It maps onto
+    # the paper's λ — which multiplies L in α = (LΦL + λL)⁻¹LΦy with Φ scaled by
+    # 1/n² — as  lam1 = λ·n.  So a *fixed* lam1 means λ ∝ 1/n, which decays
+    # faster than the n^(-1/2)..n^(-1/4) the convergence theorem asks for; the
+    # right reparameterisation is lam1 = c·√n.  The paper grid-searches λ over
+    # [4.9e-6, 0.25] (50 points, selected on a held-out V-statistic); lam1 = 1.0
+    # sits mid-grid at n≈2000 but is a guess, not a selected value, and visibly
+    # over-shrinks h relative to lam1 ≈ 1e-3 on synthetic checks.
     lam1: float = 1.0
+
+    # lam2 is NOT cosmetic jitter — it sets the smallest eigenvalue of the
+    # normal-equation matrix, and hence whether the solve means anything. LΦL is
+    # badly rank-deficient: measured at n=2000, lam2=1e-4 gives eig_min ≈ 2e-1
+    # (cond ≈ 5e6), while lam2=0 gives eig_min ≈ 2e-5 (cond ≈ 5e10). Low-dim
+    # W/Z with no X is worse still. Do not lower it without checking rcond.
+    # (The reference implementation stabilises differently: jitter added to L
+    # and to the Z-gram before the products are formed, not to the assembled
+    # left-hand side.)
     lam2: float = 1e-4
 
     # No seed: fit() is fully deterministic. Do not add a global
