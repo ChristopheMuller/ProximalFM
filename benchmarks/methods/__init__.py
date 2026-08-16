@@ -550,6 +550,9 @@ class PMMR_Wrapper(CATEEstimator):
 
         cfg = PMMRConfig(
             kernel_scale=kwargs.get("kernel_scale", 1.0),
+            # Default read off the dataclass so the reference-matching value
+            # lives in exactly one place.
+            kernel_scale_z=kwargs.get("kernel_scale_z", PMMRConfig.kernel_scale_z),
             lam1=kwargs.get("lam1", 1.0),
             lam2=kwargs.get("lam2", 1e-4),
             jitter=kwargs.get("jitter", 1e-10),
