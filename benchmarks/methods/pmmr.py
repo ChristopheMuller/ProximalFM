@@ -11,6 +11,9 @@ Let, over the n training points, with product kernels over (A, Z, X) and (A, W, 
     Φ = K_A ⊙ K_Z ⊙ K_X      (instrument-side feature gram)
     L = K_A ⊙ K_W ⊙ K_X      (bridge-side feature gram)
 
+K_X is shared by both grams; K_Z alone carries an extra widening factor
+(kernel_scale_z). See PMMRConfig.
+
 The bridge coefficients solve the regularised normal equations:
     α = (L Φ L + λ₁ n L + λ₂ n I)⁻¹ L Φ Y
 
@@ -47,6 +50,12 @@ from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKe
 # six tries span ten orders of magnitude above the configured starting value.
 _JITTER_MAX_TRIES = 6
 _JITTER_ESCALATION = 100.0
+
+# The reference implementation sets the instrument-side bandwidth to
+# `median / 0.6` while leaving the bridge side at the plain median heuristic.
+# Their kernel is exp(-d²/(2σ²)) and ours is exp(-d²/(2·median²·scale)), so
+# their divisor of 0.6 on σ is a scale of 1/0.6² here.
+_REFERENCE_Z_WIDENING = 1.0 / 0.6**2  # ≈ 2.778
 
 
 def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
@@ -108,9 +117,51 @@ def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
 @dataclass
 class PMMRConfig:
     # ── Kernel ────────────────────────────────────────────────────────────────
-    # Multiplicative rescaling applied to the median-heuristic bandwidth σ.
+    # Global multiplicative rescaling of the median-heuristic bandwidth σ.
     # Values < 1 → narrower kernel (more local); > 1 → wider (smoother).
     kernel_scale: float = 1.0
+
+    # Extra widening applied to the treatment-inducing proxy kernel K_Z alone —
+    # the factor that distinguishes Φ from L. Composes with kernel_scale, so
+    # Z's bandwidth is kernel_scale * kernel_scale_z and everything else's is
+    # kernel_scale. This has to be its own knob rather than a different default
+    # on a shared one: the two grams want different bandwidths, and no single
+    # scale can express that.
+    #
+    # Scope note: X enters *both* Φ and L, and we deliberately give it one
+    # shared bandwidth rather than widening its Φ-side copy. The reference
+    # cannot settle this — its experiments set X = ∅ throughout ("we assume
+    # that X is a null set"), so the 0.6 divisor was only ever applied to
+    # (A, Z). Widening X on the Φ side would make the objective less sensitive
+    # to moment violations that vary with X, which is the wrong trade when X is
+    # exactly what CATE conditions on. The competing consideration — a product
+    # kernel decays faster the more factors it has, so Φ drifts toward I as d_X
+    # grows — is better handled by tuning kernel_scale globally.
+    #
+    # Why it is not a nuisance parameter. k decides which moment violations the
+    # MMR objective can see, and both limits are degenerate:
+    #   narrow → Φ → I    → the objective collapses to Σᵢ dᵢ², i.e. plain kernel
+    #                       ridge of Y on (A, W, X) — the paper's KernelRidge-W
+    #                       baseline. The proximal correction is gone; how much
+    #                       bias that costs depends on how good a proxy W is.
+    #   wide   → Φ → 11ᵀ  → the objective collapses to (mean d)², a single
+    #                       moment, and h is badly under-identified.
+    # Measured, n=1500, true ATE 2.0, naive contrast 4.27, lam1=1e-3, over
+    # kernel_scale_z = 1e-4 … 1e6:
+    #   informative W (proxy noise 0.5; KernelRidge-W = 2.74)
+    #       2.45  2.26  2.20  2.17  2.17  2.14  2.30  2.13  3.82
+    #   noisy W       (proxy noise 1.5; KernelRidge-W = 3.74)
+    #       3.58  3.35  2.89  2.44  2.27  2.17  2.15  2.55  4.09
+    # The wide end is the sharper failure — it walks back to the naive contrast.
+    # The narrow end degrades gracefully with an informative W and badly with a
+    # noisy one. The default sits in a broad flat basin in both cases.
+    #
+    # The default reproduces the reference implementation, which hardcodes
+    # `ak = median(AZ) / 0.6` (`W_kern_divisor`) against a plain median
+    # heuristic on the bridge side — a deliberate step away from the Φ ≈ I
+    # cliff. Note their Appendix D describes a plain median heuristic on *both*
+    # sides; only the released code widens Φ. We follow the code.
+    kernel_scale_z: float = _REFERENCE_Z_WIDENING
 
     # ── Regularisation ────────────────────────────────────────────────────────
     # lam1 is the RKHS-norm penalty on the bridge (the αᵀLα term). It maps onto
@@ -215,8 +266,13 @@ class PMMREstimator:
         n = len(Y)
 
         # ── Fit kernel bandwidths (median heuristic) ───────────────────────
+        # Everything uses kernel_scale; the proxy Z alone is widened further by
+        # kernel_scale_z. K_A has no bandwidth (indicator) and K_X is shared by
+        # both grams, so Z is the only factor that differs between Φ and L.
         k_A = BinaryKernel().fit(A)
-        k_Z = ColumnWiseGaussianKernel().fit(Z, scale=cfg.kernel_scale)
+        k_Z = ColumnWiseGaussianKernel().fit(
+            Z, scale=cfg.kernel_scale * cfg.kernel_scale_z
+        )
         k_W = ColumnWiseGaussianKernel().fit(W, scale=cfg.kernel_scale)
 
         K_A = k_A(A, A)
@@ -230,7 +286,8 @@ class PMMREstimator:
             k_X = None
             K_X = np.ones((n, n))
 
-        # Compute Gram matrices
+        # Compute Gram matrices. X is shared: only K_Z carries the extra
+        # widening, so the covariate factor is identical on both sides.
         Phi = K_A * K_Z * K_X
         L = K_A * K_W * K_X
 
