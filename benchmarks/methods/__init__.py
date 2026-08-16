@@ -637,6 +637,23 @@ class NMMR_Wrapper(CATEEstimator):
         # a copy of this and refits the winner on the full context.
         self._base_cfg = cfg
         self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
+        if "loss" in self._tune_cfg.grid:
+            # Not deprecated — refused. Candidates are ranked by the held-out
+            # moment loss of their *own* statistic (NMMREstimator.score), so a
+            # grid over `loss` would compare U-statistic scores against
+            # V-statistic ones, which differ by V's diagonal term (MSE/n) and
+            # are not on a common scale. The statistic identifies the method
+            # variant; fix it per method entry.
+            raise ValueError(
+                "NMMR: `loss` may not appear in `tune.grid` — the U- and "
+                "V-statistic scores are not comparable, so a search over it "
+                "would rank on scale rather than on fit. Set it as a "
+                "method-level key instead:\n"
+                "    - name: NMMR-U\n"
+                "      cls:  NMMR\n"
+                "      loss: u_stat\n"
+                "      tune: { grid: { hidden_dim: [...], ... } }"
+            )
         self.model = NMMREstimator(cfg)
         self._tune_diag: dict[str, float] = {}
 
@@ -677,7 +694,10 @@ class NMMR_Wrapper(CATEEstimator):
         """Random/grid search over `tune.grid`; return the best field overrides.
 
         Candidates are trained on a train split and ranked by held-out moment
-        loss (a fixed-kernel score, so bandwidth choices stay comparable).
+        loss: a *fixed-kernel* score, so bandwidth choices stay comparable,
+        evaluated with this method's own U/V statistic, so the ranking is on
+        the objective the candidates were trained for. `loss` itself is not
+        tunable — see `__init__` for why.
         """
         from benchmarks.tuning import (
             sample_candidates,

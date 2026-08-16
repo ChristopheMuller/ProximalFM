@@ -281,7 +281,7 @@ class NMMREstimator:
         W: np.ndarray,
         Z: np.ndarray,
         length_scale: float = 1.0,
-        loss: Literal["u_stat", "v_stat"] = "v_stat",
+        loss: Literal["u_stat", "v_stat"] | None = None,
     ) -> float:
         """Held-out kernel moment loss (lower is better) for model selection.
 
@@ -289,12 +289,24 @@ class NMMREstimator:
         validation metric is the same kernel-weighted moment loss evaluated on
         rows the model was not trained on.
 
-        Crucially, scoring uses a *fixed* kernel bandwidth and the V-statistic
-        regardless of the trained model's own ``length_scale``/``loss``. This
-        keeps scores comparable across candidates whose kernel knobs differ
-        during a hyperparameter search — otherwise a wider training bandwidth
-        would trivially rescale the loss.
+        Two knobs, and they are deliberately treated differently:
+
+        - ``length_scale`` is *fixed* here, independent of the trained model's
+          own bandwidth, so scores stay comparable across candidates whose
+          kernel knobs differ during a hyperparameter search — otherwise a
+          wider training bandwidth would trivially rescale the loss.
+        - ``loss`` defaults to the model's **own** statistic (``cfg.loss``), so
+          each estimator is validated on the objective it was trained for.
+          Scoring everything on the V-statistic instead — as this used to —
+          adds V's diagonal term, which is exactly ``MSE/n``: a U-statistic
+          model would then be ranked partly by an ordinary-regression fit on
+          ``(A, W, X)``, the confounded quantity the method exists to avoid.
+          ``cfg.loss`` is therefore a fixed property of a method entry, not a
+          tunable, and :class:`benchmarks.methods.NMMR_Wrapper` refuses to see
+          it inside a ``tune.grid``.
         """
+        if loss is None:
+            loss = self.cfg.loss
         if self._model is None:
             raise RuntimeError("Call fit() before score().")
 
