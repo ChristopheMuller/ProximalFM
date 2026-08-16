@@ -54,8 +54,9 @@ class PMMRConfig:
     lam1: float = 1.0
     lam2: float = 1e-4
 
-    # ── Reproducibility ───────────────────────────────────────────────────────
-    seed: int = 42
+    # No seed: fit() is fully deterministic. Do not add a global
+    # np.random.seed() call here — estimators share a process in the episode
+    # pool, so it would reseed whatever runs next.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -117,7 +118,6 @@ class PMMREstimator:
             self (for method chaining).
         """
         cfg = self.cfg
-        np.random.seed(cfg.seed)
 
         A = as_2d(A)
         Y = np.asarray(Y, dtype=float).reshape(-1)
