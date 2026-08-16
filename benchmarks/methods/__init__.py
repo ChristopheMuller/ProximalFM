@@ -552,6 +552,7 @@ class PMMR_Wrapper(CATEEstimator):
             kernel_scale=kwargs.get("kernel_scale", 1.0),
             lam1=kwargs.get("lam1", 1.0),
             lam2=kwargs.get("lam2", 1e-4),
+            jitter=kwargs.get("jitter", 1e-10),
         )
         self.model = PMMREstimator(cfg)
 

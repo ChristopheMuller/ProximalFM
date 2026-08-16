@@ -38,9 +38,66 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.linalg import solve
+from scipy.linalg import solve, LinAlgError
 
 from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
+
+
+# Escalation budget for _solve_pd: each retry multiplies the jitter by 100, so
+# six tries span ten orders of magnitude above the configured starting value.
+_JITTER_MAX_TRIES = 6
+_JITTER_ESCALATION = 100.0
+
+
+def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
+    """
+    Solve the symmetric positive-definite system ``lhs @ x = rhs`` by Cholesky,
+    adding a jitter *relative to the scale of lhs* and escalating it if the
+    factorisation fails.
+
+    Why relative. ``lam2 * n * I`` is an absolute floor, so how much
+    conditioning it actually buys depends on the magnitude of ``L Φ L``, which
+    varies by orders of magnitude across episodes (it grows like n² and shrinks
+    as the kernels narrow). Scaling the jitter by ``mean(diag(lhs))`` — the mean
+    eigenvalue — makes it a bound on the condition number instead: a jitter of j
+    caps cond at roughly 1/j regardless of episode scale.
+
+    Why it matters for low-dimensional data. Φ and L are products of per-column
+    Gaussian grams, so with few proxy columns and no covariates they are close
+    to rank-deficient and ``L Φ L`` is numerically singular: with lam2 = 0 and
+    scalar W, Z, the assembled matrix reaches rcond ≈ 1e-21, well past what
+    double precision can resolve. The default lam2 already lifts that in the
+    cases measured here, but nothing guarantees it does for every episode, and
+    the failure is silent — an ill-conditioned solve returns a plausible-looking
+    α whose component in the near-null space is noise.
+
+    Cholesky (``assume_a="pos"``) is used rather than the previous LDL
+    (``assume_a="sym"``) because it is about twice as fast and, more usefully,
+    *raises* on a matrix that is not positive definite instead of quietly
+    returning a solution. That failure is the signal this helper acts on.
+    """
+    n = lhs.shape[0]
+    scale = float(np.trace(lhs)) / n
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise LinAlgError(
+            f"PMMR normal-equation matrix has non-positive/non-finite scale "
+            f"(mean diagonal = {scale}); the kernel grams are degenerate."
+        )
+
+    eye = np.eye(n)
+    current = jitter
+    for _ in range(_JITTER_MAX_TRIES):
+        try:
+            return solve(lhs + current * scale * eye, rhs, assume_a="pos")
+        except LinAlgError:
+            current *= _JITTER_ESCALATION
+
+    raise LinAlgError(
+        f"PMMR normal equations remained non-positive-definite after "
+        f"{_JITTER_MAX_TRIES} jitter escalations (up to "
+        f"{current / _JITTER_ESCALATION:.1e} * mean(diag)). Raise lam2, widen "
+        f"kernel_scale, or check for duplicate/constant proxy columns."
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +132,15 @@ class PMMRConfig:
     # and to the Z-gram before the products are formed, not to the assembled
     # left-hand side.)
     lam2: float = 1e-4
+
+    # Relative jitter for the Cholesky solve, in units of mean(diag(lhs)) — see
+    # _solve_pd. Unlike lam2 this is not a statistical knob: it is insurance
+    # against a numerically singular normal-equation matrix on low-dimensional
+    # proxies, and escalates by 100x per retry if the factorisation fails. At
+    # 1e-10 it caps the condition number near 1e10 while moving the fitted
+    # bridge by ~1e-11 relative on well-conditioned data, i.e. it is inert
+    # whenever it is not needed.
+    jitter: float = 1e-10
 
     # No seed: fit() is fully deterministic. Do not add a global
     # np.random.seed() call here — estimators share a process in the episode
@@ -172,7 +238,7 @@ class PMMREstimator:
         LPhi = L @ Phi
         lhs = LPhi @ L + cfg.lam1 * n * L + cfg.lam2 * n * np.eye(n)
         rhs = LPhi @ Y
-        self._alpha = solve(lhs, rhs, assume_a="sym")
+        self._alpha = _solve_pd(lhs, rhs, cfg.jitter)
 
         # Empirical joint mean embedding of (W, X), used by the marginal ATE path.
         self._wx_mean = (K_W * K_X).mean(axis=1)
