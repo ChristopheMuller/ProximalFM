@@ -546,7 +546,10 @@ class PMMR_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
+        from dataclasses import fields
+
         from benchmarks.methods.pmmr import PMMRConfig, PMMREstimator
+        from benchmarks.tuning import TuningConfig
 
         cfg = PMMRConfig(
             kernel_scale=kwargs.get("kernel_scale", 1.0),
@@ -557,7 +560,32 @@ class PMMR_Wrapper(CATEEstimator):
             lam2=kwargs.get("lam2", 1e-4),
             jitter=kwargs.get("jitter", 1e-10),
         )
+
+        # Kept so `_tune` can build candidates off the configured baseline, then
+        # refit the winner on the full context.
+        self._PMMREstimator = PMMREstimator
+        self._base_cfg = cfg
+        self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
+
+        # `jitter` is numerics, not statistics — searching it would rank
+        # candidates by conditioning rather than by fit, and the winner would
+        # be whichever value happened to perturb the solve least on this split.
+        if "jitter" in self._tune_cfg.grid:
+            raise ValueError(
+                "PMMR: `jitter` may not appear in `tune.grid` — it is a "
+                "solver-stability floor, not a statistical hyperparameter. Set "
+                "it as a method-level key if you need to change it."
+            )
+        tunable = {f.name for f in fields(PMMRConfig)} - {"jitter"}
+        unknown = set(self._tune_cfg.grid) - tunable
+        if unknown:
+            raise ValueError(
+                f"PMMR: unknown `tune.grid` key(s) {sorted(unknown)}; "
+                f"choose from {sorted(tunable)}."
+            )
+
         self.model = PMMREstimator(cfg)
+        self._tune_diag: dict[str, float] = {}
 
         self.strategy = kwargs.get("strategy", "marginal")
         if self.strategy not in self._VALID_STRATEGIES:
@@ -582,8 +610,68 @@ class PMMR_Wrapper(CATEEstimator):
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("PMMR requires W and Z proxies.")
+
+        cfg = self._base_cfg
+        self._tune_diag = {}
+        if self._tune_cfg.enabled and self._tune_cfg.grid:
+            cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
+
+        # Fit the (possibly tuned) model once on the full context. Every output
+        # variant later reuses this single fit — no refitting.
+        self.model = self._PMMREstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def _tune(self, X, A, Y, W, Z) -> dict:
+        """Random/grid search over `tune.grid`; return the best field overrides.
+
+        Candidates are fitted on a train split and ranked by the held-out
+        V-statistic (`PMMREstimator.score`) — the criterion the paper selects
+        on, and the one PMMR is fitted to. The scoring kernel is *fixed*, so
+        `kernel_scale` and `kernel_scale_z` are safe to search: without that,
+        a candidate could win by widening its own kernel rather than by fitting
+        better. See `PMMREstimator.score`.
+
+        Cost note: every candidate rebuilds the grams, which dominate a PMMR
+        fit (~0.6s of ~0.9s at n=2048). Candidates sharing a bandwidth pair
+        differ only in the final solve, so a memo keyed on
+        (kernel_scale, kernel_scale_z) would cut a λ-heavy grid by ~3x. Not
+        done here — the search is already cheap relative to the neural methods.
+        """
+        from scipy.linalg import LinAlgError
+
+        from benchmarks.tuning import (
+            sample_candidates,
+            search,
+            search_diagnostics,
+            train_val_split,
+        )
+
+        tc = self._tune_cfg
+        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        train_idx, val_idx = train_val_split(X.shape[0], tc.val_frac, tc.seed)
+
+        def split(idx):
+            return X[idx], A[idx], Y[idx], W[idx], Z[idx]
+
+        Xtr, Atr, Ytr, Wtr, Ztr = split(train_idx)
+        Xva, Ava, Yva, Wva, Zva = split(val_idx)
+
+        def fit_score(hparams: dict) -> float:
+            est = self._PMMREstimator(replace(self._base_cfg, **hparams))
+            try:
+                est.fit(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+            except LinAlgError:
+                # A candidate whose normal equations will not factorise is not
+                # a usable model; `search` skips non-finite scores.
+                return float("inf")
+            return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+
+        best, best_score, results = search(candidates, fit_score)
+        self._tune_diag = search_diagnostics(
+            tc.grid, candidates, best, best_score, results
+        )
+        return best
 
     def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other
@@ -603,6 +691,20 @@ class PMMR_Wrapper(CATEEstimator):
             o["name"]: self._predict_strategy(o["strategy"], X, W=W)
             for o in self._outputs
         }
+
+    def diagnostics(self) -> dict[str, float]:
+        """Where the hyperparameter search landed. Empty without a `tune:` block.
+
+        `tune_*` comes from :func:`benchmarks.tuning.search_diagnostics`. Read
+        `tune_score_range` first: PMMR's held-out V-statistic can be nearly flat
+        across a wide band of `lam1` (the estimate moves little between 1e-6 and
+        1e-1 on well-behaved data), so a range near zero means the "selected"
+        value is arbitrary and should not be read as an optimum.
+
+        One fit backs every entry in `outputs:`, so these describe the shared
+        model rather than any one of paired / independent / conditional.
+        """
+        return dict(self._tune_diag)
 
 
 class NMMR_Wrapper(CATEEstimator):

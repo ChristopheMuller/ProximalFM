@@ -312,6 +312,71 @@ class PMMREstimator:
 
         return self
 
+    def score(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+        kernel_scale: float = 1.0,
+        loss: Literal["v_stat", "u_stat"] = "v_stat",
+    ) -> float:
+        """Held-out MMR statistic (lower is better) for model selection.
+
+        This is the quantity the paper selects on: "the metric we use for
+        hyperparameter selection is the empirical estimate of the V-statistic,
+        R̂_V ... over a held-out validation set" (Appendix D). With residuals
+        d_i = h(a_i,w_i,x_i) − y_i and K the instrument-side gram over the
+        held-out (A, Z, X),
+
+            R̂_V = dᵀ K d / n²            (keeps the diagonal; what PMMR trains on)
+            R̂_U = dᵀ (K − diagK) d / n(n−1)   (drops it; unbiased but noisier)
+
+        V is the default because it is the objective PMMR is fitted to — Φ in
+        the normal equations includes its own diagonal — so the ranking is on
+        the criterion the candidates were trained for.
+
+        ``kernel_scale`` is deliberately **fixed and independent of the fitted
+        model's own bandwidths**, exactly as in
+        :meth:`NMMREstimator.score`. R̂ is a squared norm in H_k, so its scale
+        is set by k; letting each candidate score itself with its own k would
+        rank candidates by how wide their kernel is rather than by how well
+        their bridge fits, and a search over ``kernel_scale``/
+        ``kernel_scale_z`` would be won by whichever value shrinks the norm.
+        Because the split is fixed within an episode, every candidate is then
+        scored by the identical functional.
+
+        Returns NaN for fewer than two held-out rows (and for ``u_stat``, which
+        needs an off-diagonal pair to be defined at all).
+        """
+        self._check_fitted()
+
+        X = as_2d(X)
+        A = as_2d(A)
+        W = as_2d(W)
+        Z = as_2d(Z)
+        Y = np.asarray(Y, dtype=float).reshape(-1)
+        n = len(Y)
+        if n < 2:
+            return float("nan")
+
+        d = self.predict_bridge(A, W=W, X=X) - Y
+
+        # Fixed reference kernel over (A, Z, X) — see the docstring.
+        K = BinaryKernel().fit(A)(A, A)
+        K = K * ColumnWiseGaussianKernel().fit(Z, scale=kernel_scale)(Z, Z)
+        if X.shape[1] > 0:
+            K = K * ColumnWiseGaussianKernel().fit(X, scale=kernel_scale)(X, X)
+
+        if loss == "u_stat":
+            K = K - np.diag(np.diag(K))
+            return float(d @ K @ d / (n * (n - 1)))
+        if loss != "v_stat":
+            raise ValueError(f"Unknown loss {loss!r}; choose 'v_stat' or 'u_stat'.")
+        return float(d @ K @ d / (n * n))
+
     def predict(
         self,
         X: np.ndarray,
