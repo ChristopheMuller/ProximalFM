@@ -13,13 +13,29 @@ Tuning entry point: NMMRConfig — every knob lives there with sensible defaults
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+
+#: NMMRConfig fields a tuner may vary *without* retraining. Only the trajectory
+#: *length* qualifies: every other knob changes the optimisation itself, so a
+#: candidate needs its own run. `fit_trajectory` pauses at each requested epoch
+#: count, and the benchmark wrapper validates `tune.sweep` against this same
+#: set, so the two cannot drift apart. Mirrors `pmmr.SOLVE_ONLY_PARAMS`.
+#:
+#: Note what is deliberately *absent*: `w_strategy`, `x_cond_length_scale` and
+#: `x_cond_top_k` cost nothing to vary — they touch only the W-marginalisation
+#: at prediction time — but `score` is a moment loss on the bridge h(A,W,X)
+#: against Y and never evaluates that path, so every value would score
+#: identically and the "winner" would be whichever came first. Free to
+#: re-evaluate is not the same as selectable; both are required.
+SWEEP_ONLY_PARAMS = frozenset({"n_epochs"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -209,8 +225,70 @@ class NMMREstimator:
 
         Returns:
             self (for method chaining).
+
+        This is exactly ``fit_trajectory(..., milestones=(cfg.n_epochs,))`` run
+        to exhaustion — one code path, so a single fit and a swept one cannot
+        diverge. See :meth:`fit_trajectory` for the split and why it is exact.
+        """
+        for _ in self.fit_trajectory(
+            X, A, Y, W=W, Z=Z, milestones=(self.cfg.n_epochs,)
+        ):
+            pass
+        return self
+
+    def fit_trajectory(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+        milestones: Sequence[int],
+    ) -> Iterator[tuple[int, "NMMREstimator"]]:
+        """Train once, pausing after each milestone epoch so the caller can score.
+
+        Yields ``(epoch, self)`` once epoch ``m`` has completed, for every ``m``
+        in ``milestones``, then resumes training from exactly that state. The
+        run lasts ``max(milestones)`` epochs, so a search over ``n_epochs``
+        costs one training run rather than one per value — the counterpart of
+        :meth:`PMMREstimator.prepare`'s split, except that here what is shared
+        is a prefix of the optimisation rather than a set of matrices.
+
+        **The weights yielded at ``m`` are bit-identical to a fresh** ``fit``
+        **with** ``n_epochs=m``. Nothing in the loop reads ``cfg.n_epochs``
+        except the bound; the seeds are set once here and the MLP is built
+        before the first epoch, so both the initialisation and the whole
+        ``randperm`` stream are independent of where the run stops. That is what
+        makes ``sweep`` a re-spelling rather than an approximation, and
+        ``tests/test_bench_nmmr_sweep.py`` pins it.
+
+        Two things a caller must not break, both of which would silently
+        invalidate that claim rather than raise:
+
+        - **Do not consume RNG between yields.** :meth:`score` does not (a
+          ``no_grad`` forward plus an RBF gram), and neither does the
+          ``eval()``/``train()`` round trip it induces, since :class:`_MLP` has
+          no dropout or batch norm. Anything that draws — resampling the
+          validation split per milestone, say — would shift every subsequent
+          minibatch.
+        - **Score before advancing.** The yielded object is ``self``, mutated in
+          place; the next epoch overwrites it. Holding one for later gives the
+          final weights, not the milestone's. Keeping the *score* rather than a
+          state dict is what keeps memory flat in the number of milestones.
+
+        Args are as :meth:`fit`, plus ``milestones``: epoch counts at which to
+        yield, deduplicated and sorted; must be non-empty and >= 1.
         """
         cfg = self.cfg
+
+        stops = sorted({int(m) for m in milestones})
+        if not stops or stops[0] < 1:
+            raise ValueError(
+                f"fit_trajectory needs a non-empty list of epoch counts >= 1, "
+                f"got {list(milestones)!r}."
+            )
+
         torch.manual_seed(cfg.seed)
         np.random.seed(cfg.seed)
 
@@ -239,9 +317,13 @@ class NMMREstimator:
         )
 
         n = X_t.shape[0]
-        self._model.train()
+        todo = set(stops)
 
-        for _ in range(cfg.n_epochs):
+        for epoch in range(1, stops[-1] + 1):
+            # Re-asserted every epoch rather than once before the loop: a
+            # milestone score leaves the module in eval(). Inert for this
+            # architecture, but the loop must not depend on what the caller did.
+            self._model.train()
             perm = torch.randperm(n, device=self._device)
             for start in range(0, n, cfg.batch_size):
                 idx = perm[start : start + cfg.batch_size]
@@ -270,7 +352,8 @@ class NMMREstimator:
                 loss.backward()
                 optimizer.step()
 
-        return self
+            if epoch in todo:
+                yield epoch, self
 
     def score(
         self,

@@ -636,7 +636,7 @@ class PMMR_Wrapper(CATEEstimator):
 
         cfg = self._base_cfg
         self._tune_diag = {}
-        if self._tune_cfg.enabled and self._tune_cfg.grid:
+        if self._tune_cfg.enabled and self._tune_cfg.search_space:
             cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
 
         # Fit the (possibly tuned) model once on the full context. Every output
@@ -762,7 +762,13 @@ class NMMR_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.methods.nmmr import NMMRConfig, NMMREstimator
+        from dataclasses import fields
+
+        from benchmarks.methods.nmmr import (
+            SWEEP_ONLY_PARAMS,
+            NMMRConfig,
+            NMMREstimator,
+        )
         from benchmarks.tuning import TuningConfig
 
         self._NMMREstimator = NMMREstimator
@@ -789,23 +795,50 @@ class NMMR_Wrapper(CATEEstimator):
         # a copy of this and refits the winner on the full context.
         self._base_cfg = cfg
         self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
-        if "loss" in self._tune_cfg.grid:
-            # Not deprecated — refused. Candidates are ranked by the held-out
-            # moment loss of their *own* statistic (NMMREstimator.score), so a
-            # grid over `loss` would compare U-statistic scores against
-            # V-statistic ones, which differ by V's diagonal term (MSE/n) and
-            # are not on a common scale. The statistic identifies the method
-            # variant; fix it per method entry.
+        if "loss" in self._tune_cfg.search_space:
+            # Not deprecated — refused, in either block. Candidates are ranked
+            # by the held-out moment loss of their *own* statistic
+            # (NMMREstimator.score), so a search over `loss` would compare
+            # U-statistic scores against V-statistic ones, which differ by V's
+            # diagonal term (MSE/n) and are not on a common scale. The
+            # statistic identifies the method variant; fix it per method entry.
             raise ValueError(
-                "NMMR: `loss` may not appear in `tune.grid` — the U- and "
-                "V-statistic scores are not comparable, so a search over it "
-                "would rank on scale rather than on fit. Set it as a "
+                "NMMR: `loss` may not appear in `tune.grid` or `tune.sweep` — "
+                "the U- and V-statistic scores are not comparable, so a search "
+                "over it would rank on scale rather than on fit. Set it as a "
                 "method-level key instead:\n"
                 "    - name: NMMR-U\n"
                 "      cls:  NMMR\n"
                 "      loss: u_stat\n"
                 "      tune: { grid: { hidden_dim: [...], ... } }"
             )
+
+        # Checked before the `sweep` restriction below, so that a typo is
+        # reported as a typo rather than as an expensive parameter.
+        tunable = {f.name for f in fields(NMMRConfig)}
+        unknown = set(self._tune_cfg.search_space) - tunable
+        if unknown:
+            raise ValueError(
+                f"NMMR: unknown `tune` key(s) {sorted(unknown)}; choose from "
+                f"{sorted(tunable)}."
+            )
+
+        # `sweep` promises the axis is free to re-evaluate, and for NMMR that is
+        # true of exactly one parameter: `n_epochs` names where a single
+        # training run is paused, so every value is one held-out score off a
+        # shared prefix (NMMREstimator.fit_trajectory). Everything else changes
+        # the optimisation itself and would still be searched *correctly* here,
+        # just at a full training run per value — so the config would be
+        # claiming a saving it does not get. Refuse rather than under-deliver.
+        not_free = set(self._tune_cfg.sweep) - SWEEP_ONLY_PARAMS
+        if not_free:
+            raise ValueError(
+                f"NMMR: `tune.sweep` may only contain "
+                f"{sorted(SWEEP_ONLY_PARAMS)}; {sorted(not_free)} change the "
+                f"training trajectory, so every value needs a fresh fit. Move "
+                f"them to `tune.grid`."
+            )
+
         self.model = NMMREstimator(cfg)
         self._tune_diag: dict[str, float] = {}
 
@@ -832,7 +865,7 @@ class NMMR_Wrapper(CATEEstimator):
 
         cfg = self._base_cfg
         self._tune_diag = {}
-        if self._tune_cfg.enabled and self._tune_cfg.grid:
+        if self._tune_cfg.enabled and self._tune_cfg.search_space:
             best = self._tune(X, A, Y, W, Z)
             cfg = replace(self._base_cfg, **best)
 
@@ -843,23 +876,46 @@ class NMMR_Wrapper(CATEEstimator):
         return self
 
     def _tune(self, X, A, Y, W, Z) -> dict:
-        """Random/grid search over `tune.grid`; return the best field overrides.
+        """Search `tune.grid` x `tune.sweep`; return the best field overrides.
 
         Candidates are trained on a train split and ranked by held-out moment
         loss: a *fixed-kernel* score, so bandwidth choices stay comparable,
         evaluated with this method's own U/V statistic, so the ranking is on
         the objective the candidates were trained for. `loss` itself is not
         tunable — see `__init__` for why.
+
+        The two blocks are searched at two levels, because they cost
+        differently. A `grid` draw fixes the architecture and the optimiser, so
+        it needs its own training run. `n_epochs` — the only thing `sweep`
+        admits — names where that run is *paused*: one run to the largest value
+        yields at every smaller one, so each costs a single held-out score
+        rather than another run (`NMMREstimator.fit_trajectory`). Hence
+        `n_trials` training runs and `n_trials * |sweep|` scores, which turns
+        exhaustive early stopping into roughly the price of one epoch count.
+
+        Selection is unaffected: the candidate set and every score are what a
+        flat grid over the union would produce, because the weights at a
+        milestone are bit-identical to a fresh fit that stopped there.
+        `tests/test_bench_nmmr_sweep.py` pins both halves of that.
+
+        Note the asymmetry with PMMR: there, the shared object is the prepared
+        system and each inner candidate does real work (a Cholesky). Here the
+        milestone *scores* are computed during the run itself, so the prepared
+        object is just the epoch -> score mapping and the inner `score` callback
+        is a lookup. The search shape is identical either way.
         """
         from benchmarks.tuning import (
             sample_candidates,
-            search,
             search_diagnostics,
+            search_nested,
             train_val_split,
         )
 
         tc = self._tune_cfg
-        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        outer = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        # n_trials budgets the sampled block only; the sweep is exhaustive.
+        inner = sample_candidates(tc.sweep, None, tc.seed)
+        swept_epochs = tc.sweep.get("n_epochs")
         train_idx, val_idx = train_val_split(X.shape[0], tc.val_frac, tc.seed)
 
         Xtr, Atr, Ytr, Wtr, Ztr = (
@@ -877,15 +933,48 @@ class NMMR_Wrapper(CATEEstimator):
             Z[val_idx],
         )
 
-        def fit_score(hparams: dict) -> float:
-            est = self._NMMREstimator(replace(self._base_cfg, **hparams))
-            est.fit(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
-            return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+        def prepare(hparams: dict) -> dict[int, float]:
+            """One training run; the held-out score at every milestone epoch.
 
-        best, best_score, results = search(candidates, fit_score)
+            Scored inside the loop rather than by keeping state dicts: the
+            winner is refitted on the full context by `fit` anyway, so the
+            search needs the numbers and not the models. Scoring must happen
+            before the generator advances — see `fit_trajectory`.
+            """
+            cfg = replace(self._base_cfg, **hparams)
+            est = self._NMMREstimator(cfg)
+            return {
+                epoch: m.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+                for epoch, m in est.fit_trajectory(
+                    Xtr,
+                    Atr,
+                    Ytr,
+                    W=Wtr,
+                    Z=Ztr,
+                    # Without a swept `n_epochs` there is one milestone, and it
+                    # is *this candidate's* — not the base config's, which
+                    # differs whenever `n_epochs` is searched in `grid` instead.
+                    milestones=swept_epochs or [cfg.n_epochs],
+                )
+            }
+
+        def score(prepared: dict[int, float], sweep_hparams: dict) -> float:
+            if "n_epochs" in sweep_hparams:
+                return prepared[sweep_hparams["n_epochs"]]
+            (only,) = prepared.values()  # the candidate's own single milestone
+            return only
+
+        best, best_score, results = search_nested(outer, inner, prepare, score)
+
+        # `results` already carries every merged candidate, in order, so the
+        # diagnostics stay unaware that the search was nested.
         self._tune_diag = search_diagnostics(
-            tc.grid, candidates, best, best_score, results
+            tc.search_space, [hp for hp, _ in results], best, best_score, results
         )
+        # How many training runs the search paid for, which is what its wall
+        # time tracks — `tune_n_candidates` counts scores and overstates the
+        # cost whenever a sweep is configured.
+        self._tune_diag["tune_n_prepared"] = float(len(outer))
         return best
 
     def _predict_strategy(self, strategy, X, *, W=None):
@@ -918,9 +1007,12 @@ class NMMR_Wrapper(CATEEstimator):
           episode is closer to a confounded regression on ``(A, W, X)`` than to
           NMMR, so check it before reading anything else here.
         - ``tune_*`` from :func:`benchmarks.tuning.search_diagnostics` — the
-          selected value per grid parameter, plus the candidate count and score
-          spread that say whether "selected" means anything. Absent when the
-          method was configured without a ``tune:`` block.
+          selected value per searched parameter, plus the candidate count and
+          score spread that say whether "selected" means anything. Absent when
+          the method was configured without a ``tune:`` block.
+          ``tune_n_candidates`` counts *scores*; with a ``sweep`` most of those
+          are milestones off a shared training run, so ``tune_n_prepared`` — the
+          number of runs — is the one that tracks wall time.
 
         One fit backs every entry in ``outputs:``, so these describe the shared
         model rather than any one of paired / independent / conditional.
