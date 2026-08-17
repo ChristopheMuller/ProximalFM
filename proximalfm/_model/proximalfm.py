@@ -41,12 +41,12 @@ from .ensemble import FeatureEnsemble, apply_permutation, apply_value_transform
 
 # Loss types sharing the single-histogram CATE head: same out_dim, same
 # cate_bin_* grid, same predict path. They differ only in the training
-# objective ("cate_single_noise_aware" deconvolves the Monte Carlo noise on the
+# objective ("noise_aware" deconvolves the Monte Carlo noise on the
 # target; see proximalfm.train._run.compute_cate_noise_aware_nll), which is why
 # a "cate_single" checkpoint fine-tunes into the noise-aware one with no head
 # surgery. Anything that branches on the head's *shape* must test membership
 # here rather than equality with "cate_single".
-CATE_SINGLE_LOSS_TYPES = ("cate_single", "cate_single_noise_aware")
+CATE_SINGLE_LOSS_TYPES = ("cate_single", "noise_aware")
 
 SUPPORTED_LOSS_TYPES = ("bins_po", "cate_decomposition", "hl", *CATE_SINGLE_LOSS_TYPES)
 
@@ -63,7 +63,7 @@ class ProximalFM(nn.Module):
 
     Parameters
     ----------
-    loss_type : Literal["bins_po", "hl", "cate_single", "cate_single_noise_aware", "cate_decomposition"], default="bins_po"
+    loss_type : Literal["bins_po", "hl", "cate_single", "noise_aware", "cate_decomposition"], default="bins_po"
         Determines the output space and learning objective:
         - "bins_po": Predicts binned distributions for both potential outcomes (y0, y1).
           Output dimension is `nbins * 2`.
@@ -72,7 +72,7 @@ class ProximalFM(nn.Module):
         - "cate_single": Predicts a single binned distribution directly over the treatment
           effect `tau = mu1 - mu0`, on its own bin grid (`cate_vmin`/`cate_vmax`).
           Output dimension is `nbins`. Only `target="cate"` is supported.
-        - "cate_single_noise_aware": Architecturally identical to "cate_single" (same
+        - "noise_aware": Architecturally identical to "cate_single" (same
           out_dim, same grid, same predict path), so checkpoints are interchangeable.
           The training loss instead treats the supervised target as a *noisy* estimate
           of `tau` -- it is a Monte Carlo mean over `mc_cate` replicates -- and
@@ -196,7 +196,7 @@ class ProximalFM(nn.Module):
             "cate_decomposition",
             "hl",
             "cate_single",
-            "cate_single_noise_aware",
+            "noise_aware",
         ] = "bins_po",
         nbins: int = 1000,
         vmin: float = -10.0,

@@ -463,7 +463,7 @@ class LoadPriorDataset(IterableDataset):
                     f"{batch_file} carries no S2/K_eff (pre-dating target-noise "
                     "tracking, or built by synt_eval/build_proximal_datasets.py). "
                     "Treating the CATE targets as noise-free: loss_type="
-                    "'cate_single_noise_aware' falls back to its plain "
+                    "'noise_aware' falls back to its plain "
                     "sigma-smoothed NLL on these rows. Regenerate the batches to "
                     "get the noise-aware likelihood.",
                     RuntimeWarning,

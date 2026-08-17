@@ -107,7 +107,7 @@ Which keys exist depends on `--loss_type`. `loss/total` is the only one common t
 | `loss/cate_mse_weighted` | `bins_po`, `hl`, `cate_single*` | The same term **already multiplied by `--lambda_cate`**, i.e. its actual contribution to `loss/total`. A zero here means the weight is zero, not that the term is satisfied. Was called `loss/cate` before 2026-08-06; runs older than that log the weighted value under the old name. |
 | `loss/ate_nll`, `loss/he_crps` | `cate_decomposition` | The ATE-NLL and heterogeneity-CRPS parts, each already multiplied by its lambda. |
 | `loss/y0_hl`, `loss/y1_hl` | `hl` | Per-arm HL-Gaussian NLL. |
-| `loss/cate_dist` | `cate_single*` | The single-head distributional NLL over `tau`. Under `cate_single_noise_aware` this is the deconvolved form; the key does not change between the two, which is deliberate — checkpoints load across them untouched. |
+| `loss/cate_dist` | `cate_single*` | The single-head distributional NLL over `tau`. Under `noise_aware` this is the deconvolved form; the key does not change between the two, which is deliberate — checkpoints load across them untouched. |
 | `loss/hl_sigma` | `hl`, `cate_single*` | The current HL-Gaussian sigma from `get_hl_sigma()`. **A schedule, not a result.** See [`diag/sigma`](#diagsigma). |
 
 Direction: all `loss/*` lower is better, except `loss/hl_sigma`, which is not a quality metric at
@@ -119,7 +119,7 @@ times the width of the grid the loss smooths over — tau's (`--cate_vmin/--cate
 `cate_single*`, the potential-outcome grid (`--vmin/--vmax`) for `hl`, both over `--nbins`
 (`_train_config.resolve_hl_final_sigma`). `--hl_final_sigma` still takes an absolute value and
 overrides it, but only its ratio to the bin width is meaningful: sigma is a floor on the learnable
-width under `cate_single` and a *bias* (too narrow) under `cate_single_noise_aware`, and a sigma
+width under `cate_single` and a *bias* (too narrow) under `noise_aware`, and a sigma
 chosen independently of the grid is how it once ended up at 8 bin widths — a width deficit at the
 objective's optimum, which no amount of further training removes. The resolved value is what lands
 in the run's wandb config.
@@ -135,7 +135,7 @@ grid before you spend a day blaming the architecture.
 | `target/cate_std` | Its SD. The denominator the other standardized-scale keys are read against. | O(1), stable |
 | `target/sampled_ite_mean` | Mean of the *sampled* ITE `y1 − y0` (one draw, not the MC mean). | ≈ `target/cate_mean` |
 | `target/ite_minus_cate_mse` | `E[(ITE − CATE)²]`, the irreducible outcome-noise gap between the two estimands. | — |
-| `target/cate_out_of_grid_frac` | Share of targets outside `[--cate_vmin, --cate_vmax]`. `cate_single_noise_aware` only. | ≈ 0 |
+| `target/cate_out_of_grid_frac` | Share of targets outside `[--cate_vmin, --cate_vmax]`. `noise_aware` only. | ≈ 0 |
 
 `target/ite_minus_cate_mse` is the number that makes the estimand trap concrete: it is exactly the
 excess MSE any ITE-scored evaluation carries over a CATE-scored one, and therefore the size of the
@@ -166,7 +166,7 @@ the same step `cate_std` jumps, the batch mix changed and there is nothing to de
 
 ### `noise/*` — the noise-aware objective
 
-`--loss_type cate_single_noise_aware` only. Everything here is in **head units** (the model's own
+`--loss_type noise_aware` only. Everything here is in **head units** (the model's own
 standardized grid).
 
 | Key | What it is | Want |
@@ -192,7 +192,7 @@ are not the same number.** Four differences, in decreasing order of size:
    `--mc_cate` replicates; the prior key measures the *frozen set*, built at `K = 4000`. Since
    `s ∝ 1/√K`, a run at `--mc_cate 64` sits `√(4000/64) ≈ 7.9×` higher on the numerator alone. This
    is why `prior_dist/s_over_sd ≈ 0.008` can be negligible while the training-side ratio is the
-   binding reason `cate_single_noise_aware` exists at all.
+   binding reason `noise_aware` exists at all.
 2. **Different functional.** `noise/s_over_sd_pred = E[√s²] / E[√Var]` — a ratio of mean *SDs*.
    `prior_dist/s_over_sd = √(E[s²]) / √(E[Var])` — a ratio of root mean *variances*. By Jensen these
    disagree whenever the per-row spread is heterogeneous, which it always is.
@@ -293,7 +293,7 @@ metrics from `PosteriorEvaluator`.
 
 Preconditions, both enforced at `Trainer.__init__` rather than hundreds of steps in:
 
-- **`--loss_type` must be `cate_single` or `cate_single_noise_aware`.** `bins_po` and `hl` raise
+- **`--loss_type` must be `cate_single` or `noise_aware`.** `bins_po` and `hl` raise
   `UnsupportedLossTypeError`: the posterior of a difference is not identified by its two per-arm
   marginals, so there is nothing to score. `cate_decomposition` is refused too — its grid is anchored
   on a per-row predicted ATE, so there is no single shared grid.

@@ -132,7 +132,7 @@ def _parse_args(tmp_path, extra):
 def test_hl_final_sigma_derives_from_the_grid_it_smooths():
     """sigma and the bin width are one quantity, not two.
 
-    Under cate_single_noise_aware the deconvolution makes sigma a *bias* on the
+    Under noise_aware the deconvolution makes sigma a *bias* on the
     learned width (sd(Pi)^2 - sigma^2), so a sigma set independently of the grid
     -- as it once was, at 8 bin widths -- bakes a width deficit into the
     objective's optimum that training longer cannot remove.
@@ -142,7 +142,7 @@ def test_hl_final_sigma_derives_from_the_grid_it_smooths():
     args = parser.parse_args(
         [
             "--loss_type",
-            "cate_single_noise_aware",
+            "noise_aware",
             "--nbins",
             "2000",
             "--cate_vmin",
@@ -418,14 +418,14 @@ def test_trainer_micro_batch_cate_single(dummy_args):
 
 
 @pytest.mark.parametrize("mc_targets_on_context", [True, False])
-def test_trainer_micro_batch_cate_single_noise_aware(dummy_args, mc_targets_on_context):
+def test_trainer_micro_batch_noise_aware(dummy_args, mc_targets_on_context):
     """The noise-aware branch runs end to end and reports its noise diagnostics.
 
     Parametrised over mc_targets_on_context because that flag decides whether S2
     carries a NaN context prefix -- the path most likely to leak a NaN into the
     loss.
     """
-    dummy_args.loss_type = "cate_single_noise_aware"
+    dummy_args.loss_type = "noise_aware"
     dummy_args.lambda_cate = 0.1
     dummy_args.mc_targets_on_context = mc_targets_on_context
     trainer = Trainer(dummy_args)
@@ -467,7 +467,7 @@ def test_trainer_micro_batch_cate_single_noise_aware(dummy_args, mc_targets_on_c
 
 def test_noise_aware_falls_back_when_the_variance_is_missing(dummy_args):
     """K=1 leaves no variance estimate; the loss must still produce metrics."""
-    dummy_args.loss_type = "cate_single_noise_aware"
+    dummy_args.loss_type = "noise_aware"
     trainer = Trainer(dummy_args)
 
     batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=1))
@@ -486,7 +486,7 @@ def test_non_finite_loss_skips_the_micro_batch(dummy_args):
     surface -- prior_dist/*, prior_point/*, synt_point/* -- reads nan with no
     trace of which step did it.
     """
-    dummy_args.loss_type = "cate_single_noise_aware"
+    dummy_args.loss_type = "noise_aware"
     trainer = Trainer(dummy_args)
 
     batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=4))
@@ -511,7 +511,7 @@ def test_non_finite_gradient_skips_the_optimizer_step(dummy_args):
     CUDA, so the explicit guard is the only thing standing between one bad batch
     and a permanently dead model.
     """
-    dummy_args.loss_type = "cate_single_noise_aware"
+    dummy_args.loss_type = "noise_aware"
     trainer = Trainer(dummy_args)
 
     batch = _batch_with_both_arms(_overlap_prior(dummy_args, mc_cate=4))
@@ -536,7 +536,7 @@ def test_cate_single_checkpoint_loads_into_the_noise_aware_head(dummy_args):
     dummy_args.loss_type = "cate_single"
     point = Trainer(dummy_args).model
 
-    dummy_args.loss_type = "cate_single_noise_aware"
+    dummy_args.loss_type = "noise_aware"
     noise_aware = Trainer(dummy_args).model
 
     result = noise_aware.load_state_dict(point.state_dict(), strict=True)

@@ -1168,10 +1168,10 @@ class Trainer:
 
                 total_loss = loss_y0 + loss_y1 + (lambda_cate * loss_cate)
 
-            elif loss_type in ("cate_single", "cate_single_noise_aware"):
+            elif loss_type in ("cate_single", "noise_aware"):
                 hl_sigma = self.get_hl_sigma()
 
-                if loss_type == "cate_single_noise_aware":
+                if loss_type == "noise_aware":
                     loss_cate_dist = compute_cate_noise_aware_nll(
                         pred_logits,
                         true_cate_std,
@@ -1243,7 +1243,7 @@ class Trainer:
                     "loss/cate_mse": loss_cate,
                     "loss/hl_sigma": hl_sigma,
                 }
-            elif loss_type in ("cate_single", "cate_single_noise_aware"):
+            elif loss_type in ("cate_single", "noise_aware"):
                 micro_results = {
                     "loss/total": reported_loss_total,
                     "loss/cate_dist": loss_cate_dist,
@@ -1252,7 +1252,7 @@ class Trainer:
                     "loss/hl_sigma": hl_sigma,
                 }
 
-                if loss_type == "cate_single_noise_aware":
+                if loss_type == "noise_aware":
                     micro_results.update(
                         self._target_noise_metrics(
                             target_var_std,

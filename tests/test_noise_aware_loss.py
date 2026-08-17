@@ -1,4 +1,4 @@
-"""Tests for the noise-aware CATE likelihood (``loss_type="cate_single_noise_aware"``).
+"""Tests for the noise-aware CATE likelihood (``loss_type="noise_aware"``).
 
 The supervised CATE target is a Monte Carlo mean over ``K`` replicates, so it is
 a *noisy* observation of the estimand. These tests pin down that

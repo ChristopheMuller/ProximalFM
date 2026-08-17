@@ -633,7 +633,7 @@ def build_parser():
         type=float,
         default=0.0,
         help="Weight for the CATE loss term. If 0, CATE loss is not used. "
-        "Set it explicitly for --loss_type cate_single / cate_single_noise_aware: "
+        "Set it explicitly for --loss_type cate_single / noise_aware: "
         "the MSE term protects the predicted mean and gives the from-scratch head "
         "an early learning signal. It needs no adjustment under the noise-aware "
         "objective, since convolving the prediction leaves its mean unchanged.",
@@ -648,9 +648,9 @@ def build_parser():
             "hl",
             "cate_decomposition",
             "cate_single",
-            "cate_single_noise_aware",
+            "noise_aware",
         ],
-        help="Training objective. 'cate_single_noise_aware' uses the same head as "
+        help="Training objective. 'noise_aware' uses the same head as "
         "'cate_single' (checkpoints are interchangeable) but treats the target as a "
         "Monte Carlo estimate of tau and deconvolves its sampling noise, so the head "
         "converges to a posterior over tau rather than to that posterior blurred by "
@@ -685,7 +685,7 @@ def build_parser():
         type=float,
         default=-3.0,
         help="Lower edge of the tau bin grid used by --loss_type cate_single and "
-        "cate_single_noise_aware (standardized scale). tau is much narrower than "
+        "noise_aware (standardized scale). tau is much narrower than "
         "Y(a), hence its own grid.",
     )
 
@@ -694,7 +694,7 @@ def build_parser():
         type=float,
         default=3.0,
         help="Upper edge of the tau bin grid used by --loss_type cate_single and "
-        "cate_single_noise_aware.",
+        "noise_aware.",
     )
 
     parser.add_argument(
@@ -721,7 +721,7 @@ def build_parser():
         default=2.0,
         help="Final HL sigma expressed in BIN WIDTHS of the grid the loss smooths "
         "over. This is the flag to set: sigma is a floor (cate_single) or a bias "
-        "(cate_single_noise_aware) on the learnable posterior width, and only its "
+        "(noise_aware) on the learnable posterior width, and only its "
         "ratio to the bin width is meaningful. Ignored when --hl_final_sigma is "
         "given explicitly.",
     )
@@ -733,7 +733,7 @@ def build_parser():
         help="Final HL sigma in absolute (standardized) units, overriding "
         "--hl_final_sigma_bins. Leave unset unless you have a reason to decouple "
         "sigma from the grid -- that decoupling is how sigma once ended up 8x a "
-        "bin width, which under cate_single_noise_aware is a permanent deficit in "
+        "bin width, which under noise_aware is a permanent deficit in "
         "the learned width, not something training longer removes.",
     )
 
@@ -747,7 +747,7 @@ def hl_bin_width(config) -> float:
     over the tau grid (``--cate_vmin/--cate_vmax``), everything else over the
     potential-outcome grid (``--vmin/--vmax``). Both share ``--nbins``.
     """
-    if getattr(config, "loss_type", "") in ("cate_single", "cate_single_noise_aware"):
+    if getattr(config, "loss_type", "") in ("cate_single", "noise_aware"):
         lo, hi = config.cate_vmin, config.cate_vmax
     else:
         lo, hi = config.vmin, config.vmax
@@ -767,7 +767,7 @@ def resolve_hl_final_sigma(config) -> float:
     ``sigma`` and the bin width are not independent quantities: the head cannot
     represent a width below ``w/sqrt(12)``, and ``sigma`` sits on top of that as
     a floor (``cate_single``: learned var = ``sd(Pi)^2 + s^2 + sigma^2``) or,
-    under ``cate_single_noise_aware``, as a *bias* the deconvolution subtracts
+    under ``noise_aware``, as a *bias* the deconvolution subtracts
     (``sd(Pi)^2 - sigma^2``, i.e. too narrow). Expressing it in bin widths keeps
     the two coupled when the grid changes.
     """

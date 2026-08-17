@@ -1,12 +1,12 @@
 # %%
-"""Interactive visualization of the ``cate_single_noise_aware`` loss.
+"""Interactive visualization of the ``noise_aware`` loss.
 
 Drives the *actual* training-code functions (``gaussian_bin_mass``,
 ``compute_cate_noise_aware_nll``, ``compute_cate_distribution_loss`` from
 :mod:`proximalfm.train._losses`, and ``Trainer.get_hl_sigma`` from
 :mod:`proximalfm.train._run`) with sliders, so nothing here can silently
 drift from what training does. See the docstrings of those functions (and
-``cate_single_noise_aware`` in ``proximalfm/train/_run.py``) for the math.
+``noise_aware`` in ``proximalfm/train/_run.py``) for the math.
 
 Run standalone:
 
@@ -100,7 +100,7 @@ axA = fig.add_subplot(gs[0, 0])
 axB = fig.add_subplot(gs[0, 1])
 axC = fig.add_subplot(gs[1, 0])
 axD = fig.add_subplot(gs[1, 1])
-fig.suptitle("cate_single_noise_aware: bins, sigma-smoothing and target noise (s2)")
+fig.suptitle("noise_aware: bins, sigma-smoothing and target noise (s2)")
 
 axA_twin = axA.twinx()
 

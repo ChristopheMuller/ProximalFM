@@ -52,7 +52,7 @@ python -m proximalfm.train \
     --gen_block_size 64 --gen_reuse_passes 1 \
     --train_dataloader_num_workers 0 --train_dataloader_prefetch_factor none \
     --lr 1e-4 --warmup_proportion -1 --warmup_steps 2500 \
-    --loss_type cate_single_noise_aware --lambda_cate 0.5 \
+    --loss_type noise_aware --lambda_cate 0.5 \
     --nbins 2000 --cate_vmin -5 --cate_vmax 5 \
     --hl_start_sigma 0.5 \
     --hl_warmup_sigma_steps 500 \

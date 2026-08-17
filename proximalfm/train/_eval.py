@@ -72,7 +72,7 @@ class CausalEvaluator:
 
         Per-arm predictions (``pred_y0``/``pred_y1``/``true_y0``/``true_y1``)
         are optional: loss types with no y0/y1 head (``cate_decomposition``,
-        ``cate_single``, ``cate_single_noise_aware``) have nothing honest to
+        ``cate_single``, ``noise_aware``) have nothing honest to
         pass here, so ``po/*`` metrics are only produced when all four are
         given.
         """
