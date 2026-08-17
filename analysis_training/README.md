@@ -16,10 +16,11 @@ directory instead.
 |---|---|---|
 | `\Cref{tab:training_hparams}` | `uv run python -m analysis_training.hparam_table` | [`hparam_table.py`](hparam_table.py) |
 | `\Cref{tab:training_cost}` | `uv run python -m analysis_training.time_table` | [`time_table.py`](time_table.py) |
+| `\Cref{fig:training_curves}` | `uv run python -m analysis_training.loss_figure` | [`loss_figure.py`](loss_figure.py) |
 
 Artifacts derived from a *run* rather than from a config go through
 [`wandb_history.py`](wandb_history.py), which fetches and caches history into
-`results/history/`.
+`results/history/`. Figures get their look from [`design.py`](design.py).
 
 ## `hparam_table` — the training hyperparameter table
 
@@ -133,3 +134,75 @@ just does not reach the table.
 Sources are split deliberately: what was *configured* (steps, batch size) comes from the launch
 script through `run_config`, the same path `hparam_table` reads, so the two tables cannot disagree
 about the run; what it *cost* comes from wandb.
+
+## `design` — the figure identity
+
+Appendix C's figures sit next to Appendix B's, so they must be typographically the *same* figures.
+[`design.py`](design.py) therefore **re-exports [`analysis_prior.design`](../analysis_prior/design.py)**
+— text width, 9 pt serif, Okabe–Ito, constrained layout — rather than keeping a second copy, which
+is what that module's own docstring argues against. It adds only two things:
+
+- **`SERIES`**, a registry of colour per *logged quantity*, one level up from `analysis_prior`'s
+  per-structural-variable `BLOCK_COLORS`: `loss/total` must be the same colour in every Appendix C
+  figure. Same rule as there — never name a colour inline, ask the module. Unknown keys raise.
+- **`binned` / `draw_binned`**, the reduction every per-step metric goes through: median and p25–p75
+  band per log- or linearly-spaced bin. 75 000 raw points are noise; a fixed-width rolling window is
+  the wrong smoother on a log axis (over-smooths the transient, under-smooths the plateau); and a
+  *median* rather than a mean because the first steps spike far above the trend. The band is the
+  gradient noise, which a single line would hide.
+
+`reference_line` labels a "learned nothing" baseline on the line itself instead of in a legend, and
+`panel_tag` moves a panel title left with an `(a)`/`(b)` prefix.
+
+## `loss_figure` — the training curves
+
+```bash
+uv run python -m analysis_training.loss_figure     # -> results/training_curves.{pdf,png}
+```
+
+Four panels, each answering something the others cannot:
+
+- **(a) the objective and its two terms, log step.** All the schedule's action is in the first 3 500
+  of 75 000 steps, so a linear axis would render it as a vertical line. The reference line is
+  `log(v_max − v_min) = log 10 = 2.3026`, the differential entropy of a **uniform density over the
+  grid** — and the head's first logged step is 2.3037, i.e. it is initialised flat. That line is what
+  makes the panel a scale rather than arbitrary units, and it is the distributional twin of (c)'s
+  do-nothing line. The panel also shows that the distributional term *is* the objective to within a
+  few percent: the mean penalty is a regulariser, not a co-equal half.
+- **(b) the same, linear step, past the anneal.** Where a reader can see the objective still
+  descending at 75 000 steps — the fact the training budget is an argument about. Carries the
+  figure's only legend.
+- **(c) the two schedules**, σ and the learning rate on twin axes. This panel exists for what it
+  explains in (a): under `cate_single_noise_aware` the loss is a cross-entropy against a target
+  convolved with a kernel of width σ, so **shrinking σ sharpens the target and raises the attainable
+  loss**. The level of the distributional term is therefore not comparable across the anneal, and a
+  curve that moves inside the shaded window is the schedule, not the model. The shading in (a) marks
+  that window; nothing else in the appendix would tell a reader to distrust that segment.
+- **(d) the mean head's accuracy.** `loss/cate_mse / target/cate_std²` is `1 − R²`; it ends at
+  **0.020**.
+
+`(c)` sits under `(a)` on purpose, and `build_figure` pins the log-step limits of every panel that
+uses one rather than letting them autoscale: a binned panel stops at its last bin's median step and a
+raw one at the final step, so autoscaled limits put the shaded σ window at a *slightly different* x in
+(a) than in (c) — the one thing the column layout exists to prevent. A test pins it.
+
+### The baseline in (d) is an oracle, not a do-nothing
+
+Worth stating because the obvious reading is wrong. `target/cate_std` is the spread of `τ` about its
+**own mean**, so `1 − R² = 1` is attained by the single constant `τ ≡ E[τ]` — a predictor that needs
+the ground truth. `R² = 0` is therefore already non-trivial, not a free floor, and the line is drawn
+with `ROLES["oracle"]` (black dotted) rather than `ROLES["reference"]` so it does not read as
+something cheap the model beat. A genuinely naive estimator — an unadjusted difference in means,
+biased by exactly the confounding this model exists to handle — sits **above** 1. That level is *not*
+derivable from the logged keys: it is a property of the prior rather than of the run, and drawing it
+needs a separate sampling pass.
+
+Two more things the panel cannot claim, both because of pooling. `loss/cate_mse` and
+`target/cate_std` are computed over *all* elements of the `(micro_batch, n_query)` tensor
+(`_run.py`'s `true_cate_std.std()`), i.e. over 16 episodes at once, so:
+
+- the implied constant is one number across all 16 episodes, weaker than a per-episode ATE;
+- the denominator carries the **between**-episode spread of `τ` as well as the within-episode spread,
+  where the benchmark's nPEHE normalises per episode. Same formula (`r2 = 1 − nrmse²` in
+  [`benchmarks/metrics.py`](../benchmarks/metrics.py)), strictly easier denominator — so **0.020 is
+  optimistic against the benchmark's cate-task nPEHE² and the two must not be read side by side.**
