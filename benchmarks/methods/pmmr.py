@@ -44,13 +44,21 @@ the mapping from `lam1` to the paper's λ.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import numpy as np
 from scipy.linalg import solve, LinAlgError
 
 from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
+
+
+#: PMMRConfig fields that enter *only* the assembled left-hand side, never a
+#: kernel gram — so a fitted system can be re-solved at new values of these
+#: without recomputing anything. `_PreparedSystem.solve` accepts exactly these,
+#: and the benchmark wrapper validates `tune.sweep` against the same set, so the
+#: two cannot drift apart.
+SOLVE_ONLY_PARAMS = frozenset({"lam1", "lam2"})
 
 
 # Escalation budget for _solve_pd: each retry multiplies the jitter by 100, so
@@ -216,6 +224,124 @@ class PMMRConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# The lam-free half of a fit
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _ArmBlock:
+    """One arm's share of the normal equations, with lam1/lam2 not yet applied.
+
+    ``LPhiL`` and ``LPhiY`` are the two cubic products; ``L`` is kept because it
+    multiplies ``lam1``. Together they are everything the solve consumes.
+    """
+
+    arm: float
+    idx: np.ndarray  # (n_a,) rows of the full sample in this arm
+    L: np.ndarray  # (n_a, n_a)
+    LPhiL: np.ndarray  # (n_a, n_a)
+    LPhiY: np.ndarray  # (n_a,)
+
+
+class _PreparedSystem:
+    """Everything a PMMR fit needs *before* lam1 and lam2 are chosen.
+
+    The split is not cosmetic. Writing the per-arm system out,
+
+        lhs = L Φ L + λ₁ n L + λ₂ n I        rhs = L Φ Y
+
+    the two regularisers appear only in the assembly — ``L Φ L`` and ``L Φ Y``
+    are free of both, and they are the whole cost of a fit (the grams plus two
+    cubic matmuls, ~1.5 s of ~1.7 s at n = 2048, against ~0.2 s for the
+    Cholesky). So a search over λ costs one prepare and one *solve* per
+    candidate rather than one fit per candidate, which is what makes an
+    exhaustive λ sweep affordable inside a per-episode tuner. Same reasoning,
+    and the same shape, as ``plearner._MomentSystem``.
+
+    What is *not* free is anything touching a bandwidth: ``kernel_scale`` and
+    ``kernel_scale_z`` change the grams and therefore need a new prepare. That
+    is why :meth:`solve` accepts only :data:`SOLVE_ONLY_PARAMS` and raises on
+    anything else — silently honouring a ``kernel_scale`` override would return
+    a model whose ``cfg`` disagrees with the grams it was actually built from,
+    which is a wrong answer rather than an error.
+
+    Built by :meth:`PMMREstimator.prepare`; not constructed directly.
+    """
+
+    def __init__(
+        self,
+        cfg: PMMRConfig,
+        n: int,
+        blocks: list[_ArmBlock],
+        *,
+        wx_mean: np.ndarray,
+        K_W_train: np.ndarray,
+        A_train: np.ndarray,
+        W_train: np.ndarray,
+        X_train: np.ndarray,
+        k_A,
+        k_W,
+        k_X,
+    ) -> None:
+        self.cfg = cfg
+        self.n = n
+        self.blocks = blocks
+        self._wx_mean = wx_mean
+        self._K_W_train = K_W_train
+        self._A_train = A_train
+        self._W_train = W_train
+        self._X_train = X_train
+        self._k_A = k_A
+        self._k_W = k_W
+        self._k_X = k_X
+
+    def solve_into(self, est: "PMMREstimator") -> "PMMREstimator":
+        """Solve at ``est.cfg``'s lam1/lam2 and write the fit into ``est``.
+
+        The predict-side state is *shared*, not copied: several estimators
+        produced from one prepared system point at the same grams. They are
+        read-only after this call, so that is safe and is what keeps a sweep's
+        memory flat in the number of candidates.
+        """
+        cfg = est.cfg
+        alpha = np.zeros(self.n, dtype=float)
+        for b in self.blocks:
+            lhs = b.LPhiL + cfg.lam1 * self.n * b.L
+            # Add the ridge on the diagonal in place — `lhs` is already a fresh
+            # array from the sum above, so this cannot touch the cached LPhiL.
+            lhs.flat[:: b.idx.size + 1] += cfg.lam2 * self.n
+            alpha[b.idx] = _solve_pd(
+                lhs, b.LPhiY, cfg.jitter, context=f"(arm A={b.arm:.0f})"
+            )
+
+        est._alpha = alpha
+        est._wx_mean = self._wx_mean
+        est._K_W_train = self._K_W_train
+        est._A_train = self._A_train
+        est._W_train = self._W_train
+        est._X_train = self._X_train
+        est._k_A = self._k_A
+        est._k_W = self._k_W
+        est._k_X = self._k_X
+        return est
+
+    def solve(self, **lams: float) -> "PMMREstimator":
+        """A fitted estimator at these lam1/lam2, sharing this system's state.
+
+        Keyword arguments must be drawn from :data:`SOLVE_ONLY_PARAMS`; omitted
+        ones keep the value the system was prepared with.
+        """
+        unknown = set(lams) - SOLVE_ONLY_PARAMS
+        if unknown:
+            raise ValueError(
+                f"_PreparedSystem.solve got {sorted(unknown)}, which "
+                f"change the kernel grams and so need a fresh prepare(). "
+                f"Only {sorted(SOLVE_ONLY_PARAMS)} can be re-solved."
+            )
+        return self.solve_into(PMMREstimator(replace(self.cfg, **lams)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Estimator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -273,6 +399,31 @@ class PMMREstimator:
         Returns:
             self (for method chaining).
 
+        This is exactly ``prepare(...).solve_into(self)`` — one code path, so a
+        single fit and a swept one cannot diverge. See :meth:`prepare` for the
+        split and :class:`_PreparedSystem` for why it is worth making.
+        """
+        return self.prepare(X, A, Y, W=W, Z=Z).solve_into(self)
+
+    def prepare(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+    ) -> _PreparedSystem:
+        """
+        Build the kernel grams and the two cubic products, stopping short of the
+        solve — everything that does not depend on ``lam1``/``lam2``.
+
+        Call this directly when several λ values are to be tried on one sample;
+        :meth:`_PreparedSystem.solve` then costs one Cholesky each. For a single
+        fit, use :meth:`fit`, which wraps it.
+
+        Args are as :meth:`fit`.
+
         The normal equations are assembled and solved **once per arm**, not once
         over all n rows. That is exact, not an approximation: ``k_A`` is an
         indicator, so it is identically zero across arms, and it multiplies
@@ -288,10 +439,10 @@ class PMMREstimator:
         materialises at all.
 
         Note that ``n`` in the two penalty terms stays the **full** row count in
-        every block. The blocks are a decomposition of one system, not two
-        smaller problems, so ``lam1``/``lam2`` keep meaning exactly what they
-        meant before; using a per-arm count here would silently double the
-        regularisation.
+        every block (applied in :meth:`_PreparedSystem.solve_into`). The blocks
+        are a decomposition of one system, not two smaller problems, so
+        ``lam1``/``lam2`` keep meaning exactly what they meant before; using a
+        per-arm count here would silently double the regularisation.
         """
         cfg = self.cfg
 
@@ -327,12 +478,12 @@ class PMMREstimator:
 
         # Empirical joint mean embedding of (W, X), used by the marginal ATE
         # path. Taken here so the n x n product stays transient.
-        self._wx_mean = (K_W if K_X is None else K_W * K_X).mean(axis=1)
+        wx_mean = (K_W if K_X is None else K_W * K_X).mean(axis=1)
 
-        # Solve the normal equations arm by arm — see the docstring. Within an
-        # arm k_A is identically 1, so it drops out of both grams; X is shared,
-        # so only K_Z carries the extra widening.
-        self._alpha = np.zeros(n, dtype=float)
+        # Assemble the normal equations arm by arm — see the docstring. Within
+        # an arm k_A is identically 1, so it drops out of both grams; X is
+        # shared, so only K_Z carries the extra widening.
+        blocks: list[_ArmBlock] = []
         arm_of = A.ravel()
         for a in (0.0, 1.0):
             idx = np.flatnonzero(arm_of == a)
@@ -351,22 +502,23 @@ class PMMREstimator:
                 Phi_a *= K_X_a
 
             LPhi = L_a @ Phi_a
-            lhs = LPhi @ L_a + cfg.lam1 * n * L_a + cfg.lam2 * n * np.eye(idx.size)
-            self._alpha[idx] = _solve_pd(
-                lhs, LPhi @ Y[idx], cfg.jitter, context=f"(arm A={a:.0f})"
+            blocks.append(
+                _ArmBlock(arm=a, idx=idx, L=L_a, LPhiL=LPhi @ L_a, LPhiY=LPhi @ Y[idx])
             )
 
-        # Persist training state needed by the paired / independent / conditional
-        # prediction paths.
-        self._A_train = A
-        self._W_train = W
-        self._X_train = X
-        self._k_A = k_A
-        self._k_W = k_W
-        self._k_X = k_X
-        self._K_W_train = K_W
-
-        return self
+        return _PreparedSystem(
+            cfg,
+            n,
+            blocks,
+            wx_mean=wx_mean,
+            K_W_train=K_W,
+            A_train=A,
+            W_train=W,
+            X_train=X,
+            k_A=k_A,
+            k_W=k_W,
+            k_X=k_X,
+        )
 
     def score(
         self,

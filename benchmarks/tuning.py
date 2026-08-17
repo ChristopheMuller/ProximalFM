@@ -34,25 +34,70 @@ import numpy as np
 
 @dataclass
 class TuningConfig:
-    """Parsed form of a method config's ``tune:`` block."""
+    """Parsed form of a method config's ``tune:`` block.
+
+    Two search spaces, because they cost differently:
+
+    - ``grid`` is *sampled*: ``n_trials`` draws from its Cartesian product (the
+      whole product when it fits). This is the budgeted axis.
+    - ``sweep`` is *enumerated*: every combination is tried, for every draw from
+      ``grid``. So the evaluated candidate count is ``n_trials * |sweep|`` and
+      ``n_trials`` counts the sampled axes only.
+
+    ``sweep`` exists because some parameters are nearly free to vary once a
+    candidate has been prepared — PMMR's ``lam1``/``lam2`` enter only the
+    assembled left-hand side, so re-solving costs one Cholesky against a full
+    refit (see :class:`benchmarks.methods.pmmr._PreparedSystem`). Putting such a
+    parameter in ``sweep`` rather than ``grid`` buys exhaustive coverage of the
+    axis that matters most for roughly the cost of one point on it.
+
+    It is a *declaration of intent*, not an optimisation the tuner performs on
+    its own: whether a swept parameter is actually cheap depends on the method,
+    so a method that exploits ``sweep`` must validate which of its parameters
+    may appear there. A method that ignores ``sweep`` still gets correct
+    results, just no speedup.
+
+    Omitting ``sweep`` reproduces the single-grid behaviour exactly.
+    """
 
     enabled: bool = False
     val_frac: float = 0.2  # fraction of the context held out for scoring
-    n_trials: int = 20  # random-search budget; full grid if it fits
+    n_trials: int = 20  # random-search budget over `grid`; full grid if it fits
     grid: dict = field(default_factory=dict)  # param_name -> list of values
+    sweep: dict = field(default_factory=dict)  # param_name -> list, exhaustive
     seed: int = 0
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "TuningConfig":
         if not d:
             return cls(enabled=False)
+        grid = dict(d.get("grid", {}) or {})
+        sweep = dict(d.get("sweep", {}) or {})
+
+        both = sorted(set(grid) & set(sweep))
+        if both:
+            raise ValueError(
+                f"tune: {both} appear in both `grid` and `sweep`; a parameter "
+                f"is either sampled or enumerated, not both. Keep the values in "
+                f"one block."
+            )
+
         return cls(
             enabled=bool(d.get("enabled", True)),
             val_frac=float(d.get("val_frac", 0.2)),
             n_trials=int(d.get("n_trials", 20)),
-            grid=dict(d.get("grid", {}) or {}),
+            grid=grid,
+            sweep=sweep,
             seed=int(d.get("seed", 0)),
         )
+
+    @property
+    def search_space(self) -> dict:
+        """Both blocks as one ``param -> values`` mapping, for diagnostics.
+
+        Safe to merge because ``from_dict`` refuses overlapping keys.
+        """
+        return {**self.grid, **self.sweep}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,15 +150,59 @@ def search(
     Returns:
         (best_hparams, best_score, all_results).
     """
-    best_hparams: dict = candidates[0] if candidates else {}
+    return search_nested(
+        candidates,
+        [{}],
+        prepare=lambda hp: hp,
+        score=lambda hp, _sweep: fit_score(hp),
+    )
+
+
+def search_nested(
+    outer: list[dict],
+    inner: list[dict],
+    prepare: Callable[[dict], object | None],
+    score: Callable[[object, dict], float],
+) -> tuple[dict, float, list[tuple[dict, float]]]:
+    """Two-level search: prepare once per ``outer`` candidate, score every ``inner``.
+
+    For methods where part of a fit does not depend on part of the search space
+    (see :class:`TuningConfig`), this is the shape that collects the saving —
+    and it collects it *structurally*, by building the shared object once in the
+    outer loop, rather than by memoising on hyperparameter values. That matters
+    for more than tidiness: a memo keyed on hyperparameters alone carries no
+    identity for the *data*, so one that outlived a call would happily serve
+    another episode's grams inside a worker pool. Here there is nothing to
+    invalidate, and the reuse is total rather than opportunistic.
+
+    Args:
+        outer: candidates whose values require a fresh ``prepare``.
+        inner: candidates re-evaluated against every prepared object. Pass
+            ``[{}]`` for none.
+        prepare: builds the shared object for one outer candidate. Return
+            ``None`` to declare the candidate unfittable; all of its inner
+            candidates then score ``inf`` and are skipped, as with a non-finite
+            score from ``fit_score``.
+        score: ``(prepared, inner_hparams) -> float``, lower is better.
+
+    Returns:
+        ``(best_hparams, best_score, all_results)``, identical in contract to
+        :func:`search`. Every reported hparams dict is the merged
+        ``{**outer, **inner}``, so a caller cannot tell the search was nested —
+        which is what lets :func:`search_diagnostics` stay unaware of the split.
+    """
+    best_hparams: dict = {**outer[0], **inner[0]} if outer and inner else {}
     best_score = float("inf")
     results: list[tuple[dict, float]] = []
 
-    for hp in candidates:
-        score = float(fit_score(hp))
-        results.append((hp, score))
-        if np.isfinite(score) and score < best_score:
-            best_score, best_hparams = score, hp
+    for base in outer:
+        prepared = prepare(base)
+        for sweep_hp in inner:
+            hp = {**base, **sweep_hp}
+            s = float("inf") if prepared is None else float(score(prepared, sweep_hp))
+            results.append((hp, s))
+            if np.isfinite(s) and s < best_score:
+                best_score, best_hparams = s, hp
 
     return best_hparams, best_score, results
 

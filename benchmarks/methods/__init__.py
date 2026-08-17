@@ -548,7 +548,11 @@ class PMMR_Wrapper(CATEEstimator):
     def __init__(self, **kwargs):
         from dataclasses import fields
 
-        from benchmarks.methods.pmmr import PMMRConfig, PMMREstimator
+        from benchmarks.methods.pmmr import (
+            SOLVE_ONLY_PARAMS,
+            PMMRConfig,
+            PMMREstimator,
+        )
         from benchmarks.tuning import TuningConfig
 
         cfg = PMMRConfig(
@@ -567,21 +571,40 @@ class PMMR_Wrapper(CATEEstimator):
         self._base_cfg = cfg
         self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
 
-        # `jitter` is numerics, not statistics — searching it would rank
-        # candidates by conditioning rather than by fit, and the winner would
-        # be whichever value happened to perturb the solve least on this split.
-        if "jitter" in self._tune_cfg.grid:
-            raise ValueError(
-                "PMMR: `jitter` may not appear in `tune.grid` — it is a "
-                "solver-stability floor, not a statistical hyperparameter. Set "
-                "it as a method-level key if you need to change it."
-            )
         tunable = {f.name for f in fields(PMMRConfig)} - {"jitter"}
-        unknown = set(self._tune_cfg.grid) - tunable
-        if unknown:
+        for block, values in (
+            ("grid", self._tune_cfg.grid),
+            ("sweep", self._tune_cfg.sweep),
+        ):
+            # `jitter` is numerics, not statistics — searching it would rank
+            # candidates by conditioning rather than by fit, and the winner
+            # would be whichever value happened to perturb the solve least on
+            # this split.
+            if "jitter" in values:
+                raise ValueError(
+                    f"PMMR: `jitter` may not appear in `tune.{block}` — it is a "
+                    "solver-stability floor, not a statistical hyperparameter. "
+                    "Set it as a method-level key if you need to change it."
+                )
+            unknown = set(values) - tunable
+            if unknown:
+                raise ValueError(
+                    f"PMMR: unknown `tune.{block}` key(s) {sorted(unknown)}; "
+                    f"choose from {sorted(tunable)}."
+                )
+
+        # `sweep` promises the axis is free to re-evaluate, and for PMMR that is
+        # true of exactly the parameters that never enter a kernel gram. A
+        # bandwidth placed here would still be searched *correctly*, but every
+        # value would cost a full prepare — so the config would be claiming a
+        # saving it does not get. Refuse rather than silently under-deliver.
+        not_free = set(self._tune_cfg.sweep) - SOLVE_ONLY_PARAMS
+        if not_free:
             raise ValueError(
-                f"PMMR: unknown `tune.grid` key(s) {sorted(unknown)}; "
-                f"choose from {sorted(tunable)}."
+                f"PMMR: `tune.sweep` may only contain "
+                f"{sorted(SOLVE_ONLY_PARAMS)}; {sorted(not_free)} change the "
+                f"kernel grams, so every value needs a fresh fit. Move them to "
+                f"`tune.grid`."
             )
 
         self.model = PMMREstimator(cfg)
@@ -623,7 +646,7 @@ class PMMR_Wrapper(CATEEstimator):
         return self
 
     def _tune(self, X, A, Y, W, Z) -> dict:
-        """Random/grid search over `tune.grid`; return the best field overrides.
+        """Search `tune.grid` x `tune.sweep`; return the best field overrides.
 
         Candidates are fitted on a train split and ranked by the held-out
         V-statistic (`PMMREstimator.score`) — the criterion the paper selects
@@ -632,23 +655,32 @@ class PMMR_Wrapper(CATEEstimator):
         a candidate could win by widening its own kernel rather than by fitting
         better. See `PMMREstimator.score`.
 
-        Cost note: every candidate rebuilds the grams, which dominate a PMMR
-        fit (~0.6s of ~0.9s at n=2048). Candidates sharing a bandwidth pair
-        differ only in the final solve, so a memo keyed on
-        (kernel_scale, kernel_scale_z) would cut a λ-heavy grid by ~3x. Not
-        done here — the search is already cheap relative to the neural methods.
+        The two blocks are searched at two levels, because they cost
+        differently. A `grid` draw fixes the bandwidths, so it needs a fresh
+        `PMMREstimator.prepare` — grams plus two cubic matmuls, the whole cost
+        of a fit. Everything in `sweep` (`lam1`, `lam2`) enters only the
+        assembled left-hand side, so each value is one further Cholesky off the
+        prepared system. Hence `n_trials` prepares and `n_trials * |sweep|`
+        scores, and an exhaustive sweep over the axis that actually moves the
+        estimate costs about as much as one point on it.
+
+        Selection is unaffected: the candidate set and every score are what a
+        flat grid over the union would produce, and `tests/
+        test_bench_pmmr_sweep.py` pins that. Only the arithmetic is shared.
         """
         from scipy.linalg import LinAlgError
 
         from benchmarks.tuning import (
             sample_candidates,
-            search,
             search_diagnostics,
+            search_nested,
             train_val_split,
         )
 
         tc = self._tune_cfg
-        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        outer = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        # n_trials budgets the sampled block only; the sweep is exhaustive.
+        inner = sample_candidates(tc.sweep, None, tc.seed)
         train_idx, val_idx = train_val_split(X.shape[0], tc.val_frac, tc.seed)
 
         def split(idx):
@@ -657,20 +689,35 @@ class PMMR_Wrapper(CATEEstimator):
         Xtr, Atr, Ytr, Wtr, Ztr = split(train_idx)
         Xva, Ava, Yva, Wva, Zva = split(val_idx)
 
-        def fit_score(hparams: dict) -> float:
+        def prepare(hparams: dict):
             est = self._PMMREstimator(replace(self._base_cfg, **hparams))
             try:
-                est.fit(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+                return est.prepare(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+            except LinAlgError:
+                # Grams that will not build take the whole sweep down with
+                # them; `search_nested` scores all of them inf and skips them.
+                return None
+
+        def score(prepared, sweep_hparams: dict) -> float:
+            try:
+                est = prepared.solve(**sweep_hparams)
             except LinAlgError:
                 # A candidate whose normal equations will not factorise is not
-                # a usable model; `search` skips non-finite scores.
+                # a usable model; non-finite scores are skipped.
                 return float("inf")
             return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
 
-        best, best_score, results = search(candidates, fit_score)
+        best, best_score, results = search_nested(outer, inner, prepare, score)
+
+        # `results` already carries every merged candidate, in order, so the
+        # diagnostics stay unaware that the search was nested.
         self._tune_diag = search_diagnostics(
-            tc.grid, candidates, best, best_score, results
+            tc.search_space, [hp for hp, _ in results], best, best_score, results
         )
+        # How many prepares the search paid for, which is what its wall time
+        # tracks — `tune_n_candidates` counts scores and overstates the cost
+        # whenever a sweep is configured.
+        self._tune_diag["tune_n_prepared"] = float(len(outer))
         return best
 
     def _predict_strategy(self, strategy, X, *, W=None):
