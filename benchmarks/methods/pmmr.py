@@ -17,6 +17,11 @@ K_X is shared by both grams; K_Z alone carries an extra widening factor
 The bridge coefficients solve the regularised normal equations:
     α = (L Φ L + λ₁ n L + λ₂ n I)⁻¹ L Φ Y
 
+For binary A this system is block diagonal in the arms — k_A is an indicator and
+multiplies both grams — so `fit` assembles and solves it one arm at a time. That
+is an exact decomposition of the equation above, not a second estimator; see
+`PMMREstimator.fit`.
+
 Prediction of E[Y | do(a)] marginalises over the *joint* empirical (W, X):
     ŷ(a) = αᵀ [ k_A(A_train, a) ⊙ wx̄ ]
     where wx̄ = mean_row(K_W ⊙ K_X)
@@ -29,10 +34,12 @@ CATE = ŷ(1) - ŷ(0)  (for binary treatment).
 
 All computation is pure numpy/scipy — no JAX dependency.
 
-Tuning entry point: PMMRConfig. Note that PMMR is *not* a fixed-hyperparameter
-method: the reference implementation grid-searches λ and selects on a held-out
-V-statistic. We do not, so the defaults here are unvalidated starting points
-rather than tuned values — see PMMRConfig for the mapping to the paper's λ.
+Tuning entry point: PMMRConfig, whose every field except `jitter` may appear in
+the wrapper's `tune.grid` (benchmarks/methods/__init__.py). PMMR is *not* a
+fixed-hyperparameter method — the reference grid-searches λ and selects on a
+held-out V-statistic, which is what `PMMREstimator.score` reproduces — so the
+defaults here are starting points rather than tuned values. See PMMRConfig for
+the mapping from `lam1` to the paper's λ.
 """
 
 from __future__ import annotations
@@ -58,11 +65,20 @@ _JITTER_ESCALATION = 100.0
 _REFERENCE_Z_WIDENING = 1.0 / 0.6**2  # ≈ 2.778
 
 
-def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
+def _solve_pd(
+    lhs: np.ndarray, rhs: np.ndarray, jitter: float, context: str = ""
+) -> np.ndarray:
     """
     Solve the symmetric positive-definite system ``lhs @ x = rhs`` by Cholesky,
     adding a jitter *relative to the scale of lhs* and escalating it if the
     factorisation fails.
+
+    ``context`` names the caller's block in any raised message; ``fit`` passes
+    the arm, since the system is solved once per arm (see :meth:`fit`). Note
+    that the relative scale is therefore computed per arm rather than over the
+    assembled system — the two differ by the ratio of the arms' mean diagonals,
+    which at the default ``jitter`` is far below the level at which the term
+    does anything.
 
     Why relative. ``lam2 * n * I`` is an absolute floor, so how much
     conditioning it actually buys depends on the magnitude of ``L Φ L``, which
@@ -85,12 +101,13 @@ def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
     *raises* on a matrix that is not positive definite instead of quietly
     returning a solution. That failure is the signal this helper acts on.
     """
+    where = f" {context}" if context else ""
     n = lhs.shape[0]
     scale = float(np.trace(lhs)) / n
     if not np.isfinite(scale) or scale <= 0.0:
         raise LinAlgError(
-            f"PMMR normal-equation matrix has non-positive/non-finite scale "
-            f"(mean diagonal = {scale}); the kernel grams are degenerate."
+            f"PMMR normal-equation matrix{where} has non-positive/non-finite "
+            f"scale (mean diagonal = {scale}); the kernel grams are degenerate."
         )
 
     eye = np.eye(n)
@@ -102,7 +119,7 @@ def _solve_pd(lhs: np.ndarray, rhs: np.ndarray, jitter: float) -> np.ndarray:
             current *= _JITTER_ESCALATION
 
     raise LinAlgError(
-        f"PMMR normal equations remained non-positive-definite after "
+        f"PMMR normal equations{where} remained non-positive-definite after "
         f"{_JITTER_MAX_TRIES} jitter escalations (up to "
         f"{current / _JITTER_ESCALATION:.1e} * mean(diag)). Raise lam2, widen "
         f"kernel_scale, or check for duplicate/constant proxy columns."
@@ -255,6 +272,26 @@ class PMMREstimator:
 
         Returns:
             self (for method chaining).
+
+        The normal equations are assembled and solved **once per arm**, not once
+        over all n rows. That is exact, not an approximation: ``k_A`` is an
+        indicator, so it is identically zero across arms, and it multiplies
+        *both* grams — hence ``Φ``, ``L`` and ``L Φ L`` are all block diagonal
+        in the arms and the system decouples into two independent per-arm MMR
+        regressions. Pinned against the assembled n×n solve by
+        ``tests/test_bench_pmmr_blocks.py``.
+
+        Why bother: the solve and the two matmuls are the whole cost of a fit
+        (~1.7 s of ~2.0 s at n = 2048), they are cubic, and two halves cost a
+        quarter of one whole. Measured 1.47x end to end, with peak memory down
+        by more than that — ``Φ`` is now built per block and ``K_A`` never
+        materialises at all.
+
+        Note that ``n`` in the two penalty terms stays the **full** row count in
+        every block. The blocks are a decomposition of one system, not two
+        smaller problems, so ``lam1``/``lam2`` keep meaning exactly what they
+        meant before; using a per-arm count here would silently double the
+        regularisation.
         """
         cfg = self.cfg
 
@@ -269,14 +306,16 @@ class PMMREstimator:
         # Everything uses kernel_scale; the proxy Z alone is widened further by
         # kernel_scale_z. K_A has no bandwidth (indicator) and K_X is shared by
         # both grams, so Z is the only factor that differs between Φ and L.
+        # k_A also validates that A is scalar and encoded in {0, 1}, which the
+        # per-arm decomposition below relies on.
         k_A = BinaryKernel().fit(A)
         k_Z = ColumnWiseGaussianKernel().fit(
             Z, scale=cfg.kernel_scale * cfg.kernel_scale_z
         )
         k_W = ColumnWiseGaussianKernel().fit(W, scale=cfg.kernel_scale)
 
-        K_A = k_A(A, A)
-        K_Z = k_Z(Z, Z)
+        # Bandwidths are fitted on the *full* sample, so slicing a gram to an arm
+        # below carries the same numbers the assembled matrix would have.
         K_W = k_W(W, W)
 
         if X.shape[1] > 0:
@@ -284,21 +323,38 @@ class PMMREstimator:
             K_X = k_X(X, X)
         else:
             k_X = None
-            K_X = np.ones((n, n))
+            K_X = None
 
-        # Compute Gram matrices. X is shared: only K_Z carries the extra
-        # widening, so the covariate factor is identical on both sides.
-        Phi = K_A * K_Z * K_X
-        L = K_A * K_W * K_X
+        # Empirical joint mean embedding of (W, X), used by the marginal ATE
+        # path. Taken here so the n x n product stays transient.
+        self._wx_mean = (K_W if K_X is None else K_W * K_X).mean(axis=1)
 
-        # Solve normal equations
-        LPhi = L @ Phi
-        lhs = LPhi @ L + cfg.lam1 * n * L + cfg.lam2 * n * np.eye(n)
-        rhs = LPhi @ Y
-        self._alpha = _solve_pd(lhs, rhs, cfg.jitter)
+        # Solve the normal equations arm by arm — see the docstring. Within an
+        # arm k_A is identically 1, so it drops out of both grams; X is shared,
+        # so only K_Z carries the extra widening.
+        self._alpha = np.zeros(n, dtype=float)
+        arm_of = A.ravel()
+        for a in (0.0, 1.0):
+            idx = np.flatnonzero(arm_of == a)
+            if idx.size == 0:
+                continue  # an arm with no rows contributes no coefficients
+            sub = np.ix_(idx, idx)
 
-        # Empirical joint mean embedding of (W, X), used by the marginal ATE path.
-        self._wx_mean = (K_W * K_X).mean(axis=1)
+            # Both are fresh arrays — fancy indexing copies, and k_Z returns a
+            # new gram — so the in-place products cannot reach back into K_W,
+            # which `predict` still needs whole.
+            L_a = K_W[sub]
+            Phi_a = k_Z(Z[idx], Z[idx])
+            if K_X is not None:
+                K_X_a = K_X[sub]  # shared by both grams; slice it once
+                L_a *= K_X_a
+                Phi_a *= K_X_a
+
+            LPhi = L_a @ Phi_a
+            lhs = LPhi @ L_a + cfg.lam1 * n * L_a + cfg.lam2 * n * np.eye(idx.size)
+            self._alpha[idx] = _solve_pd(
+                lhs, LPhi @ Y[idx], cfg.jitter, context=f"(arm A={a:.0f})"
+            )
 
         # Persist training state needed by the paired / independent / conditional
         # prediction paths.
