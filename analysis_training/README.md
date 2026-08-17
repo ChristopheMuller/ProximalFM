@@ -14,6 +14,7 @@ directory instead.
 
 | Appendix ref | Command | Module |
 |---|---|---|
+| `\Cref{tab:model_hparams}` | `uv run python -m analysis_training.arch_table` | [`arch_table.py`](arch_table.py) |
 | `\Cref{tab:training_hparams}` | `uv run python -m analysis_training.hparam_table` | [`hparam_table.py`](hparam_table.py) |
 | `\Cref{tab:training_cost}` | `uv run python -m analysis_training.time_table` | [`time_table.py`](time_table.py) |
 | `\Cref{fig:training_curves}` | `uv run python -m analysis_training.loss_figure` | [`loss_figure.py`](loss_figure.py) |
@@ -54,13 +55,52 @@ Three things worth knowing before changing it:
   trainer about it would misreport the one number that objective turns on.
 
 Rows are declared in `build_rows` as `(group, label, value)` and the renderer is generic: adding a
-row is one entry there. Groups become `\multirow` blocks, matching the shape of
-`tab:app_arch_hparams` so the two read as a pair. The table needs `booktabs` and `multirow`
-(both already in `docs/latex/preamble.tex`) and `\modelname`.
+row is one entry there. Groups become `\multirow` blocks, matching the shape of `tab:model_hparams`
+so the two read as a pair. The table needs `booktabs` and `multirow` (both already in
+`docs/latex/preamble.tex`) and `\modelname`.
 
 The script parser covers exactly the shell the production scripts use — simple assignments, one
 `python -m proximalfm.train` invocation, line continuations. A conditionally built flag list or a
 command substitution feeding the invocation raises `ScriptParseError` rather than being guessed at.
+
+## `arch_table` — the architecture table
+
+```bash
+uv run python -m analysis_training.arch_table --print        # -> results/model_hparams.{tex,csv}
+uv run python -m analysis_training.arch_table --no-params    # skip instantiating the model
+uv run python -m analysis_training.arch_table --out <paper>/assets/training/model_hparams.tex
+```
+
+`tab:model_hparams` — the architecture — built the same way as `hparam_table` above and from the
+same launch script through the same `run_config`, so the two tables cannot disagree about the run.
+It is the case that machinery exists for: `pretrain_prod.sh` passes **no architecture flag at all**,
+so every row comes back as a `build_parser()` default, reported at the value the run actually used.
+
+The hand-written table it replaces was wrong in four places, which is the argument for generating
+it: it reported **4** attention heads in the column embedder and **4** in the in-context learner
+where all three stages use the default **8**, and `B = 1000` over `[-4, 4]` where the run passes
+`--nbins 2000 --cate_vmin -5 --cate_vmax 5`. The parameter total was stale as a *consequence* of the
+last one — a 2000-bin head is 2.6M parameters, not 1.3M — so `28.7`M understated the model by nearly
+a million. The current figures are 0.9M / 0.4M / 28.3M for the three stages, **29.6M** in total.
+
+Three things worth knowing before changing it:
+
+- **Parameter counts are measured, not transcribed.** `count_parameters` instantiates `ProximalFM`
+  on the resolved config on the `meta` device — shapes are all the table needs, so no storage is
+  allocated — and sums per stage. That is what makes the head's share track `--nbins` on its own.
+  `MODEL_KEYS` lists the constructor's arguments explicitly, mirroring `_run.py::build_model`, so a
+  new architecture flag has to be added here deliberately rather than appearing by signature magic.
+  `--no-params` drops those rows and the torch import with them.
+- **The reported grid follows `--loss_type`.** Under `noise_aware`/`cate_single` the single head
+  scores `tau` on `[cate_vmin, cate_vmax]`; the two-head losses score `Y(a)` on `[vmin, vmax]`.
+  Printing the wrong pair would misstate the hard support constraint §C.1 turns on.
+- **Nothing is prettified past its value.** `power` renders `100000` as `$10^{5}$` only on an exact
+  power of ten, and an unrecognised `--col_ssmax` is typeset verbatim rather than given a name the
+  flag does not carry.
+
+`Row`, the formatters and `render_latex` are shared with `hparam_table` rather than duplicated;
+`render_latex` takes a `generator=` argument only so each generated file names the command that
+regenerates it. `tests/test_analysis_training_arch.py` pins the derivations.
 
 ## `wandb_history` — getting a run's history off wandb
 
