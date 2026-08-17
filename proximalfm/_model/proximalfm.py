@@ -50,6 +50,14 @@ CATE_SINGLE_LOSS_TYPES = ("cate_single", "noise_aware")
 
 SUPPORTED_LOSS_TYPES = ("bins_po", "cate_decomposition", "hl", *CATE_SINGLE_LOSS_TYPES)
 
+# Names this loss went by before. A checkpoint stores its `loss_type` string in
+# `ckpt["config"]`, and every consumer that reconstructs a model from a
+# checkpoint — the benchmark's `ProximalFM_Estimator`, `prior_eval.report`,
+# `visu/` — replays it through `__init__`. Renaming the loss therefore
+# invalidates weights already on disk unless the old spelling still resolves;
+# nothing about the architecture changed, only the label.
+LEGACY_LOSS_TYPE_ALIASES = {"cate_single_noise_aware": "noise_aware"}
+
 
 class ProximalFM(nn.Module):
     """A Tabular In-Context Learning Foundation Model.
@@ -249,6 +257,7 @@ class ProximalFM(nn.Module):
         super().__init__()
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
+        loss_type = LEGACY_LOSS_TYPE_ALIASES.get(loss_type, loss_type)
         if loss_type not in SUPPORTED_LOSS_TYPES:
             raise ValueError(f"Unsupported loss_type: {loss_type}")
         self.loss_type = loss_type

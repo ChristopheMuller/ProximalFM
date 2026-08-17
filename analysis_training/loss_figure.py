@@ -24,7 +24,7 @@ training budget is an argument about.
 the log-step axis line up between the two panels. ``sigma`` on a log axis and the
 learning rate on a twin axis: the warmup-then-cosine shape, and the anneal from
 0.5 to two bin widths. This panel exists because of what it explains in (a) and
-(b): under ``cate_single_noise_aware`` the loss is a cross-entropy against a
+(b): under ``noise_aware`` the loss is a cross-entropy against a
 target *convolved with a kernel of width sigma*, so shrinking sigma sharpens the
 target and **raises the attainable loss**. The level of the distributional term
 is therefore not comparable across the anneal, and a curve that moves inside the

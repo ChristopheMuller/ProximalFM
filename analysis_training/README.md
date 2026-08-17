@@ -213,7 +213,7 @@ Four panels, each answering something the others cannot:
   descending at 75 000 steps — the fact the training budget is an argument about. Carries the
   figure's only legend.
 - **(c) the two schedules**, σ and the learning rate on twin axes. This panel exists for what it
-  explains in (a): under `cate_single_noise_aware` the loss is a cross-entropy against a target
+  explains in (a): under `noise_aware` the loss is a cross-entropy against a target
   convolved with a kernel of width σ, so **shrinking σ sharpens the target and raises the attainable
   loss**. The level of the distributional term is therefore not comparable across the anneal, and a
   curve that moves inside the shaded window is the schedule, not the model. The shading in (a) marks
