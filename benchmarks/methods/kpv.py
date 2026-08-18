@@ -83,7 +83,16 @@ from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKe
 #: - ``lam1``/``lam2`` are in the set because setting either *fixes* it and
 #:   bypasses the LOOCV. That is a legitimate thing to compare against, and the
 #:   score stays comparable because Y₂ is unchanged.
-TUNABLE_PARAMS = frozenset({"kernel_scale", "lam1", "lam2"})
+TUNABLE_PARAMS = frozenset(
+    {
+        "kernel_scale",
+        "kernel_scale_z",
+        "kernel_scale_w",
+        "kernel_scale_x",
+        "lam1",
+        "lam2",
+    }
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,19 +106,39 @@ class KPVConfig:
     # Fraction of training data used in Stage 1 (remainder goes to Stage 2).
     split_ratio: float = 0.5
 
-    # ── Kernel ────────────────────────────────────────────────────────────────
-    # Multiplicative rescaling applied to the median-heuristic bandwidth σ,
-    # shared by every variable's kernel. Values < 1 → narrower kernel (more
-    # local); > 1 → wider (smoother). 1.0 is the plain median heuristic.
+    # ── Kernel length-scales ──────────────────────────────────────────────────
+    # Multiplicative rescalings of the median-heuristic bandwidth σ², in the
+    # same global × per-variable spelling PMMR uses (see PMMRConfig): the
+    # effective scale of Z's kernel is `kernel_scale * kernel_scale_z`, and
+    # likewise for W and X. Values < 1 → narrower kernel (more local); > 1 →
+    # wider (smoother). All-1.0 is the plain per-dimension median heuristic.
     #
-    # This is a genuine hyperparameter with no procedure attached: the paper
+    # Two levels rather than one because they answer different questions.
+    # `kernel_scale` moves every bandwidth together — "is the median heuristic
+    # too local for this sample size?" — while the per-variable factors change
+    # the *shape* of the joint kernel, which is what actually trades Stage 1's
+    # fit of W against Stage 2's fit of Y. A search over the three relatives at
+    # a fixed global covers the space without redundancy; searching all four
+    # over-parameterises it, since only the products enter.
+    #
+    # A has no entry: its kernel is the Kronecker delta (BinaryKernel), which
+    # has no bandwidth to scale.
+    #
+    # These are genuine hyperparameters with no procedure attached: the paper
     # says to pick "the optimal length-scale from a narrow range around this
     # level" (Experiments_append.tex §D.2.1) without naming a criterion, and the
     # released reference never searches it at all — its scale loop is
     # `np.logspace(mn, mx, 1)`, a one-point grid that always returns the lower
-    # bound. Searching it is therefore a `tune:` block on the benchmark wrapper,
-    # not something this estimator does to itself; see TUNABLE_PARAMS.
+    # bound. Searching them is therefore a `tune:` block on the benchmark
+    # wrapper, not something this estimator does to itself; see TUNABLE_PARAMS.
     kernel_scale: float = 1.0
+    kernel_scale_z: float = 1.0
+    kernel_scale_w: float = 1.0
+    # Inert when the episode has no covariates (d_X = 0): k_X is never fitted,
+    # so every value of this gives the identical fit. Searching it on a
+    # covariate-free set is not wrong, just empty — `tune_score_range` collapses
+    # to 0 and says so.
+    kernel_scale_x: float = 1.0
 
     # ── Stage 1 regularisation ────────────────────────────────────────────────
     # Set lam1 to a fixed value to skip cross-validation.
@@ -253,7 +282,7 @@ class KPVEstimator:
 
         self.lam1_: float | None = None
         self.lam2_: float | None = None
-        self.kernel_scale_: float | None = None
+        self.kernel_scales_: dict[str, float] | None = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -305,13 +334,11 @@ class KPVEstimator:
         n1, n2 = len(i1), len(i2)
         has_x = X1.shape[1] > 0
 
-        # ── Fit both stages at the configured length-scale ─────────────────
-        # One fit, one scale. An outer search over `kernel_scale` is the
+        # ── Fit both stages at the configured length-scales ────────────────
+        # One fit, one set of bandwidths. An outer search over them is the
         # wrapper's `tune:` block (benchmarks/methods/__init__.py), ranked on
         # `loocv_score_` below.
-        best = self._fit_stages(
-            float(cfg.kernel_scale), A1, A2, W1, Z1, Z2, X1, X2, Y2, n1, n2, has_x
-        )
+        best = self._fit_stages(A1, A2, W1, Z1, Z2, X1, X2, Y2, n1, n2, has_x)
 
         # The Stage-2 LOOCV loss at the selected λ's — the selection score for
         # any outer search, and the only in-sample signal of fit quality KPV
@@ -319,7 +346,11 @@ class KPVEstimator:
         # fixed; see `_loocv_stage2_block` for what it is *not* comparable
         # across.
         self.loocv_score_ = best["score"]
-        self.kernel_scale_ = best["scale"]
+        # The *effective* per-variable scales (global x relative), which is what
+        # you want when reading a tuned fit back: `cfg` holds the two factors,
+        # this holds the product actually handed to each kernel. Absent when a
+        # kernel was never fitted (k_X on a covariate-free episode).
+        self.kernel_scales_ = best["scales"]
         self.lam1_ = best["lam1"]
         self.lam2_ = best["lam2"]
         self._alpha = best["alpha"]  # (n1, n2)
@@ -363,7 +394,6 @@ class KPVEstimator:
 
     def _fit_stages(
         self,
-        scale: float,
         A1: np.ndarray,
         A2: np.ndarray,
         W1: np.ndarray,
@@ -377,26 +407,53 @@ class KPVEstimator:
         has_x: bool,
     ) -> dict:
         """
-        Run both KPV stages at a fixed kernel length-scale multiplier.
+        Run both KPV stages at the configured kernel length-scales.
 
-        Fits the kernel bandwidths on D1 (rescaled by ``scale``), tunes λ₁/λ₂
-        by closed-form LOOCV, and returns the resulting bridge weights together
-        with the Stage-2 LOOCV score used to compare scales. Called once per
-        candidate scale by ``fit``.
+        Fits the kernel bandwidths on D1 (each rescaled by its own
+        ``kernel_scale * kernel_scale_<v>``), tunes λ₁/λ₂ by closed-form LOOCV,
+        and returns the resulting bridge weights together with the Stage-2
+        LOOCV score an outer search ranks on. Called once per ``fit``.
         """
         cfg = self.cfg
 
         # ── Fit kernel bandwidths on D1 ────────────────────────────────────
+        # Appendix §D.2.1, "Kernel's length-scale": an exponentiated-quadratic
+        # kernel per *dimension*, bandwidth from the median inter-point distance
+        # of that dimension, the joint kernel being the product over dimensions
+        # (that product is why `kx`/`k_Z` multiply below rather than concatenate).
+        # The scales are the "narrow range around this level" the appendix
+        # searches; each multiplies its variable's σ², so scale > 1 = wider,
+        # exactly the reference's `rbf_ker(x, y, scale)` with
+        # coef = 1/(2·scale·median²). The appendix ties them together; we allow
+        # one per variable, because the shape of the joint kernel is what trades
+        # Stage 1's fit of W against Stage 2's fit of Y (see KPVConfig).
+        #
+        # One deliberate departure: we fit each bandwidth **once, on D1**, and
+        # reuse it for every gram. The reference recomputes the median inside
+        # every `rbf_ker` call, so K_11, K_12 and K_22 there are built with three
+        # *different* bandwidths and are not blocks of one kernel matrix. Ours is
+        # the consistent reading of the equations; the numbers differ slightly.
+        #
+        # A is integer-valued, so it takes the Kronecker-delta kernel — the
+        # `identifier_k` branch the reference selects for integer dtypes — and
+        # therefore takes no scale at all.
         k_A = BinaryKernel()
         k_Z = ColumnWiseGaussianKernel()
         k_W = ColumnWiseGaussianKernel()
         k_X = ColumnWiseGaussianKernel()
 
-        k_A.fit(A1, scale=scale)
-        k_Z.fit(Z1, scale=scale)
-        k_W.fit(W1, scale=scale)
+        # Global x per-variable, so a config that sets only `kernel_scale` still
+        # moves every bandwidth together (see KPVConfig).
+        scales = {
+            "Z": float(cfg.kernel_scale * cfg.kernel_scale_z),
+            "W": float(cfg.kernel_scale * cfg.kernel_scale_w),
+        }
+        k_A.fit(A1)
+        k_Z.fit(Z1, scale=scales["Z"])
+        k_W.fit(W1, scale=scales["W"])
         if has_x:
-            k_X.fit(X1, scale=scale)
+            scales["X"] = float(cfg.kernel_scale * cfg.kernel_scale_x)
+            k_X.fit(X1, scale=scales["X"])
 
         # X-kernel factor: an empty (d_X = 0) covariate set contributes a
         # neutral factor of 1 (empty product), so the bridge collapses to the
@@ -513,7 +570,7 @@ class KPVEstimator:
         alpha = Gamma * v[np.newaxis, :]
 
         return {
-            "scale": scale,
+            "scales": scales,
             "lam1": lam1,
             "lam2": lam2,
             "alpha": alpha,
