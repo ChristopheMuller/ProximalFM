@@ -201,7 +201,10 @@ class KPVEstimator:
             self (for method chaining).
         """
         cfg = self.cfg
-        np.random.seed(cfg.seed)
+        # A local Generator, not np.random.seed: the benchmark runs many
+        # estimators inside one worker process, and reseeding the global RNG
+        # here would silently reset every other method's stream too.
+        rng = np.random.default_rng(cfg.seed)
 
         A = as_2d(A)
         Y = np.asarray(Y, dtype=float).reshape(-1)
@@ -212,7 +215,7 @@ class KPVEstimator:
         # ── Split ──────────────────────────────────────────────────────────
         n = len(Y)
         n1 = int(n * cfg.split_ratio)
-        idx = np.random.permutation(n)
+        idx = rng.permutation(n)
         i1, i2 = idx[:n1], idx[n1:]
 
         A1, A2 = A[i1], A[i2]
