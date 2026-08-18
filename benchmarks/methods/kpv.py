@@ -12,14 +12,24 @@ Pipeline:
       Bridges outcome proxy W to the (A, Z, X) space.
 
   Stage 2 (data split D2):
-      Σ = (Γᵀ K_W Γ) ⊙ K_A(D2, D2)
+      Σ = (Γᵀ K_W Γ) ⊙ K_A(D2, D2) ⊙ K_X(D2, D2)
       α = Γ ⊙ [(Σ + λ₂ n₂ I)⁻¹ Y₂]     (n₁ × n₂)
 
-  Prediction of E[Y | do(a)]:
-      ŷ(a) = w̄ᵀ α k_A(A₂, a)
-      where w̄ = mean_row(K_W(W1, W1))
+  Prediction of E[Y | do(a)] marginalises over the *joint* empirical (X, W):
+      β̂(a) = (1/n) Σ_ijk α_ij k_A(ã_j, a) k_X(x̃_j, x_k) k_W(w_i, w_k)
+  which is the paper's estimator of the causal effect. The mean is taken over
+  the elementwise product, not of each gram separately — mean_k[k_X · k_W] is
+  not mean_k[k_X] · mean_k[k_W] unless X ⊥ W in sample. (The released reference
+  code factorises the two, i.e. silently assumes independence.)
 
-  CATE = ŷ(1) − ŷ(0)  (for binary treatment)
+  CATE = β̂(1) − β̂(0)  (for binary treatment)
+
+For binary A the whole pipeline is block diagonal in the arms — k_A is an
+indicator and multiplies *every* gram, K_ZAX on both splits and Σ — so both
+stages, both LOOCV criteria, and α itself decouple by arm, and `_fit_stages`
+assembles them one arm at a time. That is an exact decomposition of the
+equations above, not a second estimator; see `KPVEstimator._fit_stages` and
+`tests/test_bench_kpv_blocks.py`.
 
 All computation is pure numpy/scipy — no JAX dependency.
 
@@ -90,45 +100,72 @@ class KPVConfig:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _loocv_stage1(K_ZAX: np.ndarray, K_W: np.ndarray, lam1: float) -> float:
+def _ridge_influence(K: np.ndarray, lam: float, n_full: int) -> tuple:
+    """The LOO influence matrix H and the reciprocal of its diagonal.
+
+    H = I − K (K + cI)⁻¹ = c (K + cI)⁻¹ with c = λ·n_full, by the standard ridge
+    identity — one solve, no extra matrix multiply.
+
+    ``n_full`` is the row count the penalty is scaled by, which is *not*
+    ``K.shape[0]`` when K is one arm's block of a larger system: λ has to keep
+    meaning what it meant over the whole sample. See `_fit_stages`.
     """
-    Leave-one-out cross-validation score for Stage 1 regularisation.
-
-    Measures how well the kernel embedding predicts the outcome proxy W
-    via the influence matrix H = I − K_ZAX (K_ZAX + λ₁ n I)⁻¹.
-
-    Via the standard ridge identity I − K (K + cI)⁻¹ = c (K + cI)⁻¹ with
-    c = λ₁ n, this simplifies to H = λ₁ n (K_ZAX + λ₁ n I)⁻¹, avoiding the
-    extra matrix multiply (and matching the form used in _loocv_stage2).
-
-    Lower is better.
-    """
-    n = K_ZAX.shape[0]
-    H = lam1 * n * solve(K_ZAX + lam1 * n * np.eye(n), np.eye(n), assume_a="pos")
+    m = K.shape[0]
+    c = lam * n_full
+    H = c * solve(K + c * np.eye(m), np.eye(m), assume_a="pos")
     diag_H = np.diag(H)
     # Avoid division by zero in degenerate cases.
     diag_H = np.where(np.abs(diag_H) < 1e-12, 1e-12, diag_H)
-    tH_inv = np.diag(1.0 / diag_H)
-    return float(np.trace(tH_inv @ H @ K_W @ H @ tH_inv))
+    return H, 1.0 / diag_H
+
+
+def _loocv_stage1_block(
+    K_ZAX: np.ndarray, K_W: np.ndarray, lam1: float, n_full: int
+) -> float:
+    """One arm's contribution to the Stage-1 LOOCV score. Lower is better.
+
+    Measures how well the kernel embedding predicts the outcome proxy W, as
+    tr(D H K_W H D) with D = diag(1/H_ii). Evaluated as tr(G K_W Gᵀ) with
+    G = D H, i.e. as one matmul and an elementwise sum: D is diagonal, so the
+    literal form's ``np.diag(...) @ ...`` would spend two full n³ matmuls
+    scaling rows and columns. Same number to machine precision, ~3x less work.
+
+    The scores of the arms *add*: H is block diagonal when k_A is an indicator
+    (see `_fit_stages`), so row i of H is supported on i's own arm and every
+    term of the trace stays inside one block.
+    """
+    H, inv_diag = _ridge_influence(K_ZAX, lam1, n_full)
+    G = inv_diag[:, np.newaxis] * H
+    return float(np.einsum("ij,ij->", G @ K_W, G))
+
+
+def _loocv_stage2_block(
+    Sigma: np.ndarray, Y: np.ndarray, lam2: float, n_full: int
+) -> float:
+    """One arm's **squared** contribution to the Stage-2 LOOCV score.
+
+    The score is ‖D H Y‖ with D = diag(1/H_ii); this returns ‖·‖² per arm so
+    the caller can add the blocks and take one square root at the end. As
+    above, D is applied by broadcasting on a matrix-*vector* product rather
+    than by two dense matmuls.
+
+    Uses the identity D_t M_Γ = Σ from the paper, so the (m₂ × m₁m₂)
+    ``modif_kron`` matrix of the reference implementation is never formed:
+        H = I − Σ (Σ + λ₂ n I)⁻¹ = λ₂ n (Σ + λ₂ n I)⁻¹
+    """
+    H, inv_diag = _ridge_influence(Sigma, lam2, n_full)
+    r = inv_diag * (H @ Y)
+    return float(r @ r)
+
+
+def _loocv_stage1(K_ZAX: np.ndarray, K_W: np.ndarray, lam1: float) -> float:
+    """Stage-1 LOOCV over a single undecomposed system (the dense reference)."""
+    return _loocv_stage1_block(K_ZAX, K_W, lam1, K_ZAX.shape[0])
 
 
 def _loocv_stage2(Sigma: np.ndarray, Y: np.ndarray, lam2: float) -> float:
-    """
-    Leave-one-out cross-validation score for Stage 2 regularisation.
-
-    Equivalent to the original cal_loocv_alpha but uses the identity
-    D_t @ M_Γ = Σ (derived in the paper), simplifying to:
-        H = I − Σ (Σ + λ₂ n I)⁻¹ = λ₂ n (Σ + λ₂ n I)⁻¹
-
-    Lower is better.
-    """
-    n = Sigma.shape[0]
-    Sigma_reg = Sigma + lam2 * n * np.eye(n)
-    H = lam2 * n * solve(Sigma_reg, np.eye(n), assume_a="pos")
-    diag_H = np.diag(H)
-    diag_H = np.where(np.abs(diag_H) < 1e-12, 1e-12, diag_H)
-    tH_inv = np.diag(1.0 / diag_H)
-    return float(np.linalg.norm(tH_inv @ H @ Y))
+    """Stage-2 LOOCV over a single undecomposed system (the dense reference)."""
+    return float(np.sqrt(_loocv_stage2_block(Sigma, Y, lam2, Sigma.shape[0])))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -332,52 +369,110 @@ class KPVEstimator:
         def kx(a: np.ndarray, b: np.ndarray) -> np.ndarray | float:
             return k_X(a, b) if has_x else 1.0
 
+        # ── Arm decomposition ──────────────────────────────────────────────
+        # k_A is an indicator, and it multiplies *every* gram in the pipeline:
+        # K_ZAX = K_A ⊙ K_Z ⊙ K_X on both splits, and Σ carries K_A(D2, D2).
+        # So K_ZAX(D1,D1) and Σ are block diagonal in the arms, K_ZAX(D1,D2) is
+        # zero off the arm blocks, and hence so are Γ and α. Both stages
+        # therefore decouple into two independent per-arm problems whose
+        # results are *assembled*, not approximated — pinned against the
+        # undecomposed solve by tests/test_bench_kpv_blocks.py.
+        #
+        # Both LOOCV criteria decompose with them: H inherits the block
+        # structure, so the Stage-1 trace is a sum over arms and the Stage-2
+        # squared norm is too (one square root at the end, not one per arm).
+        #
+        # Why bother: the two LOOCV scans are ~86% of a fit at n = 2048 (0.68 s
+        # + 0.20 s of 1.62 s) and every term in them is cubic, so two half-size
+        # arms cost a quarter. K_ZAX(D1,D1), K_A and the full K_W(D1,D1) are
+        # never materialised at all.
+        #
+        # Note λ₁ and λ₂ keep multiplying the **full** split sizes n1 and n2
+        # inside every block. The blocks are a decomposition of one system, not
+        # two smaller problems; a per-arm count would silently double the
+        # regularisation. Bandwidths are likewise fitted on the whole of D1
+        # above, so a block carries the same numbers the dense gram would.
+        arm1, arm2 = A1.ravel(), A2.ravel()
+        arms = (0.0, 1.0)
+
         # ── Stage 1 ────────────────────────────────────────────────────────
-        # K_ZAX(D1, D1) — product kernel over (A, Z, X)
-        K_ZAX_11 = k_A(A1, A1) * k_Z(Z1, Z1) * kx(X1, X1)
-        K_W1W1 = k_W(W1, W1)
+        # Within an arm k_A ≡ 1, so it drops out of the product entirely.
+        stage1: dict[float, tuple] = {}
+        for a in arms:
+            i1 = np.flatnonzero(arm1 == a)
+            if i1.size == 0:
+                continue
+            K11_a = k_Z(Z1[i1], Z1[i1]) * kx(X1[i1], X1[i1])
+            stage1[a] = (i1, K11_a, k_W(W1[i1], W1[i1]))
 
         lam1 = cfg.lam1
         if lam1 is None:
             lam1 = self._tune(
-                lambda l: _loocv_stage1(K_ZAX_11, K_W1W1, l),
+                lambda l: sum(
+                    _loocv_stage1_block(K11_a, K_W_a, l, n1)
+                    for _, K11_a, K_W_a in stage1.values()
+                ),
                 cfg.lam1_min,
                 cfg.lam1_max,
                 cfg.n_lam1_search,
             )
 
-        # Cross-split kernel: (n1, n2) — needed to form Γ
-        K_ZAX_12 = k_A(A1, A2) * k_Z(Z1, Z2) * kx(X1, X2)
-
-        # Γ = (K_ZAX_11 + λ₁ n₁ I)⁻¹ K_ZAX_12  → (n1, n2)
-        Gamma = solve(
-            K_ZAX_11 + lam1 * n1 * np.eye(n1),
-            K_ZAX_12,
-            assume_a="pos",
-        )
+        # Γ = (K_ZAX_11 + λ₁ n₁ I)⁻¹ K_ZAX_12  → (n1, n2), zero off the blocks.
+        # Kept dense: it is only n1×n2 floats, and every prediction head then
+        # reads it exactly as before.
+        Gamma = np.zeros((n1, n2), dtype=float)
+        for a, (i1, K11_a, _) in stage1.items():
+            i2 = np.flatnonzero(arm2 == a)
+            if i2.size == 0:
+                continue
+            K12_a = k_Z(Z1[i1], Z2[i2]) * kx(X1[i1], X2[i2])
+            Gamma[np.ix_(i1, i2)] = solve(
+                K11_a + lam1 * n1 * np.eye(i1.size), K12_a, assume_a="pos"
+            )
 
         # ── Stage 2 ────────────────────────────────────────────────────────
-        # gKg = Γᵀ K_W Γ  → (n2, n2)
-        gKg = Gamma.T @ K_W1W1 @ Gamma
+        # Σ_a = (Γ_aᵀ K_W^{aa} Γ_a) ⊙ K_X(D2_a, D2_a). Only the *within-arm*
+        # block of K_W is reachable: Γ is zero off the blocks, so the cross-arm
+        # entries of K_W are annihilated on both sides.
+        sigma_blocks: list[tuple[np.ndarray, np.ndarray]] = []
+        for a in arms:
+            i2 = np.flatnonzero(arm2 == a)
+            if i2.size == 0:
+                continue
+            if a in stage1:
+                i1, _, K_W_a = stage1[a]
+                G_a = Gamma[np.ix_(i1, i2)]
+                Sigma_a = (G_a.T @ K_W_a @ G_a) * kx(X2[i2], X2[i2])
+            else:
+                # No D1 rows in this arm, so Γ has no column here and Σ_a = 0
+                # — matching what the undecomposed product would give.
+                Sigma_a = np.zeros((i2.size, i2.size), dtype=float)
+            sigma_blocks.append((i2, Sigma_a))
 
-        K_A2 = k_A(A2, A2)
-        Sigma = gKg * K_A2 * kx(X2, X2)
+        def stage2_score(lam: float) -> float:
+            return float(
+                np.sqrt(
+                    sum(
+                        _loocv_stage2_block(Sigma_a, Y2[i2], lam, n2)
+                        for i2, Sigma_a in sigma_blocks
+                    )
+                )
+            )
 
         lam2 = cfg.lam2
         if lam2 is None:
             lam2 = self._tune(
-                lambda l: _loocv_stage2(Sigma, Y2, l),
-                cfg.lam2_min,
-                cfg.lam2_max,
-                cfg.n_lam2_search,
+                stage2_score, cfg.lam2_min, cfg.lam2_max, cfg.n_lam2_search
             )
 
         # Stage-2 LOOCV loss at the chosen λ₂ — the criterion for ranking
         # scales. Comparable across scales because the target Y₂ is fixed.
-        score = _loocv_stage2(Sigma, Y2, lam2)
+        score = stage2_score(lam2)
 
         # v = (Σ + λ₂ n₂ I)⁻¹ Y₂  → (n2,)
-        v = solve(Sigma + lam2 * n2 * np.eye(n2), Y2, assume_a="pos")
+        v = np.zeros(n2, dtype=float)
+        for i2, Sigma_a in sigma_blocks:
+            v[i2] = solve(Sigma_a + lam2 * n2 * np.eye(i2.size), Y2[i2], assume_a="pos")
 
         # α[i, j] = Γ[i, j] * v[j]  → (n1, n2)
         alpha = Gamma * v[np.newaxis, :]
