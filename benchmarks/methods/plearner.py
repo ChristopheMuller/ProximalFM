@@ -50,6 +50,7 @@ entry, and each is a complete estimator on its own:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from inspect import signature
 from typing import Optional, Sequence
 
 import numpy as np
@@ -961,6 +962,25 @@ class PLearner(CATEEstimator):
         }
         return self
 
+    def _effective_bridge_params(self) -> dict:
+        """``bridge_params`` with ``self.random_state`` filled in when the bridge
+        takes one and the caller didn't already set it.
+
+        Without this, a bridge's own ``random_state`` default (e.g.
+        :class:`KernelBridge`'s ``0``) silently wins over ``PLearner``'s
+        ``random_state`` (default ``42``) whenever ``bridge_params`` doesn't
+        mention it — the same "wrapper default doesn't reach the nested
+        component's own default" trap as ``KPV_Wrapper``'s seed. That decouples
+        the landmark draw, bandwidth subsample and tuning split from the seed
+        the caller thinks controls reproducibility.
+        """
+        params = dict(self.bridge_params or {})
+        cls = BRIDGES.get(self.bridge)
+        if cls is not None and "random_state" not in params:
+            if "random_state" in signature(cls.__init__).parameters:
+                params["random_state"] = self.random_state
+        return params
+
     def _cross_fit_scores(self, X, A, Y, W, Z) -> np.ndarray:
         """Fit the bridge on each training fold, score its held-out fold.
 
@@ -971,9 +991,10 @@ class PLearner(CATEEstimator):
         n = X.shape[0]
         scores = np.empty(n, dtype=float)
         self.bridges_ = []
+        bridge_params = self._effective_bridge_params()
 
         for train_idx, test_idx in self._folds(A):
-            bridge = build_bridge(self.bridge, self.bridge_params).fit(
+            bridge = build_bridge(self.bridge, bridge_params).fit(
                 X[train_idx],
                 A[train_idx],
                 Y[train_idx],

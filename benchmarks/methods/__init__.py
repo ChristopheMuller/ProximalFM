@@ -508,7 +508,7 @@ class KPV_Wrapper(CATEEstimator):
             lam2_min=kwargs.get("lam2_min", 1e-5),
             lam2_max=kwargs.get("lam2_max", 1e1),
             n_lam2_search=kwargs.get("n_lam2_search", 10),
-            seed=kwargs.get("seed", 42),
+            seed=kwargs.get("seed", KPVConfig.seed),
         )
 
         # Kept so `_tune` can build candidates off the configured baseline, then
