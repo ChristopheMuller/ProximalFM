@@ -33,6 +33,26 @@ equations above, not a second estimator; see `KPVEstimator._fit_stages` and
 
 All computation is pure numpy/scipy — no JAX dependency.
 
+Hyperparameters
+───────────────
+λ₁ and λ₂ are selected *inside* a fit by the paper's own closed-form LOOCV
+(eqs. stage1_reg / stage2_reg), so they are not search axes by default. What the
+paper leaves undetermined is the kernel length-scale: it prescribes the median
+heuristic as an *initialisation* and then says to pick "the optimal length-scale
+from a narrow range around this level" without naming a criterion, and the
+released code does not implement even that. `kernel_scale` is therefore an
+ordinary hyperparameter searched from outside, through the wrapper's `tune:`
+block, ranked on `KPVEstimator.loocv_score_` — the Stage-2 LOOCV loss, whose
+target Y₂ is fixed across bandwidths and so gives comparable scores. TUNABLE_PARAMS
+is the whitelist and carries the reasoning for every field left out of it.
+
+Read that score for what it is: Stage 2 fits G_h(a,x,z) = E[Y | a,x,z], the
+*reduced-form* regression. A bandwidth that predicts Y well need not identify
+the bridge h well, and nothing here scores CATE. This is the open problem the
+paper's own conclusion names, so expect the criterion to separate candidates
+weakly — check `tune_score_range` in the wrapper's diagnostics before reading a
+selected value as an optimum.
+
 Tuning entry point: KPVConfig — every knob lives there with sensible defaults.
 """
 
@@ -47,6 +67,25 @@ from scipy.linalg import solve
 from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
 
 
+#: The only :class:`KPVConfig` fields a `tune:` block may search. The benchmark
+#: wrapper validates `tune.grid` against this set; everything else in the
+#: dataclass is excluded on purpose, and for three different reasons:
+#:
+#: - ``split_ratio`` and ``seed`` are **unscoreable**. `_loocv_stage2_block`
+#:   drops the ``1/m₂`` prefactor, so its scores are not on a common scale once
+#:   ``m₂`` changes — a search over `split_ratio` would rank candidates by how
+#:   many terms their sum has. `seed` is scoreable but selecting *which rows
+#:   land in D1* on the fit criterion is fitting the split, not the model.
+#: - ``lam1_min``/``lam1_max``/``n_lam1_search`` (and λ₂'s) are the *grid* the
+#:   paper's LOOCV searches over, not statistics. Widening or refining a grid
+#:   can only lower the LOOCV minimum, so a search over them is monotone and
+#:   would always return the widest, finest option offered.
+#: - ``lam1``/``lam2`` are in the set because setting either *fixes* it and
+#:   bypasses the LOOCV. That is a legitimate thing to compare against, and the
+#:   score stays comparable because Y₂ is unchanged.
+TUNABLE_PARAMS = frozenset({"kernel_scale", "lam1", "lam2"})
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,22 +98,18 @@ class KPVConfig:
     split_ratio: float = 0.5
 
     # ── Kernel ────────────────────────────────────────────────────────────────
-    # Multiplicative rescaling applied to the median-heuristic bandwidth σ.
-    # Values < 1 → narrower kernel (more local); > 1 → wider (smoother).
-    # Used directly when tune_kernel_scale is False; otherwise it is the centre
-    # (1.0 = plain median heuristic) that the search grid is spread around.
+    # Multiplicative rescaling applied to the median-heuristic bandwidth σ,
+    # shared by every variable's kernel. Values < 1 → narrower kernel (more
+    # local); > 1 → wider (smoother). 1.0 is the plain median heuristic.
+    #
+    # This is a genuine hyperparameter with no procedure attached: the paper
+    # says to pick "the optimal length-scale from a narrow range around this
+    # level" (Experiments_append.tex §D.2.1) without naming a criterion, and the
+    # released reference never searches it at all — its scale loop is
+    # `np.logspace(mn, mx, 1)`, a one-point grid that always returns the lower
+    # bound. Searching it is therefore a `tune:` block on the benchmark wrapper,
+    # not something this estimator does to itself; see TUNABLE_PARAMS.
     kernel_scale: float = 1.0
-
-    # ── Kernel length-scale search ────────────────────────────────────────────
-    # When True, search a geometric grid of scale multipliers around the median
-    # heuristic and keep the one minimising the Stage-2 LOOCV loss (λ₁, λ₂ are
-    # retuned inside each candidate). The Stage-2 loss is used because its target
-    # (Y) is fixed across scales, so scores are comparable — unlike the Stage-1
-    # loss, whose K_WW target itself changes with the W bandwidth.
-    tune_kernel_scale: bool = False
-    kernel_scale_min: float = 0.5
-    kernel_scale_max: float = 2.0
-    n_kernel_scale_search: int = 5
 
     # ── Stage 1 regularisation ────────────────────────────────────────────────
     # Set lam1 to a fixed value to skip cross-validation.
@@ -152,6 +187,13 @@ def _loocv_stage2_block(
     Uses the identity D_t M_Γ = Σ from the paper, so the (m₂ × m₁m₂)
     ``modif_kron`` matrix of the reference implementation is never formed:
         H = I − Σ (Σ + λ₂ n I)⁻¹ = λ₂ n (Σ + λ₂ n I)⁻¹
+
+    **What the resulting score may be compared across.** Dropping ``1/m₂`` is
+    free over a λ grid and over kernel bandwidths — the target Y₂ is the same
+    vector and the sum has the same number of terms — which is what makes this
+    a valid selection criterion for `kernel_scale`. It is *not* free across
+    anything that changes ``m₂``: a different `split_ratio` changes the term
+    count, so the raw scores are not on a common scale. See TUNABLE_PARAMS.
     """
     H, inv_diag = _ridge_influence(Sigma, lam2, n_full)
     r = inv_diag * (H @ Y)
@@ -263,27 +305,20 @@ class KPVEstimator:
         n1, n2 = len(i1), len(i2)
         has_x = X1.shape[1] > 0
 
-        # ── Select the kernel length-scale ─────────────────────────────────
-        # Either the single fixed scale, or a geometric grid around the median
-        # heuristic (see KPVConfig). Each candidate refits both stages (with
-        # their own λ tuning) and is ranked by the Stage-2 LOOCV loss.
-        if cfg.tune_kernel_scale:
-            scales = np.logspace(
-                np.log10(cfg.kernel_scale_min),
-                np.log10(cfg.kernel_scale_max),
-                cfg.n_kernel_scale_search,
-            )
-        else:
-            scales = [cfg.kernel_scale]
+        # ── Fit both stages at the configured length-scale ─────────────────
+        # One fit, one scale. An outer search over `kernel_scale` is the
+        # wrapper's `tune:` block (benchmarks/methods/__init__.py), ranked on
+        # `loocv_score_` below.
+        best = self._fit_stages(
+            float(cfg.kernel_scale), A1, A2, W1, Z1, Z2, X1, X2, Y2, n1, n2, has_x
+        )
 
-        best = None
-        for scale in scales:
-            res = self._fit_stages(
-                float(scale), A1, A2, W1, Z1, Z2, X1, X2, Y2, n1, n2, has_x
-            )
-            if best is None or res["score"] < best["score"]:
-                best = res
-
+        # The Stage-2 LOOCV loss at the selected λ's — the selection score for
+        # any outer search, and the only in-sample signal of fit quality KPV
+        # produces. Comparable across kernel scales because the target Y₂ is
+        # fixed; see `_loocv_stage2_block` for what it is *not* comparable
+        # across.
+        self.loocv_score_ = best["score"]
         self.kernel_scale_ = best["scale"]
         self.lam1_ = best["lam1"]
         self.lam2_ = best["lam2"]

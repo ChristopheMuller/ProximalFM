@@ -469,16 +469,37 @@ class KPV_Wrapper(CATEEstimator):
     #   "conditional" — CATE(x) marginalising W over W | X (assumes W correlated with X).
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
+    #: Pre-`tune:` spellings of the kernel-scale search, which KPVEstimator used
+    #: to run inside its own `fit`. They are refused rather than ignored: a
+    #: config still carrying them would silently drop to a single un-searched
+    #: scale, which looks exactly like a working run.
+    _RETIRED_KWARGS = {
+        "tune_kernel_scale": "tune: {enabled: true}",
+        "kernel_scale_min": "the low end of tune.grid.kernel_scale",
+        "kernel_scale_max": "the high end of tune.grid.kernel_scale",
+        "n_kernel_scale_search": "the length of tune.grid.kernel_scale",
+    }
+
     def __init__(self, **kwargs):
-        from benchmarks.methods.kpv import KPVConfig, KPVEstimator
+        from dataclasses import fields
+
+        from benchmarks.methods.kpv import TUNABLE_PARAMS, KPVConfig, KPVEstimator
+        from benchmarks.tuning import TuningConfig
+
+        retired = sorted(set(kwargs) & set(self._RETIRED_KWARGS))
+        if retired:
+            hints = "; ".join(f"`{k}` -> {self._RETIRED_KWARGS[k]}" for k in retired)
+            raise ValueError(
+                f"KPV: {retired} are no longer method-level keys — the "
+                f"kernel-scale search moved out of KPVEstimator.fit into the "
+                f"generic `tune:` block. Translate: {hints}. A geometric grid "
+                f"is now written out, e.g. "
+                f"`tune: {{enabled: true, grid: {{kernel_scale: [0.5, 1.0, 2.0]}}}}`."
+            )
 
         cfg = KPVConfig(
             split_ratio=kwargs.get("split_ratio", 0.5),
             kernel_scale=kwargs.get("kernel_scale", 1.0),
-            tune_kernel_scale=kwargs.get("tune_kernel_scale", False),
-            kernel_scale_min=kwargs.get("kernel_scale_min", 0.5),
-            kernel_scale_max=kwargs.get("kernel_scale_max", 2.0),
-            n_kernel_scale_search=kwargs.get("n_kernel_scale_search", 5),
             lam1=kwargs.get("lam1", None),
             lam1_min=kwargs.get("lam1_min", 1e-5),
             lam1_max=kwargs.get("lam1_max", 1e1),
@@ -489,6 +510,65 @@ class KPV_Wrapper(CATEEstimator):
             n_lam2_search=kwargs.get("n_lam2_search", 10),
             seed=kwargs.get("seed", 42),
         )
+
+        # Kept so `_tune` can build candidates off the configured baseline, then
+        # refit the winner on the full context.
+        self._KPVEstimator = KPVEstimator
+        self._base_cfg = cfg
+        self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
+        self._tune_diag: dict[str, float] = {}
+
+        known = {f.name for f in fields(KPVConfig)}
+        for block, values in (
+            ("grid", self._tune_cfg.grid),
+            ("sweep", self._tune_cfg.sweep),
+        ):
+            unknown = set(values) - known
+            if unknown:
+                raise ValueError(
+                    f"KPV: unknown `tune.{block}` key(s) {sorted(unknown)}; "
+                    f"choose from {sorted(TUNABLE_PARAMS)}."
+                )
+            unscoreable = set(values) - TUNABLE_PARAMS
+            if unscoreable:
+                raise ValueError(
+                    f"KPV: {sorted(unscoreable)} may not appear in "
+                    f"`tune.{block}` — the selection score is the Stage-2 LOOCV "
+                    f"loss, which does not rank them (it drops the 1/m2 "
+                    f"prefactor, so it is not comparable across `split_ratio`, "
+                    f"and the lambda grid bounds only move where its own "
+                    f"minimum is allowed to fall). See "
+                    f"benchmarks.methods.kpv.TUNABLE_PARAMS. Searchable: "
+                    f"{sorted(TUNABLE_PARAMS)}."
+                )
+
+        # Nothing in KPV is cheap to re-evaluate: `kernel_scale` rebuilds every
+        # gram, and lam1/lam2 are already searched by the paper's closed-form
+        # LOOCV inside each fit. `sweep` would therefore promise a saving it
+        # cannot deliver — refuse rather than silently under-deliver, as PMMR
+        # does for its bandwidths.
+        if self._tune_cfg.sweep:
+            raise ValueError(
+                f"KPV: `tune.sweep` is not supported "
+                f"({sorted(self._tune_cfg.sweep)}); every KPV hyperparameter "
+                f"needs a full refit, so there is no partly-built system to "
+                f"re-solve. Move them to `tune.grid`."
+            )
+
+        # LOOCV *is* the held-out criterion, at the leave-one-out extreme, and
+        # it already runs on the whole context. Honouring `val_frac` on top
+        # would hold rows out twice and score every candidate on a smaller
+        # sample than the fit it selects. Refuse an explicit setting rather
+        # than accept a key that does nothing.
+        raw_tune = kwargs.get("tune") or {}
+        if "val_frac" in raw_tune:
+            raise ValueError(
+                "KPV: `tune.val_frac` has no effect — candidates are ranked on "
+                "the Stage-2 leave-one-out CV loss over the full context "
+                "(KPVEstimator.loocv_score_), not on a held-out split. Remove "
+                "the key."
+            )
+
         self.model = KPVEstimator(cfg)
 
         self.strategy = kwargs.get("strategy", "marginal")
@@ -514,8 +594,78 @@ class KPV_Wrapper(CATEEstimator):
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("KPV requires W and Z proxies.")
+
+        cfg = self._base_cfg
+        self._tune_diag = {}
+        if self._tune_cfg.enabled and self._tune_cfg.search_space:
+            cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
+
+        # Fit the (possibly tuned) model once on the full context. Every output
+        # variant later reuses this single fit — no refitting.
+        self.model = self._KPVEstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def _tune(self, X, A, Y, W, Z) -> dict:
+        """Search `tune.grid`; return the best field overrides.
+
+        Candidates are ranked on `KPVEstimator.loocv_score_`, the Stage-2
+        leave-one-out CV loss at that candidate's own LOOCV-selected λ's. Two
+        things follow from that choice, both worth knowing before reading a
+        result:
+
+        - **No train/val split.** LOOCV is already held-out, so every candidate
+          is fitted on the whole context and the winner is the model a plain
+          un-tuned fit at those settings would produce. This is why the
+          constructor refuses `tune.val_frac`.
+        - **The score is comparable across bandwidths but weak.** Y₂ is the
+          same vector for every candidate (see `_loocv_stage2_block`), so the
+          ranking is meaningful — but Stage 2 fits E[Y | a,x,z], not the bridge
+          and not CATE. A near-zero `tune_score_range` means the criterion did
+          not separate the grid and the winner is arbitrary.
+
+        Flat rather than nested: `search_nested`'s saving needs a partly-built
+        system that several candidates can share, and KPV has none — every
+        parameter in TUNABLE_PARAMS changes the grams or the solve. So this is
+        `len(candidates)` full fits, plus one refit of the winner in `fit`.
+        """
+        from scipy.linalg import LinAlgError
+
+        from benchmarks.tuning import sample_candidates, search, search_diagnostics
+
+        tc = self._tune_cfg
+        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+
+        def fit_score(hparams: dict) -> float:
+            est = self._KPVEstimator(replace(self._base_cfg, **hparams))
+            try:
+                est.fit(X, A, Y, W=W, Z=Z)
+            except LinAlgError:
+                # A bandwidth whose grams will not factorise is not a usable
+                # model; `search` scores it inf and skips it.
+                return float("inf")
+            return float(est.loocv_score_)
+
+        best, best_score, results = search(candidates, fit_score)
+
+        self._tune_diag = search_diagnostics(
+            tc.grid, candidates, best, best_score, results
+        )
+        return best
+
+    def diagnostics(self) -> dict[str, float]:
+        """Where the hyperparameter search landed. Empty without a `tune:` block.
+
+        `tune_*` comes from :func:`benchmarks.tuning.search_diagnostics`. Read
+        `tune_score_range` first, and expect it to be small: the criterion is a
+        reduced-form fit of Y on (a, x, z), which the paper's own conclusion
+        names as the unresolved part of KPV's tuning. A range near zero means
+        the selected `kernel_scale` is arbitrary rather than optimal.
+
+        One fit backs every entry in `outputs:`, so these describe the shared
+        model rather than any one of paired / independent / conditional.
+        """
+        return dict(self._tune_diag)
 
     def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other
