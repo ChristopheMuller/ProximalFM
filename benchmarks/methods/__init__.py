@@ -1183,7 +1183,10 @@ class DFPV_Wrapper(CATEEstimator):
     _VALID_STRATEGIES = {"marginal", "paired", "independent", "conditional"}
 
     def __init__(self, **kwargs):
-        from benchmarks.methods.dfpv import DFPVConfig, DFPVEstimator
+        from dataclasses import fields
+
+        from benchmarks.methods.dfpv import TUNABLE_PARAMS, DFPVConfig, DFPVEstimator
+        from benchmarks.tuning import TuningConfig
 
         # Device comes from the method's resolved ComputeConfig (build_method injects
         # it). This used to force CPU unconditionally, because concurrent
@@ -1218,7 +1221,68 @@ class DFPV_Wrapper(CATEEstimator):
             seed=kwargs.get("seed", 42),
             device=device,
         )
+
+        # Kept so `_tune` can build candidates off the configured baseline, then
+        # refit the winner on the full context.
+        self._DFPVEstimator = DFPVEstimator
+        self._base_cfg = cfg
+        self._tune_cfg = TuningConfig.from_dict(kwargs.get("tune"))
+        self._tune_diag: dict[str, float] = {}
         self.model = DFPVEstimator(cfg)
+
+        known = {f.name for f in fields(DFPVConfig)}
+        for block, values in (
+            ("grid", self._tune_cfg.grid),
+            ("sweep", self._tune_cfg.sweep),
+        ):
+            unknown = set(values) - known
+            if unknown:
+                raise ValueError(
+                    f"DFPV: unknown `tune.{block}` key(s) {sorted(unknown)}; "
+                    f"choose from {sorted(TUNABLE_PARAMS)}."
+                )
+            unscoreable = set(values) - TUNABLE_PARAMS
+            if unscoreable:
+                raise ValueError(
+                    f"DFPV: {sorted(unscoreable)} may not appear in "
+                    f"`tune.{block}` — the selection score is the out-of-sample "
+                    f"Stage-2 loss (DFPVEstimator.oos_score_), which cannot rank "
+                    f"them: `seed`/`device` are not model choices, and "
+                    f"`x_cond_length_scale`/`x_cond_top_k` enter only the "
+                    f"`conditional` read-out, so every candidate differing in "
+                    f"them scores identically. See "
+                    f"benchmarks.methods.dfpv.TUNABLE_PARAMS. Searchable: "
+                    f"{sorted(TUNABLE_PARAMS)}."
+                )
+
+        # Every DFPV hyperparameter changes the feature training, so there is no
+        # partly-built object several candidates can share and `sweep` would
+        # promise a saving it cannot deliver — refuse rather than silently
+        # under-deliver, as KPV does. Two axes *could* earn it later and are the
+        # planned next stage: `n_epochs` by yielding at milestones of one long
+        # run (as NMMR does), and lam1/lam2 by re-solving the closed form on the
+        # frozen features. Neither exists yet.
+        if self._tune_cfg.sweep:
+            raise ValueError(
+                f"DFPV: `tune.sweep` is not supported yet "
+                f"({sorted(self._tune_cfg.sweep)}); every candidate currently "
+                f"needs its own feature-training run, so there is nothing to "
+                f"re-solve. Move them to `tune.grid`."
+            )
+
+        # DFPV holds data out on its own: the criterion scores the Stage-2
+        # weights on D1, the split they were *not* fitted on. Honouring
+        # `val_frac` on top would hold rows out twice and score every candidate
+        # on a smaller sample than the fit it selects. Refuse an explicit
+        # setting rather than accept a key that does nothing.
+        raw_tune = kwargs.get("tune") or {}
+        if "val_frac" in raw_tune:
+            raise ValueError(
+                "DFPV: `tune.val_frac` has no effect — candidates are ranked on "
+                "the out-of-sample Stage-2 loss over the Stage-1 split "
+                "(DFPVEstimator.oos_score_), which is already held out by the "
+                "estimator's own `split_ratio`. Remove the key."
+            )
 
         self.strategy = kwargs.get("strategy", "marginal")
         if self.strategy not in self._VALID_STRATEGIES:
@@ -1240,8 +1304,99 @@ class DFPV_Wrapper(CATEEstimator):
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError("DFPV requires both W and Z proxies.")
+
+        cfg = self._base_cfg
+        self._tune_diag = {}
+        if self._tune_cfg.enabled and self._tune_cfg.search_space:
+            cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
+
+        # Train the (possibly tuned) model once on the full context. Every
+        # output variant later reuses this single fit — no retraining.
+        self.model = self._DFPVEstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def _tune(self, X, A, Y, W, Z) -> dict:
+        """Search `tune.grid`; return the best field overrides.
+
+        Candidates are ranked on `DFPVEstimator.oos_score_`, the paper's
+        out-of-sample Stage-2 loss: the fitted bridge run forward on the
+        Stage-1 split, whose rows the Stage-2 ridge never saw. Three things
+        follow from that choice, all worth knowing before reading a result:
+
+        - **No train/val split.** The estimator's own `split_ratio` already
+          holds D1 out from the Stage-2 fit, so every candidate trains on the
+          whole context and the winner is the model a plain un-tuned fit at
+          those settings would produce. This is why the constructor refuses
+          `tune.val_frac`.
+        - **The score is comparable but weak.** It is a mean squared residual
+          against the same Y for every candidate, so the ranking is meaningful
+          — but Stage 2 fits E[Y | a, z], the reduced form, not the bridge and
+          not CATE. A near-zero `tune_score_range` means the criterion did not
+          separate the grid and the winner is arbitrary.
+        - **`lam1` is ranked only indirectly.** V̂ is fitted on D1 and the score
+          is evaluated on D1, so the Stage-1 solve is in-sample for the
+          criterion. Read `oos_stage1` alongside it, and see
+          `DFPVEstimator._oos_scores` for why that one cannot be the rank key.
+
+        Flat rather than nested: `search_nested`'s saving needs a partly-built
+        object several candidates can share, and DFPV has none yet — every
+        parameter in TUNABLE_PARAMS changes the feature training. So this is
+        `len(candidates)` full training runs, plus one refit of the winner in
+        `fit`. Budget accordingly: DFPV's cost is `n_epochs * stage1_iter`
+        full-batch Cholesky solves on a `(feature_dim+1)^3` system.
+        """
+        from benchmarks.tuning import sample_candidates, search, search_diagnostics
+
+        tc = self._tune_cfg
+        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+
+        def fit_score(hparams: dict) -> float:
+            est = self._DFPVEstimator(replace(self._base_cfg, **hparams))
+            try:
+                est.fit(X, A, Y, W=W, Z=Z)
+            except (torch.linalg.LinAlgError, RuntimeError, ValueError):
+                # A candidate whose ridge systems will not factorise, or whose
+                # feature training diverged into a shape/dtype failure, is not a
+                # usable model; `search` scores it inf and skips it.
+                return float("inf")
+            score = float(est.oos_score_)
+            # A diverged run reports NaN rather than raising. Same treatment.
+            return score if np.isfinite(score) else float("inf")
+
+        best, best_score, results = search(candidates, fit_score)
+
+        self._tune_diag = search_diagnostics(
+            tc.grid, candidates, best, best_score, results
+        )
+        return best
+
+    def diagnostics(self) -> dict[str, float]:
+        """Where the search landed, plus the fitted model's held-out losses.
+
+        `tune_*` comes from :func:`benchmarks.tuning.search_diagnostics` and is
+        empty without a `tune:` block; `oos_stage2` / `oos_stage1` are always
+        reported, since they describe the final fit whether or not it was
+        selected by a search.
+
+        Read `tune_score_range` first, and expect it to be small: the criterion
+        is a reduced-form fit of Y on (a, z), so it ranks predictive accuracy
+        rather than identification of the bridge. A range near zero means the
+        selected values are arbitrary.
+
+        `oos_stage1` is a diagnostic only — it lives in ψ_W's own learned
+        feature space, which differs between candidates, so it is not
+        comparable across a grid (see `DFPVEstimator._oos_scores`). A large
+        value flags a Stage-1 fit that failed, which `oos_stage2` alone can
+        hide.
+
+        One fit backs every entry in `outputs:`, so these describe the shared
+        model rather than any one of paired / independent / conditional.
+        """
+        out = dict(self._tune_diag)
+        out["oos_stage2"] = float(self.model.oos_score_)
+        out["oos_stage1"] = float(self.model.oos_stage1_score_)
+        return out
 
     def _predict_strategy(self, strategy, X, *, W=None):
         # Only the paired contrast consumes the query-time W; the other

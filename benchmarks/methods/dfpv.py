@@ -30,6 +30,17 @@ CATE = ŷ(1) − ŷ(0)  (for binary treatment).
 
 Pure numpy/torch — no JAX and no dependency on the reference `src` package.
 
+Hyperparameters are searched from outside, through the benchmark wrapper's
+`tune:` block, ranked on `DFPVEstimator.oos_score_` — the paper's own
+out-of-sample Stage-2 loss (Appendix "Hyper-parameters"). TUNABLE_PARAMS is the
+whitelist and carries the reasoning for every field left out of it.
+
+Read that score for what it is: Stage 2 fits E[Y | a, z], the *reduced-form*
+regression. A candidate that predicts Y well need not identify the bridge h
+well, and nothing here scores CATE — the same limitation KPV's LOOCV criterion
+has. Check `tune_score_range` in the wrapper's diagnostics before reading a
+selected value as an optimum.
+
 Tuning entry point: DFPVConfig — every knob lives there with sensible defaults.
 """
 
@@ -41,6 +52,61 @@ from typing import Literal, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+
+
+#: The only :class:`DFPVConfig` fields a `tune:` block may search. The benchmark
+#: wrapper validates `tune.grid` against this set; everything else in the
+#: dataclass is configurable but not searchable, because the selection score
+#: cannot rank it:
+#:
+#: - ``seed`` and ``device`` are not model choices. Searching the seed would
+#:   select the luckiest initialisation on the criterion and report it as a
+#:   tuned optimum.
+#: - ``x_cond_length_scale`` / ``x_cond_top_k`` enter *only*
+#:   ``_mean_outcome_conditional``, i.e. only the `conditional` read-out. They
+#:   are invisible to `oos_score_`, which is computed from the bridge and the
+#:   two stage fits, so every candidate differing only in them scores
+#:   identically. They are honest ablation axes, not tunable ones — ranking
+#:   them would need the true CATE.
+#:
+#: Everything else is in, including the structural flags: refusing a field needs
+#: a reason the *criterion* cannot rank it, and `use_backdoor`,
+#: `feature_relu_output` and the two intercept flags all change the fit that
+#: `oos_score_` scores. Two carry caveats worth knowing before reading a winner:
+#:
+#: - ``split_ratio`` changes which rows are scored (the criterion evaluates on
+#:   D1, whose size it moves). The score is a *mean*, so this is unbiased and
+#:   the comparison is legitimate — unlike KPV, whose LOOCV score drops its
+#:   ``1/m₂`` prefactor and is therefore refused this field — but candidates are
+#:   scored on different row sets, so expect more noise across this axis than
+#:   across the others.
+#: - ``feature_relu_output`` is a known-bad option, not a neutral one: the
+#:   paper's own footnote reports that a ReLU on the final feature layer "causes
+#:   numerical instability" and disowns the results produced with it. Searchable,
+#:   but `False` is the corrected setting and a grid over it is mostly a way to
+#:   rediscover that.
+TUNABLE_PARAMS = frozenset(
+    {
+        "feature_dim",
+        "hidden_dim",
+        "n_hidden_layers",
+        "feature_relu_output",
+        "use_backdoor",
+        "add_stage1_intercept",
+        "add_stage2_intercept",
+        "lam1",
+        "lam2",
+        "n_epochs",
+        "stage1_iter",
+        "stage2_iter",
+        "lr",
+        "treatment_weight_decay",
+        "treatment_proxy_weight_decay",
+        "outcome_proxy_weight_decay",
+        "backdoor_weight_decay",
+        "split_ratio",
+    }
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,6 +297,10 @@ class DFPVEstimator:
         self._W_feat_ref: torch.Tensor | None = None  # (m, feat) g_W(W2)
         self._X_ref: torch.Tensor | None = None  # (m, d_X) raw X2
         self._X_scale: torch.Tensor | None = None  # (1, d_X)
+
+        # Held-out selection scores, set by `_finalise`. See `_oos_scores`.
+        self.oos_score_: float = float("nan")
+        self.oos_stage1_score_: float = float("nan")
 
         self._dim_A: int = 1
         self._has_x: bool = False
@@ -614,6 +684,65 @@ class DFPVEstimator:
                 self._X_scale = d2.X.std(dim=0, unbiased=False, keepdim=True).clamp_min(
                     1e-6
                 )
+
+            self.oos_score_, self.oos_stage1_score_ = self._oos_scores(d1, d2)
+
+    def _oos_scores(
+        self, d1: "DFPVEstimator._Split", d2: "DFPVEstimator._Split"
+    ) -> tuple[float, float]:
+        """The paper's two out-of-sample stage losses, as means. Lower is better.
+
+        From the DFPV appendix ("Hyper-parameters"): with the full joint
+        (A, Y, Z, W) available on both splits — which every episode here has —
+        each stage can be scored on the data the *other* stage was fitted on.
+
+            L₂-oos = (1/m) Σ_{i ∈ D1} ( y_i − û ᵀ(ψ_A(a_i) ⊗ V̂(φ_A(a_i) ⊗ φ_Z(z_i))) )²
+            L₁-oos = (1/n) Σ_{j ∈ D2} ‖ ψ_W(w̃_j) − V̂(φ_A(ã_j) ⊗ φ_Z(z̃_j)) ‖²
+
+        Two things to know before ranking anything on these:
+
+        - **Only `û` is held out in L₂-oos.** `V̂` was fitted on D1, which is
+          where L₂-oos evaluates, so the Stage-1 solve is in-sample there. That
+          asymmetry is the paper's own construction, and it is why L₂-oos is a
+          clean criterion for Stage-2 quantities and only an indirect one for
+          `lam1`.
+        - **L₁-oos is a distance in ψ_W's own learned feature space**, and ψ_W
+          differs between candidates. It is comparable only with the Stage-2
+          nets held fixed, so it is returned as a *diagnostic* and never as the
+          rank key — anything touching `feature_dim`, `hidden_dim`,
+          `outcome_proxy_weight_decay` or the Stage-2 schedule would otherwise
+          be compared across different spaces, which means nothing. It is
+          reported because a large value flags a Stage-1 fit that failed, which
+          L₂-oos alone can hide.
+
+        Both are means, so they stay comparable when a candidate changes the
+        number of rows in either split (`split_ratio`).
+        """
+        # L₂-oos: the full bridge pipeline, run forward on the Stage-1 rows.
+        feat1_d1 = self._augment_stage1(
+            self._f1_A(d1.A),
+            self._g_Z(d1.Z),
+            self._b1_X(d1.X) if self._has_x else None,
+        )
+        W_hat_d1 = _ridge_pred(feat1_d1, self._stage1_weight)
+        feat2_d1 = self._augment_stage2(
+            W_hat_d1,
+            self._f2_A(d1.A),
+            self._b2_X(d1.X) if self._has_x else None,
+        )
+        resid = d1.Y - _ridge_pred(feat2_d1, self._stage2_weight)
+        stage2_oos = float(torch.mean(resid**2))
+
+        # L₁-oos: the Stage-1 conditional mean embedding, on the Stage-2 rows.
+        feat1_d2 = self._augment_stage1(
+            self._f1_A(d2.A),
+            self._g_Z(d2.Z),
+            self._b1_X(d2.X) if self._has_x else None,
+        )
+        W_err = self._g_W(d2.W) - _ridge_pred(feat1_d2, self._stage1_weight)
+        stage1_oos = float(torch.mean(torch.sum(W_err**2, dim=1)))
+
+        return stage2_oos, stage1_oos
 
     # ── Internals ─────────────────────────────────────────────────────────────
 

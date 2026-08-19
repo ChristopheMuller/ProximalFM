@@ -122,6 +122,72 @@ def test_one_fit_backs_every_output():
     assert est.diagnostics()["tune_n_candidates"] == 2.0
 
 
+def test_per_variable_scales_compose_with_the_global():
+    """`kernel_scale * kernel_scale_<v>` is what reaches each kernel.
+
+    The two-level spelling is only worth having if the levels genuinely
+    multiply, so pin the product rather than either factor: a global of 2 with
+    a relative of 0.5 must be the same fit as leaving both at 1.
+    """
+    X, A, Y, W, Z = make_data(n=140, seed=7)
+
+    both = KPVEstimator(
+        KPVConfig(kernel_scale=2.0, kernel_scale_z=0.5, seed=_SEED)
+    ).fit(X, A, Y, W=W, Z=Z)
+    neither = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+
+    assert both.kernel_scales_["Z"] == pytest.approx(1.0)
+    # W and X carry the global alone, so they are *not* the same fit.
+    assert both.kernel_scales_["W"] == pytest.approx(2.0)
+    np.testing.assert_allclose(
+        neither.kernel_scales_["Z"], both.kernel_scales_["Z"], rtol=1e-12
+    )
+
+    # And the global alone still moves everything, the pre-per-variable
+    # behaviour a config setting only `kernel_scale` relies on.
+    glob = KPVEstimator(KPVConfig(kernel_scale=2.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    assert glob.kernel_scales_ == {"Z": 2.0, "W": 2.0, "X": 2.0}
+
+
+def test_scales_default_to_the_plain_median_heuristic():
+    """All-1.0 is the paper's initialisation, and must stay the default."""
+    X, A, Y, W, Z = make_data(n=120, seed=8)
+    est = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    assert est.kernel_scales_ == {"Z": 1.0, "W": 1.0, "X": 1.0}
+
+
+def test_no_covariates_reports_no_x_scale():
+    """k_X is never fitted at d_X = 0, so there is no effective scale to report."""
+    X, A, Y, W, Z = make_data(n=120, seed=9, d_x=0)
+    est = KPVEstimator(KPVConfig(kernel_scale_x=4.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    assert "X" not in est.kernel_scales_
+
+    # ... and `kernel_scale_x` is then inert: searching it on such a set is
+    # empty rather than wrong, which `tune_score_range` is what surfaces.
+    ref = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    np.testing.assert_allclose(est._alpha, ref._alpha, rtol=1e-12)
+
+
+def test_per_variable_grid_searches_the_product_space():
+    X, A, Y, W, Z = make_data(n=160, seed=10)
+    grid = {"kernel_scale_z": [0.5, 2.0], "kernel_scale_w": [0.5, 2.0]}
+
+    est = _kpv(seed=_SEED, tune={"enabled": True, "n_trials": 4, "grid": grid})
+    est.fit(X, A, Y, W=W, Z=Z)
+
+    base = KPVConfig(seed=_SEED)
+    expected = min(
+        ((z, w) for z in grid["kernel_scale_z"] for w in grid["kernel_scale_w"]),
+        key=lambda zw: KPVEstimator(
+            replace(base, kernel_scale_z=zw[0], kernel_scale_w=zw[1])
+        )
+        .fit(X, A, Y, W=W, Z=Z)
+        .loocv_score_,
+    )
+    assert (est.model.cfg.kernel_scale_z, est.model.cfg.kernel_scale_w) == expected
+    assert est.diagnostics()["tune_n_candidates"] == 4.0
+
+
 # ── Refusals ─────────────────────────────────────────────────────────────────
 
 
