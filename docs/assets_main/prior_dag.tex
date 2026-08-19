@@ -13,10 +13,10 @@ latent/.style={draw=red!75!black, fill=red!4!white, line width=0.85pt, dashed, d
 edge/.style={draw=black!75, line width=0.65pt, -{Latex[length=2.0mm,width=1.4mm]}},
 latent edge/.style={edge, draw=red!75!black, dashed, dash pattern=on 2.5pt off 1.8pt},
 pipeline edge/.style={draw=teal!80!black, line width=0.7pt, -{Latex[length=2.0mm,width=1.4mm]}},
-operation/.style={draw=teal!75!black, fill=teal!4!white, line width=0.7pt, rounded corners=4pt},
-output/.style={draw=blue!80!black, fill=blue!3!white, line width=0.8pt, rounded corners=4pt},
+box context/.style={draw=teal!65!black, fill=teal!3!white, line width=0.75pt, rounded corners=5pt},
+box target/.style={draw=blue!75!black, fill=blue!3!white, line width=0.75pt, rounded corners=5pt},
+box divider/.style={draw=black!12, line width=0.4pt},
 node label/.style={font=\large\itshape, inner sep=0pt, text=black!90},
-mechanism/.style={font=\scriptsize\bfseries\color{teal!55!black}, fill=white, fill opacity=0.9, text opacity=1, inner sep=1.2pt, rounded corners=2pt},
 small text/.style={font=\scriptsize, inner sep=0pt, text=black!85},
 tiny text/.style={font=\fontsize{7}{8.5}\selectfont, inner sep=0pt, text=black!65},
 output math/.style={font=\footnotesize, inner sep=0pt, text=black!90},
@@ -29,19 +29,22 @@ every node/.style={text=black}
 \node[plate tag outer, anchor=south east] at (342,362) {units $i=1,\ldots,T$};
 \node[plate tag inner, anchor=south east] at (318,334) {replicates $k=1,\ldots,K$};
 
-\draw[edge] (184,81) -- (184,123);
-\draw[edge] (164,73) .. controls (96,95) and (76,160) .. (95,185);
-\draw[edge] (204,73) .. controls (272,95) and (292,160) .. (273,185);
-\draw[edge] (158,68) .. controls (62,100) and (55,225) .. (109,261);
-\draw[edge] (210,68) .. controls (306,100) and (313,225) .. (259,260);
+% Edges from X
+\draw[edge] (184,84) -- (184,123); % X -> U
+\draw[edge] (171,81) -- (110,191); % X -> Z
+\draw[edge] (197,81) -- (258,191); % X -> W
+\draw[edge] (158,68) .. controls (58,105) and (54,220) .. (108,269); % X -> A
+\draw[edge] (210,68) .. controls (310,105) and (320,220) .. (266,260); % X -> Y
 
-\draw[latent edge] (170,157) -- (115,192);
-\draw[latent edge] (198,157) -- (253,192);
-\draw[latent edge] (176,160) .. controls (158,195) and (140,230) .. (130,257);
-\draw[latent edge] (192,160) .. controls (212,195) and (230,230) .. (238,252);
+% Latent edges from U
+\draw[latent edge] (170,157) -- (115,192); % U -> Z
+\draw[latent edge] (198,157) -- (253,192); % U -> W
+\draw[latent edge] (176,160) .. controls (158,195) and (140,230) .. (130,257); % U -> A
+\draw[latent edge] (192,160) .. controls (212,195) and (230,230) .. (238,252); % U -> Y
 
-\draw[edge] (106,229) -- (121,258);
-\draw[edge] (262,229) -- (247,254);
+% Edges from proxies
+\draw[edge] (106,229) -- (121,258); % Z -> A
+\draw[edge] (262,229) -- (247,254); % W -> Y
 
 \draw[observed] (184,60) circle[radius=21];
 \node[node label] at (184,60) {$X$};
@@ -63,33 +66,24 @@ every node/.style={text=black}
 \node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (241,284) {$Y(1)$};
 \draw[draw=blue!30, line width=0.4pt] (216,276.5) -- (266,276.5);
 
-\node[mechanism] at (184,102) {$f_U$};
-\node[mechanism] at (76,135) {$f_Z$};
-\node[mechanism] at (292,135) {$f_W$};
-\node[mechanism] at (56,195) {$f_A$};
-\node[mechanism] at (312,195) {$f_Y$};
+\draw[box context] (410,48) rectangle (830,172);
+\node[font=\small\bfseries\color{teal!70!black}] at (620,66) {Observational Context};
+\draw[box divider] (430,79) -- (810,79);
+\node[output math, anchor=west] at (430,106) {Subsample: \quad $k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+\node[output math, anchor=west] at (430,142) {Context: \quad $\mathcal{D}_T = \bigl\{(x_i,\, w_{i,k_i},\, z_{i,k_i},\, a_{i,k_i},\, y_{i,k_i})\bigr\}_{i=1}^T$};
 
-\draw[operation] (410,95) rectangle (580,145);
-\node[font=\scriptsize\bfseries\color{teal!60!black}] at (495,112) {Draw One Replicate};
-\node[small text] at (495,130) {$k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+% Pipeline: Replicates plate -> Observational Context (subsample)
+\draw[pipeline edge] (326,110) -- node[above, font=\fontsize{5.8}{6.8}\selectfont\bfseries, color=teal!70!black, inner sep=1.5pt] {subsample} (410,110);
 
-\draw[output] (610,85) rectangle (880,155);
-\node[output math] at (745,116) {$\bigl(x_i, w_{i,k_i}, z_{i,k_i}, a_{i,k_i}, y_{i,k_i}\bigr)$};
-\node[font=\fontsize{7}{8}\selectfont\bfseries\color{blue!70!black}] at (745,138) {observational context};
+\draw[box target] (410,212) rectangle (830,358);
+\node[font=\small\bfseries\color{blue!80!black}] at (620,230) {Training Targets};
+\draw[box divider] (430,243) -- (810,243);
+\node[output math, anchor=west] at (430,268) {MC mean: \quad $\widehat{\mu}_a(x_i) = \frac{1}{K}\sum_{k=1}^K y_{i,k}(a), \quad a \in \{0,1\}$};
+\node[output math, anchor=west] at (430,298) {CATE target: \quad $\widehat{Q}(x_i) = \widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)$};
+\node[output math, anchor=west] at (430,328) {MC noise: \quad $\widehat{\sigma}^2(x_i) = \operatorname{Var}_k\bigl(y_{i,k}(1) - y_{i,k}(0)\bigr)$};
 
-\draw[pipeline edge] (326,120) -- node[above, font=\fontsize{6.5}{7.5}\selectfont, color=teal!70!black, inner sep=1pt] {subsample} (410,120);
-\draw[pipeline edge] (580,120) -- (610,120);
-
-\draw[operation] (410,260) rectangle (580,310);
-\node[font=\scriptsize\bfseries\color{teal!60!black}] at (495,275) {Average over};
-\node[small text] at (495,295) {$k=1,\ldots,K$};
-
-\draw[output] (610,251) rectangle (880,319);
-\node[output math] at (745,277) {$\bigl(\widehat{\mu}_0(x_i),\widehat{\mu}_1(x_i)\bigr)$};
-\node[font=\fontsize{7}{8}\selectfont\bfseries\color{blue!70!black}] at (745,300) {training targets ($\approx$ CEPOs)};
-
-\draw[pipeline edge] (274,276) .. controls (330,285) and (370,285) .. node[above, font=\fontsize{6.5}{7.5}\selectfont, color=teal!70!black, inner sep=1pt, pos=0.5] {integrate noise} (410,285);
-\draw[pipeline edge] (580,285) -- (610,285);
+% Pipeline: Potential outcomes Y -> Training Targets (integrate noise)
+\draw[pipeline edge] (274,276) .. controls (330,285) and (370,285) .. node[above, font=\fontsize{5.8}{6.8}\selectfont\bfseries, color=teal!70!black, inner sep=1.5pt, pos=0.55] {integrate noise} (410,285);
 
 \end{tikzpicture}
 
