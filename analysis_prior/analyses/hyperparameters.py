@@ -486,8 +486,6 @@ class HyperparametersAnalysis(Analysis):
                 "the law shown, stated in terms of the ceilings listed below "
                 "it. The proxy dimensions are drawn conditionally on $d_U$ so "
                 "that the completeness heuristic of "
-                "\\Cref{app:prior_procedure} holds by construction; the "
-                "resulting marginals are derived in "
                 "\\Cref{app:prior_dimensions}."
             ),
             label="tab:prior_structural_hp",
