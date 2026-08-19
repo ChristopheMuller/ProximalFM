@@ -1172,6 +1172,13 @@ class NMMR_Wrapper(CATEEstimator):
         return diag
 
 
+#: The `DFPVConfig` fields a `tune.sweep` block may carry — the ones that are
+#: genuinely free once a candidate has been trained, so that a swept value gives
+#: exactly what a `grid` over it would. See `DFPV_Wrapper.__init__` for why
+#: `lam1`/`lam2` are *not* in here despite `final_lam1`/`final_lam2` being.
+_DFPV_SWEEPABLE = frozenset({"n_epochs", "final_lam1", "final_lam2"})
+
+
 class DFPV_Wrapper(CATEEstimator):
     """Wrapper for the Deep Feature Proxy Variable (DFPV) estimator."""
 
@@ -1255,19 +1262,38 @@ class DFPV_Wrapper(CATEEstimator):
                     f"{sorted(TUNABLE_PARAMS)}."
                 )
 
-        # Every DFPV hyperparameter changes the feature training, so there is no
-        # partly-built object several candidates can share and `sweep` would
-        # promise a saving it cannot deliver — refuse rather than silently
-        # under-deliver, as KPV does. Two axes *could* earn it later and are the
-        # planned next stage: `n_epochs` by yielding at milestones of one long
-        # run (as NMMR does), and lam1/lam2 by re-solving the closed form on the
-        # frozen features. Neither exists yet.
-        if self._tune_cfg.sweep:
+        # `sweep` is a claim that the axis is free once a candidate is trained,
+        # and — per TuningConfig — that a swept value gives what a grid over it
+        # would. Exactly three fields satisfy both:
+        #
+        #   n_epochs    one run is paused at each milestone, and the state there
+        #               is bit-identical to a fit that stopped there
+        #               (DFPVEstimator.fit_trajectory).
+        #   final_lam1  they enter only `_finalise`, so a new value is two
+        #   final_lam2  Cholesky factorisations against a training run
+        #               (DFPVEstimator.refinalise).
+        #
+        # `lam1`/`lam2` are the trap this whitelist exists for. They look like
+        # the same knob and are not: they enter the feature *training* (the
+        # Stage-1 objective and the Stage-2 loss), so re-solving cannot produce
+        # them and a swept value would select a model nobody trained. They stay
+        # legal in `grid`, where they cost what they actually cost.
+        unsweepable = set(self._tune_cfg.sweep) - _DFPV_SWEEPABLE
+        if unsweepable:
+            hint = ""
+            if {"lam1", "lam2"} & unsweepable:
+                hint = (
+                    " `lam1`/`lam2` enter the feature training, so they are not "
+                    "free off a trained model — put them in `tune.grid`, or "
+                    "sweep `final_lam1`/`final_lam2` if what you want is the "
+                    "ridge of the *final solve* at fixed trained features (a "
+                    "different, cheaper knob; see DFPVConfig)."
+                )
             raise ValueError(
-                f"DFPV: `tune.sweep` is not supported yet "
-                f"({sorted(self._tune_cfg.sweep)}); every candidate currently "
-                f"needs its own feature-training run, so there is nothing to "
-                f"re-solve. Move them to `tune.grid`."
+                f"DFPV: {sorted(unsweepable)} may not appear in `tune.sweep` — "
+                f"only {sorted(_DFPV_SWEEPABLE)} are free once a candidate is "
+                f"trained, and a sweep over anything else would price a full "
+                f"retrain as if it were a re-solve.{hint}"
             )
 
         # DFPV holds data out on its own: the criterion scores the Stage-2
@@ -1339,36 +1365,97 @@ class DFPV_Wrapper(CATEEstimator):
           criterion. Read `oos_stage1` alongside it, and see
           `DFPVEstimator._oos_scores` for why that one cannot be the rank key.
 
-        Flat rather than nested: `search_nested`'s saving needs a partly-built
-        object several candidates can share, and DFPV has none yet — every
-        parameter in TUNABLE_PARAMS changes the feature training. So this is
-        `len(candidates)` full training runs, plus one refit of the winner in
-        `fit`. Budget accordingly: DFPV's cost is `n_epochs * stage1_iter`
-        full-batch Cholesky solves on a `(feature_dim+1)^3` system.
+        Two levels, because the blocks cost differently. A `grid` draw changes
+        the feature training and needs its own run; `sweep` carries only the
+        three axes that are free off a trained model (`_DFPV_SWEEPABLE`), so the
+        search pays `len(outer)` training runs and `len(outer) * |sweep|`
+        scores. `n_epochs` is one run paused at each milestone; `final_lam1` /
+        `final_lam2` are two Cholesky factorisations each.
+
+        Selection is unaffected by the nesting: every score is what a flat grid
+        over the union would produce, because a milestone's state is
+        bit-identical to a fit that stopped there and the `final_lam*` re-solve
+        is the same closed form a fresh fit at that value would run. It is
+        `tests/test_bench_dfpv_sweep.py` that pins both halves.
+
+        Budget the outer loop accordingly: one DFPV run is
+        `n_epochs * stage1_iter` full-batch Cholesky solves on a
+        `(feature_dim+1)^3` system.
         """
-        from benchmarks.tuning import sample_candidates, search, search_diagnostics
+        from benchmarks.tuning import (
+            sample_candidates,
+            search_diagnostics,
+            search_nested,
+        )
 
         tc = self._tune_cfg
-        candidates = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        outer = sample_candidates(tc.grid, tc.n_trials, tc.seed)
+        # n_trials budgets the sampled block only; the sweep is exhaustive.
+        inner = sample_candidates(tc.sweep, None, tc.seed)
+        swept_epochs = tc.sweep.get("n_epochs")
 
-        def fit_score(hparams: dict) -> float:
-            est = self._DFPVEstimator(replace(self._base_cfg, **hparams))
+        def prepare(hparams: dict) -> dict | None:
+            """One training run; the score at every (milestone, final_lam) point.
+
+            Scored inside the loop rather than by keeping state dicts: the
+            winner is refitted from a config by `fit` anyway, so the search
+            needs the numbers and not the models. Scoring must happen before the
+            generator advances — see `fit_trajectory`.
+            """
+            cfg = replace(self._base_cfg, **hparams)
+            est = self._DFPVEstimator(cfg)
+
+            # `final_lam*` absent from the sweep means "leave it at the config's
+            # effective value", which `refinalise(None, None)` is.
+            lam_points = [(hp.get("final_lam1"), hp.get("final_lam2")) for hp in inner]
+
+            scores: dict = {}
             try:
-                est.fit(X, A, Y, W=W, Z=Z)
+                # Without a swept `n_epochs` there is one milestone, and it is
+                # *this candidate's* — not the base config's, which differs
+                # whenever `n_epochs` is searched in `grid` instead.
+                for epoch, m in est.fit_trajectory(
+                    X, A, Y, W=W, Z=Z, milestones=swept_epochs or [cfg.n_epochs]
+                ):
+                    for lam1, lam2 in lam_points:
+                        s = float(m.refinalise(lam1, lam2))
+                        scores[(epoch, lam1, lam2)] = (
+                            s if np.isfinite(s) else float("inf")
+                        )
             except (torch.linalg.LinAlgError, RuntimeError, ValueError):
                 # A candidate whose ridge systems will not factorise, or whose
                 # feature training diverged into a shape/dtype failure, is not a
-                # usable model; `search` scores it inf and skips it.
-                return float("inf")
-            score = float(est.oos_score_)
-            # A diverged run reports NaN rather than raising. Same treatment.
-            return score if np.isfinite(score) else float("inf")
+                # usable model; `search_nested` scores all of its inner points
+                # inf and skips them.
+                return None
+            return scores
 
-        best, best_score, results = search(candidates, fit_score)
+        def score(prepared: dict, sweep_hparams: dict) -> float:
+            # Without a swept `n_epochs` the run has exactly one milestone —
+            # the candidate's own — so the epoch is not part of the key the
+            # caller can name.
+            epoch = sweep_hparams.get("n_epochs")
+            if epoch is None:
+                (epoch,) = {e for e, _, _ in prepared}
+            return prepared[
+                (
+                    epoch,
+                    sweep_hparams.get("final_lam1"),
+                    sweep_hparams.get("final_lam2"),
+                )
+            ]
 
+        best, best_score, results = search_nested(outer, inner, prepare, score)
+
+        # `results` already carries every merged candidate, in order, so the
+        # diagnostics stay unaware that the search was nested.
         self._tune_diag = search_diagnostics(
-            tc.grid, candidates, best, best_score, results
+            tc.search_space, [hp for hp, _ in results], best, best_score, results
         )
+        # How many training runs the search paid for, which is what its wall
+        # time tracks — `tune_n_candidates` counts scores and overstates the
+        # cost whenever a sweep is configured.
+        self._tune_diag["tune_n_prepared"] = float(len(outer))
         return best
 
     def diagnostics(self) -> dict[str, float]:

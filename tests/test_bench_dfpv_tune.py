@@ -221,9 +221,8 @@ def test_unscoreable_params_are_refused(param):
         _dfpv(tune={"enabled": True, "grid": {param: [1, 2]}})
 
 
-def test_sweep_is_refused_with_the_reason():
-    with pytest.raises(ValueError, match="`tune.sweep` is not supported yet"):
-        _dfpv(tune={"enabled": True, "sweep": {"n_epochs": [2, 4]}})
+# The `tune.sweep` whitelist and the axes it admits live in
+# tests/test_bench_dfpv_sweep.py.
 
 
 def test_val_frac_is_refused():

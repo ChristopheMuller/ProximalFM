@@ -96,6 +96,8 @@ TUNABLE_PARAMS = frozenset(
         "add_stage2_intercept",
         "lam1",
         "lam2",
+        "final_lam1",
+        "final_lam2",
         "n_epochs",
         "stage1_iter",
         "stage2_iter",
@@ -138,6 +140,27 @@ class DFPVConfig:
     # ── Ridge regularisation ──────────────────────────────────────────────────
     lam1: float = 0.1  # Stage-1 ridge penalty
     lam2: float = 0.1  # Stage-2 ridge penalty
+
+    # Ridge penalties for the *final* closed-form solve only, on features that
+    # are already trained. `None` (the default) reuses lam1 / lam2, so the
+    # estimator behaves exactly as it did before these existed.
+    #
+    # These are separate fields rather than a second meaning for lam1/lam2
+    # because they are a genuinely different knob. lam1/lam2 enter the feature
+    # *training* — `_ridge_loss` is the Stage-1 objective and the Stage-2 loss
+    # carries `lam2 * n * ||u||^2` — so changing one changes the learned
+    # features and costs a full retrain. final_lam1/final_lam2 enter nothing
+    # but `_finalise`, so re-solving at a new value costs two Cholesky
+    # factorisations against a training run, which is what makes them the only
+    # ridge penalties DFPV may put in a `tune.sweep` block.
+    #
+    # A swept `final_lam2` is therefore NOT a cheap stand-in for a grid over
+    # `lam2`: it selects the ridge of the final solve at features trained under
+    # the configured `lam2`, which is a different estimator from one trained at
+    # the swept value. Reading it as the latter would overstate what the sweep
+    # searched.
+    final_lam1: Optional[float] = None
+    final_lam2: Optional[float] = None
 
     # ── Optimisation ──────────────────────────────────────────────────────────
     # Full-batch alternating updates: each epoch runs `stage1_iter` Stage-1 steps
@@ -305,6 +328,12 @@ class DFPVEstimator:
         self._dim_A: int = 1
         self._has_x: bool = False
 
+        # Kept so `refinalise` can re-solve the closed form without the caller
+        # having to hand the data back. Index-selected views of the fit inputs;
+        # the memory is one extra copy of one episode.
+        self._d1: "DFPVEstimator._Split | None" = None
+        self._d2: "DFPVEstimator._Split | None" = None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def fit(
@@ -329,6 +358,100 @@ class DFPVEstimator:
         Returns:
             self (for method chaining).
         """
+        for _ in self._fit_to(X, A, Y, W=W, Z=Z, milestones=[self.cfg.n_epochs]):
+            pass
+        return self
+
+    def fit_trajectory(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+        milestones,
+    ):
+        """Train once, pausing after each milestone epoch so the caller can score.
+
+        Yields ``(epoch, self)`` once epoch ``m`` has completed, for every ``m``
+        in ``milestones``, then resumes training from exactly that state. The
+        run lasts ``max(milestones)`` epochs, so a search over ``n_epochs``
+        costs one training run rather than one per value.
+
+        **The state yielded at ``m`` is bit-identical to a fresh** ``fit``
+        **with** ``n_epochs=m``. Nothing in the loop reads ``cfg.n_epochs``
+        except the bound; the seeds are set once at the top and every net is
+        built before the first epoch, so both the initialisation and the whole
+        RNG stream are independent of where the run stops. That is what makes
+        ``sweep`` a re-spelling rather than an approximation, and
+        ``tests/test_bench_dfpv_sweep.py`` pins it.
+
+        Two things a caller must not break, both of which would silently
+        invalidate that claim rather than raise:
+
+        - **Do not consume RNG between yields.** ``_finalise`` and
+          ``refinalise`` do not — they are ``no_grad`` forwards plus Cholesky
+          solves — and neither does the ``eval()``/``train()`` round trip they
+          induce, since the extractors are plain ``Linear``/``ReLU`` stacks with
+          no dropout or batch norm. Anything that draws would shift every
+          subsequent update.
+        - **Score before advancing.** The yielded object is ``self``, mutated in
+          place; the next epoch overwrites it. Keeping the *score* rather than a
+          state dict is what keeps memory flat in the number of milestones.
+
+        Args are as :meth:`fit`, plus ``milestones``: epoch counts at which to
+        yield, deduplicated and sorted; must be non-empty and >= 1.
+        """
+        yield from self._fit_to(X, A, Y, W=W, Z=Z, milestones=milestones)
+
+    def refinalise(
+        self, final_lam1: Optional[float] = None, final_lam2: Optional[float] = None
+    ) -> float:
+        """Re-solve the closed form at new ridge penalties; return `oos_score_`.
+
+        The trained features are untouched — only ``V̂`` and ``û`` are
+        recomputed — so this costs two Cholesky factorisations rather than a
+        training run. That is what a `tune.sweep` over ``final_lam1`` /
+        ``final_lam2`` buys, and why those are the only ridge penalties that may
+        appear there: ``lam1``/``lam2`` also enter the feature training, so a
+        sweep over them would be selecting a different model than the one it
+        priced.
+
+        ``None`` means "this config's effective value" — i.e. ``final_lamK`` if
+        set, else ``lamK``. Mutates the fitted weights in place and leaves
+        ``cfg`` alone, so the object is a valid predictor at the new penalties
+        but no longer describes itself; the wrapper refits the winner from a
+        config rather than keeping a re-finalised model.
+        """
+        if self._d1 is None or self._d2 is None:
+            raise RuntimeError("Call fit() or fit_trajectory() before refinalise().")
+        self._finalise(self._d1, self._d2, lam1=final_lam1, lam2=final_lam2)
+        return self.oos_score_
+
+    # ── Training ──────────────────────────────────────────────────────────────
+
+    def _fit_to(
+        self,
+        X: np.ndarray,
+        A: np.ndarray,
+        Y: np.ndarray,
+        *,
+        W: np.ndarray,
+        Z: np.ndarray,
+        milestones,
+    ):
+        """The training loop behind both `fit` and `fit_trajectory`.
+
+        One implementation so the bit-identity claim in `fit_trajectory` is
+        structural rather than a promise two copies have to keep.
+        """
+        milestones = sorted({int(m) for m in milestones})
+        if not milestones:
+            raise ValueError("milestones must be non-empty.")
+        if milestones[0] < 1:
+            raise ValueError(f"milestones must be >= 1, got {milestones[0]}.")
+
         cfg = self.cfg
         torch.manual_seed(cfg.seed)
         np.random.seed(cfg.seed)
@@ -350,6 +473,7 @@ class DFPVEstimator:
 
         d1 = self._Split(A_t[i1], Z_t[i1], W_t[i1], X_t[i1], Y_t[i1])
         d2 = self._Split(A_t[i2], Z_t[i2], W_t[i2], X_t[i2], Y_t[i2])
+        self._d1, self._d2 = d1, d2
 
         # ── Build networks ─────────────────────────────────────────────────
         self._f1_A = _build_extractor(self._dim_A, cfg).to(self._device)
@@ -364,13 +488,15 @@ class DFPVEstimator:
         opt_s2 = torch.optim.Adam(self._stage2_params(), lr=cfg.lr)
 
         # ── Alternating feature training ───────────────────────────────────
-        for _ in range(cfg.n_epochs):
+        pending = set(milestones)
+        for epoch in range(1, milestones[-1] + 1):
             self._stage1_update(d1, opt_s1)
             self._stage2_update(d1, d2, opt_s2)
-
-        # ── Final closed-form 2SLS on the trained features ─────────────────
-        self._finalise(d1, d2)
-        return self
+            if epoch in pending:
+                # Close the 2SLS so the yielded object is a usable predictor,
+                # exactly as a `fit` stopping here would leave it.
+                self._finalise(d1, d2)
+                yield epoch, self
 
     def predict(
         self,
@@ -622,6 +748,8 @@ class DFPVEstimator:
     def _two_stage(
         self,
         *,
+        lam1: Optional[float] = None,
+        lam2: Optional[float] = None,
         d1_W_feat: torch.Tensor,
         f1_A_1: torch.Tensor,
         f1_A_2: torch.Tensor,
@@ -633,31 +761,62 @@ class DFPVEstimator:
         b2_2: torch.Tensor | None,
         Y2: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Closed-form 2SLS, returning (stage1_weight, stage2_weight, stage-2 loss)."""
+        """Closed-form 2SLS, returning (stage1_weight, stage2_weight, stage-2 loss).
+
+        `lam1`/`lam2` default to the *training* penalties, which is what the
+        Stage-2 update needs — the loss it backpropagates has to be the one the
+        features are being trained under. `_finalise` passes the effective
+        `final_lam*` instead.
+        """
+        lam1 = self.cfg.lam1 if lam1 is None else lam1
+        lam2 = self.cfg.lam2 if lam2 is None else lam2
+
         # Stage 1: predict the outcome-proxy feature from the instrument side.
         feat1 = self._augment_stage1(f1_A_1, gZ_1, b1_1)
-        stage1_weight = _fit_ridge(d1_W_feat, feat1, self.cfg.lam1)
+        stage1_weight = _fit_ridge(d1_W_feat, feat1, lam1)
 
         feat1_pred = self._augment_stage1(f1_A_2, gZ_2, b1_2)
         W_feat_hat = _ridge_pred(feat1_pred, stage1_weight)
 
         # Stage 2: regress Y on the predicted outcome-proxy feature.
         feat2 = self._augment_stage2(W_feat_hat, f2_A_2, b2_2)
-        stage2_weight = _fit_ridge(Y2, feat2, self.cfg.lam2)
+        stage2_weight = _fit_ridge(Y2, feat2, lam2)
 
         n = feat2.shape[0]
         pred = _ridge_pred(feat2, stage2_weight)
-        loss = (
-            torch.norm(Y2 - pred) ** 2
-            + self.cfg.lam2 * n * torch.norm(stage2_weight) ** 2
-        )
+        loss = torch.norm(Y2 - pred) ** 2 + lam2 * n * torch.norm(stage2_weight) ** 2
         return stage1_weight, stage2_weight, loss
 
-    def _finalise(self, d1: "DFPVEstimator._Split", d2: "DFPVEstimator._Split") -> None:
-        """Recompute the closed-form weights and reference means with frozen nets."""
+    def _effective_final_lams(self) -> tuple[float, float]:
+        """The penalties the final solve uses: `final_lamK` if set, else `lamK`."""
+        cfg = self.cfg
+        lam1 = cfg.lam1 if cfg.final_lam1 is None else cfg.final_lam1
+        lam2 = cfg.lam2 if cfg.final_lam2 is None else cfg.final_lam2
+        return float(lam1), float(lam2)
+
+    def _finalise(
+        self,
+        d1: "DFPVEstimator._Split",
+        d2: "DFPVEstimator._Split",
+        *,
+        lam1: Optional[float] = None,
+        lam2: Optional[float] = None,
+    ) -> None:
+        """Recompute the closed-form weights and reference means with frozen nets.
+
+        `lam1`/`lam2` override the config's effective final penalties for this
+        solve only; `None` uses `_effective_final_lams()`. The nets are not
+        touched, so this is the whole cost of a `final_lam*` sweep point.
+        """
+        eff1, eff2 = self._effective_final_lams()
+        lam1 = eff1 if lam1 is None else float(lam1)
+        lam2 = eff2 if lam2 is None else float(lam2)
+
         self._set_eval()
         with torch.no_grad():
             stage1_weight, stage2_weight, _ = self._two_stage(
+                lam1=lam1,
+                lam2=lam2,
                 d1_W_feat=self._g_W(d1.W),
                 f1_A_1=self._f1_A(d1.A),
                 f1_A_2=self._f1_A(d2.A),
