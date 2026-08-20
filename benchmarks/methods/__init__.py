@@ -926,7 +926,7 @@ class NMMR_Wrapper(CATEEstimator):
         cfg = NMMRConfig(
             hidden_dim=kwargs.get("hidden_dim", 64),
             n_layers=kwargs.get("n_layers", 3),
-            length_scale=kwargs.get("length_scale", 1.0),
+            kernel_scale=kwargs.get("kernel_scale", 1.0),
             loss=kwargs.get("loss", "u_stat"),
             n_epochs=kwargs.get("n_epochs", 100),
             batch_size=kwargs.get("batch_size", 256),
@@ -934,7 +934,7 @@ class NMMR_Wrapper(CATEEstimator):
             weight_decay=kwargs.get("weight_decay", 1e-4),
             predict_batch_size=kwargs.get("predict_batch_size", 128),
             w_predict_batch_size=kwargs.get("w_predict_batch_size", 4096),
-            x_cond_length_scale=kwargs.get("x_cond_length_scale", 1.0),
+            x_cond_kernel_scale=kwargs.get("x_cond_kernel_scale", 1.0),
             x_cond_top_k=kwargs.get("x_cond_top_k", 512),
             seed=kwargs.get("seed", 42),
             # From the resolved ComputeConfig; NMMR used to auto-grab MPS in every

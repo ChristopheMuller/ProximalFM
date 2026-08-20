@@ -29,13 +29,21 @@ import torch.optim as optim
 #: count, and the benchmark wrapper validates `tune.sweep` against this same
 #: set, so the two cannot drift apart. Mirrors `pmmr.SOLVE_ONLY_PARAMS`.
 #:
-#: Note what is deliberately *absent*: `w_strategy`, `x_cond_length_scale` and
+#: Note what is deliberately *absent*: `w_strategy`, `x_cond_kernel_scale` and
 #: `x_cond_top_k` cost nothing to vary — they touch only the W-marginalisation
 #: at prediction time — but `score` is a moment loss on the bridge h(A,W,X)
 #: against Y and never evaluates that path, so every value would score
 #: identically and the "winner" would be whichever came first. Free to
 #: re-evaluate is not the same as selectable; both are required.
 SWEEP_ONLY_PARAMS = frozenset({"n_epochs"})
+
+
+#: Rows used to estimate the median-heuristic bandwidth. Deliberately *not*
+#: `kernel_precompute_max_n`: the bandwidth must be a function of the data
+#: alone, so that turning the precomputation on or off cannot move it. Tying
+#: the two together makes `kernel_precompute_max_n=0` resolve sigma from two
+#: rows, which is a different model, not a slower one.
+_MEDIAN_HEURISTIC_MAX_N = 4096
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,9 +58,23 @@ class NMMRConfig:
     n_layers: int = 3  # number of hidden layers (depth before output)
 
     # ── Kernel ────────────────────────────────────────────────────────────────
-    # length_scale controls the RBF bandwidth for the moment kernel K(A, Z, X).
-    # Smaller → kernel is more local (sharpens the moment condition).
-    length_scale: float = 1.0
+    # Multiplicative rescaling of the median-heuristic bandwidth for the moment
+    # kernel K(A, Z, X): sigma = kernel_scale * median‖x-x'‖, taken over the
+    # fit's own kernel inputs. 1.0 is the plain median heuristic;
+    # smaller is more local (sharpens the moment condition), larger is smoother.
+    # Same spelling as PMMR's and KPV's `kernel_scale`, and for the same reason.
+    #
+    # An *absolute* width — which is what the reference implementation uses,
+    # never overriding `rbf_kernel`'s `length_scale=1` — cannot be a sensible
+    # default here. Inputs are standardized per column, so E‖x-x'‖² = 2d and a
+    # fixed width gives a typical off-diagonal of exp(-d/sigma²): measured on
+    # our episodes, 1.5e-3 at d = 8 and 4e-10 at d = 23, i.e. K ≈ I. The whole
+    # moment condition lives in that off-diagonal (see
+    # `_record_kernel_diagnostics`), so at our dimensions a fixed width silently
+    # switches the method off. The median heuristic pins the median off-diagonal
+    # at exp(-1/2) = 0.607 in every dimension, which is what makes a grid over
+    # `kernel_scale` mean the same thing in every episode.
+    kernel_scale: float = 1.0
 
     # ── Loss ──────────────────────────────────────────────────────────────────
     # "u_stat": U-statistic (zeros diagonal of K, unbiased but noisier)
@@ -83,8 +105,11 @@ class NMMRConfig:
     # ── CATE prediction / W marginalisation ──────────────────────────────────
     w_strategy: Literal["independent", "conditional"] = "independent"
 
-    # For conditional W|X prediction.
-    x_cond_length_scale: float = 1.0
+    # For conditional W|X prediction: same multiplier semantics, on the median
+    # heuristic of the scaled training X. A fixed width degenerates the same way
+    # — at large d_X every softmax weight is equal and `conditional` silently
+    # becomes `independent`.
+    x_cond_kernel_scale: float = 1.0
     x_cond_top_k: int | None = 512
 
     # Chunk over W/reference samples at prediction time.
@@ -125,6 +150,27 @@ class _MLP(nn.Module):
         return self.net(x)
 
 
+def _sq_dists(X: torch.Tensor) -> torch.Tensor:
+    """Pairwise squared Euclidean distances, shape (n, n), for X of shape (n, d).
+
+    Deliberately the subtraction form rather than the ‖x‖² + ‖y‖² - 2xᵀy gemm
+    identity: the latter is faster but differs in the last ulp, and relatively
+    most so for near-identical rows — exactly the near-diagonal region that
+    dominates K. `tests/test_bench_nmmr_sweep.py` pins bit-identical weights
+    across code paths, so the arithmetic here is load-bearing.
+    """
+    # Vectorised: use broadcasting over the last two dimensions.
+    # X.T has shape (d, n); unsqueeze gives (d, n, 1) and (d, 1, n).
+    t = X.T  # (d, n)
+    diff = t.unsqueeze(2) - t.unsqueeze(1)  # (d, n, n)
+    return (diff**2).sum(dim=0)  # (n, n)
+
+
+def _rbf_from_sq_dists(sq_dist: torch.Tensor, length_scale: float) -> torch.Tensor:
+    """K = exp(-d² / (2σ²)) from precomputed squared distances."""
+    return torch.exp(-sq_dist / (2.0 * (length_scale + 1e-8) ** 2))
+
+
 def _rbf_kernel_matrix(X: torch.Tensor, length_scale: float = 1.0) -> torch.Tensor:
     """
     Compute the nxn RBF (Gaussian) kernel matrix for a dataset of n row-vectors.
@@ -133,17 +179,45 @@ def _rbf_kernel_matrix(X: torch.Tensor, length_scale: float = 1.0) -> torch.Tens
 
     Args:
         X:            Tensor of shape (n, d).
-        length_scale: Bandwidth parameter σ.
+        length_scale: Bandwidth parameter σ, an *absolute* width. Callers
+                      holding a `kernel_scale` multiplier resolve it through
+                      `_median_bandwidth` first.
 
     Returns:
         K: Tensor of shape (n, n).
     """
-    # Vectorised: use broadcasting over the last two dimensions.
-    # X.T has shape (d, n); unsqueeze gives (d, n, 1) and (d, 1, n).
-    t = X.T  # (d, n)
-    diff = t.unsqueeze(2) - t.unsqueeze(1)  # (d, n, n)
-    sq_dist = (diff**2).sum(dim=0)  # (n, n)
-    return torch.exp(-sq_dist / (2.0 * (length_scale + 1e-8) ** 2))
+    return _rbf_from_sq_dists(_sq_dists(X), length_scale)
+
+
+def _median_bandwidth(sq_dist: torch.Tensor) -> float:
+    """Median-heuristic bandwidth: σ = median_{i≠j} ‖xᵢ - xⱼ‖.
+
+    Taken as the median *distance* (the median commutes with the square root,
+    so it is read straight off the squared distances) rather than any of the
+    other spellings in circulation, because that is the convention the sibling
+    kernel methods already use — `kernels.ColumnWiseGaussianKernel`'s
+    `2 * median² * scale` under `exp(-d²/σ)` and `plearner._median_bandwidth`
+    both put the median entry of K at exp(-1/2). Matching them is what lets a
+    `kernel_scale` of 1.0 mean the same thing when NMMR, PMMR and KPV appear in
+    one table.
+
+    The diagonal is excluded: it contributes n exact zeros out of n², which
+    drags the median down by a factor that depends on n, so including it would
+    make the bandwidth depend on the context size. Degenerate inputs (all rows
+    identical, a single row) leave the median at 0; we fall back to 1.0 rather
+    than dividing by zero, which is the only case where an absolute width is
+    the right answer.
+    """
+    n = sq_dist.shape[0]
+    if n < 2:
+        return 1.0
+
+    iu = torch.triu_indices(n, n, offset=1, device=sq_dist.device)
+    med = float(sq_dist[iu[0], iu[1]].median())
+
+    if not (med > 0.0) or not np.isfinite(med):
+        return 1.0
+    return float(np.sqrt(med))
 
 
 def _nmmr_loss(
@@ -209,6 +283,11 @@ class NMMREstimator:
         self._X_train: torch.Tensor | None = None
         self._W_train: torch.Tensor | None = None
         self._dim_A: int = 1
+        # Absolute RBF widths, resolved from the data at fit time (the config
+        # carries multipliers, not widths). The W|X one is filled in on first
+        # use of the `conditional` strategy.
+        self._length_scale_: float = 1.0
+        self._x_cond_length_scale_: float | None = None
         self._device = self._select_device(self.cfg.device)
         self.diagnostics_: dict[str, float] = {}
 
@@ -315,23 +394,36 @@ class NMMREstimator:
             1e-6
         )
 
-        self._record_kernel_diagnostics(A_t, Z_t, X_t)
-
         n = X_t.shape[0]
 
-        # One kernel for the whole fit. Each minibatch's K is a submatrix of
-        # this one, and `index_select` twice recovers it *exactly*: every entry
-        # is the same per-pair arithmetic on the same inputs, so the yielded
-        # weights stay bit-identical to the per-batch path (and to every
-        # checkpoint `tests/test_bench_nmmr_sweep.py` pins). Nothing here draws
-        # from the RNG, so the minibatch stream is untouched.
-        K_full: torch.Tensor | None = None
-        if n <= cfg.kernel_precompute_max_n:
-            with torch.no_grad():
-                K_full = _rbf_kernel_matrix(
-                    self._kernel_input(A_t, Z_t, X_t),
-                    length_scale=cfg.length_scale,
-                )
+        # The bandwidth is a property of the data, so it is resolved once, here,
+        # from the fit's own kernel inputs — never per minibatch, which would
+        # make sigma a function of `batch_size`. Nothing below draws from the
+        # RNG, so the minibatch stream is unaffected by any of it.
+        with torch.no_grad():
+            k_input_all = self._kernel_input(A_t, Z_t, X_t)
+            sq_dist = (
+                _sq_dists(k_input_all) if n <= cfg.kernel_precompute_max_n else None
+            )
+            self._length_scale_ = self._resolve_bandwidth(
+                k_input_all,
+                cfg.kernel_scale,
+                # Only when it covers exactly the rows the resolver would have
+                # picked itself, so that sigma cannot depend on the precompute.
+                sq_dist=sq_dist if n <= _MEDIAN_HEURISTIC_MAX_N else None,
+            )
+
+            # One kernel for the whole fit. Each minibatch's K is a submatrix of
+            # this one, and `index_select` twice recovers it *exactly*: every
+            # entry is the same per-pair arithmetic on the same inputs, so the
+            # yielded weights stay bit-identical to the per-batch path (and to
+            # every checkpoint `tests/test_bench_nmmr_sweep.py` pins).
+            K_full: torch.Tensor | None = None
+            if sq_dist is not None:
+                K_full = _rbf_from_sq_dists(sq_dist, self._length_scale_)
+                del sq_dist
+
+        self._record_kernel_diagnostics(A_t, Z_t, X_t, K_full=K_full)
 
         input_dim = self._dim_A + W_t.shape[1] + X_t.shape[1]
         self._model = _MLP(input_dim, cfg.hidden_dim, cfg.n_layers).to(self._device)
@@ -364,7 +456,7 @@ class NMMREstimator:
                 else:
                     K = _rbf_kernel_matrix(
                         self._kernel_input(bA, Z_t[idx], bX),
-                        length_scale=cfg.length_scale,
+                        length_scale=self._length_scale_,
                     )
 
                 loss = _nmmr_loss(pred, bY, K, cfg.loss)
@@ -382,7 +474,7 @@ class NMMREstimator:
         *,
         W: np.ndarray,
         Z: np.ndarray,
-        length_scale: float = 1.0,
+        kernel_scale: float = 1.0,
         loss: Literal["u_stat", "v_stat"] | None = None,
     ) -> float:
         """Held-out kernel moment loss (lower is better) for model selection.
@@ -393,10 +485,27 @@ class NMMREstimator:
 
         Two knobs, and they are deliberately treated differently:
 
-        - ``length_scale`` is *fixed* here, independent of the trained model's
-          own bandwidth, so scores stay comparable across candidates whose
-          kernel knobs differ during a hyperparameter search — otherwise a
-          wider training bandwidth would trivially rescale the loss.
+        - ``kernel_scale`` multiplies the median heuristic **of the scoring
+          rows**, and the model's own ``cfg.kernel_scale`` is deliberately
+          ignored. Two properties follow, and both are required. It is
+          *candidate-independent*: the bandwidth is a function of the held-out
+          data alone, so every candidate is ranked by the same functional of its
+          residuals. And it is *dimension-free*, so the criterion has the same
+          resolving power in a 3-dimensional episode and a 23-dimensional one.
+          Scoring each candidate at its own width instead would not merely be
+          incomparable, it would be monotone in the wrong thing: a narrower
+          kernel drives K towards the identity and the U-statistic towards
+          zero, so the search would always "win" by switching the moment
+          condition off.
+
+          What this does *not* fully remove is the residual advantage a
+          candidate gets when its training width happens to coincide with this
+          one — it is being scored on (a held-out copy of) its own objective
+          while the others are scored on a foreign one. Held-out evaluation
+          prices in the overfitting part of that; what is left is the arbitrary
+          choice of which single member of a family of equally valid criteria
+          to rank on. Read `tune_score_range` in the wrapper diagnostics before
+          treating a selected width as an optimum.
         - ``loss`` defaults to the model's **own** statistic (``cfg.loss``), so
           each estimator is validated on the objective it was trained for.
           Scoring everything on the V-statistic instead — as this used to —
@@ -418,7 +527,10 @@ class NMMREstimator:
         with torch.no_grad():
             pred = self._model(torch.cat([A_t, W_t, X_t], dim=1))
             k_input = self._kernel_input(A_t, Z_t, X_t)
-            K = _rbf_kernel_matrix(k_input, length_scale=length_scale)
+            K = _rbf_kernel_matrix(
+                k_input,
+                length_scale=self._resolve_bandwidth(k_input, kernel_scale),
+            )
             val = _nmmr_loss(pred, Y_t, K, loss)
 
         return float(val)
@@ -512,30 +624,63 @@ class NMMREstimator:
         """Concatenated moment-kernel input ``(A, Z/sd, X/sd)``.
 
         One definition for three call sites — training, :meth:`score` and the
-        diagnostics. The per-column scaling is what makes ``cfg.length_scale``
-        mean the same thing in every episode (the reference implementation
-        applies one absolute width to raw columns), so the three must not drift
-        apart.
+        diagnostics. Together with the median-heuristic bandwidth, the
+        per-column scaling is what makes ``cfg.kernel_scale`` mean the same
+        thing in every episode (the reference implementation applies one
+        absolute width to raw columns), so the three must not drift apart.
         """
         return torch.cat(
             [A_t, Z_t / self._Z_scale, X_t / self._X_scale],
             dim=1,
         )
 
+    def _resolve_bandwidth(
+        self,
+        k_input: torch.Tensor,
+        kernel_scale: float,
+        *,
+        sq_dist: torch.Tensor | None = None,
+    ) -> float:
+        """Turn a ``kernel_scale`` multiplier into an absolute RBF width.
+
+        ``sq_dist`` is the caller's already-computed distance matrix, if it has
+        one *and* it covers the same rows this would have used; otherwise the
+        rows are strided down to ``_MEDIAN_HEURISTIC_MAX_N`` first, since the
+        median of a strided subsample is a perfectly good estimate of the
+        median and the full matrix may not fit. The stride is
+        deterministic rather than a random subsample **on purpose**: an RNG draw
+        here would shift every subsequent minibatch and break
+        :meth:`fit_trajectory`'s exactness claim, for a quantity that only needs
+        to be a stable summary of the data.
+        """
+        if sq_dist is None:
+            n = k_input.shape[0]
+            if n > _MEDIAN_HEURISTIC_MAX_N:
+                step = (n + _MEDIAN_HEURISTIC_MAX_N - 1) // _MEDIAN_HEURISTIC_MAX_N
+                k_input = k_input[::step]
+            sq_dist = _sq_dists(k_input)
+
+        return kernel_scale * _median_bandwidth(sq_dist)
+
     def _record_kernel_diagnostics(
         self,
         A_t: torch.Tensor,
         Z_t: torch.Tensor,
         X_t: torch.Tensor,
+        *,
+        K_full: torch.Tensor | None = None,
     ) -> None:
         """Measure how much moment signal the kernel actually carries.
 
-        ``length_scale`` is a fixed absolute width (1.0 by default, matching the
-        reference implementation, which never overrides ``rbf_kernel``'s
-        default). But it is applied to the concatenated ``(A, Z/sd, X/sd)``
-        vector, whose squared norms grow with ``1 + d_Z + d_X`` — so the same
-        width means something different in every episode, and past a handful of
-        dimensions ``K`` approaches the identity.
+        The bandwidth now follows the median heuristic, so these numbers should
+        sit near their target rather than collapse: the median off-diagonal is
+        ``exp(-1/(2·kernel_scale²))`` by construction — 0.607 at the default —
+        in every dimension. They are kept, and are still worth reading, because
+        that is a property of the *bandwidth rule*, not of the data: duplicate
+        or constant proxy columns, a degenerate median, or a `kernel_scale` far
+        from 1 can still leave K near the identity, and under an absolute width
+        (the reference implementation's fixed 1.0) it is the norm rather than
+        the exception past a handful of dimensions.
 
         That matters because the whole moment condition lives in K's
         **off-diagonal**. The V-statistic's diagonal term is just ``MSE/n``, so
@@ -549,7 +694,9 @@ class NMMREstimator:
         ``batch_size`` rows (no RNG — a permutation here would shift the
         training minibatch stream and change results for a diagnostic):
 
-        - ``kernel_dim`` — ``1 + d_Z + d_X``, the width driving the effect.
+        - ``kernel_dim`` — ``1 + d_Z + d_X``, the dimension driving the effect.
+        - ``kernel_length_scale`` — the resolved absolute σ, so a logged run
+          records the width it actually used and not just the multiplier.
         - ``kernel_offdiag_median`` / ``kernel_offdiag_mean`` — the typical
           off-diagonal entry against a diagonal of exactly 1. Small values mean
           the moment condition is barely being enforced; read them before
@@ -561,11 +708,15 @@ class NMMREstimator:
 
         with torch.no_grad():
             k_input = self._kernel_input(A_t[:m], Z_t[:m], X_t[:m])
-            K = _rbf_kernel_matrix(k_input, length_scale=self.cfg.length_scale)
+            if K_full is not None:
+                K = K_full[:m, :m]
+            else:
+                K = _rbf_kernel_matrix(k_input, length_scale=self._length_scale_)
             off = K[~torch.eye(m, dtype=torch.bool, device=self._device)]
 
             self.diagnostics_ = {
                 "kernel_dim": float(k_input.shape[1]),
+                "kernel_length_scale": float(self._length_scale_),
                 "kernel_offdiag_median": float(off.median()),
                 "kernel_offdiag_mean": float(off.mean()),
             }
@@ -679,6 +830,15 @@ class NMMREstimator:
 
         X_train_scaled = self._X_train / self._X_scale
 
+        if self._x_cond_length_scale_ is None:
+            # Lazily, because most method entries never take this path, and a
+            # second n x n distance matrix per fit is not free. Cached on the
+            # estimator: it is a function of X_train alone, so it must not vary
+            # between prediction batches.
+            self._x_cond_length_scale_ = self._resolve_bandwidth(
+                X_train_scaled, cfg.x_cond_kernel_scale
+            )
+
         self._model.eval()
         with torch.no_grad():
             for start in range(0, n_test, cfg.predict_batch_size):
@@ -690,7 +850,7 @@ class NMMREstimator:
                 # Squared distances between test X and train X.
                 dist2 = torch.cdist(X_b_scaled, X_train_scaled).pow(2)
 
-                log_weights = -dist2 / (2.0 * (cfg.x_cond_length_scale + 1e-8) ** 2)
+                log_weights = -dist2 / (2.0 * (self._x_cond_length_scale_ + 1e-8) ** 2)
 
                 if cfg.x_cond_top_k is not None:
                     k = min(cfg.x_cond_top_k, self._X_train.shape[0])

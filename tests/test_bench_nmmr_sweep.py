@@ -250,7 +250,7 @@ def test_unknown_key_refused_in_either_block(block):
         _method(tune=_tune_block(**{block: {"hiden_dim": [8]}}))
 
 
-@pytest.mark.parametrize("param", ["hidden_dim", "lr", "weight_decay", "length_scale"])
+@pytest.mark.parametrize("param", ["hidden_dim", "lr", "weight_decay", "kernel_scale"])
 def test_trajectory_changing_parameter_in_sweep_is_refused_with_the_fix(param):
     """It would be correct but slow, and the config would be claiming a saving."""
     with pytest.raises(ValueError, match=r"Move\s+them to `tune.grid`"):
@@ -267,7 +267,7 @@ def test_prediction_side_knobs_are_not_sweepable():
     "select" the first. Refused for the same reason as the expensive ones,
     though the failure mode is the opposite one.
     """
-    for param in ("w_strategy", "x_cond_length_scale", "x_cond_top_k"):
+    for param in ("w_strategy", "x_cond_kernel_scale", "x_cond_top_k"):
         with pytest.raises(ValueError, match="Move"):
             _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
 
@@ -321,3 +321,76 @@ def test_precomputation_does_not_perturb_the_minibatch_stream():
         seen[epoch] = _weights(model)
 
     assert _same_weights(seen[3], _weights(ref))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# bandwidth: the median heuristic and the kernel_scale multiplier
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("d_x", [0, 2, 10, 30])
+def test_median_heuristic_holds_the_kernel_open_in_every_dimension(d_x):
+    """The point of the heuristic: one grid of multipliers, all dimensions.
+
+    Under an absolute width the median off-diagonal decays as exp(-d/sigma²) —
+    1e-3 by d = 8, 1e-10 by d = 23 — so K becomes the identity and the moment
+    condition is silently switched off. The heuristic pins that median at
+    exp(-1/2) instead, by construction, whatever d is.
+    """
+    X, A, Y, W, Z = make_data(n=200, d_x=d_x)
+    est = NMMREstimator(_cfg()).fit(X, A, Y, W=W, Z=Z)
+
+    assert est.diagnostics_["kernel_dim"] == 1 + 2 + d_x
+    assert est.diagnostics_["kernel_offdiag_median"] == pytest.approx(
+        np.exp(-0.5), rel=0.05
+    )
+
+
+def test_kernel_scale_multiplies_the_heuristic():
+    """`kernel_scale` is a multiplier on sigma, not an absolute width."""
+    X, A, Y, W, Z = make_data(n=200)
+
+    widths = {
+        s: NMMREstimator(_cfg(kernel_scale=s))
+        .fit(X, A, Y, W=W, Z=Z)
+        .diagnostics_["kernel_length_scale"]
+        for s in (0.5, 1.0, 2.0)
+    }
+
+    assert widths[2.0] == pytest.approx(2 * widths[1.0])
+    assert widths[0.5] == pytest.approx(0.5 * widths[1.0])
+
+
+def test_bandwidth_does_not_depend_on_the_batch_size():
+    """sigma is a property of the data; resolving it per minibatch would make
+    the objective a function of an optimisation knob."""
+    X, A, Y, W, Z = make_data(n=200)
+
+    wide = NMMREstimator(_cfg(batch_size=200)).fit(X, A, Y, W=W, Z=Z)
+    narrow = NMMREstimator(_cfg(batch_size=32)).fit(X, A, Y, W=W, Z=Z)
+
+    assert wide.diagnostics_["kernel_length_scale"] == pytest.approx(
+        narrow.diagnostics_["kernel_length_scale"]
+    )
+
+
+def test_score_ignores_the_candidates_own_bandwidth():
+    """Candidates must be ranked by one functional of their residuals.
+
+    Scoring each at its own width would rank on scale rather than fit, and
+    monotonically so: a narrower kernel drives K to the identity and the
+    U-statistic to zero, so the search would "win" by switching the moment
+    condition off.
+    """
+    X, A, Y, W, Z = make_data(n=200)
+    Xv, Av, Yv, Wv, Zv = make_data(n=120, seed=11)
+
+    est = NMMREstimator(_cfg()).fit(X, A, Y, W=W, Z=Z)
+    baseline = est.score(Xv, Av, Yv, W=Wv, Z=Zv)
+
+    for scale in (0.25, 4.0):
+        est.cfg = replace(est.cfg, kernel_scale=scale)
+        assert est.score(Xv, Av, Yv, W=Wv, Z=Zv) == baseline
+
+    # ...but the scoring bandwidth is still a knob of the *scorer*.
+    assert est.score(Xv, Av, Yv, W=Wv, Z=Zv, kernel_scale=4.0) != baseline
