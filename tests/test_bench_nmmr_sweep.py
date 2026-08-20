@@ -270,3 +270,54 @@ def test_prediction_side_knobs_are_not_sweepable():
     for param in ("w_strategy", "x_cond_length_scale", "x_cond_top_k"):
         with pytest.raises(ValueError, match="Move"):
             _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# kernel precomputation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("loss", ["u_stat", "v_stat"])
+def test_precomputed_kernel_is_bit_identical_to_per_batch(loss):
+    """The one-kernel-per-fit path may not move a number, only a clock.
+
+    `K` depends on the data alone, so each minibatch's kernel is a submatrix of
+    one n x n matrix; `kernel_precompute_max_n=0` forces the old per-batch
+    recomputation. Bit-identical weights are the claim, and they also cover the
+    subtler failure: the U-statistic zeroes K's diagonal, so a path that
+    mutated the shared matrix in place would corrupt every later minibatch and
+    show up here rather than as a silently worse fit.
+    """
+    X, A, Y, W, Z = make_data(n=200)
+
+    fast = NMMREstimator(_cfg(loss=loss)).fit(X, A, Y, W=W, Z=Z)
+    slow = NMMREstimator(_cfg(loss=loss, kernel_precompute_max_n=0)).fit(
+        X, A, Y, W=W, Z=Z
+    )
+
+    assert _same_weights(_weights(fast), _weights(slow))
+    assert np.array_equal(fast.predict(X, W=W), slow.predict(X, W=W))
+
+
+def test_the_cap_switches_paths_without_switching_results():
+    """Crossing the memory cap is a time/memory trade, never a numerical one."""
+    X, A, Y, W, Z = make_data(n=200)
+
+    under = NMMREstimator(_cfg(kernel_precompute_max_n=200)).fit(X, A, Y, W=W, Z=Z)
+    over = NMMREstimator(_cfg(kernel_precompute_max_n=199)).fit(X, A, Y, W=W, Z=Z)
+
+    assert _same_weights(_weights(under), _weights(over))
+
+
+def test_precomputation_does_not_perturb_the_minibatch_stream():
+    """Nothing in the precompute draws, so milestones stay where they were."""
+    X, A, Y, W, Z = make_data(n=200)
+
+    ref = NMMREstimator(_cfg(n_epochs=3)).fit(X, A, Y, W=W, Z=Z)
+
+    est = NMMREstimator(_cfg(n_epochs=5))
+    seen = {}
+    for epoch, model in est.fit_trajectory(X, A, Y, W=W, Z=Z, milestones=(3, 5)):
+        seen[epoch] = _weights(model)
+
+    assert _same_weights(seen[3], _weights(ref))

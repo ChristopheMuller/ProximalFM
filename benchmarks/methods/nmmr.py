@@ -90,6 +90,16 @@ class NMMRConfig:
     # Chunk over W/reference samples at prediction time.
     w_predict_batch_size: int = 1024
 
+    # ── Kernel precomputation ────────────────────────────────────────────────
+    # The moment kernel K(A, Z, X) depends on the data alone — no model
+    # parameters, no grad — so `fit_trajectory` builds the full n x n matrix
+    # once and each minibatch reads its own submatrix, instead of recomputing
+    # identical entries once per minibatch per epoch. Above this many rows the
+    # matrix (4n^2 bytes: 67 MB at 4096) is not worth holding on the device and
+    # the per-batch path is used instead. The two are bit-identical, so this is
+    # a time/memory trade and never a numerical one.
+    kernel_precompute_max_n: int = 4096
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Building blocks
@@ -307,6 +317,22 @@ class NMMREstimator:
 
         self._record_kernel_diagnostics(A_t, Z_t, X_t)
 
+        n = X_t.shape[0]
+
+        # One kernel for the whole fit. Each minibatch's K is a submatrix of
+        # this one, and `index_select` twice recovers it *exactly*: every entry
+        # is the same per-pair arithmetic on the same inputs, so the yielded
+        # weights stay bit-identical to the per-batch path (and to every
+        # checkpoint `tests/test_bench_nmmr_sweep.py` pins). Nothing here draws
+        # from the RNG, so the minibatch stream is untouched.
+        K_full: torch.Tensor | None = None
+        if n <= cfg.kernel_precompute_max_n:
+            with torch.no_grad():
+                K_full = _rbf_kernel_matrix(
+                    self._kernel_input(A_t, Z_t, X_t),
+                    length_scale=cfg.length_scale,
+                )
+
         input_dim = self._dim_A + W_t.shape[1] + X_t.shape[1]
         self._model = _MLP(input_dim, cfg.hidden_dim, cfg.n_layers).to(self._device)
 
@@ -316,7 +342,6 @@ class NMMREstimator:
             weight_decay=cfg.weight_decay,
         )
 
-        n = X_t.shape[0]
         todo = set(stops)
 
         for epoch in range(1, stops[-1] + 1):
@@ -328,25 +353,19 @@ class NMMREstimator:
             for start in range(0, n, cfg.batch_size):
                 idx = perm[start : start + cfg.batch_size]
 
-                bA, bW, bX, bZ, bY = A_t[idx], W_t[idx], X_t[idx], Z_t[idx], Y_t[idx]
+                bA, bW, bX, bY = A_t[idx], W_t[idx], X_t[idx], Y_t[idx]
 
                 optimizer.zero_grad()
 
                 pred = self._model(torch.cat([bA, bW, bX], dim=1))
 
-                k_input = torch.cat(
-                    [
-                        bA,
-                        bZ / self._Z_scale,
-                        bX / self._X_scale,
-                    ],
-                    dim=1,
-                )
-
-                K = _rbf_kernel_matrix(
-                    k_input,
-                    length_scale=cfg.length_scale,
-                )
+                if K_full is not None:
+                    K = K_full.index_select(0, idx).index_select(1, idx)
+                else:
+                    K = _rbf_kernel_matrix(
+                        self._kernel_input(bA, Z_t[idx], bX),
+                        length_scale=cfg.length_scale,
+                    )
 
                 loss = _nmmr_loss(pred, bY, K, cfg.loss)
                 loss.backward()
@@ -398,10 +417,7 @@ class NMMREstimator:
         self._model.eval()
         with torch.no_grad():
             pred = self._model(torch.cat([A_t, W_t, X_t], dim=1))
-            k_input = torch.cat(
-                [A_t, Z_t / self._Z_scale, X_t / self._X_scale],
-                dim=1,
-            )
+            k_input = self._kernel_input(A_t, Z_t, X_t)
             K = _rbf_kernel_matrix(k_input, length_scale=length_scale)
             val = _nmmr_loss(pred, Y_t, K, loss)
 
@@ -487,6 +503,25 @@ class NMMREstimator:
             t(Z).view(n, -1) if Z.ndim == 1 else t(Z),
         )
 
+    def _kernel_input(
+        self,
+        A_t: torch.Tensor,
+        Z_t: torch.Tensor,
+        X_t: torch.Tensor,
+    ) -> torch.Tensor:
+        """Concatenated moment-kernel input ``(A, Z/sd, X/sd)``.
+
+        One definition for three call sites — training, :meth:`score` and the
+        diagnostics. The per-column scaling is what makes ``cfg.length_scale``
+        mean the same thing in every episode (the reference implementation
+        applies one absolute width to raw columns), so the three must not drift
+        apart.
+        """
+        return torch.cat(
+            [A_t, Z_t / self._Z_scale, X_t / self._X_scale],
+            dim=1,
+        )
+
     def _record_kernel_diagnostics(
         self,
         A_t: torch.Tensor,
@@ -525,14 +560,7 @@ class NMMREstimator:
             return
 
         with torch.no_grad():
-            k_input = torch.cat(
-                [
-                    A_t[:m],
-                    Z_t[:m] / self._Z_scale,
-                    X_t[:m] / self._X_scale,
-                ],
-                dim=1,
-            )
+            k_input = self._kernel_input(A_t[:m], Z_t[:m], X_t[:m])
             K = _rbf_kernel_matrix(k_input, length_scale=self.cfg.length_scale)
             off = K[~torch.eye(m, dtype=torch.bool, device=self._device)]
 
