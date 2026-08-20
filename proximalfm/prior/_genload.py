@@ -908,17 +908,20 @@ def write_batch_file(
         B = len(d_X)
     else:
         B, T, _ = X.shape
+        # reshape(B * T, ...) rather than view(-1, ...): a zero-width block
+        # (dim_X = 0 is a legitimate prior configuration) has no elements, and
+        # torch cannot infer -1 against a 0 column count.
         U = dense2sparse(
-            U.view(-1, U.shape[-1]), d_U.repeat_interleave(T), dtype=torch.float32
+            U.reshape(B * T, U.shape[-1]), d_U.repeat_interleave(T), dtype=torch.float32
         )
         X = dense2sparse(
-            X.view(-1, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
+            X.reshape(B * T, X.shape[-1]), d_X.repeat_interleave(T), dtype=torch.float32
         )
         W = dense2sparse(
-            W.view(-1, W.shape[-1]), d_W.repeat_interleave(T), dtype=torch.float32
+            W.reshape(B * T, W.shape[-1]), d_W.repeat_interleave(T), dtype=torch.float32
         )
         Z = dense2sparse(
-            Z.view(-1, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
+            Z.reshape(B * T, Z.shape[-1]), d_Z.repeat_interleave(T), dtype=torch.float32
         )
 
     # Create temporary file first
