@@ -1274,9 +1274,14 @@ class CausalFM_Estimator(CATEEstimator):
         # both.
         key = (checkpoint_path, str(self.device))
         if key not in _CAUSALFM_CACHE:
+            # `StandardCATEModel` is a plain wrapper, not an `nn.Module`: it has no
+            # `.to()`. Placement goes through `from_pretrained(device=...)`, which
+            # both moves the inner module and sets the `device` its `_to_device`
+            # uses on every input tensor.
             with silent():
-                model = StandardCATEModel.from_pretrained(checkpoint_path)
-                _CAUSALFM_CACHE[key] = model.to(self.device)
+                _CAUSALFM_CACHE[key] = StandardCATEModel.from_pretrained(
+                    checkpoint_path, device=str(self.device)
+                )
 
         self.model = _CAUSALFM_CACHE[key]
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
