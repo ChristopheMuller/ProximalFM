@@ -11,15 +11,16 @@ the two questions that decide how its benchmark results may be read:
                                           (c) tau vs X -- is any of it predictable?
                                           (d) tau vs U -- not even by the confounder?
     Is the confounding removable?         (e) U by treatment arm  (U -> A)
-                                          (f) overlap: e(U) = P(A=1|U). Mass at 0/1
-                                              means the effect is not identified
+                                          (f) overlap: e(U,Z) = P(A=1|U,Z).
+                                              Mass at 0/1 means the effect is not identified
                                               there, however good the estimator.
                                           (g) Z vs U -- treatment-proxy relevance
                                           (h) W vs U -- outcome-proxy relevance
 
-``chamber_comparison.pdf/.png`` — all four files side by side on the two numbers
-that matter: the unadjusted confounding bias (what a method must remove) and
-SD(tau)/ATE (whether CATE metrics mean anything at all).
+``chamber_comparison.pdf/.png`` — every file side by side on the three numbers
+that matter: the unadjusted confounding bias (what a method must remove),
+SD(tau)/ATE (whether CATE metrics mean anything at all), and the share of rows
+with e(U,Z) outside [0.05, 0.95] — where the effect is not identified at all.
 
 Style comes from ``analysis_prior.design`` so the block colours match the paper:
 red = latent U, blue = X, green = W, orange = Z. Treatment arms use the
@@ -95,6 +96,35 @@ def _binned_mean(x: np.ndarray, y: np.ndarray, n_bins: int = 12):
             bx.append(xs[lo:hi].mean())
             by.append(ys[lo:hi].mean())
     return np.array(bx), np.array(by)
+
+
+#: Rows outside this band have a treatment that is effectively deterministic
+#: given U: no estimator recovers the effect there without extrapolating.
+POSITIVITY_CUT = 0.05
+
+
+def _propensity(df: pd.DataFrame, treated: np.ndarray) -> np.ndarray:
+    """Fitted e(U, Z) = P(A=1 | U, Z), by logistic regression.
+
+    Conditioning on Z as well as U is not a refinement of the same quantity, it
+    is a different one, and it is the one that matters here: in the chamber the
+    treatment is a hard threshold on ``ir_2``, which Z (``led_2_uv``) drives
+    directly, so a row can look perfectly overlapped in U alone and still have a
+    deterministic treatment once Z is held fixed. A proximal estimator sees Z,
+    so this is the overlap it actually faces.
+
+    Columns are standardized before the fit: U (0-255) and Z (0-4095) live on
+    scales two orders apart, and the default L2 penalty is not scale-free, so
+    the raw fit would shrink Z's coefficient for a reason that is pure units.
+    """
+    f = df[[c for c in ("U_1", "Z_1") if c in df.columns]].to_numpy(dtype=np.float64)
+    f = (f - f.mean(0)) / np.where(f.std(0) > 0, f.std(0), 1.0)
+    return LogisticRegression().fit(f, treated.astype(int)).predict_proba(f)[:, 1]
+
+
+def _extreme_share(e_hat: np.ndarray, cut: float = POSITIVITY_CUT) -> float:
+    """Fraction of rows with e in [0, cut] u [1 - cut, 1]."""
+    return float(((e_hat < cut) | (e_hat > 1 - cut)).mean())
 
 
 def plot_dataset(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
@@ -190,15 +220,11 @@ def plot_dataset(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
 
     # (f) Is the effect even identified? -------------------------------------
     # Confounding you can adjust away requires both arms to be observed at the
-    # same U. Where e(U) is ~0 or ~1 the treatment is effectively deterministic
+    # same (U, Z). Where e is ~0 or ~1 the treatment is effectively deterministic
     # and NO estimator recovers the effect there without extrapolating.
     ax = axes[1, 1]
-    e_hat = (
-        LogisticRegression()
-        .fit(u.reshape(-1, 1), (A > 0.5).astype(int))
-        .predict_proba(u.reshape(-1, 1))[:, 1]
-    )
-    extreme = float(((e_hat < 0.05) | (e_hat > 0.95)).mean())
+    e_hat = _propensity(df, treated)
+    extreme = _extreme_share(e_hat)
     for a in (0, 1):
         m = treated if a else ~treated
         ax.hist(
@@ -208,11 +234,11 @@ def plot_dataset(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
             histtype="step",
             linewidth=1.3,
         )
-    for lo_, hi_ in ((0.0, 0.05), (0.95, 1.0)):
+    for lo_, hi_ in ((0.0, POSITIVITY_CUT), (1 - POSITIVITY_CUT, 1.0)):
         ax.axvspan(lo_, hi_, color=OKABE_ITO["vermillion"], alpha=0.13, lw=0)
     _note(ax, f"{extreme:.0%} of rows in\nthe shaded zone")
-    _panel_label(ax, "f", r"overlap: $\hat e(U)$")
-    ax.set_xlabel(r"$\hat e(U)$")
+    _panel_label(ax, "f", r"overlap: $\hat e(U, Z)$")
+    ax.set_xlabel(r"$\hat e(U, Z)$")
     ax.set_ylabel("count")
 
     # (g, h) Are the proxies relevant to U? ----------------------------------
@@ -254,7 +280,7 @@ def plot_dataset(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
 
 
 def plot_comparison(frames: dict[str, pd.DataFrame], outdir: Path) -> list[Path]:
-    """All four files on the two numbers that decide how to read their results."""
+    """Every file on the three numbers that decide how to read its results."""
     rows = []
     for name, df in frames.items():
         A = df["A"].to_numpy() > 0.5
@@ -262,18 +288,26 @@ def plot_comparison(frames: dict[str, pd.DataFrame], outdir: Path) -> list[Path]
         tau = Y1 - Y0
         ate = tau.mean()
         naive = Y[A].mean() - Y[~A].mean()
+        # Same e(U, Z) fit as panel (f) of the per-file audit, so the two figures
+        # cannot disagree about a file.
+        e_hat = _propensity(df, A)
         rows.append(
             {
-                "name": name.replace("_confounding", "").replace("_", " "),
+                "name": (
+                    name.replace("_confounding", "")
+                    .replace("_proxy_", " / ")
+                    .replace("_", " ")
+                ),
                 "bias_pct": 100 * (naive - ate) / ate,
                 "sd_over_ate_pct": 100 * tau.std() / ate,
+                "extreme_pct": 100 * _extreme_share(e_hat),
             }
         )
     d = pd.DataFrame(rows).sort_values("bias_pct")
     y = np.arange(len(d))
 
     fig, axes = plt.subplots(
-        1, 2, figsize=figsize_grid(2, 1, panel_aspect=0.72, extra_height_in=0.3)
+        1, 3, figsize=figsize_grid(3, 1, panel_aspect=0.72, extra_height_in=0.3)
     )
 
     ax = axes[0]
@@ -323,6 +357,32 @@ def plot_comparison(frames: dict[str, pd.DataFrame], outdir: Path) -> list[Path]
     ax.set_xlim(0, 8)
     ax.set_xlabel(r"SD($\tau$) / ATE  (%)")
     _panel_label(ax, "b", "heterogeneity to estimate")
+
+    # (c) Is it identified at all? -------------------------------------------
+    # Bias and heterogeneity say what there is to estimate; this says where no
+    # estimator can. Rows with e pinned at 0 or 1 contribute an
+    # extrapolation, not an estimate, however good the method.
+    ax = axes[2]
+    ax.barh(y, d.extreme_pct, color=block_color("A"), height=0.6)
+    for yi, v in zip(y, d.extreme_pct):
+        ax.annotate(
+            f"{v:.1f}%",
+            xy=(v, yi),
+            xytext=(4, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize="x-small",
+        )
+    ax.set_yticks(y, [""] * len(d))
+    # A common scale across files is the point of the panel, but a run where
+    # every file is well overlapped should not magnify a 0.2% difference.
+    ax.set_xlim(0, max(10.0, 1.15 * d.extreme_pct.max()))
+    ax.set_xlabel(
+        rf"rows with $\hat e(U, Z)$ outside"
+        "\n"
+        rf"$[{POSITIVITY_CUT:g},\,{1 - POSITIVITY_CUT:g}]$  (%)"
+    )
+    _panel_label(ax, "c", "positivity violations")
 
     return save_figure(fig, outdir, "chamber_comparison")
 
