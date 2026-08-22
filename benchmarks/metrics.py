@@ -268,6 +268,27 @@ ATE_BIAS = Metric(
     key="ate_bias_norm",
     fn=norm_bias,
 )
+PEHE = Metric(
+    label="PEHE",
+    direction="min",
+    style=_style_bias,
+    key="pehe",
+    fn=rmse,
+    # The one metric here that does NOT divide by Var(tau), which is the whole
+    # reason it exists: on a homogeneous set (`d_X = 0` makes tau*(x) constant,
+    # so Var(tau) is exactly 0) every scale-free metric is NaN and the tables
+    # come out empty. Absolute accuracy against a constant target is still a
+    # real quantity, and it is the only one that sees a method inventing
+    # heterogeneity that is not there -- rmse^2 = bias^2 + Var(predictions),
+    # where the level metrics see only the first term. Measured on a d_X = 0
+    # set, four of twelve methods had an RMSE 3-5x their |ATE bias|.
+    #
+    # `rmse`'s own docstring warns it is in the outcome's units and so not
+    # comparable across episodes; that warning does not bite here, because
+    # `benchmarks/data.py` has already divided every episode's outcome by its
+    # context-only y std. The number is in standardized-y units throughout.
+    scale_free=False,
+)
 ATE_RMSE = Metric(
     label="ATE RMSE",
     direction="min",
@@ -278,7 +299,12 @@ ATE_RMSE = Metric(
 )
 
 # The level/shape decomposition, in the order the tables read it.
-EFFECT_METRICS = (NPEHE, CATE_R2, SHAPE_R2, ATE_BIAS, ATE_RMSE)
+EFFECT_METRICS = (NPEHE, PEHE, CATE_R2, SHAPE_R2, ATE_BIAS, ATE_RMSE)
+# The `ate` task stays level-only on purpose. It is the one table that admits
+# proxy-conditioning methods, and it admits them *because* a level metric is
+# meaningful for a `cate(x,w)` output; a row-level PEHE against tau*(x) is not,
+# it just penalizes them for answering the question they were asked. That is
+# the same reasoning that keeps them out of the `cate` table.
 LEVEL_METRICS = (ATE_BIAS, ATE_RMSE)
 
 

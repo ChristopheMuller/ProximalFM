@@ -10,7 +10,6 @@ eval_data/*
 results/*
 benchmarks/results/*
 
-# analysis_prior generated artifacts -- fully regenerable from a PriorSpec
 analysis_prior/cache/*
 analysis_prior/results/*
 analysis_training/results/*
@@ -21,6 +20,11 @@ archive/*
 docs/latex/
 docs/notes/
 toy/*
+
+dfpv_paper
+DFPV_code
+DeepFeatureProxyVariable
+NMMR/
 
 *.pdf
 *.pt
