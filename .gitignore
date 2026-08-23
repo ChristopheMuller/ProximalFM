@@ -4,7 +4,8 @@ checkpoints/*
 runs/*
 .DS_Store
 .venv/
-.claude/
+.codex/
+AGENTS.md
 
 eval_data/*
 results/*
