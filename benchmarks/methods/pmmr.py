@@ -391,7 +391,7 @@ class PMMREstimator:
 
         Args:
             X: Covariates,                shape (n, d_X).
-            A: Treatment (binary/cont.),  shape (n,) or (n, d_A).
+            A: Binary treatment encoded as 0/1, shape (n,) or (n, 1).
             Y: Observed outcome,          shape (n,).
             W: Outcome-inducing proxy,    shape (n, d_W).
             Z: Treatment-inducing proxy,  shape (n, d_Z).
