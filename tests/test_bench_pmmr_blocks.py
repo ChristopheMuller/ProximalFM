@@ -11,9 +11,8 @@ formula in the module docstring rather than a call into ``pmmr.py``: if the two
 shared code the test would pass no matter what either did.
 
 **On the tolerance.** The two routes are the same arithmetic in a different
-order, so the floor is not machine epsilon but the conditioning of the system,
-which ``PMMRConfig.lam2`` documents as ~1e9 at the defaults. 1e-16 * 1e9 = 1e-7
-relative, and the measured spread over the cases below is 3e-8 to 6e-7 — so
+order, so the floor is not machine epsilon but the conditioning of the system.
+The measured spread over the cases below is 3e-8 to 6e-7, so
 ``_ALPHA_RTOL`` is set an order of magnitude above what was observed, and a
 failure here means a changed formula rather than drifting numerics. Tightening
 it will produce flakes, not extra safety; the sharp check is
@@ -25,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.linalg import solve
+from scipy.linalg import LinAlgError, solve
 
 from benchmarks.methods.kernels import BinaryKernel, ColumnWiseGaussianKernel
 from benchmarks.methods.pmmr import PMMRConfig, PMMREstimator
@@ -70,8 +69,12 @@ def alpha_dense(X, A, Y, W, Z, cfg: PMMRConfig) -> np.ndarray:
     Phi = K_A * K_Z * K_X
     L = K_A * K_W * K_X
     LPhi = L @ Phi
-    lhs = LPhi @ L + cfg.lam1 * n * L + cfg.lam2 * n * np.eye(n)
-    return solve(lhs, LPhi @ Y, assume_a="pos")
+    lhs = LPhi @ L + cfg.lam1 * n**2 * L
+    rhs = LPhi @ Y
+    try:
+        return solve(lhs, rhs, assume_a="pos")
+    except LinAlgError:
+        return solve(lhs + cfg.jitter * np.eye(n), rhs, assume_a="pos")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,7 +83,7 @@ def alpha_dense(X, A, Y, W, Z, cfg: PMMRConfig) -> np.ndarray:
 
 
 @pytest.mark.parametrize("d_x", [0, 2])
-@pytest.mark.parametrize("lam1", [1e-3, 1.0])
+@pytest.mark.parametrize("lam1", [4.9e-6, 1e-3, 0.25])
 def test_per_arm_alpha_matches_assembled_system(d_x, lam1):
     X, A, Y, W, Z = make_data(d_x=d_x)
     cfg = PMMRConfig(lam1=lam1)
@@ -142,7 +145,7 @@ def test_cross_arm_block_of_the_assembled_system_is_exactly_zero():
     K_X = ColumnWiseGaussianKernel().fit(X, scale=cfg.kernel_scale)(X, X)
 
     L = K_A * K_W * K_X
-    lhs = (L @ (K_A * K_Z * K_X)) @ L + cfg.lam1 * n * L + cfg.lam2 * n * np.eye(n)
+    lhs = (L @ (K_A * K_Z * K_X)) @ L + cfg.lam1 * n**2 * L
 
     treated = np.flatnonzero(A.ravel() == 1.0)
     control = np.flatnonzero(A.ravel() == 0.0)

@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from benchmarks.methods import build_method
+from benchmarks.methods import pmmr as pmmr_module
 from benchmarks.methods.pmmr import SOLVE_ONLY_PARAMS, PMMRConfig, PMMREstimator
 from benchmarks.tuning import TuningConfig, search, search_nested
 
@@ -62,6 +63,26 @@ def test_one_prepare_reproduces_every_lambda():
         got = prepared.solve(lam1=lam1)
         assert np.array_equal(got._alpha, want._alpha)
         assert got.cfg.lam1 == lam1
+
+
+def test_lam1_is_objective_lambda_at_the_current_fit_size(monkeypatch):
+    """The split and refit must both assemble lambda * s^2 * L."""
+    X, A, Y, W, Z = make_data(n=120)
+    prepared = PMMREstimator(PMMRConfig()).prepare(X, A, Y, W=W, Z=Z)
+    captured = []
+
+    def capture(lhs, rhs, jitter, context=""):
+        captured.append(lhs.copy())
+        return np.zeros_like(rhs)
+
+    monkeypatch.setattr(pmmr_module, "_solve_pd", capture)
+    lam1 = 0.0123
+    prepared.solve(lam1=lam1)
+
+    assert len(captured) == len(prepared.blocks)
+    for lhs, block in zip(captured, prepared.blocks):
+        expected = block.LPhiL + lam1 * prepared.n**2 * block.L
+        assert np.array_equal(lhs, expected)
 
 
 def test_solve_omitting_lambda_keeps_the_prepared_value():
