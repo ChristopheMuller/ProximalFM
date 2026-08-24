@@ -867,11 +867,11 @@ def proximal_scores(
         Y: (n,) observed outcome.
         h: (n, 2) outcome bridge at both arms.
         q: (n, 2) treatment bridge at both arms.
-        q_clip: if given, cap ``|q|`` at this value. ``q`` is an inverse
-            propensity in disguise, so a badly estimated one is unbounded above
-            and dominates the score; the cap is on the *magnitude* rather than a
-            symmetric interval, which would otherwise let a clip pass a sign
-            change through untouched.
+        q_clip: if given, clip ``q`` to ``[-q_clip, q_clip]``. ``q`` is an
+            inverse propensity in disguise, so a badly estimated value can have
+            excessive magnitude and dominate the score. This is a signed
+            magnitude cap: it preserves the sign of a negative estimate and
+            does not enforce the positivity of the population bridge.
 
     Returns:
         (n,) array of scores. Its mean is the proximal ATE estimate; regressing
