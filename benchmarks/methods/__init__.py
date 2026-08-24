@@ -717,9 +717,8 @@ class PMMR_Wrapper(CATEEstimator):
             # Default read off the dataclass so the reference-matching value
             # lives in exactly one place.
             kernel_scale_z=kwargs.get("kernel_scale_z", PMMRConfig.kernel_scale_z),
-            lam1=kwargs.get("lam1", 1.0),
-            lam2=kwargs.get("lam2", 1e-4),
-            jitter=kwargs.get("jitter", 1e-10),
+            lam1=kwargs.get("lam1", 1e-3),
+            jitter=kwargs.get("jitter", 1e-8),
         )
 
         # Kept so `_tune` can build candidates off the configured baseline, then
@@ -751,7 +750,7 @@ class PMMR_Wrapper(CATEEstimator):
                 )
 
         # `sweep` promises the axis is free to re-evaluate, and for PMMR that is
-        # true of exactly the parameters that never enter a kernel gram. A
+        # true of exactly the parameter that never enters a kernel gram. A
         # bandwidth placed here would still be searched *correctly*, but every
         # value would cost a full prepare — so the config would be claiming a
         # saving it does not get. Refuse rather than silently under-deliver.
@@ -815,7 +814,7 @@ class PMMR_Wrapper(CATEEstimator):
         The two blocks are searched at two levels, because they cost
         differently. A `grid` draw fixes the bandwidths, so it needs a fresh
         `PMMREstimator.prepare` — grams plus two cubic matmuls, the whole cost
-        of a fit. Everything in `sweep` (`lam1`, `lam2`) enters only the
+        of a fit. Everything in `sweep` (`lam1`) enters only the
         assembled left-hand side, so each value is one further Cholesky off the
         prepared system. Hence `n_trials` prepares and `n_trials * |sweep|`
         scores, and an exhaustive sweep over the axis that actually moves the
@@ -901,8 +900,7 @@ class PMMR_Wrapper(CATEEstimator):
 
         `tune_*` comes from :func:`benchmarks.tuning.search_diagnostics`. Read
         `tune_score_range` first: PMMR's held-out V-statistic can be nearly flat
-        across a wide band of `lam1` (the estimate moves little between 1e-6 and
-        1e-1 on well-behaved data), so a range near zero means the "selected"
+        across a wide band of `lam1`, so a range near zero means the "selected"
         value is arbitrary and should not be read as an optimum.
 
         One fit backs every entry in `outputs:`, so these describe the shared

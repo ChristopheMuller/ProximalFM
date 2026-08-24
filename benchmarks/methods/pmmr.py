@@ -3,7 +3,7 @@ PMMR — Proximal Maximum Moment Restriction
 ==========================================
 Single-stage kernel ridge estimator for proximal causal inference. Learns an
 outcome bridge function h(A, W) by minimising a kernelised maximum-moment
-restriction with two ridge penalties.
+restriction with an RKHS-norm penalty.
 
 Reference: Mastouri et al. "Proximal Causal Learning with Kernels" (ICML 2021)
 
@@ -15,7 +15,11 @@ K_X is shared by both grams; K_Z alone carries an extra widening factor
 (kernel_scale_z). See PMMRConfig.
 
 The bridge coefficients solve the regularised normal equations:
-    α = (L Φ L + λ₁ n L + λ₂ n I)⁻¹ L Φ Y
+    α = (L Φ L + λ n² L + ε I)⁻¹ L Φ Y
+
+where λ is the paper's objective-level regularisation parameter and ε is a
+fixed numerical jitter. Parameterising the objective by λ keeps its meaning
+unchanged when tuning on a split and refitting on the full context.
 
 For binary A this system is block diagonal in the arms — k_A is an indicator and
 multiplies both grams — so `fit` assembles and solves it one arm at a time. That
@@ -38,8 +42,8 @@ Tuning entry point: PMMRConfig, whose every field except `jitter` may appear in
 the wrapper's `tune.grid` (benchmarks/methods/__init__.py). PMMR is *not* a
 fixed-hyperparameter method — the reference grid-searches λ and selects on a
 held-out V-statistic, which is what `PMMREstimator.score` reproduces — so the
-defaults here are starting points rather than tuned values. See PMMRConfig for
-the mapping from `lam1` to the paper's λ.
+defaults here are starting points rather than tuned values. `lam1` is the
+paper's λ directly.
 """
 
 from __future__ import annotations
@@ -58,13 +62,8 @@ from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKe
 #: without recomputing anything. `_PreparedSystem.solve` accepts exactly these,
 #: and the benchmark wrapper validates `tune.sweep` against the same set, so the
 #: two cannot drift apart.
-SOLVE_ONLY_PARAMS = frozenset({"lam1", "lam2"})
+SOLVE_ONLY_PARAMS = frozenset({"lam1"})
 
-
-# Escalation budget for _solve_pd: each retry multiplies the jitter by 100, so
-# six tries span ten orders of magnitude above the configured starting value.
-_JITTER_MAX_TRIES = 6
-_JITTER_ESCALATION = 100.0
 
 # The reference implementation sets the instrument-side bandwidth to
 # `median / 0.6` while leaving the bridge side at the plain median heuristic.
@@ -78,60 +77,26 @@ def _solve_pd(
 ) -> np.ndarray:
     """
     Solve the symmetric positive-definite system ``lhs @ x = rhs`` by Cholesky,
-    adding a jitter *relative to the scale of lhs* and escalating it if the
-    factorisation fails.
+    with the released implementation's fixed diagonal fallback jitter.
 
-    ``context`` names the caller's block in any raised message; ``fit`` passes
-    the arm, since the system is solved once per arm (see :meth:`fit`). Note
-    that the relative scale is therefore computed per arm rather than over the
-    assembled system — the two differ by the ratio of the arms' mean diagonals,
-    which at the default ``jitter`` is far below the level at which the term
-    does anything.
-
-    Why relative. ``lam2 * n * I`` is an absolute floor, so how much
-    conditioning it actually buys depends on the magnitude of ``L Φ L``, which
-    varies by orders of magnitude across episodes (it grows like n² and shrinks
-    as the kernels narrow). Scaling the jitter by ``mean(diag(lhs))`` — the mean
-    eigenvalue — makes it a bound on the condition number instead: a jitter of j
-    caps cond at roughly 1/j regardless of episode scale.
-
-    Why it matters for low-dimensional data. Φ and L are products of per-column
-    Gaussian grams, so with few proxy columns and no covariates they are close
-    to rank-deficient and ``L Φ L`` is numerically singular: with lam2 = 0 and
-    scalar W, Z, the assembled matrix reaches rcond ≈ 1e-21, well past what
-    double precision can resolve. The default lam2 already lifts that in the
-    cases measured here, but nothing guarantees it does for every episode, and
-    the failure is silent — an ill-conditioned solve returns a plausible-looking
-    α whose component in the near-null space is noise.
-
-    Cholesky (``assume_a="pos"``) is used rather than the previous LDL
-    (``assume_a="sym"``) because it is about twice as fast and, more usefully,
-    *raises* on a matrix that is not positive definite instead of quietly
-    returning a solution. That failure is the signal this helper acts on.
+    The reference first attempts the unjittered solve, then retries with
+    ``JITTER_LW * I`` (1e-8 in its binary-treatment implementation). We do the
+    same. The jitter is numerical insurance, not a statistical parameter: it
+    is fixed, is never tuned, and is applied only if Cholesky rejects the
+    unjittered matrix.
     """
     where = f" {context}" if context else ""
-    n = lhs.shape[0]
-    scale = float(np.trace(lhs)) / n
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise LinAlgError(
-            f"PMMR normal-equation matrix{where} has non-positive/non-finite "
-            f"scale (mean diagonal = {scale}); the kernel grams are degenerate."
-        )
-
-    eye = np.eye(n)
-    current = jitter
-    for _ in range(_JITTER_MAX_TRIES):
+    try:
+        return solve(lhs, rhs, assume_a="pos")
+    except LinAlgError:
         try:
-            return solve(lhs + current * scale * eye, rhs, assume_a="pos")
-        except LinAlgError:
-            current *= _JITTER_ESCALATION
-
-    raise LinAlgError(
-        f"PMMR normal equations{where} remained non-positive-definite after "
-        f"{_JITTER_MAX_TRIES} jitter escalations (up to "
-        f"{current / _JITTER_ESCALATION:.1e} * mean(diag)). Raise lam2, widen "
-        f"kernel_scale, or check for duplicate/constant proxy columns."
-    )
+            return solve(lhs + jitter * np.eye(lhs.shape[0]), rhs, assume_a="pos")
+        except LinAlgError as exc:
+            raise LinAlgError(
+                f"PMMR normal equations{where} remained non-positive-definite "
+                f"after adding the fixed {jitter:g} diagonal jitter. Widen "
+                "kernel_scale or check for duplicate/constant proxy columns."
+            ) from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,34 +154,16 @@ class PMMRConfig:
     kernel_scale_z: float = _REFERENCE_Z_WIDENING
 
     # ── Regularisation ────────────────────────────────────────────────────────
-    # lam1 is the RKHS-norm penalty on the bridge (the αᵀLα term). It maps onto
-    # the paper's λ — which multiplies L in α = (LΦL + λL)⁻¹LΦy with Φ scaled by
-    # 1/n² — as  lam1 = λ·n.  So a *fixed* lam1 means λ ∝ 1/n, which decays
-    # faster than the n^(-1/2)..n^(-1/4) the convergence theorem asks for; the
-    # right reparameterisation is lam1 = c·√n.  The paper grid-searches λ over
-    # [4.9e-6, 0.25] (50 points, selected on a held-out V-statistic); lam1 = 1.0
-    # sits mid-grid at n≈2000 but is a guess, not a selected value, and visibly
-    # over-shrinks h relative to lam1 ≈ 1e-3 on synthetic checks.
-    lam1: float = 1.0
+    # lam1 is the paper's objective-level RKHS penalty λ, not the coefficient
+    # multiplying L in the unnormalised normal equations. For a fit on s rows,
+    # the latter is λ s². Keeping lam1 unchanged between a tuning split and a
+    # full-data refit therefore keeps the statistical objective unchanged.
+    # The paper searches λ over [4.9e-6, 0.25] using a held-out V-statistic.
+    lam1: float = 1e-3
 
-    # lam2 is NOT cosmetic jitter — it sets the smallest eigenvalue of the
-    # normal-equation matrix, and hence whether the solve means anything. LΦL is
-    # badly rank-deficient: measured at n=2000, lam2=1e-4 gives eig_min ≈ 2e-1
-    # (cond ≈ 5e6), while lam2=0 gives eig_min ≈ 2e-5 (cond ≈ 5e10). Low-dim
-    # W/Z with no X is worse still. Do not lower it without checking rcond.
-    # (The reference implementation stabilises differently: jitter added to L
-    # and to the Z-gram before the products are formed, not to the assembled
-    # left-hand side.)
-    lam2: float = 1e-4
-
-    # Relative jitter for the Cholesky solve, in units of mean(diag(lhs)) — see
-    # _solve_pd. Unlike lam2 this is not a statistical knob: it is insurance
-    # against a numerically singular normal-equation matrix on low-dimensional
-    # proxies, and escalates by 100x per retry if the factorisation fails. At
-    # 1e-10 it caps the condition number near 1e10 while moving the fitted
-    # bridge by ~1e-11 relative on well-conditioned data, i.e. it is inert
-    # whenever it is not needed.
-    jitter: float = 1e-10
+    # Fixed fallback jitter from the released binary-treatment implementation's
+    # JITTER_LW. It is deliberately not a tuning parameter.
+    jitter: float = 1e-8
 
     # No seed: fit() is fully deterministic. Do not add a global
     # np.random.seed() call here — estimators share a process in the episode
@@ -230,7 +177,7 @@ class PMMRConfig:
 
 @dataclass
 class _ArmBlock:
-    """One arm's share of the normal equations, with lam1/lam2 not yet applied.
+    """One arm's share of the normal equations, with lam1 not yet applied.
 
     ``LPhiL`` and ``LPhiY`` are the two cubic products; ``L`` is kept because it
     multiplies ``lam1``. Together they are everything the solve consumes.
@@ -244,11 +191,11 @@ class _ArmBlock:
 
 
 class _PreparedSystem:
-    """Everything a PMMR fit needs *before* lam1 and lam2 are chosen.
+    """Everything a PMMR fit needs *before* lam1 is chosen.
 
     The split is not cosmetic. Writing the per-arm system out,
 
-        lhs = L Φ L + λ₁ n L + λ₂ n I        rhs = L Φ Y
+        lhs = L Φ L + λ n² L + ε I        rhs = L Φ Y
 
     the two regularisers appear only in the assembly — ``L Φ L`` and ``L Φ Y``
     are free of both, and they are the whole cost of a fit (the grams plus two
@@ -296,7 +243,7 @@ class _PreparedSystem:
         self._k_X = k_X
 
     def solve_into(self, est: "PMMREstimator") -> "PMMREstimator":
-        """Solve at ``est.cfg``'s lam1/lam2 and write the fit into ``est``.
+        """Solve at ``est.cfg``'s lam1 and write the fit into ``est``.
 
         The predict-side state is *shared*, not copied: several estimators
         produced from one prepared system point at the same grams. They are
@@ -306,10 +253,7 @@ class _PreparedSystem:
         cfg = est.cfg
         alpha = np.zeros(self.n, dtype=float)
         for b in self.blocks:
-            lhs = b.LPhiL + cfg.lam1 * self.n * b.L
-            # Add the ridge on the diagonal in place — `lhs` is already a fresh
-            # array from the sum above, so this cannot touch the cached LPhiL.
-            lhs.flat[:: b.idx.size + 1] += cfg.lam2 * self.n
+            lhs = b.LPhiL + cfg.lam1 * self.n**2 * b.L
             alpha[b.idx] = _solve_pd(
                 lhs, b.LPhiY, cfg.jitter, context=f"(arm A={b.arm:.0f})"
             )
@@ -326,7 +270,7 @@ class _PreparedSystem:
         return est
 
     def solve(self, **lams: float) -> "PMMREstimator":
-        """A fitted estimator at these lam1/lam2, sharing this system's state.
+        """A fitted estimator at this lam1, sharing this system's state.
 
         Keyword arguments must be drawn from :data:`SOLVE_ONLY_PARAMS`; omitted
         ones keep the value the system was prepared with.
@@ -352,7 +296,7 @@ class PMMREstimator:
 
     Usage::
 
-        cfg = PMMRConfig(lam1=1.0, lam2=1e-4)
+        cfg = PMMRConfig(lam1=1e-3)
         est = PMMREstimator(cfg)
         est.fit(X_train, A_train, Y_train, W=W_train, Z=Z_train)
         cate = est.predict(X_test)   # shape (n_test,)
@@ -416,7 +360,7 @@ class PMMREstimator:
     ) -> _PreparedSystem:
         """
         Build the kernel grams and the two cubic products, stopping short of the
-        solve — everything that does not depend on ``lam1``/``lam2``.
+        solve — everything that does not depend on ``lam1``.
 
         Call this directly when several λ values are to be tried on one sample;
         :meth:`_PreparedSystem.solve` then costs one Cholesky each. For a single
@@ -441,8 +385,8 @@ class PMMREstimator:
         Note that ``n`` in the two penalty terms stays the **full** row count in
         every block (applied in :meth:`_PreparedSystem.solve_into`). The blocks
         are a decomposition of one system, not two smaller problems, so
-        ``lam1``/``lam2`` keep meaning exactly what they meant before; using a
-        per-arm count here would silently double the regularisation.
+        ``lam1`` keeps meaning exactly what it meant before; using a per-arm
+        count here would silently change the regularisation.
         """
         cfg = self.cfg
 
