@@ -40,10 +40,10 @@ def make_data(n=300, seed=0, d_x=2):
 def test_prepare_then_solve_is_bit_identical_to_fit(d_x):
     """Not merely close: `fit` *is* prepare+solve, so the bits must match."""
     X, A, Y, W, Z = make_data(d_x=d_x)
-    cfg = PMMRConfig(lam1=0.1, lam2=1e-4)
+    cfg = PMMRConfig(lam1=0.1)
 
     direct = PMMREstimator(cfg).fit(X, A, Y, W=W, Z=Z)
-    swept = PMMREstimator(cfg).prepare(X, A, Y, W=W, Z=Z).solve(lam1=0.1, lam2=1e-4)
+    swept = PMMREstimator(cfg).prepare(X, A, Y, W=W, Z=Z).solve(lam1=0.1)
 
     assert np.array_equal(direct._alpha, swept._alpha)
 
@@ -54,25 +54,23 @@ def test_one_prepare_reproduces_every_lambda():
     base = PMMRConfig()
     prepared = PMMREstimator(base).prepare(X, A, Y, W=W, Z=Z)
 
-    for lam1 in (1e-3, 1e-2, 1.0, 100.0):
-        for lam2 in (1e-4, 1e-2):
-            from dataclasses import replace
+    for lam1 in (4.9e-6, 1e-3, 0.25):
+        from dataclasses import replace
 
-            want = PMMREstimator(replace(base, lam1=lam1, lam2=lam2))
-            want.fit(X, A, Y, W=W, Z=Z)
-            got = prepared.solve(lam1=lam1, lam2=lam2)
-            assert np.array_equal(got._alpha, want._alpha)
-            assert got.cfg.lam1 == lam1 and got.cfg.lam2 == lam2
+        want = PMMREstimator(replace(base, lam1=lam1))
+        want.fit(X, A, Y, W=W, Z=Z)
+        got = prepared.solve(lam1=lam1)
+        assert np.array_equal(got._alpha, want._alpha)
+        assert got.cfg.lam1 == lam1
 
 
-def test_solve_omitting_a_lambda_keeps_the_prepared_value():
+def test_solve_omitting_lambda_keeps_the_prepared_value():
     X, A, Y, W, Z = make_data()
-    cfg = PMMRConfig(lam1=0.25, lam2=1e-3)
+    cfg = PMMRConfig(lam1=0.25)
     prepared = PMMREstimator(cfg).prepare(X, A, Y, W=W, Z=Z)
 
-    got = prepared.solve(lam1=7.0)
-    assert got.cfg.lam1 == 7.0
-    assert got.cfg.lam2 == 1e-3  # untouched
+    got = prepared.solve()
+    assert got.cfg.lam1 == 0.25
 
 
 def test_solve_refuses_a_parameter_that_would_need_new_grams():
@@ -84,7 +82,7 @@ def test_solve_refuses_a_parameter_that_would_need_new_grams():
         with pytest.raises(ValueError, match="fresh prepare"):
             prepared.solve(**{bad: 2.0})
 
-    assert SOLVE_ONLY_PARAMS == {"lam1", "lam2"}
+    assert SOLVE_ONLY_PARAMS == {"lam1"}
 
 
 def test_estimators_from_one_prepare_do_not_share_alpha():
@@ -93,7 +91,7 @@ def test_estimators_from_one_prepare_do_not_share_alpha():
     prepared = PMMREstimator(PMMRConfig()).prepare(X, A, Y, W=W, Z=Z)
 
     a = prepared.solve(lam1=1e-3)
-    b = prepared.solve(lam1=100.0)
+    b = prepared.solve(lam1=0.25)
     assert not np.array_equal(a._alpha, b._alpha)
     # ...while the read-only grams genuinely are the same objects.
     assert a._K_W_train is b._K_W_train
@@ -193,7 +191,7 @@ def test_swept_search_selects_what_the_flat_search_would():
     """
     X, A, Y, W, Z = make_data(n=400)
     grid = {"kernel_scale_z": [1.0, 2.7778]}
-    lam1 = [1e-3, 1e-1, 10.0]
+    lam1 = [4.9e-6, 1e-3, 0.25]
 
     _, flat = build_method(
         {
@@ -237,7 +235,7 @@ def test_n_trials_budgets_the_grid_only():
             "tune": _tune_block(
                 n_trials=2,
                 grid={"kernel_scale": [0.5, 1.0, 2.0]},
-                sweep={"lam1": [1e-3, 1e-1, 10.0, 100.0]},
+                sweep={"lam1": [4.9e-6, 1e-3, 0.01, 0.25]},
             ),
         }
     )
@@ -254,14 +252,16 @@ def test_diagnostics_report_swept_parameters_like_grid_ones():
             "name": "PMMR",
             "cls": "PMMR",
             "tune": _tune_block(
-                n_trials=99, grid={"kernel_scale": [1.0]}, sweep={"lam1": [0.1, 10.0]}
+                n_trials=99,
+                grid={"kernel_scale": [1.0]},
+                sweep={"lam1": [1e-3, 0.25]},
             ),
         }
     )
     m.fit(X, A, Y, W=W, Z=Z)
     diag = m.diagnostics()
     fracs = {k: v for k, v in diag.items() if k.startswith("tune_lam1_frac@")}
-    assert set(fracs) == {"tune_lam1_frac@0.1", "tune_lam1_frac@10"}
+    assert set(fracs) == {"tune_lam1_frac@0.001", "tune_lam1_frac@0.25"}
     assert sum(fracs.values()) == 1.0
 
 
@@ -290,6 +290,17 @@ def test_unknown_key_refused_in_either_block(block):
                 "name": "PMMR",
                 "cls": "PMMR",
                 "tune": _tune_block(**{block: {"lam_typo": [1.0]}}),
+            }
+        )
+
+
+def test_removed_lam2_is_rejected():
+    with pytest.raises(ValueError, match="unknown"):
+        build_method(
+            {
+                "name": "PMMR",
+                "cls": "PMMR",
+                "tune": _tune_block(sweep={"lam2": [1e-4]}),
             }
         )
 

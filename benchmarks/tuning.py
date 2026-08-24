@@ -45,7 +45,7 @@ class TuningConfig:
       ``n_trials`` counts the sampled axes only.
 
     ``sweep`` exists because some parameters are nearly free to vary once a
-    candidate has been prepared — PMMR's ``lam1``/``lam2`` enter only the
+    candidate has been prepared — PMMR's ``lam1`` enters only the
     assembled left-hand side, so re-solving costs one Cholesky against a full
     refit (see :class:`benchmarks.methods.pmmr._PreparedSystem`). Putting such a
     parameter in ``sweep`` rather than ``grid`` buys exhaustive coverage of the
