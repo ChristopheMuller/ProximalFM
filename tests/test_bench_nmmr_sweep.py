@@ -161,7 +161,8 @@ def _method(**over):
     return build_method(entry)[1]
 
 
-def test_swept_search_selects_what_the_flat_search_would():
+@pytest.mark.parametrize("kernel_width", ["fixed", "median"])
+def test_swept_search_selects_what_the_flat_search_would(kernel_width):
     """The config refactor is a re-spelling, not a different search.
 
     Same union of parameters, same candidates, same split (the split is seeded
@@ -171,9 +172,13 @@ def test_swept_search_selects_what_the_flat_search_would():
     grid = {"lr": [1e-3, 5e-3]}
     epochs = [1, 3, 6]
 
-    flat = _method(tune=_tune_block(n_trials=99, grid={**grid, "n_epochs": epochs}))
+    flat = _method(
+        kernel_width=kernel_width,
+        tune=_tune_block(n_trials=99, grid={**grid, "n_epochs": epochs}),
+    )
     swept = _method(
-        tune=_tune_block(n_trials=99, grid=grid, sweep={"n_epochs": epochs})
+        kernel_width=kernel_width,
+        tune=_tune_block(n_trials=99, grid=grid, sweep={"n_epochs": epochs}),
     )
 
     flat.fit(X, A, Y, W=W, Z=Z)
@@ -250,7 +255,7 @@ def test_unknown_key_refused_in_either_block(block):
         _method(tune=_tune_block(**{block: {"hiden_dim": [8]}}))
 
 
-@pytest.mark.parametrize("param", ["hidden_dim", "lr", "weight_decay", "kernel_scale"])
+@pytest.mark.parametrize("param", ["hidden_dim", "lr", "weight_decay"])
 def test_trajectory_changing_parameter_in_sweep_is_refused_with_the_fix(param):
     """It would be correct but slow, and the config would be claiming a saving."""
     with pytest.raises(ValueError, match=r"Move\s+them to `tune.grid`"):
@@ -272,13 +277,26 @@ def test_prediction_side_knobs_are_not_sweepable():
             _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
 
 
+@pytest.mark.parametrize("block", ["grid", "sweep"])
+def test_kernel_width_is_method_level_not_searchable(block):
+    with pytest.raises(ValueError, match="method-level"):
+        _method(tune=_tune_block(**{block: {"kernel_width": ["fixed", "median"]}}))
+
+
+@pytest.mark.parametrize("block", ["grid", "sweep"])
+def test_kernel_scale_is_removed(block):
+    with pytest.raises(ValueError, match="unknown"):
+        _method(tune=_tune_block(**{block: {"kernel_scale": [1.0]}}))
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # kernel precomputation
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("loss", ["u_stat", "v_stat"])
-def test_precomputed_kernel_is_bit_identical_to_per_batch(loss):
+@pytest.mark.parametrize("kernel_width", ["fixed", "median"])
+def test_precomputed_kernel_is_bit_identical_to_per_batch(loss, kernel_width):
     """The one-kernel-per-fit path may not move a number, only a clock.
 
     `K` depends on the data alone, so each minibatch's kernel is a submatrix of
@@ -290,10 +308,12 @@ def test_precomputed_kernel_is_bit_identical_to_per_batch(loss):
     """
     X, A, Y, W, Z = make_data(n=200)
 
-    fast = NMMREstimator(_cfg(loss=loss)).fit(X, A, Y, W=W, Z=Z)
-    slow = NMMREstimator(_cfg(loss=loss, kernel_precompute_max_n=0)).fit(
+    fast = NMMREstimator(_cfg(loss=loss, kernel_width=kernel_width)).fit(
         X, A, Y, W=W, Z=Z
     )
+    slow = NMMREstimator(
+        _cfg(loss=loss, kernel_width=kernel_width, kernel_precompute_max_n=0)
+    ).fit(X, A, Y, W=W, Z=Z)
 
     assert _same_weights(_weights(fast), _weights(slow))
     assert np.array_equal(fast.predict(X, W=W), slow.predict(X, W=W))
@@ -324,7 +344,7 @@ def test_precomputation_does_not_perturb_the_minibatch_stream():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# bandwidth: the median heuristic and the kernel_scale multiplier
+# bandwidth: fixed reference width versus the median heuristic
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -346,19 +366,48 @@ def test_median_heuristic_holds_the_kernel_open_in_every_dimension(d_x):
     )
 
 
-def test_kernel_scale_multiplies_the_heuristic():
-    """`kernel_scale` is a multiplier on sigma, not an absolute width."""
+def test_fixed_width_is_exactly_one():
     X, A, Y, W, Z = make_data(n=200)
 
-    widths = {
-        s: NMMREstimator(_cfg(kernel_scale=s))
-        .fit(X, A, Y, W=W, Z=Z)
-        .diagnostics_["kernel_length_scale"]
-        for s in (0.5, 1.0, 2.0)
-    }
+    est = NMMREstimator(_cfg(kernel_width="fixed")).fit(X, A, Y, W=W, Z=Z)
 
-    assert widths[2.0] == pytest.approx(2 * widths[1.0])
-    assert widths[0.5] == pytest.approx(0.5 * widths[1.0])
+    assert est.diagnostics_["kernel_length_scale"] == 1.0
+
+
+@pytest.mark.parametrize("kernel_width", ["fixed", "median"])
+def test_kernel_diagnostics_describe_diagonal_and_offdiagonal(kernel_width):
+    X, A, Y, W, Z = make_data(n=200)
+
+    est = NMMREstimator(_cfg(kernel_width=kernel_width)).fit(X, A, Y, W=W, Z=Z)
+    diag = est.diagnostics_
+
+    assert diag["kernel_diag_mean"] == pytest.approx(1.0)
+    assert diag["kernel_diag_std"] == pytest.approx(0.0)
+    assert diag["kernel_offdiag_min"] <= diag["kernel_offdiag_p25"]
+    assert diag["kernel_offdiag_p25"] <= diag["kernel_offdiag_median"]
+    assert diag["kernel_offdiag_median"] <= diag["kernel_offdiag_p75"]
+    assert diag["kernel_offdiag_p75"] <= diag["kernel_offdiag_max"]
+
+    if kernel_width == "fixed":
+        assert diag["kernel_length_scale"] == 1.0
+    else:
+        assert diag["kernel_length_scale"] > 0.0
+
+
+def test_median_width_matches_the_fit_kernel_inputs():
+    X, A, Y, W, Z = make_data(n=200)
+    est = NMMREstimator(_cfg(kernel_width="median")).fit(X, A, Y, W=W, Z=Z)
+
+    k_input = est._kernel_input(
+        est._as_2d_tensor(A, name="A"),
+        est._as_2d_tensor(Z, name="Z"),
+        est._as_2d_tensor(X, name="X"),
+    )
+    sq_dist = (k_input.T.unsqueeze(2) - k_input.T.unsqueeze(1)).pow(2).sum(dim=0)
+    iu = torch.triu_indices(sq_dist.shape[0], sq_dist.shape[1], offset=1)
+    expected = float(torch.sqrt(sq_dist[iu[0], iu[1]].median()))
+
+    assert est.diagnostics_["kernel_length_scale"] == pytest.approx(expected)
 
 
 def test_bandwidth_does_not_depend_on_the_batch_size():
@@ -374,23 +423,15 @@ def test_bandwidth_does_not_depend_on_the_batch_size():
     )
 
 
-def test_score_ignores_the_candidates_own_bandwidth():
-    """Candidates must be ranked by one functional of their residuals.
-
-    Scoring each at its own width would rank on scale rather than fit, and
-    monotonically so: a narrower kernel drives K to the identity and the
-    U-statistic to zero, so the search would "win" by switching the moment
-    condition off.
-    """
+def test_score_uses_the_selected_width_variant():
+    """Validation scoring follows the method-level width choice."""
     X, A, Y, W, Z = make_data(n=200)
     Xv, Av, Yv, Wv, Zv = make_data(n=120, seed=11)
 
     est = NMMREstimator(_cfg()).fit(X, A, Y, W=W, Z=Z)
     baseline = est.score(Xv, Av, Yv, W=Wv, Z=Zv)
 
-    for scale in (0.25, 4.0):
-        est.cfg = replace(est.cfg, kernel_scale=scale)
-        assert est.score(Xv, Av, Yv, W=Wv, Z=Zv) == baseline
+    est.cfg = replace(est.cfg, kernel_width="fixed")
+    fixed_score = est.score(Xv, Av, Yv, W=Wv, Z=Zv)
 
-    # ...but the scoring bandwidth is still a knob of the *scorer*.
-    assert est.score(Xv, Av, Yv, W=Wv, Z=Zv, kernel_scale=4.0) != baseline
+    assert fixed_score != baseline

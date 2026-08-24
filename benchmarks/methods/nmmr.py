@@ -58,23 +58,14 @@ class NMMRConfig:
     n_layers: int = 3  # number of hidden layers (depth before output)
 
     # ── Kernel ────────────────────────────────────────────────────────────────
-    # Multiplicative rescaling of the median-heuristic bandwidth for the moment
-    # kernel K(A, Z, X): sigma = kernel_scale * median‖x-x'‖, taken over the
-    # fit's own kernel inputs. 1.0 is the plain median heuristic;
-    # smaller is more local (sharpens the moment condition), larger is smoother.
-    # Same spelling as PMMR's and KPV's `kernel_scale`, and for the same reason.
-    #
-    # An *absolute* width — which is what the reference implementation uses,
-    # never overriding `rbf_kernel`'s `length_scale=1` — cannot be a sensible
-    # default here. Inputs are standardized per column, so E‖x-x'‖² = 2d and a
-    # fixed width gives a typical off-diagonal of exp(-d/sigma²): measured on
-    # our episodes, 1.5e-3 at d = 8 and 4e-10 at d = 23, i.e. K ≈ I. The whole
-    # moment condition lives in that off-diagonal (see
-    # `_record_kernel_diagnostics`), so at our dimensions a fixed width silently
-    # switches the method off. The median heuristic pins the median off-diagonal
-    # at exp(-1/2) = 0.607 in every dimension, which is what makes a grid over
-    # `kernel_scale` mean the same thing in every episode.
-    kernel_scale: float = 1.0
+    # The training moment kernel uses one of two deliberately simple bandwidth
+    # rules. This is a method-level choice; fixed and median variants are
+    # benchmarked separately rather than searched as one categorical axis.
+    # ``fixed`` reproduces the reference NMMR RBF's length_scale=1. ``median``
+    # uses the off-diagonal median pairwise distance of the fit's kernel inputs.
+    # The current benchmark geometry keeps binary A unchanged and scales Z/X
+    # by their context standard deviations.
+    kernel_width: Literal["fixed", "median"] = "median"
 
     # ── Loss ──────────────────────────────────────────────────────────────────
     # "u_stat": U-statistic (zeros diagonal of K, unbiased but noisier)
@@ -179,9 +170,8 @@ def _rbf_kernel_matrix(X: torch.Tensor, length_scale: float = 1.0) -> torch.Tens
 
     Args:
         X:            Tensor of shape (n, d).
-        length_scale: Bandwidth parameter σ, an *absolute* width. Callers
-                      holding a `kernel_scale` multiplier resolve it through
-                      `_median_bandwidth` first.
+                      length_scale: Bandwidth parameter σ, an *absolute* width.
+                      The estimator resolves it from its selected width rule.
 
     Returns:
         K: Tensor of shape (n, n).
@@ -197,9 +187,8 @@ def _median_bandwidth(sq_dist: torch.Tensor) -> float:
     other spellings in circulation, because that is the convention the sibling
     kernel methods already use — `kernels.ColumnWiseGaussianKernel`'s
     `2 * median² * scale` under `exp(-d²/σ)` and `plearner._median_bandwidth`
-    both put the median entry of K at exp(-1/2). Matching them is what lets a
-    `kernel_scale` of 1.0 mean the same thing when NMMR, PMMR and KPV appear in
-    one table.
+    both put the median entry of K at exp(-1/2). Here it is used only as one of
+    the two explicit NMMR method variants.
 
     The diagonal is excluded: it contributes n exact zeros out of n², which
     drags the median down by a factor that depends on n, so including it would
@@ -407,7 +396,7 @@ class NMMREstimator:
             )
             self._length_scale_ = self._resolve_bandwidth(
                 k_input_all,
-                cfg.kernel_scale,
+                cfg.kernel_width,
                 # Only when it covers exactly the rows the resolver would have
                 # picked itself, so that sigma cannot depend on the precompute.
                 sq_dist=sq_dist if n <= _MEDIAN_HEURISTIC_MAX_N else None,
@@ -474,7 +463,6 @@ class NMMREstimator:
         *,
         W: np.ndarray,
         Z: np.ndarray,
-        kernel_scale: float = 1.0,
         loss: Literal["u_stat", "v_stat"] | None = None,
     ) -> float:
         """Held-out kernel moment loss (lower is better) for model selection.
@@ -483,30 +471,12 @@ class NMMREstimator:
         validation metric is the same kernel-weighted moment loss evaluated on
         rows the model was not trained on.
 
-        Two knobs, and they are deliberately treated differently:
+        The scoring rows use the same fixed or median width rule as the model.
+        Candidates within one width variant are therefore ranked by one
+        candidate-independent functional. The two width variants are separate
+        benchmark methods because their tuning losses use different kernels.
 
-        - ``kernel_scale`` multiplies the median heuristic **of the scoring
-          rows**, and the model's own ``cfg.kernel_scale`` is deliberately
-          ignored. Two properties follow, and both are required. It is
-          *candidate-independent*: the bandwidth is a function of the held-out
-          data alone, so every candidate is ranked by the same functional of its
-          residuals. And it is *dimension-free*, so the criterion has the same
-          resolving power in a 3-dimensional episode and a 23-dimensional one.
-          Scoring each candidate at its own width instead would not merely be
-          incomparable, it would be monotone in the wrong thing: a narrower
-          kernel drives K towards the identity and the U-statistic towards
-          zero, so the search would always "win" by switching the moment
-          condition off.
-
-          What this does *not* fully remove is the residual advantage a
-          candidate gets when its training width happens to coincide with this
-          one — it is being scored on (a held-out copy of) its own objective
-          while the others are scored on a foreign one. Held-out evaluation
-          prices in the overfitting part of that; what is left is the arbitrary
-          choice of which single member of a family of equally valid criteria
-          to rank on. Read `tune_score_range` in the wrapper diagnostics before
-          treating a selected width as an optimum.
-        - ``loss`` defaults to the model's **own** statistic (``cfg.loss``), so
+        ``loss`` defaults to the model's **own** statistic (``cfg.loss``), so
           each estimator is validated on the objective it was trained for.
           Scoring everything on the V-statistic instead — as this used to —
           adds V's diagonal term, which is exactly ``MSE/n``: a U-statistic
@@ -529,7 +499,7 @@ class NMMREstimator:
             k_input = self._kernel_input(A_t, Z_t, X_t)
             K = _rbf_kernel_matrix(
                 k_input,
-                length_scale=self._resolve_bandwidth(k_input, kernel_scale),
+                length_scale=self._resolve_bandwidth(k_input, self.cfg.kernel_width),
             )
             val = _nmmr_loss(pred, Y_t, K, loss)
 
@@ -625,9 +595,9 @@ class NMMREstimator:
 
         One definition for three call sites — training, :meth:`score` and the
         diagnostics. Together with the median-heuristic bandwidth, the
-        per-column scaling is what makes ``cfg.kernel_scale`` mean the same
-        thing in every episode (the reference implementation applies one
-        absolute width to raw columns), so the three must not drift apart.
+        per-column scaling keeps the median rule stable across episodes while
+        preserving the benchmark's binary treatment geometry, so the three
+        call sites must not drift apart.
         """
         return torch.cat(
             [A_t, Z_t / self._Z_scale, X_t / self._X_scale],
@@ -637,22 +607,27 @@ class NMMREstimator:
     def _resolve_bandwidth(
         self,
         k_input: torch.Tensor,
-        kernel_scale: float,
+        kernel_width: Literal["fixed", "median"],
         *,
         sq_dist: torch.Tensor | None = None,
     ) -> float:
-        """Turn a ``kernel_scale`` multiplier into an absolute RBF width.
+        """Resolve the selected method-level width into an absolute RBF width.
 
         ``sq_dist`` is the caller's already-computed distance matrix, if it has
         one *and* it covers the same rows this would have used; otherwise the
         rows are strided down to ``_MEDIAN_HEURISTIC_MAX_N`` first, since the
-        median of a strided subsample is a perfectly good estimate of the
-        median and the full matrix may not fit. The stride is
-        deterministic rather than a random subsample **on purpose**: an RNG draw
-        here would shift every subsequent minibatch and break
-        :meth:`fit_trajectory`'s exactness claim, for a quantity that only needs
-        to be a stable summary of the data.
+        median of a strided subsample is a stable approximation and the full
+        matrix may not fit. The stride is deterministic rather than random so
+        it cannot perturb :meth:`fit_trajectory`'s RNG stream.
         """
+        if kernel_width == "fixed":
+            return 1.0
+        if kernel_width != "median":
+            raise ValueError(
+                "kernel_width must be either 'fixed' or 'median', "
+                f"got {kernel_width!r}."
+            )
+
         if sq_dist is None:
             n = k_input.shape[0]
             if n > _MEDIAN_HEURISTIC_MAX_N:
@@ -660,7 +635,7 @@ class NMMREstimator:
                 k_input = k_input[::step]
             sq_dist = _sq_dists(k_input)
 
-        return kernel_scale * _median_bandwidth(sq_dist)
+        return _median_bandwidth(sq_dist)
 
     def _record_kernel_diagnostics(
         self,
@@ -672,15 +647,9 @@ class NMMREstimator:
     ) -> None:
         """Measure how much moment signal the kernel actually carries.
 
-        The bandwidth now follows the median heuristic, so these numbers should
-        sit near their target rather than collapse: the median off-diagonal is
-        ``exp(-1/(2·kernel_scale²))`` by construction — 0.607 at the default —
-        in every dimension. They are kept, and are still worth reading, because
-        that is a property of the *bandwidth rule*, not of the data: duplicate
-        or constant proxy columns, a degenerate median, or a `kernel_scale` far
-        from 1 can still leave K near the identity, and under an absolute width
-        (the reference implementation's fixed 1.0) it is the norm rather than
-        the exception past a handful of dimensions.
+        The diagnostics make both width rules visible. Median mode should have
+        an off-diagonal median near ``exp(-1/2)``, while fixed mode can become
+        close to the identity as the standardized kernel dimension grows.
 
         That matters because the whole moment condition lives in K's
         **off-diagonal**. The V-statistic's diagonal term is just ``MSE/n``, so
@@ -695,12 +664,12 @@ class NMMREstimator:
         training minibatch stream and change results for a diagnostic):
 
         - ``kernel_dim`` — ``1 + d_Z + d_X``, the dimension driving the effect.
-        - ``kernel_length_scale`` — the resolved absolute σ, so a logged run
-          records the width it actually used and not just the multiplier.
-        - ``kernel_offdiag_median`` / ``kernel_offdiag_mean`` — the typical
-          off-diagonal entry against a diagonal of exactly 1. Small values mean
-          the moment condition is barely being enforced; read them before
-          reading an NMMR number.
+        - ``kernel_length_scale`` — the resolved absolute σ.
+        - ``kernel_diag_mean`` / ``kernel_diag_std`` — checks the unit diagonal.
+        - ``kernel_offdiag_min`` / ``_p25`` / ``_median`` / ``_mean`` /
+          ``_p75`` / ``_max`` — the distribution of off-diagonal similarities.
+          Small values mean the moment condition is barely being enforced; read
+          them before reading an NMMR number.
         """
         m = min(A_t.shape[0], self.cfg.batch_size)
         if m < 2:
@@ -717,8 +686,14 @@ class NMMREstimator:
             self.diagnostics_ = {
                 "kernel_dim": float(k_input.shape[1]),
                 "kernel_length_scale": float(self._length_scale_),
+                "kernel_diag_mean": float(K.diagonal().mean()),
+                "kernel_diag_std": float(K.diagonal().std(unbiased=False)),
+                "kernel_offdiag_min": float(off.min()),
+                "kernel_offdiag_p25": float(torch.quantile(off, 0.25)),
                 "kernel_offdiag_median": float(off.median()),
                 "kernel_offdiag_mean": float(off.mean()),
+                "kernel_offdiag_p75": float(torch.quantile(off, 0.75)),
+                "kernel_offdiag_max": float(off.max()),
             }
 
     def _predict_effect_paired_w(
@@ -835,8 +810,9 @@ class NMMREstimator:
             # second n x n distance matrix per fit is not free. Cached on the
             # estimator: it is a function of X_train alone, so it must not vary
             # between prediction batches.
-            self._x_cond_length_scale_ = self._resolve_bandwidth(
-                X_train_scaled, cfg.x_cond_kernel_scale
+            self._x_cond_length_scale_ = (
+                self._resolve_bandwidth(X_train_scaled, "median")
+                * cfg.x_cond_kernel_scale
             )
 
         self._model.eval()

@@ -933,7 +933,7 @@ class NMMR_Wrapper(CATEEstimator):
         cfg = NMMRConfig(
             hidden_dim=kwargs.get("hidden_dim", 64),
             n_layers=kwargs.get("n_layers", 3),
-            kernel_scale=kwargs.get("kernel_scale", 1.0),
+            kernel_width=kwargs.get("kernel_width", "median"),
             loss=kwargs.get("loss", "u_stat"),
             n_epochs=kwargs.get("n_epochs", 100),
             batch_size=kwargs.get("batch_size", 256),
@@ -948,6 +948,11 @@ class NMMR_Wrapper(CATEEstimator):
             # pool worker, which is exactly the collision ComputeConfig now refuses.
             device=kwargs.get("device", None),
         )
+        if cfg.kernel_width not in {"fixed", "median"}:
+            raise ValueError(
+                "NMMR: `kernel_width` must be either `fixed` or `median`, "
+                f"got {cfg.kernel_width!r}."
+            )
         # Base config; a hyperparameter search (if enabled) overrides fields on
         # a copy of this and refits the winner on the full context.
         self._base_cfg = cfg
@@ -978,6 +983,13 @@ class NMMR_Wrapper(CATEEstimator):
             raise ValueError(
                 f"NMMR: unknown `tune` key(s) {sorted(unknown)}; choose from "
                 f"{sorted(tunable)}."
+            )
+
+        if "kernel_width" in self._tune_cfg.search_space:
+            raise ValueError(
+                "NMMR: `kernel_width` is a method-level choice and may not "
+                "appear in `tune.grid` or `tune.sweep`; define separate fixed "
+                "and median method entries instead."
             )
 
         # `sweep` promises the axis is free to re-evaluate, and for NMMR that is
