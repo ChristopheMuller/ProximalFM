@@ -15,7 +15,7 @@ K_X is shared by both grams; K_Z alone carries an extra widening factor
 (kernel_scale_z). See PMMRConfig.
 
 The bridge coefficients solve the regularised normal equations:
-    α = (L Φ L + λ n² L + ε I)⁻¹ L Φ Y
+    α = (L Φ L + λ n² L + ε n² I)⁻¹ L Φ Y
 
 where λ is the paper's objective-level regularisation parameter and ε is a
 fixed numerical jitter. Parameterising the objective by λ keeps its meaning
@@ -77,26 +77,25 @@ def _solve_pd(
 ) -> np.ndarray:
     """
     Solve the symmetric positive-definite system ``lhs @ x = rhs`` by Cholesky,
-    with the released implementation's fixed diagonal fallback jitter.
+    with a fixed diagonal jitter.
 
-    The reference first attempts the unjittered solve, then retries with
-    ``JITTER_LW * I`` (1e-8 in its binary-treatment implementation). We do the
-    same. The jitter is numerical insurance, not a statistical parameter: it
-    is fixed, is never tuned, and is applied only if Cholesky rejects the
-    unjittered matrix.
+    The released binary-treatment implementation uses ``JITTER_LW = 1e-8`` in
+    its normalized system. The caller scales that value by n² when assembling
+    our equivalent unnormalized system. We apply it on every solve so the full
+    matrix and its exact per-arm decomposition remain identical: conditionally
+    jittering only the blocks whose Cholesky fails would define a different
+    matrix from conditionally jittering the assembled system. The jitter is
+    numerical insurance, not a statistical parameter, and is never tuned.
     """
     where = f" {context}" if context else ""
     try:
-        return solve(lhs, rhs, assume_a="pos")
-    except LinAlgError:
-        try:
-            return solve(lhs + jitter * np.eye(lhs.shape[0]), rhs, assume_a="pos")
-        except LinAlgError as exc:
-            raise LinAlgError(
-                f"PMMR normal equations{where} remained non-positive-definite "
-                f"after adding the fixed {jitter:g} diagonal jitter. Widen "
-                "kernel_scale or check for duplicate/constant proxy columns."
-            ) from exc
+        return solve(lhs + jitter * np.eye(lhs.shape[0]), rhs, assume_a="pos")
+    except LinAlgError as exc:
+        raise LinAlgError(
+            f"PMMR normal equations{where} remained non-positive-definite "
+            f"after adding the fixed {jitter:g} diagonal jitter. Widen "
+            "kernel_scale or check for duplicate/constant proxy columns."
+        ) from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -161,8 +160,8 @@ class PMMRConfig:
     # The paper searches λ over [4.9e-6, 0.25] using a held-out V-statistic.
     lam1: float = 1e-3
 
-    # Fixed fallback jitter from the released binary-treatment implementation's
-    # JITTER_LW. It is deliberately not a tuning parameter.
+    # Fixed jitter matching the released binary-treatment implementation's
+    # JITTER_LW value. It is deliberately not a tuning parameter.
     jitter: float = 1e-8
 
     # No seed: fit() is fully deterministic. Do not add a global
@@ -195,12 +194,12 @@ class _PreparedSystem:
 
     The split is not cosmetic. Writing the per-arm system out,
 
-        lhs = L Φ L + λ n² L + ε I        rhs = L Φ Y
+        lhs = L Φ L + λ n² L + ε n² I        rhs = L Φ Y
 
-    the two regularisers appear only in the assembly — ``L Φ L`` and ``L Φ Y``
-    are free of both, and they are the whole cost of a fit (the grams plus two
-    cubic matmuls, ~1.5 s of ~1.7 s at n = 2048, against ~0.2 s for the
-    Cholesky). So a search over λ costs one prepare and one *solve* per
+    the regulariser and fixed jitter enter only in the assembly — ``L Φ L``
+    and ``L Φ Y`` are free of both, and they are the whole cost of a fit (the
+    grams plus two cubic matmuls, ~1.5 s of ~1.7 s at n = 2048, against ~0.2 s
+    for the Cholesky). So a search over λ costs one prepare and one *solve* per
     candidate rather than one fit per candidate, which is what makes an
     exhaustive λ sweep affordable inside a per-episode tuner. Same reasoning,
     and the same shape, as ``plearner._MomentSystem``.
@@ -255,7 +254,10 @@ class _PreparedSystem:
         for b in self.blocks:
             lhs = b.LPhiL + cfg.lam1 * self.n**2 * b.L
             alpha[b.idx] = _solve_pd(
-                lhs, b.LPhiY, cfg.jitter, context=f"(arm A={b.arm:.0f})"
+                lhs,
+                b.LPhiY,
+                cfg.jitter * self.n**2,
+                context=f"(arm A={b.arm:.0f})",
             )
 
         est._alpha = alpha

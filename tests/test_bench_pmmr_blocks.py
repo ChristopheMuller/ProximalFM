@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from scipy.linalg import LinAlgError, solve
+from scipy.linalg import solve
 
 from benchmarks.methods.kernels import BinaryKernel, ColumnWiseGaussianKernel
 from benchmarks.methods.pmmr import PMMRConfig, PMMREstimator
@@ -70,11 +70,7 @@ def alpha_dense(X, A, Y, W, Z, cfg: PMMRConfig) -> np.ndarray:
     L = K_A * K_W * K_X
     LPhi = L @ Phi
     lhs = LPhi @ L + cfg.lam1 * n**2 * L
-    rhs = LPhi @ Y
-    try:
-        return solve(lhs, rhs, assume_a="pos")
-    except LinAlgError:
-        return solve(lhs + cfg.jitter * np.eye(n), rhs, assume_a="pos")
+    return solve(lhs + cfg.jitter * n**2 * np.eye(n), LPhi @ Y, assume_a="pos")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
