@@ -895,4 +895,19 @@ class PLearner(CATEEstimator):
                 diag[f"lam_h_frac@{lam:g}"] = lam_h.count(lam) / n_folds
                 diag[f"lam_q_frac@{lam:g}"] = lam_q.count(lam) / n_folds
 
+        # GridSearchCV is intentionally detected by capability rather than an
+        # import: PLearner accepts any sklearn-compatible final regressor, and
+        # the driver should not depend on the registry's concrete CV wrapper.
+        # Candidate index remains numeric even when a grid includes values such
+        # as max_depth=None; the (negative) validation MSE makes it possible to
+        # inspect whether the selected final model was genuinely predictive.
+        for name, model in getattr(self, "final_models_", {}).items():
+            if hasattr(model, "best_index_") and hasattr(model, "best_score_"):
+                diag[f"base_cv/{name}/best_index"] = float(model.best_index_)
+                diag[f"base_cv/{name}/mse"] = -float(model.best_score_)
+                for param, value in model.best_params_.items():
+                    if isinstance(value, (int, float, np.integer, np.floating)):
+                        param = param.removeprefix("model__")
+                        diag[f"base_cv/{name}/{param}"] = float(value)
+
         return diag

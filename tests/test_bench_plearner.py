@@ -13,7 +13,11 @@ import numpy as np
 import pytest
 from sklearn.dummy import DummyRegressor
 from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import Ridge
 
+from benchmarks.methods import build_method
 from benchmarks.methods.plearner import (
     BRIDGES,
     KernelBridge,
@@ -128,6 +132,85 @@ def test_one_fit_serves_many_final_models():
     assert len(pl.bridges_) == 3
     # And they are genuinely different fits, not one aliased twice.
     assert not np.allclose(out["rf"], out["ols"])
+
+
+def test_prediction_cv_tunes_ridge_and_rf_from_one_plearner_fit():
+    """Both final regressions search their config grids after one bridge fit."""
+    X, A, Y, W, Z, _ = _toy(n=240)
+    cfg = {
+        "name": "P-Kernel",
+        "cls": "PLearner",
+        "bridge": "kernel",
+        "bridge_params": {"rank": 24},
+        "n_splits": 2,
+        "base_cv": {
+            "folds": 3,
+            "seed": 7,
+            "grids": {
+                "linear": {"alpha": [0.01, 1.0]},
+                "rf": {
+                    "n_estimators": [10],
+                    "max_depth": [2, 4],
+                    "min_samples_leaf": [1, 5],
+                },
+            },
+        },
+        "outputs": [
+            {"name": "ridge", "base": "linear"},
+            {"name": "forest", "base": "rf"},
+        ],
+    }
+
+    _, wrapped = build_method(cfg)
+    wrapped.fit(X, A, Y, W=W, Z=Z)
+    models = wrapped.learner.final_models_
+
+    assert set(models) == {"ridge", "forest"}
+    assert all(isinstance(model, GridSearchCV) for model in models.values())
+    assert isinstance(models["ridge"].best_estimator_, Pipeline)
+    assert isinstance(models["ridge"].best_estimator_["model"], Ridge)
+    assert models["ridge"].best_params_["model__alpha"] in {0.01, 1.0}
+    assert models["forest"].best_params_["max_depth"] in {2, 4}
+    assert set(wrapped.predict_variants(X[:11])) == {"ridge", "forest"}
+    diagnostics = wrapped.diagnostics()
+    assert diagnostics["base_cv/ridge/best_index"] in {0.0, 1.0}
+    assert diagnostics["base_cv/ridge/alpha"] in {0.01, 1.0}
+    assert diagnostics["base_cv/ridge/mse"] >= 0.0
+    assert diagnostics["base_cv/forest/max_depth"] in {2.0, 4.0}
+    assert diagnostics["base_cv/forest/mse"] >= 0.0
+
+
+def test_base_cv_is_reused_by_s_learner():
+    """The CV layer is not P-learner-specific."""
+    X, A, Y, W, Z, _ = _toy(n=120)
+    cfg = {
+        "name": "S-Ridge",
+        "cls": "S_Learner",
+        "base": "linear",
+        "use_W": False,
+        "use_Z": False,
+        "base_cv": {
+            "folds": 2,
+            "grids": {"linear": {"alpha": [0.1, 1.0]}},
+        },
+    }
+
+    _, learner = build_method(cfg)
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    assert isinstance(learner.model, GridSearchCV)
+    assert learner.model.best_params_["model__alpha"] in {0.1, 1.0}
+
+
+def test_base_cv_rejects_unknown_parameters_early():
+    cfg = {
+        "name": "bad",
+        "cls": "S_Learner",
+        "base": "linear",
+        "base_cv": {"grids": {"linear": {"not_a_ridge_parameter": [1]}}},
+    }
+    with pytest.raises(ValueError, match="unknown linear base_cv parameters"):
+        build_method(cfg)
 
 
 def test_predict_ate_broadcasts_the_scalar():

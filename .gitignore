@@ -38,6 +38,3 @@ NMMR/
 *.yaml
 
 .wandb_api_key
-
-
-p_learner/

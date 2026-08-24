@@ -51,8 +51,11 @@ from benchmarks.methods.base import CATEEstimator, FeatureBuilder
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
 import numpy as np
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LinearRegression, LogisticRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 try:
     from tabicl import TabICLRegressor
@@ -408,6 +411,7 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
         )
 
     tabicl_opts = cfg.get("tabicl") or None
+    base_cv = cfg.get("base_cv") or None
     default_base = cfg.get("base", "rf")
 
     outputs = cfg.get("outputs") or [{"name": cfg["name"], "base": default_base}]
@@ -418,7 +422,10 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
             ate_outputs.append(o["name"])
         else:
             final_models[o["name"]] = _make_base_model(
-                o.get("base", default_base), tabicl_opts
+                o.get("base", default_base),
+                tabicl_opts,
+                base_cv=base_cv,
+                n_jobs=compute.n_jobs,
             )
 
     learner = PLearner(
@@ -1452,24 +1459,87 @@ def _make_tabicl(options: dict | None = None):
         return TabICLRegressor(**{**_TABICL_DEFAULTS, **(options or {})})
 
 
-def _make_base_model(name: str, tabicl_options: dict | None = None):
-    """Return a fresh sklearn estimator by short name."""
+def _make_base_model(
+    name: str,
+    tabicl_options: dict | None = None,
+    *,
+    base_cv: dict | None = None,
+    n_jobs: int = 1,
+):
+    """Return a fresh regression model, optionally tuned by prediction CV.
+
+    ``base_cv`` deliberately lives at the base-model boundary rather than in a
+    meta-learner.  P-/S-/T-/X-learners all pose ordinary supervised regression
+    problems to their final models, so they should share one implementation of
+    ridge/RF selection.  The P-learner's *bridge* tuning remains separate: its
+    lambdas are identified by held-out proximal moment loss, whereas this
+    search minimizes held-out prediction MSE for the final regression target.
+
+    The config carries one grid per base name::
+
+        base_cv:
+          folds: 4
+          grids:
+            linear: {alpha: [0.01, 0.1, 1.0, 10.0]}
+            rf: {max_depth: [3, 5], min_samples_leaf: [1, 5]}
+
+    A tuned ``linear`` model is ridge-regularized and scaled within each CV
+    fold.  With no linear grid it remains the historical unregularized OLS,
+    preserving existing configs.  RF candidates use the same deterministic
+    seed as the old fixed RF.
+    """
     if name == "tabicl":
+        if base_cv:
+            raise ValueError("base_cv does not support `base: tabicl`")
         return _make_tabicl(tabicl_options)
 
-    factories: dict[str, Callable] = {
-        "linear": LinearRegression,
-        "rf": lambda: RandomForestRegressor(
-            n_estimators=100, max_depth=5, random_state=42
-        ),
-    }
-
-    if name not in factories:
+    if name not in {"linear", "rf"}:
         raise ValueError(
             f"Unknown base model {name!r}. Choices: 'linear', 'rf', 'tabicl'."
         )
 
-    return factories[name]()
+    grids = (base_cv or {}).get("grids") or {}
+    grid = grids.get(name)
+    if grid is None:
+        if name == "linear":
+            return LinearRegression()
+        return RandomForestRegressor(
+            n_estimators=100,
+            max_depth=5,
+            random_state=42,
+            n_jobs=n_jobs,
+        )
+
+    if not isinstance(grid, dict) or not grid or any(not v for v in grid.values()):
+        raise ValueError(f"base_cv.grids.{name} must be a non-empty parameter grid")
+
+    folds = int((base_cv or {}).get("folds", 4))
+    if folds < 2:
+        raise ValueError("base_cv.folds must be at least 2")
+    seed = int((base_cv or {}).get("seed", 42))
+    cv = KFold(n_splits=folds, shuffle=True, random_state=seed)
+
+    if name == "linear":
+        unknown = set(grid) - set(Ridge().get_params())
+        if unknown:
+            raise ValueError(f"unknown linear base_cv parameters: {sorted(unknown)}")
+        estimator = Pipeline([("scale", StandardScaler()), ("model", Ridge())])
+        param_grid = {f"model__{key}": value for key, value in grid.items()}
+    else:
+        estimator = RandomForestRegressor(random_state=42, n_jobs=1)
+        unknown = set(grid) - set(estimator.get_params())
+        if unknown:
+            raise ValueError(f"unknown rf base_cv parameters: {sorted(unknown)}")
+        param_grid = grid
+
+    return GridSearchCV(
+        estimator,
+        param_grid=param_grid,
+        scoring="neg_mean_squared_error",
+        cv=cv,
+        refit=True,
+        n_jobs=n_jobs,
+    )
 
 
 # (kind, predict-time inputs) of each strategy supported by the proximal bridge
@@ -1646,7 +1716,12 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
 
     def base_factory(default: str = "linear") -> Callable[[], object]:
         bn = cfg.get("base", default)
-        return lambda: _make_base_model(bn, tabicl_opts)
+        return lambda: _make_base_model(
+            bn,
+            tabicl_opts,
+            base_cv=cfg.get("base_cv") or None,
+            n_jobs=compute.n_jobs,
+        )
 
     factories: dict[str, Callable[[], CATEEstimator]] = {
         "S_Learner": lambda: S_Learner(

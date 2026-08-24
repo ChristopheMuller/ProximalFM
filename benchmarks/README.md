@@ -192,6 +192,28 @@ where the row count is a property of the file and a ratio is the only thing ther
 `True`** for the learners and the PFN wrappers), `interactions`, `is_oracle: true` (concatenates the
 true `U` onto `X` — an upper bound, not a competitor), and `estimand:` to override the derived tag.
 
+**Prediction-model cross-validation.** A method using `base: linear` or `base: rf` may add a
+`base_cv:` block. This is implemented at the base-model boundary, so the same syntax works for
+S-/T-/X-learners and for each prediction output of P-learner. The search uses shuffled K-fold CV,
+held-out mean-squared error, and refits the winner on all rows. A configured `linear` grid fits a
+`StandardScaler` + `Ridge` pipeline (scaling is learned inside each fold); without that grid,
+`linear` retains its historical unregularized OLS meaning. RF is deterministic and searches the
+ordinary `RandomForestRegressor` parameters. `compute.n_jobs` owns search parallelism; RF candidates
+stay single-threaded so parallelism is not nested.
+
+```yaml
+base_cv:
+  folds: 4
+  seed: 42
+  grids:
+    linear: { alpha: [0.01, 0.1, 1.0, 10.0] }
+    rf: { n_estimators: [100, 300], max_depth: [3, 5, null] }
+```
+
+For P-learner this is intentionally distinct from `bridge_params.lam_grid`: the bridge grid is
+ranked by held-out proximal moment loss, while `base_cv` ranks the final regression of the
+cross-fitted score on `X` by prediction MSE.
+
 **`base: tabicl` speed.** TabICL dominates the wall clock for a reason that is entirely outside the
 model: with no cache, every `predict()` re-runs the whole context (2048 rows × 8 ensemble members)
 through the network, and an S-learner predicts twice off one fit. The `tabicl:` block passes options
@@ -305,7 +327,7 @@ one fit via an `outputs:` list — much cheaper than four separate entries:
 | `X_Learner` | propensity-weighted two-stage | `cate(x…)` | |
 | `CausalForest` | EconML `DROrthoForest.effect(X)` | `cate(x)` | `use_W`/`use_Z` feed EconML's *nuisance controls*, not the heterogeneity features |
 | `P2SLS` | a single fitted ATE, broadcast | `ate(x)` | proximal two-stage least squares |
-| `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `cate(x)` | `methods/plearner.py`. W/Z used at fit, discarded at predict. `bridge:` selects the nuisance estimator — `kernel` (default, minimax RKHS in a Nyström feature space), `linear` (IV in a linear basis, closed form), `constant` (no proxies; a plumbing fixture that returns the naive difference). `bridge_params:` is passed to it verbatim — including `lam_grid: [...]`, which picks the kernel bridge's `lam_h`/`lam_q` per fold on a held-out **moment** loss instead of using the fixed defaults. That grid must bracket the optimum: a best point at an endpoint means it does not, and the choice is then meaningless (inspect `bridge.lam_scores_`). Note the criterion is not a residual MSE — see `_MomentSystem` for why that would select the regression of Y on W rather than the bridge. `outputs:` shares one cross-fit across several final-stage models, and an entry with `kind: ate` emits the proximal ATE (tagged `ate(x)`, so it lands in the ATE table). |
+| `PLearner` | `E[gamma \| X]` from a cross-fit proximal score | `cate(x)` | `methods/plearner.py`. W/Z used at fit, discarded at predict. `bridge:` selects the nuisance estimator; `bridge_params:` is passed to it verbatim — including `lam_grid: [...]`, which picks the kernel bridge's `lam_h`/`lam_q` per fold on a held-out **moment** loss. That grid must bracket the optimum: a best point at an endpoint means it does not (inspect `bridge.lam_scores_`). `base_cv` is a separate prediction-side search over the final regression's ridge/RF parameters using held-out MSE. `outputs:` shares one cross-fit across several final-stage models, and an entry with `kind: ate` emits the proximal ATE (tagged `ate(x)`, so it lands in the ATE table). |
 | `KernelPV` | kernel proxy-variable bridge | per strategy | `methods/kpv.py`; supports `tune:`. λ₁/λ₂ are **not** search axes by default — the paper's closed-form LOOCV picks them inside every fit (eqs. stage1_reg/stage2_reg). What the paper leaves undetermined is `kernel_scale`: it prescribes the per-dimension median heuristic as an *initialisation* and then says to search "a narrow range around this level" without naming a criterion, and the released reference never searches it at all (its scale loop is a one-point `logspace`). So a `tune.grid` over the bandwidths is the intended use, ranked on the Stage-2 LOOCV loss (`KPVEstimator.loocv_score_`), whose target Y₂ is fixed across bandwidths. Bandwidths are spelled global x per-variable as in PMMR: `kernel_scale` moves every kernel together, `kernel_scale_z` / `_w` / `_x` are relative factors on top, and only the products enter — so search the three relatives at a fixed global rather than all four. `A` has no entry (its kernel is the Kronecker delta), and `kernel_scale_x` is inert on a covariate-free episode. `tune.grid` accepts **those four plus `lam1`, `lam2` only** (`kpv.TUNABLE_PARAMS`); anything else raises, because that score cannot rank it — it drops the `1/m₂` prefactor so it is not comparable across `split_ratio`, and the λ-grid bounds only move where its own minimum may fall. `tune.sweep` raises (nothing in KPV is free off a part-built system) and so does `tune.val_frac` (LOOCV is already held out; a second split would score every candidate on fewer rows than the fit it selects). Read `tune_score_range` before trusting a winner: Stage 2 fits `E[Y|a,x,z]`, not the bridge and not CATE, which the paper's own conclusion names as the unresolved part of KPV's tuning. The pre-`tune:` spellings (`tune_kernel_scale`, `kernel_scale_min/max`, `n_kernel_scale_search`) **raise** with the translation |
 | `PMMR` | proximal maximum-moment-restriction bridge | per strategy | `methods/pmmr.py` |
 | `NMMR` | neural MMR bridge | per strategy | `methods/nmmr.py`; supports `tune:`; no `marginal`; torch — for a GPU give it `compute: { device: mps, execution: inline }`. `loss: u_stat \| v_stat` is a **method-level key, not a search entry** — it identifies the variant, and each candidate is validated on its own statistic; putting it in `tune.grid` or `tune.sweep` raises (U- and V-statistic scores differ by V's diagonal `MSE/n` and are not on a common scale). `tune.sweep` accepts **`n_epochs` only**: one training run is paused at each value and scored (`NMMREstimator.fit_trajectory`), and the weights at a milestone are bit-identical to a fit that stopped there, so exhaustive early stopping costs about as much as the longest value alone. Anything else in `sweep` raises — including the prediction-side knobs (`w_strategy`, `x_cond_*`), which *are* free to vary but are invisible to the bridge-based selection score, so a search over them would rank nothing |
