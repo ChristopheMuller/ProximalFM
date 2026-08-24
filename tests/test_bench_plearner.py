@@ -16,9 +16,7 @@ from sklearn.linear_model import LinearRegression
 
 from benchmarks.methods.plearner import (
     BRIDGES,
-    ConstantBridge,
     KernelBridge,
-    LinearBridge,
     PLearner,
     _median_bandwidth,
     _MomentSystem,
@@ -74,54 +72,22 @@ def test_q_clip_caps_magnitude_not_a_symmetric_window():
     assert proximal_scores(A, Y, h, q, q_clip=2.0) == pytest.approx([-2.0])
 
 
-# ── the driver ───────────────────────────────────────────────────────────────
-
-
-def test_constant_bridge_recovers_the_naive_difference_exactly():
-    """The identity that makes the trivial bridge worth having.
-
-    With h_a = ybar_a and q_a = 1/p_a fit on the same rows, the residual sums
-    vanish and mean(Gamma) is algebraically the unadjusted difference in means.
-    Any error in the arm indexing, the (-1)^(1-A) sign, or the h1 - h0 term
-    breaks it.
-    """
-    X, A, Y, W, Z, _ = _toy()
-
-    pl = PLearner(
-        bridge="constant",
-        final_models={"m": DummyRegressor()},
-        n_splits=1,  # no cross-fitting: the identity is exact
-    ).fit(X, A, Y, W=W, Z=Z)
-
-    naive = Y[A == 1].mean() - Y[A == 0].mean()
-    assert pl.ate_ == pytest.approx(naive)
-
-
-def test_constant_bridge_is_close_to_naive_under_cross_fitting():
-    """Cross-fitting only perturbs the identity through fold-level ybar/p."""
-    X, A, Y, W, Z, _ = _toy(n=2000)
-
-    pl = PLearner(
-        bridge="constant", final_models={"m": DummyRegressor()}, n_splits=5
-    ).fit(X, A, Y, W=W, Z=Z)
-
-    naive = Y[A == 1].mean() - Y[A == 0].mean()
-    assert pl.ate_ == pytest.approx(naive, rel=0.05)
-
-
 def test_cross_fitting_is_out_of_fold():
     """Every row must be scored by a bridge that did not see it."""
     X, A, Y, W, Z, _ = _toy(n=300)
 
     pl = PLearner(
-        bridge="constant", final_models={"m": DummyRegressor()}, n_splits=3
+        bridge="kernel",
+        bridge_params={"rank": 32},
+        final_models={"m": DummyRegressor()},
+        n_splits=3,
     ).fit(X, A, Y, W=W, Z=Z)
 
     assert len(pl.bridges_) == 3
     assert pl.scores_.shape == (300,)
     assert np.isfinite(pl.scores_).all()
     # Distinct fold means: a single bridge reused everywhere would give one value.
-    assert len({round(float(b.h_[1]), 9) for b in pl.bridges_}) == 3
+    assert len({round(float(b.h_scaler_.mean_[0]), 9) for b in pl.bridges_}) == 3
 
 
 def test_folds_are_stratified_so_no_arm_is_lost():
@@ -136,7 +102,10 @@ def test_folds_are_stratified_so_no_arm_is_lost():
     Z = rng.normal(size=(n, 1))
 
     pl = PLearner(
-        bridge="constant", final_models={"m": DummyRegressor()}, n_splits=5
+        bridge="kernel",
+        bridge_params={"rank": 32},
+        final_models={"m": DummyRegressor()},
+        n_splits=5,
     ).fit(X, A, Y, W=W, Z=Z)
     assert np.isfinite(pl.scores_).all()
 
@@ -146,7 +115,8 @@ def test_one_fit_serves_many_final_models():
     X, A, Y, W, Z, _ = _toy()
 
     pl = PLearner(
-        bridge="constant",
+        bridge="kernel",
+        bridge_params={"rank": 64},
         final_models={"rf": DummyRegressor(), "ols": LinearRegression()},
         n_splits=3,
     ).fit(X, A, Y, W=W, Z=Z)
@@ -162,9 +132,11 @@ def test_one_fit_serves_many_final_models():
 
 def test_predict_ate_broadcasts_the_scalar():
     X, A, Y, W, Z, _ = _toy()
-    pl = PLearner(bridge="constant", final_models={"m": DummyRegressor()}).fit(
-        X, A, Y, W=W, Z=Z
-    )
+    pl = PLearner(
+        bridge="kernel",
+        bridge_params={"rank": 64},
+        final_models={"m": DummyRegressor()},
+    ).fit(X, A, Y, W=W, Z=Z)
 
     got = pl.predict_ate(X[:7])
     assert got.shape == (7,)
@@ -182,16 +154,28 @@ def test_bridges_return_both_arms():
         assert b.predict_q(X, Z).shape == (120, 2), name
 
 
+def test_only_kernel_bridge_is_registered():
+    assert set(BRIDGES) == {"kernel"}
+
+
 def test_binary_treatment_is_enforced():
     X, A, Y, W, Z, _ = _toy(n=80)
-    pl = PLearner(bridge="constant", final_models={"m": DummyRegressor()})
+    pl = PLearner(
+        bridge="kernel",
+        bridge_params={"rank": 32},
+        final_models={"m": DummyRegressor()},
+    )
     with pytest.raises(ValueError, match="binary"):
         pl.fit(X, A + 1.0, Y, W=W, Z=Z)
 
 
 def test_proxies_are_required():
     X, A, Y, W, Z, _ = _toy(n=80)
-    pl = PLearner(bridge="constant", final_models={"m": DummyRegressor()})
+    pl = PLearner(
+        bridge="kernel",
+        bridge_params={"rank": 32},
+        final_models={"m": DummyRegressor()},
+    )
     with pytest.raises(ValueError, match="proxies"):
         pl.fit(X, A, Y, W=W, Z=None)
 
@@ -201,16 +185,15 @@ def test_unknown_bridge_names_the_registry():
         build_bridge("does-not-exist")
 
 
-# ── the linear bridge (step 2) ───────────────────────────────────────────────
+# ── toy data for kernel-bridge tests ─────────────────────────────────────────
 
 
 def _linear_toy(n=4000, seed=0, dx=2, dp=2):
     """A proximal draw whose *outcome* mechanism is exactly linear in (U, X).
 
-    That is the condition under which the linear h-bridge is correctly specified,
-    and it is deliberately the only thing made linear: the treatment mechanism is
-    logistic, so `q` is misspecified. The score is doubly robust, so a correct `h`
-    alone must still recover the truth — which is what these tests assert.
+    The outcome mechanism is deliberately linear while the treatment mechanism is
+    logistic. This gives the kernel bridge a simple reference problem without
+    introducing a separate linear bridge implementation.
 
     Proxy widths are equal (`dp`) so both moment systems are square, and the two
     invariants below hold to solver precision rather than approximately.
@@ -236,128 +219,7 @@ def _linear_toy(n=4000, seed=0, dx=2, dp=2):
     return X, A, Y, W, Z, tau
 
 
-def test_linear_bridge_q_moment_is_exactly_one():
-    """The intercept row of the q system, which is the moment E[1{A=a} q_a] = 1.
-
-    A bridge that gets this wrong is not an inverse-propensity-like object at all,
-    so it is the first thing to look at when a real bridge misbehaves. Undamped,
-    because the identity is a property of the exact system; the default `ridge`
-    trades it away for stability on purpose.
-    """
-    X, A, Y, W, Z, _ = _linear_toy(n=1500)
-    b = LinearBridge(ridge=0.0).fit(X, A, Y, W=W, Z=Z)
-
-    q = b.predict_q(X, Z)
-    for a in (0, 1):
-        assert np.mean((A == a) * q[:, a]) == pytest.approx(1.0, abs=1e-8)
-
-
-def test_linear_bridge_h_residuals_average_to_zero_within_arm():
-    """The intercept row of the h system: the arm's residuals are centred."""
-    X, A, Y, W, Z, _ = _linear_toy(n=1500)
-    b = LinearBridge(ridge=0.0).fit(X, A, Y, W=W, Z=Z)
-
-    h = b.predict_h(X, W)
-    for a in (0, 1):
-        in_arm = A == a
-        assert np.mean(Y[in_arm] - h[in_arm, a]) == pytest.approx(0.0, abs=1e-8)
-
-
-def test_linear_bridge_recovers_the_ate_the_constant_bridge_cannot():
-    """The step this rung exists for: the estimator becomes proximal.
-
-    True ATE is 1.0. The unadjusted difference is badly biased upward because U
-    drives both the assignment and the outcome; the linear bridge removes it.
-    """
-    X, A, Y, W, Z, _ = _linear_toy(n=6000)
-
-    linear = PLearner(
-        bridge="linear",
-        final_models={"m": LinearRegression()},
-        n_splits=3,
-        q_clip=20.0,
-    ).fit(X, A, Y, W=W, Z=Z)
-    constant = PLearner(
-        bridge="constant", final_models={"m": DummyRegressor()}, n_splits=3
-    ).fit(X, A, Y, W=W, Z=Z)
-
-    assert linear.ate_ == pytest.approx(1.0, abs=0.15)
-    assert constant.ate_ > 1.8  # the confounding, left in
-
-
-def test_undamped_linear_bridge_is_unstable_on_over_complete_proxies():
-    """Why `ridge` defaults to on, pinned so nobody turns it off as a cleanup.
-
-    `_linear_toy` has a scalar U behind two-column proxies, so the moment matrix
-    has one direction of pure noise (smallest singular value ~1e-3 against O(1)
-    for the rest). Inverting it out of fold wrecks the estimate.
-    """
-    X, A, Y, W, Z, _ = _linear_toy(n=6000)
-
-    undamped = PLearner(
-        bridge="linear",
-        bridge_params={"ridge": 0.0},
-        final_models={"m": LinearRegression()},
-        n_splits=3,
-        q_clip=20.0,
-    ).fit(X, A, Y, W=W, Z=Z)
-
-    assert abs(undamped.ate_ - 1.0) > 1.0
-    assert undamped.scores_.std() > 50.0
-
-
-def test_linear_bridge_recovers_the_cate_slope():
-    """tau(x) = 1 + x0, so the final linear model must find that line."""
-    X, A, Y, W, Z, _ = _linear_toy(n=6000)
-
-    pl = PLearner(
-        bridge="linear",
-        final_models={"ols": LinearRegression()},
-        n_splits=3,
-        q_clip=20.0,
-    ).fit(X, A, Y, W=W, Z=Z)
-
-    ols = pl.final_models_["ols"]
-    assert ols.intercept_ == pytest.approx(1.0, abs=0.15)
-    assert ols.coef_[0] == pytest.approx(1.0, abs=0.20)
-    assert ols.coef_[1] == pytest.approx(0.0, abs=0.20)
-
-
-def test_linear_bridge_standardization_is_numerics_only_when_undamped():
-    """The basis is closed under affine reparametrisation and carries an
-    intercept, so with no penalty scaling must not move the fitted functions."""
-    X, A, Y, W, Z, _ = _linear_toy(n=1200)
-
-    on = LinearBridge(ridge=0.0, standardize=True).fit(X, A, Y, W=W, Z=Z)
-    off = LinearBridge(ridge=0.0, standardize=False).fit(X, A, Y, W=W, Z=Z)
-
-    assert np.allclose(on.predict_h(X, W), off.predict_h(X, W), atol=1e-6)
-    assert np.allclose(on.predict_q(X, Z), off.predict_q(X, Z), atol=1e-6)
-
-
-def test_standardization_matters_once_the_bridge_is_damped():
-    """And why it defaults to on: the penalty is on coefficients, so an unscaled
-    basis damps a small-variance proxy far harder than a large-variance one."""
-    X, A, Y, W, Z, _ = _linear_toy(n=1200)
-    W = W * 1000.0  # same information, different units
-
-    on = LinearBridge(standardize=True).fit(X, A, Y, W=W, Z=Z)
-    off = LinearBridge(standardize=False).fit(X, A, Y, W=W, Z=Z)
-
-    assert not np.allclose(on.predict_h(X, W), off.predict_h(X, W), atol=1e-3)
-
-
-def test_linear_bridge_accepts_unequal_proxy_widths():
-    """d_W != d_Z makes both systems rectangular; the solve must still run."""
-    X, A, Y, W, Z, _ = _linear_toy(n=800, dp=3)
-    Z = Z[:, :1]  # d_Z = 1, d_W = 3: the q system is over-identified
-
-    b = LinearBridge().fit(X, A, Y, W=W, Z=Z)
-    assert b.predict_h(X, W).shape == (800, 2)
-    assert b.predict_q(X, Z).shape == (800, 2)
-
-
-# ── the kernel bridge (step 3) ───────────────────────────────────────────────
+# ── the kernel bridge ────────────────────────────────────────────────────────
 
 
 def _rbf(P, Q, sigma):
@@ -422,8 +284,8 @@ def test_median_bandwidth_tracks_the_true_median():
 
 
 def test_kernel_bridge_recovers_the_ate_under_linear_mechanisms():
-    """The RKHS contains the linear functions, so it must not do worse than the
-    linear bridge on a linear problem.
+    """The RKHS contains the linear functions, so it should handle this
+    linear-mechanism reference problem.
 
     `lam` is set for this draw's size rather than left at the default: the
     optimum moves with n, which is precisely the defect tuning has to fix.
@@ -484,14 +346,6 @@ def test_kernel_bridge_stays_within_its_rank_budget():
     assert b.theta_.shape == (2, b.h_feats_.rank_)
     assert b.gamma_.shape == (2, b.q_feats_.rank_)
     assert b.predict_h(X, W).shape == (2000, 2)
-
-
-def test_constant_bridge_ignores_the_proxies_by_construction():
-    """Documents that this bridge is not proximal — it is a plumbing fixture."""
-    X, A, Y, W, Z, _ = _toy(n=150)
-    b = ConstantBridge().fit(X, A, Y, W=W, Z=Z)
-    other = np.full_like(W, 999.0)
-    assert np.array_equal(b.predict_h(X, W), b.predict_h(X, other))
 
 
 # ── step 4: tuning the regularizers on held-out moment loss ──────────────────

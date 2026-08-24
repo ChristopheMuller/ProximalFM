@@ -29,22 +29,11 @@ Arrays convention, matching the rest of ``benchmarks.methods``::
     W: (n, d_w) outcome proxy    Y: (n,) observed outcome
     Z: (n, d_z) treatment proxy
 
-**Bridges, in increasing order of ambition.** Each is one class and one registry
-entry, and each is a complete estimator on its own:
-
-- Step 1, ``bridge="constant"`` — the architecture, with a bridge that ignores
-  the proxies and therefore recovers the *unadjusted* difference in means. Not an
-  estimator; a plumbing check with an exact invariant. See :class:`ConstantBridge`.
-- Step 2, ``bridge="linear"`` — the first bridge that actually de-confounds:
-  both bridge conditions in a linear basis, i.e. just-identified IV. Closed form,
-  one regularizer, exact when the mechanisms are linear. See
-  :class:`LinearBridge`.
-- Step 3, ``bridge="kernel"`` — the minimax RKHS bridge of the proximal
-  literature, solved in an explicit Nyström feature space so no ``n x n`` matrix
-  is ever formed. See :class:`KernelBridge`.
-- Step 4, ``bridge="kernel"`` with ``lam_grid`` — the same bridge, with its two
-  regularizers picked per episode on a held-out *moment* loss rather than hand
-  set. See :class:`_MomentSystem` for the criterion and why it is not an MSE.
+The production bridge is ``bridge="kernel"``: the minimax RKHS bridge of the
+proximal literature, solved in an explicit Nyström feature space so no ``n x n``
+matrix is ever formed. Passing ``lam_grid`` selects its two regularizers per
+episode on a held-out *moment* loss rather than hand setting them. See
+:class:`KernelBridge` and :class:`_MomentSystem`.
 """
 
 from __future__ import annotations
@@ -65,8 +54,6 @@ from benchmarks.methods.base import CATEEstimator
 
 __all__ = [
     "Bridge",
-    "ConstantBridge",
-    "LinearBridge",
     "KernelBridge",
     "BRIDGES",
     "build_bridge",
@@ -186,211 +173,6 @@ def build_bridge(name: str, params: Optional[dict] = None) -> Bridge:
     if name not in BRIDGES:
         raise ValueError(f"unknown bridge {name!r}; registered: {sorted(BRIDGES)}")
     return BRIDGES[name](**(params or {}))
-
-
-@register_bridge("constant")
-class ConstantBridge(Bridge):
-    """The trivial bridge: both functions constant within arm.
-
-    ``h(w, a, x) = mean(Y | A = a)`` and ``q(z, a, x) = 1 / P(A = a)``, ignoring
-    the proxies and the covariates entirely. This is **not** a proximal estimator
-    — it cannot be, since it never reads W or Z — and it is not meant to be used
-    for results.
-
-    It exists because it makes the driver testable. Plug it in and the score
-    collapses algebraically to the unadjusted difference in means: with
-    ``h_a = ybar_a`` and ``q_a = 1 / p_a`` estimated on the same rows,
-
-        mean(Gamma) = (1/n) sum_{A=1} (Y_i - ybar_1)/p_1
-                    - (1/n) sum_{A=0} (Y_i - ybar_0)/p_0
-                    + ybar_1 - ybar_0
-                    = ybar_1 - ybar_0
-
-    because each residual sum is exactly zero by construction. So a fit whose
-    ``ate_`` does not reproduce the naive difference has a bug in the
-    cross-fitting, the arm indexing, or the sign — and that is a check no real
-    bridge can give you, because for a real bridge there is no closed form to
-    check against. Under cross-fitting the identity holds up to the fold-to-fold
-    variation in ``ybar_a`` and ``p_a``, exactly at ``n_splits=1``.
-    """
-
-    def fit(self, X, A, Y, *, W, Z) -> "ConstantBridge":
-        self.h_ = np.empty(2, dtype=float)
-        self.q_ = np.empty(2, dtype=float)
-        for a in (0, 1):
-            mask = A == a
-            n_a = int(mask.sum())
-            if n_a == 0:
-                raise ValueError(
-                    f"no rows with A={a} in this fold; the constant bridge has "
-                    "nothing to estimate. Reduce n_splits or check the episode."
-                )
-            self.h_[a] = float(Y[mask].mean())
-            self.q_[a] = len(A) / n_a  # 1 / P(A = a)
-        return self
-
-    def predict_h(self, X, W) -> np.ndarray:
-        return np.tile(self.h_, (X.shape[0], 1))
-
-    def predict_q(self, X, Z) -> np.ndarray:
-        return np.tile(self.q_, (X.shape[0], 1))
-
-
-def _ridge_lstsq(M: np.ndarray, b: np.ndarray, ridge: float) -> np.ndarray:
-    """Least-norm solution of ``M v = b``, optionally Tikhonov-damped.
-
-    ``M`` is not square in general (the two bases have different widths whenever
-    ``d_W != d_Z``), so this is a least-squares solve rather than an inverse:
-    over-identified when the test basis is wider than the unknown, minimum-norm
-    when it is narrower. Damping is applied by stacking ``sqrt(ridge) * I``
-    rather than by forming ``M'M``, which would square the condition number.
-    """
-    if ridge > 0.0:
-        k = M.shape[1]
-        M = np.vstack([M, np.sqrt(ridge) * np.eye(k)])
-        b = np.concatenate([b, np.zeros(k)])
-    return np.linalg.lstsq(M, b, rcond=None)[0]
-
-
-@register_bridge("linear")
-class LinearBridge(Bridge):
-    """Both bridges in a linear basis — i.e. just-identified IV, in closed form.
-
-    Posit ``h(w, a, x) = beta_a' [1, w, x]`` and ``q(z, a, x) = gamma_a' [1, z, x]``.
-    Each bridge condition is then a *finite* set of moment equations rather than a
-    Fredholm equation, obtained by testing against the natural basis:
-
-        h:  E[ 1{A=a} (Y - h_a(W, X)) g(Z, X) ] = 0        for g = [1, Z, X]
-        q:  E[ 1{A=a} q_a(Z, X) g(W, X) ] = E[ g(W, X) ]   for g = [1, W, X]
-
-    which, writing ``F = [1, W, X]`` and ``G = [1, Z, X]`` for the two design
-    matrices and subscript ``a`` for the rows in arm ``a``, are
-
-        (G_a' F_a) beta_a = G_a' Y_a
-        (F_a' G_a) gamma_a = sum_i F_i          (the sum is over *all* rows)
-
-    The two matrices are transposes of one another, so one cross-product per arm
-    serves both bridges. The h equation is exactly two-stage least squares of Y on
-    (W, X) instrumenting W with Z, within arm; the q equation is its mirror, and
-    notably needs **no propensity model** — the right-hand side is a plain mean.
-
-    Why this bridge is worth having beyond being a stepping stone:
-
-    - **One hyperparameter, and it is not a sensitive one.** ``ridge`` sits in the
-      middle of a two-decade plateau (see below). So a disagreement between this
-      and the kernel bridge is about the function class, not about tuning.
-    - **Exact under linear mechanisms.** If ``E[Y | ...]`` is linear in ``(U, X)``
-      and ``W`` is linear in ``U``, the true ``h`` *is* in this class, whatever the
-      treatment mechanism looks like — the match ``lambda_a * b_1 = theta_U``
-      holds pointwise in ``E[U | Z, X, A=a]``, so a logistic assignment does not
-      break it. The score is doubly robust, so a correct ``h`` alone suffices.
-    - **Two sharp invariants**, from the intercept row of each system: within arm
-      the ``h``-residuals average to zero, and ``mean_i 1{A_i=a} q_a(Z_i, X_i) = 1``
-      — the sample version of ``E[1{A=a} q_a] = 1``. Both hold to solver precision
-      when the system is square (``d_W == d_Z``) and undamped, and are the
-      diagnostic to reach for when a real bridge misbehaves. Both are exact only
-      when ``ridge = 0``; damping trades them for stability, which is the right
-      trade but means they are checks on the *system*, not on a production fit.
-
-    Caveats worth knowing before reading a number out of it:
-
-    - **The moment matrix is generically rank-deficient and the damping is load
-      bearing.** Whenever the proxies are over-complete for the latent — more
-      columns of ``W`` (or ``Z``) than there are dimensions of ``U`` — the block
-      of ``F_a' G_a`` coupling them carries only ``dim(U)`` directions of signal,
-      and the rest is sampling noise. Measured on a 1-latent, 2-proxy draw at
-      n = 4000: singular values ``[1.47, 1.01, 0.95, 0.41, 0.0152]``. Undamped,
-      the solve inverts that last direction and the bridge explodes out of fold
-      (ATE 2.2 against a truth of 1.0, and a *spread* of 2.3 across seeds). This
-      is the common case, not a corner: the prior draws ``d_U``, ``d_W`` and
-      ``d_Z`` independently in 1..10.
-    - ``q`` is an inverse propensity in disguise but nothing here constrains it to
-      be positive, and a linear function on an unbounded ``z`` is unbounded. Pair
-      this bridge with ``q_clip`` on the driver.
-    - Identification of ``gamma_a`` needs the test basis at least as wide as the
-      unknown, i.e. ``d_W >= d_Z``; below that ``_ridge_lstsq`` returns the
-      minimum-norm solution, which is a *choice*, not an estimate.
-
-    Args:
-        ridge: Tikhonov damping on both solves, in the standardized basis — the
-            regularizer the point above says is required. The default is the
-            middle of a plateau two decades wide: on that same draw, ``1e-4``,
-            ``1e-3`` and ``1e-2`` all give ATE 1.00-1.02 with a seed-to-seed
-            spread of 0.03-0.07, while ``1e-1`` is visibly over-damped (1.31).
-            Set it to ``0.0`` to recover the exact moment identities for testing.
-        standardize: centre and scale the proxy/covariate block before adding the
-            intercept. At ``ridge = 0`` this is numerics only — the basis is
-            closed under affine reparametrisation and carries an intercept, so
-            the fitted functions come out unchanged. Once ``ridge > 0`` it is
-            *not* neutral, because the penalty is on the coefficients in whatever
-            parametrisation it finds: without scaling, a proxy measured in
-            millimetres is damped a thousand times harder than the same proxy in
-            metres. That is the reason it defaults to on.
-    """
-
-    def __init__(self, ridge: float = 1e-3, standardize: bool = True):
-        self.ridge = float(ridge)
-        self.standardize = bool(standardize)
-
-    # ── basis ────────────────────────────────────────────────────────────────
-
-    def _design(self, P: np.ndarray, X: np.ndarray, scaler) -> np.ndarray:
-        """``[1, P, X]`` with the proxy/covariate block scaled by ``scaler``."""
-        block = np.column_stack([P, X])
-        if scaler is not None:
-            block = scaler.transform(block)
-        return np.column_stack([np.ones(block.shape[0]), block])
-
-    def _fit_scaler(self, P: np.ndarray, X: np.ndarray):
-        if not self.standardize:
-            return None
-        # StandardScaler leaves zero-variance columns alone (scale_ = 1), so a
-        # constant proxy degrades to a duplicate intercept rather than a NaN.
-        return StandardScaler().fit(np.column_stack([P, X]))
-
-    # ── fit ──────────────────────────────────────────────────────────────────
-
-    def fit(self, X, A, Y, *, W, Z) -> "LinearBridge":
-        self.f_scaler_ = self._fit_scaler(W, X)
-        self.g_scaler_ = self._fit_scaler(Z, X)
-
-        F = self._design(W, X, self.f_scaler_)  # (n, p) — h basis / q test basis
-        G = self._design(Z, X, self.g_scaler_)  # (n, m) — q basis / h test basis
-        n = len(A)
-
-        self.beta_ = np.empty((2, F.shape[1]), dtype=float)
-        self.gamma_ = np.empty((2, G.shape[1]), dtype=float)
-
-        # Scaled so both systems have O(1) entries and `ridge` means the same
-        # thing in each: the q system is a mean over all rows, the h system a
-        # mean over the arm's rows.
-        F_mean = F.mean(axis=0)
-
-        for a in (0, 1):
-            in_arm = A == a
-            n_a = int(in_arm.sum())
-            if n_a == 0:
-                raise ValueError(
-                    f"no rows with A={a} in this fold; the linear bridge has "
-                    "nothing to estimate. Reduce n_splits or check the episode."
-                )
-            F_a, G_a = F[in_arm], G[in_arm]
-            C = F_a.T @ G_a  # (p, m) — serves both systems
-
-            self.beta_[a] = _ridge_lstsq(
-                C.T / n_a, (G_a.T @ Y[in_arm]) / n_a, self.ridge
-            )
-            self.gamma_[a] = _ridge_lstsq(C / n, F_mean, self.ridge)
-
-        return self
-
-    # ── predict ──────────────────────────────────────────────────────────────
-
-    def predict_h(self, X, W) -> np.ndarray:
-        return self._design(W, X, self.f_scaler_) @ self.beta_.T
-
-    def predict_q(self, X, Z) -> np.ndarray:
-        return self._design(Z, X, self.g_scaler_) @ self.gamma_.T
 
 
 # ── the kernel bridge, and the feature map that keeps it small ───────────────
@@ -620,7 +402,7 @@ class KernelBridge(Bridge):
     """The minimax kernel bridge (Ghassami et al. 2022; Dikkala et al. 2020),
     solved in an explicit feature space so nothing is ever ``n x n``.
 
-    Same three-step reasoning as :class:`LinearBridge` — bridge equation, then a
+    The same three-step reasoning applies: bridge equation, then a
     conditional moment restriction, then testing against a function class — with
     the linear span replaced by an RKHS. Because the test class is now infinite
     dimensional, "test against every ``g``" becomes a saddle-point problem,
@@ -641,9 +423,8 @@ class KernelBridge(Bridge):
     Three structural facts this buys, all of which the archive's kernel-matrix
     formulation gives up:
 
-    - **``B`` is shared.** The h-system uses ``B'`` and the q-system uses ``B``,
-      exactly as ``C = F_a' G_a`` was shared in the linear bridge. One
-      cross-product per arm, not four.
+    - **``B`` is shared.** The h-system uses ``B'`` and the q-system uses ``B``.
+      One cross-product per arm, not four.
     - **``S_Q`` and ``S_H`` do not depend on the arm**, so they are factored once
       per fold rather than once per (arm, bridge). The archive recomputes the
       equivalent object four times, and at the default lambdas two of the four
@@ -652,8 +433,8 @@ class KernelBridge(Bridge):
       n = 2048, r = 256 that is 4 MB of features and a 256-cubed factorisation,
       against 565 MB and 1024-cubed for the archive.
 
-    The lambdas play the role ``ridge`` plays in :class:`LinearBridge`, and for
-    the same reason: the bridge equation is an ill-posed inverse problem, and
+    The bridge regularizers play the usual Tikhonov role: the bridge equation is
+    an ill-posed inverse problem, and
     undamped it inverts sampling noise. ``lam_g`` regularises the *test* class,
     which is what makes the inner maximisation well posed at all.
 
@@ -677,7 +458,7 @@ class KernelBridge(Bridge):
     Read that as the transport claim, not as a headline gain: at 2048 the tuner
     *reproduces* the hand-picked value and so can only match it, which is the
     correct outcome and the reason the last row moves so little. The gain appears
-    where the constant was never fitted, and it appears in the right direction —
+    where the fixed value was never fitted, and it appears in the right direction —
     less data, more damping. Cost is +25 to +50% wall clock (0.55 -> 0.70 s per
     episode at n = 2048), which buys a value that no longer depends on having
     seen the evaluation set. One number ran the other way and is worth watching:
@@ -899,7 +680,7 @@ class PLearner(CATEEstimator):
     ``predict_variants`` call, having paid for the bridges once.
 
     Args:
-        bridge: registered bridge name (see ``BRIDGES``).
+        bridge: registered bridge name (currently ``"kernel"``; see ``BRIDGES``).
         bridge_params: keyword arguments for that bridge.
         final_models: ``{output_name: unfitted sklearn regressor}``. Each is
             cloned before fitting, so the caller's instances are untouched.
@@ -918,7 +699,7 @@ class PLearner(CATEEstimator):
     def __init__(
         self,
         *,
-        bridge: str = "constant",
+        bridge: str = "kernel",
         bridge_params: Optional[dict] = None,
         final_models: Optional[dict[str, object]] = None,
         n_splits: int = 3,
@@ -1033,10 +814,9 @@ class PLearner(CATEEstimator):
     def _folds(self, A: np.ndarray):
         """(train, test) index pairs. ``n_splits=1`` means no cross-fitting.
 
-        The degenerate split is supported on purpose: it is the setting in which
-        :class:`ConstantBridge`'s identity holds *exactly*, so the plumbing test
-        has something sharp to assert. It is not a sensible way to run the
-        estimator — the scores are then evaluated in-sample.
+        The degenerate split is supported for debugging and small experiments,
+        although it is not a sensible way to run the estimator because the
+        scores are then evaluated in-sample.
         """
         n = len(A)
         if self.n_splits == 1:
