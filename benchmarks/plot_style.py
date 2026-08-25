@@ -26,83 +26,105 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Method styling
-# ─────────────────────────────────────────────────────────────────────────────
-# One entry per `name:` in config_*.yaml (active *and* commented, so styles
-# survive when a method is re-enabled).
-#
-# Convention: colour = method family, marker = variant within the family.
-#   OLS .......... Blue    #1f77b4      KPV .......... Cyan   #17becf
-#   RF ........... Green   #2ca02c      PMMR ......... Brown  #8c564b
-#   TabICL ....... Purple  #9467bd      NMMR ......... Pink   #e377c2
-#   P2SLS ........ Orange  #ff7f0e      DFPV ......... Olive  #bcbd22
-#   Neural causal models (CausalFM / DoPFN / CausalPFN / ProximalFM) . Red #d62728
-#   Oracles ...... Black/grey (never a competitor — see REFERENCE_STYLE)
-#
-# Proximal strategy markers: paired/XW = "o", independent/X-Wind = "s",
-# conditional/X-cond = "^", marginal/ATE = "D".
 METHOD_STYLES = {
-    # ── OLS baselines (Blue) ──
-    "S-OLS": {"color": "#1f77b4", "marker": "o"},  # circle
-    "S-OLS+AX": {"color": "#1f77b4", "marker": "s"},  # square
-    "T-OLS": {"color": "#1f77b4", "marker": "^"},  # triangle up
-    # ── RF baselines (Green) ──
+    "S-OLS": {"color": "#1f77b4", "marker": "o"},
+    "S-OLS+AX": {"color": "#1f77b4", "marker": "s"},
+    "S-OLS-WZ": {"color": "#2b5c8f", "marker": "v"},
+    "S-OLS-WZ-Oracle": {"color": "#4a7bb0", "marker": "h", "linestyle": ":"},
+    "S-OLS-Oracle": {"color": "#4a7bb0", "marker": "*", "s": 160, "linestyle": ":"},
+    "S-OLS+AX-Oracle": {"color": "#4a7bb0", "marker": "s", "linestyle": ":"},
+    "T-OLS": {"color": "#1f77b4", "marker": "^"},
+    "T-OLS-WZ": {"color": "#2b5c8f", "marker": ">"},
+    "T-OLS-Oracle": {"color": "#4a7bb0", "marker": "*", "s": 160, "linestyle": ":"},
+    "T-OLS-WZ-Oracle": {"color": "#4a7bb0", "marker": "H", "linestyle": ":"},
     "S-RF": {"color": "#2ca02c", "marker": "o"},
+    "S-RF-WZ": {"color": "#238b45", "marker": "v"},
+    "S-RF-Oracle": {"color": "#41ab5d", "marker": "*", "s": 160, "linestyle": ":"},
+    "S-RF-ITE-Oracle": {"color": "#005a32", "marker": "h", "s": 150, "linestyle": ":"},
     "T-RF": {"color": "#2ca02c", "marker": "^"},
-    "X-RF": {"color": "#2ca02c", "marker": "P"},  # plus (filled)
-    "P-RF": {"color": "#2ca02c", "marker": "X"},  # cross (filled)
-    # ── TabICL baselines (Purple) ── (Oracle variants use a star)
+    "T-RF-WZ": {"color": "#238b45", "marker": ">"},
+    "T-RF-Oracle": {"color": "#41ab5d", "marker": "*", "s": 160, "linestyle": ":"},
+    "X-RF": {"color": "#2ca02c", "marker": "P"},
+    "X-RF-W": {"color": "#238b45", "marker": "p"},
+    "X-RF-Oracle": {"color": "#41ab5d", "marker": "*", "s": 160, "linestyle": ":"},
+    "X-RF-WZ-Oracle": {"color": "#005a32", "marker": "H", "s": 150, "linestyle": ":"},
+    "CausalForest": {"color": "#137e36", "marker": "D"},
     "S-TabICL": {"color": "#9467bd", "marker": "o"},
-    "S-TabICL-Oracle": {"color": "#9467bd", "marker": "*", "s": 180},
+    "S-TabICL-Oracle": {"color": "#756bb1", "marker": "*", "s": 180, "linestyle": ":"},
+    "S-TabICL-XWU": {"color": "#542788", "marker": "h", "s": 170, "linestyle": ":"},
     "T-TabICL": {"color": "#9467bd", "marker": "^"},
-    "T-TabICL-Oracle": {"color": "#9467bd", "marker": "X"},
-    "X-TabICL": {"color": "#9467bd", "marker": "v"},  # triangle down
-    "X-TabICL-Oracle": {"color": "#9467bd", "marker": "P"},
-    # ── P2SLS proximal baselines (Orange) ──
+    "T-TabICL-Oracle": {"color": "#756bb1", "marker": "X", "s": 160, "linestyle": ":"},
+    "X-TabICL": {"color": "#9467bd", "marker": "v"},
+    "X-TabICL-Oracle": {"color": "#756bb1", "marker": "P", "s": 160, "linestyle": ":"},
     "P2SLS": {"color": "#ff7f0e", "marker": "o"},
     "P2SLS+AX": {"color": "#ff7f0e", "marker": "s"},
-    # ── KPV (Cyan) ──
+    "P-Kernel": {"color": "#008080", "marker": "o"},
+    "P-Kernel-RF": {"color": "#008080", "marker": "o"},
+    "P-Kernel-OLS": {"color": "#008080", "marker": "s"},
+    "P-Kernel-TabICL": {"color": "#008080", "marker": "^"},
+    "P-Kernel-ATE": {"color": "#008080", "marker": "D"},
+    "P-RF": {"color": "#008080", "marker": "o"},
+    "P-ATE": {"color": "#008080", "marker": "D"},
+    "KPV": {"color": "#17becf", "marker": "o"},
     "KPV-XW": {"color": "#17becf", "marker": "o"},
     "KPV-X-Wind": {"color": "#17becf", "marker": "s"},
     "KPV-X-Wcond": {"color": "#17becf", "marker": "^"},
     "KPV-ATE": {"color": "#17becf", "marker": "D"},
-    # ── PMMR (Brown) ──
+    "PMMR": {"color": "#8c564b", "marker": "o"},
     "PMMR-XW": {"color": "#8c564b", "marker": "o"},
     "PMMR-X-Wind": {"color": "#8c564b", "marker": "s"},
     "PMMR-X-Wcond": {"color": "#8c564b", "marker": "^"},
     "PMMR-ATE": {"color": "#8c564b", "marker": "D"},
-    # ── NMMR (Pinks: V-statistic light, U-statistic dark) ──
+    "NMMR-V": {"color": "#e377c2", "marker": "o"},
     "NMMR-V-XW": {"color": "#e377c2", "marker": "o"},
     "NMMR-V-Wind": {"color": "#e377c2", "marker": "s"},
     "NMMR-V-Wcond": {"color": "#e377c2", "marker": "^"},
+    "NMMR-V-fixed": {"color": "#e377c2", "marker": "o"},
+    "NMMR-V-fixed-XW": {"color": "#e377c2", "marker": "o"},
+    "NMMR-V-fixed-Wind": {"color": "#e377c2", "marker": "s"},
+    "NMMR-V-fixed-Wcond": {"color": "#e377c2", "marker": "^"},
+    "NMMR-V-median": {"color": "#f768a1", "marker": "o"},
+    "NMMR-V-median-XW": {"color": "#f768a1", "marker": "o"},
+    "NMMR-V-median-Wind": {"color": "#f768a1", "marker": "s"},
+    "NMMR-V-median-Wcond": {"color": "#f768a1", "marker": "^"},
+    "NMMR-U": {"color": "#c51b8a", "marker": "o"},
     "NMMR-U-XW": {"color": "#c51b8a", "marker": "o"},
     "NMMR-U-Wind": {"color": "#c51b8a", "marker": "s"},
     "NMMR-U-Wcond": {"color": "#c51b8a", "marker": "^"},
-    # ── DFPV (Olive) ──
+    "NMMR-U-fixed": {"color": "#c51b8a", "marker": "o"},
+    "NMMR-U-fixed-XW": {"color": "#c51b8a", "marker": "o"},
+    "NMMR-U-fixed-Wind": {"color": "#c51b8a", "marker": "s"},
+    "NMMR-U-fixed-Wcond": {"color": "#c51b8a", "marker": "^"},
+    "NMMR-U-median": {"color": "#7a0177", "marker": "o"},
+    "NMMR-U-median-XW": {"color": "#7a0177", "marker": "o"},
+    "NMMR-U-median-Wind": {"color": "#7a0177", "marker": "s"},
+    "NMMR-U-median-Wcond": {"color": "#7a0177", "marker": "^"},
+    "DFPV": {"color": "#bcbd22", "marker": "o"},
     "DFPV-XW": {"color": "#bcbd22", "marker": "o"},
     "DFPV-X-Wind": {"color": "#bcbd22", "marker": "s"},
     "DFPV-X-cond": {"color": "#bcbd22", "marker": "^"},
+    "DFPV-X-Wcond": {"color": "#bcbd22", "marker": "^"},
     "DFPV-ATE": {"color": "#bcbd22", "marker": "D"},
-    # ── Other forests ──
-    "CausalForest": {"color": "#2ca02c", "marker": "D"},
-    # ── Tabular & Neural Models (Red) ──
-    "CausalFM": {"color": "#d62728", "marker": "X"},  # cross
-    "DoPFN": {"color": "#d62728", "marker": "D"},  # diamond
-    "CausalPFN": {"color": "#d62728", "marker": "P"},  # plus
-    "ProximalFM3": {"color": "#d62728", "marker": "*", "s": 200},  # big star
-    "ProximalFM4": {"color": "#d62728", "marker": "p", "s": 160},  # pentagon
-    "ProximalFM": {"color": "#d62728", "marker": "*", "s": 200},
-    # ── Reference rows (never competitors) ──
-    "Oracle-CATE(X)": {"color": "#000000", "marker": "*", "s": 200},
-    "Oracle-ATE": {"color": "#777777", "marker": "D"},
-    "Oracle-ITE": {"color": "#aaaaaa", "marker": "v"},
+    "CausalFM": {"color": "#e6550d", "marker": "X", "s": 140},
+    "DoPFN": {"color": "#d95f02", "marker": "D", "s": 130},
+    "CausalPFN": {"color": "#7570b3", "marker": "P", "s": 140},
+    "CausalPFN-XWZ": {"color": "#542788", "marker": "p", "s": 140},
+    "CausalPFN-XWU": {"color": "#3f007d", "marker": "h", "s": 150, "linestyle": ":"},
+    "ProximalFM": {"color": "#d62728", "marker": "*", "s": 220},
+    "ProximalFM-75k": {"color": "#67000d", "marker": "D", "s": 150},
+    "ProximalFM-50k": {"color": "#860303", "marker": "h", "s": 150},
+    "ProximalFM-25k": {"color": "#a50f15", "marker": "p", "s": 140},
+    "ProximalFM-10k": {"color": "#cb181d", "marker": "s", "s": 140},
+    "ProximalFM-5k": {"color": "#ef3b2c", "marker": "^", "s": 130},
+    "ProximalFM-3k": {"color": "#fb6a4a", "marker": "v", "s": 130},
+    "ProximalFM-1": {"color": "#fc9272", "marker": "1", "s": 120},
+    "ProximalFM3": {"color": "#d62728", "marker": "*", "s": 200},
+    "ProximalFM4": {"color": "#b2182b", "marker": "p", "s": 160},
+    "ProximalFM5": {"color": "#990000", "marker": "h", "s": 160},
+    "Oracle-CATE(X)": {"color": "#000000", "marker": "*", "s": 220},
+    "Oracle-ATE": {"color": "#666666", "marker": "D", "s": 130},
+    "Oracle-ITE": {"color": "#999999", "marker": "v", "s": 130},
 }
-
-#: How a reference row is drawn wherever it appears beside competitors. An
-#: oracle is an axis annotation that happens to have per-episode numbers, so it
-#: is always dashed and never filled — no reader should mistake it for a bar in
-#: the ranking.
 REFERENCE_STYLE = {"linestyle": "--", "linewidth": 1.6, "alpha": 0.9}
 
 _FAMILIES = list(METHOD_STYLES)

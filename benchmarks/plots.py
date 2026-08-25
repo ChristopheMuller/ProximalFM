@@ -178,7 +178,8 @@ def _method_legend(ax, methods: Sequence[str], *, references: Sequence[str] = ()
             [],
             color=color_for(m),
             marker=style_for(m).get("marker", "o"),
-            linestyle="--" if m in references else "-",
+            linestyle=style_for(m).get("linestyle", "--" if m in references else "-"),
+            markersize=style_for(m).get("markersize", 6),
             label=abbreviate(m),
         )
         for m in methods
@@ -315,7 +316,12 @@ def plot_ecdf(run: BenchmarkRun, task: Task, opts: Options) -> None:
             xs, ys = _ecdf(v.to_numpy(dtype=float), n_ep)
             if xs.size == 0:
                 continue
-            kw = dict(color=color_for(method), linewidth=1.5)
+            style = style_for(method)
+            kw = dict(
+                color=style.get("color", "gray"),
+                linewidth=1.5,
+                linestyle=style.get("linestyle", "-"),
+            )
             if method in refs:
                 kw.update(REFERENCE_STYLE)
             ax.step(xs, ys, where="post", **kw)
@@ -438,8 +444,14 @@ def plot_performance_profile(run: BenchmarkRun, task: Task, opts: Options) -> No
     for m in run.method_order(task):
         if m not in ratio.columns:
             continue
+        style = style_for(m)
+        kw = dict(
+            color=style.get("color", "gray"),
+            linewidth=1.6,
+            linestyle=style.get("linestyle", "-"),
+        )
         y = (ratio[m].to_numpy()[:, None] <= taus[None, :]).mean(axis=0)
-        ax.step(taus, y, where="post", color=color_for(m), linewidth=1.6)
+        ax.step(taus, y, where="post", **kw)
     ax.set_xscale("log")
     ax.set_xlim(1, taus[-1])
     ax.set_ylim(0, 1.02)
@@ -874,7 +886,12 @@ def plot_bias_caterpillar(run: BenchmarkRun, task: Task, opts: Options) -> None:
         if v.size == 0:
             continue
         q = np.linspace(0, 1, v.size)
-        kw = dict(color=color_for(m), linewidth=1.5)
+        style = style_for(m)
+        kw = dict(
+            color=style.get("color", "gray"),
+            linewidth=1.5,
+            linestyle=style.get("linestyle", "-"),
+        )
         if m in refs:
             kw.update(REFERENCE_STYLE)
         ax.plot(q, v, **kw)
@@ -975,9 +992,15 @@ def plot_strata(run: BenchmarkRun, task: Task, opts: Options) -> None:
             if m not in wide.columns:
                 continue
             med = [wide.loc[cut == lv, m].median() for lv in levels]
-            ax.plot(
-                levels, med, marker="o", color=color_for(m), linewidth=1.5, markersize=4
+            style = style_for(m)
+            kw = dict(
+                color=style.get("color", "gray"),
+                marker=style.get("marker", "o"),
+                linewidth=1.5,
+                markersize=style.get("markersize", 5),
+                linestyle=style.get("linestyle", "-"),
             )
+            ax.plot(levels, med, **kw)
         counts = [int((cut == lv).sum()) for lv in levels]
         ax.set_title(f"{col}  (n = {', '.join(map(str, counts))})", fontsize=9)
         draw_anchors(ax, task.rank_by, axis="y", label=False)
@@ -1195,15 +1218,15 @@ def plot_cross_task_ranks(run: BenchmarkRun, opts: Options) -> None:
         xs = [i for i, n in enumerate(names) if m in series[n].index]
         ys = [series[n][m] for n in names if m in series[n].index]
         style = style_for(m)
-        ax.plot(
-            xs,
-            ys,
-            color=style.get("color"),
+        kw = dict(
+            color=style.get("color", "gray"),
             marker=style.get("marker", "o"),
-            markersize=6,
+            markersize=style.get("markersize", 6),
             linewidth=1.6,
             alpha=0.9,
+            linestyle=style.get("linestyle", "-"),
         )
+        ax.plot(xs, ys, **kw)
         ax.annotate(
             abbreviate(m, 18),
             (xs[-1], ys[-1]),
@@ -1427,7 +1450,15 @@ def _episode_profile(run, task, ep, label, target, ite, preds, truth, opts) -> N
     for m, p in preds.items():
         if np.all(np.isnan(p[ep])):
             continue
-        ax.plot(x, p[ep][order], color=color_for(m), linewidth=1.2, alpha=0.9, label=m)
+        style = style_for(m)
+        kw = dict(
+            color=style.get("color", "gray"),
+            linewidth=1.2,
+            alpha=0.9,
+            label=m,
+            linestyle=style.get("linestyle", "-"),
+        )
+        ax.plot(x, p[ep][order], **kw)
     ax.set_xlabel("query rows, sorted by the true effect")
     ax.set_ylabel("treatment effect (standardized units)")
     ax.set_title(
