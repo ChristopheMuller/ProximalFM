@@ -283,7 +283,7 @@ class KPVEstimator:
 
         Args:
             X: Covariates,                shape (n, d_X).
-            A: Treatment (binary/cont.),  shape (n,) or (n, d_A).
+            A: Treatment (binary),  shape (n,) or (n, d_A).
             Y: Observed outcome,          shape (n,).
             W: Outcome-inducing proxy,    shape (n, d_W).
             Z: Treatment-inducing proxy,  shape (n, d_Z).
