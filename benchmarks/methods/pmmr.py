@@ -292,6 +292,22 @@ class _PreparedSystem:
             )
         return self.solve_into(PMMREstimator(replace(self.cfg, **lams)))
 
+    def bridge_gram(self, A: np.ndarray, W: np.ndarray, X: np.ndarray) -> np.ndarray:
+        """Bridge-kernel Gram from this fit sample to another row set.
+
+        All estimators obtained by :meth:`solve` share the same fitted kernels
+        and training rows.  A lambda sweep can therefore build this matrix once
+        for its validation rows and reuse it for every candidate alpha.
+        """
+        A = as_2d(A)
+        W = as_2d(W)
+        X = as_2d(X)
+
+        K = self._k_A(self._A_train, A) * self._k_W(self._W_train, W)
+        if self._k_X is not None:
+            K *= self._k_X(self._X_train, X)
+        return K
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Estimator
@@ -483,6 +499,7 @@ class PMMREstimator:
         kernel_scale: float = 1.0,
         loss: Literal["v_stat", "u_stat"] = "v_stat",
         moment_kernel: np.ndarray | None = None,
+        bridge_kernel: np.ndarray | None = None,
     ) -> float:
         """Held-out MMR statistic (lower is better) for model selection.
 
@@ -523,7 +540,17 @@ class PMMREstimator:
         if n < 2:
             return float("nan")
 
-        d = self.predict_bridge(A, W=W, X=X) - Y
+        if bridge_kernel is None:
+            d = self.predict_bridge(A, W=W, X=X) - Y
+        else:
+            bridge_kernel = np.asarray(bridge_kernel, dtype=float)
+            expected_shape = (self._alpha.shape[0], n)
+            if bridge_kernel.shape != expected_shape:
+                raise ValueError(
+                    "bridge_kernel must have shape (n_train, n_validation); "
+                    f"got {bridge_kernel.shape}, expected {expected_shape}."
+                )
+            d = (self._alpha @ bridge_kernel).ravel() - Y
 
         # Fixed reference kernel over (A, Z, X) — see the docstring.  The
         # wrapper builds it once per validation split and shares it across all

@@ -852,13 +852,17 @@ class PMMR_Wrapper(CATEEstimator):
         def prepare(hparams: dict):
             est = self._PMMREstimator(replace(self._base_cfg, **hparams))
             try:
-                return est.prepare(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+                prepared = est.prepare(Xtr, Atr, Ytr, W=Wtr, Z=Ztr)
+                # This is fixed across the inner lambda sweep just like the
+                # validation moment kernel above: only alpha changes there.
+                return prepared, prepared.bridge_gram(Ava, Wva, Xva)
             except LinAlgError:
                 # Grams that will not build take the whole sweep down with
                 # them; `search_nested` scores all of them inf and skips them.
                 return None
 
         def score(prepared, sweep_hparams: dict) -> float:
+            prepared, val_bridge_kernel = prepared
             try:
                 est = prepared.solve(**sweep_hparams)
             except LinAlgError:
@@ -872,6 +876,7 @@ class PMMR_Wrapper(CATEEstimator):
                 W=Wva,
                 Z=Zva,
                 moment_kernel=val_moment_kernel,
+                bridge_kernel=val_bridge_kernel,
             )
 
         best, best_score, results = search_nested(outer, inner, prepare, score)

@@ -95,14 +95,26 @@ def test_solve_omitting_lambda_keeps_the_prepared_value():
 
 
 def test_cached_validation_moment_kernel_preserves_score():
-    """Caching the fixed V-statistic kernel must change no candidate ranking."""
+    """Caching fixed validation grams must change no candidate ranking."""
     X, A, Y, W, Z = make_data(n=120)
-    est = PMMREstimator(PMMRConfig()).fit(X[:80], A[:80], Y[:80], W=W[:80], Z=Z[:80])
+    prepared = PMMREstimator(PMMRConfig()).prepare(
+        X[:80], A[:80], Y[:80], W=W[:80], Z=Z[:80]
+    )
+    est = prepared.solve()
     Xva, Ava, Yva, Wva, Zva = X[80:], A[80:], Y[80:], W[80:], Z[80:]
 
     direct = est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
     cached_kernel = PMMREstimator.validation_moment_kernel(Xva, Ava, Zva)
-    cached = est.score(Xva, Ava, Yva, W=Wva, Z=Zva, moment_kernel=cached_kernel)
+    cached_bridge = prepared.bridge_gram(Ava, Wva, Xva)
+    cached = est.score(
+        Xva,
+        Ava,
+        Yva,
+        W=Wva,
+        Z=Zva,
+        moment_kernel=cached_kernel,
+        bridge_kernel=cached_bridge,
+    )
 
     assert cached == direct
 
