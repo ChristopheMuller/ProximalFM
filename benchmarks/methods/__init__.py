@@ -490,11 +490,21 @@ class KPV_Wrapper(CATEEstimator):
         "kernel_scale_x": "the shared `kernel_scale`",
     }
 
+    _REMOVED_SPLIT_KWARGS = {"split_ratio", "seed"}
+
     def __init__(self, **kwargs):
         from dataclasses import fields
 
         from benchmarks.methods.kpv import TUNABLE_PARAMS, KPVConfig, KPVEstimator
         from benchmarks.tuning import TuningConfig
+
+        removed_split = sorted(set(kwargs) & self._REMOVED_SPLIT_KWARGS)
+        if removed_split:
+            raise ValueError(
+                f"KPV: {removed_split} are no longer method-level keys because "
+                "both stages reuse the full context (m1 = m2 = n). Remove them. "
+                "Use `tune.seed` only to seed hyperparameter candidate sampling."
+            )
 
         retired = sorted(set(kwargs) & set(self._RETIRED_KWARGS))
         if retired:
@@ -520,7 +530,6 @@ class KPV_Wrapper(CATEEstimator):
             )
 
         cfg = KPVConfig(
-            split_ratio=kwargs.get("split_ratio", 0.5),
             kernel_scale=kwargs.get("kernel_scale", 1.0),
             lam1=kwargs.get("lam1", None),
             lam1_min=kwargs.get("lam1_min", 1e-5),
@@ -530,7 +539,6 @@ class KPV_Wrapper(CATEEstimator):
             lam2_min=kwargs.get("lam2_min", 1e-5),
             lam2_max=kwargs.get("lam2_max", 1e1),
             n_lam2_search=kwargs.get("n_lam2_search", 10),
-            seed=kwargs.get("seed", KPVConfig.seed),
         )
 
         # Kept so `_tune` can build candidates off the configured baseline, then
@@ -556,9 +564,8 @@ class KPV_Wrapper(CATEEstimator):
                 raise ValueError(
                     f"KPV: {sorted(unscoreable)} may not appear in "
                     f"`tune.{block}` — the selection score is the Stage-2 LOOCV "
-                    f"loss, which does not rank them (it drops the 1/m2 "
-                    f"prefactor, so it is not comparable across `split_ratio`, "
-                    f"and the lambda grid bounds only move where its own "
+                    f"loss, which does not rank them (the lambda grid bounds "
+                    f"only move where its own "
                     f"minimum is allowed to fall). See "
                     f"benchmarks.methods.kpv.TUNABLE_PARAMS. Searchable: "
                     f"{sorted(TUNABLE_PARAMS)}."

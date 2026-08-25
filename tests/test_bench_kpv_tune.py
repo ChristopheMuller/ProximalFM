@@ -27,12 +27,6 @@ from test_bench_kpv_blocks import make_data
 #: A narrow multiplicative grid around the per-dimension median heuristic.
 _SCALES = [0.5, 0.7071067811865476, 1.0, 1.4142135623730951, 2.0]
 
-#: Passed explicitly everywhere below. ``KPVConfig.seed`` is 1234 but
-#: ``KPV_Wrapper`` defaults it to 42, so a bare ``KPVConfig()`` reference would
-#: split D1/D2 differently from the wrapper and these comparisons would be
-#: against a different estimator, not a different search.
-_SEED = 1234
-
 
 def _kpv(**kwargs):
     """The wrapper as `run.py` builds it — through the config bridge, not by
@@ -50,7 +44,7 @@ def test_tuned_fit_matches_the_hand_rolled_scale_loop():
     X, A, Y, W, Z = make_data(n=180, seed=3)
 
     # What `KPVEstimator.fit` used to do internally.
-    base = KPVConfig(seed=_SEED)
+    base = KPVConfig()
     fits = {
         s: KPVEstimator(replace(base, kernel_scale=s)).fit(X, A, Y, W=W, Z=Z)
         for s in _SCALES
@@ -58,7 +52,6 @@ def test_tuned_fit_matches_the_hand_rolled_scale_loop():
     expected_scale = min(_SCALES, key=lambda s: fits[s].loocv_score_)
 
     est = _kpv(
-        seed=_SEED,
         tune={"enabled": True, "n_trials": 5, "grid": {"kernel_scale": _SCALES}},
     )
     est.fit(X, A, Y, W=W, Z=Z)
@@ -76,10 +69,10 @@ def test_no_tune_block_leaves_the_configured_scale_alone():
     """Without `tune:`, one fit at `kernel_scale` and no diagnostics."""
     X, A, Y, W, Z = make_data(n=140, seed=4)
 
-    est = _kpv(kernel_scale=1.4142135623730951, seed=_SEED)
+    est = _kpv(kernel_scale=1.4142135623730951)
     est.fit(X, A, Y, W=W, Z=Z)
 
-    ref = KPVEstimator(KPVConfig(kernel_scale=1.4142135623730951, seed=_SEED)).fit(
+    ref = KPVEstimator(KPVConfig(kernel_scale=1.4142135623730951)).fit(
         X, A, Y, W=W, Z=Z
     )
     np.testing.assert_allclose(est.model._alpha, ref._alpha, rtol=1e-12)
@@ -124,27 +117,26 @@ def test_one_fit_backs_every_output():
 def test_one_shared_scale_is_reported_for_all_continuous_kernels():
     """The public KPV scale matches the reference's single multiplier."""
     X, A, Y, W, Z = make_data(n=140, seed=7)
-    est = KPVEstimator(KPVConfig(kernel_scale=2.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    est = KPVEstimator(KPVConfig(kernel_scale=2.0)).fit(X, A, Y, W=W, Z=Z)
     assert est.kernel_scale_ == pytest.approx(2.0)
 
 
 def test_scales_default_to_the_plain_median_heuristic():
     """All-1.0 is the paper's initialisation, and must stay the default."""
     X, A, Y, W, Z = make_data(n=120, seed=8)
-    est = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    est = KPVEstimator(KPVConfig()).fit(X, A, Y, W=W, Z=Z)
     assert est.kernel_scale_ == pytest.approx(1.0)
 
 
 def test_shared_scale_is_used_without_covariates():
     """The same scale applies when the empty X product is omitted."""
     X, A, Y, W, Z = make_data(n=120, seed=9, d_x=0)
-    est = KPVEstimator(KPVConfig(kernel_scale=4.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    est = KPVEstimator(KPVConfig(kernel_scale=4.0)).fit(X, A, Y, W=W, Z=Z)
     assert est.kernel_scale_ == pytest.approx(4.0)
 
 
 def test_wrapper_forwards_all_supported_config_fields():
     est = _kpv(
-        split_ratio=0.6,
         kernel_scale=1.7,
         lam1=1e-3,
         lam1_min=1e-6,
@@ -154,10 +146,8 @@ def test_wrapper_forwards_all_supported_config_fields():
         lam2_min=2e-6,
         lam2_max=3.0,
         n_lam2_search=8,
-        seed=91,
     )
     assert est._base_cfg == KPVConfig(
-        split_ratio=0.6,
         kernel_scale=1.7,
         lam1=1e-3,
         lam1_min=1e-6,
@@ -167,7 +157,6 @@ def test_wrapper_forwards_all_supported_config_fields():
         lam2_min=2e-6,
         lam2_max=3.0,
         n_lam2_search=8,
-        seed=91,
     )
 
 
@@ -203,13 +192,17 @@ def test_tunable_params_are_accepted(param):
     _kpv(tune={"enabled": True, "grid": {param: [0.5, 1.0]}})
 
 
-@pytest.mark.parametrize(
-    "param", ["split_ratio", "seed", "lam1_min", "lam2_max", "n_lam1_search"]
-)
+@pytest.mark.parametrize("param", ["lam1_min", "lam2_max", "n_lam1_search"])
 def test_unscoreable_params_are_refused(param):
     """Fields the Stage-2 LOOCV cannot rank, for the reasons in TUNABLE_PARAMS."""
     with pytest.raises(ValueError, match="may not appear in `tune.grid`"):
         _kpv(tune={"enabled": True, "grid": {param: [0.4, 0.6]}})
+
+
+@pytest.mark.parametrize("param", ["split_ratio", "seed"])
+def test_removed_split_params_are_refused(param):
+    with pytest.raises(ValueError, match="both stages reuse the full context"):
+        _kpv(**{param: 0.5})
 
 
 def test_unknown_tune_key_is_refused():

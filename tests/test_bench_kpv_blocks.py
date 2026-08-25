@@ -51,16 +51,14 @@ def make_data(n=200, seed=0, d_x=2, d_w=2, d_z=2, p_treat=0.5):
     return X, A, Y, W, Z
 
 
-def dense_fit(X, A, Y, W, Z, cfg, split_ratio=0.5):
+def dense_fit(X, A, Y, W, Z, cfg):
     """The undecomposed pipeline, transcribed from the module docstring.
 
-    Splits exactly as ``fit`` does, so the two see the same D1/D2.
+    Reuses the complete sample in both stages, exactly as ``fit`` does.
     """
-    rng = np.random.default_rng(cfg.seed)
     n = len(Y)
-    idx = rng.permutation(n)
-    i1, i2 = idx[: int(n * split_ratio)], idx[int(n * split_ratio) :]
-    n1, n2 = i1.size, i2.size
+    i1 = i2 = np.arange(n)
+    n1 = n2 = n
     has_x = X.shape[1] > 0
 
     k_A = BinaryKernel().fit(A[i1])
@@ -134,16 +132,22 @@ def test_alpha_is_exactly_zero_across_arms():
     est = KPVEstimator(KPVConfig(lam1=1e-3, lam2=1e-2)).fit(X, A, Y, W=W, Z=Z)
 
     arm2 = est._A2.ravel()
-    # D1's arm labels are not stored, so replay the split the estimator used.
-    rng = np.random.default_rng(est.cfg.seed)
-    idx = rng.permutation(len(Y))
-    arm1 = A.ravel()[idx[: est._W1.shape[0]]]
+    arm1 = A.ravel()
 
     for a in (0.0, 1.0):
         rows = np.flatnonzero(arm1 == a)
         cols = np.flatnonzero(arm2 != a)
         if rows.size and cols.size:
             assert np.all(est._alpha[np.ix_(rows, cols)] == 0.0)
+
+
+def test_both_stages_reuse_the_full_context():
+    X, A, Y, W, Z = make_data(n=120, seed=11)
+    est = KPVEstimator(KPVConfig(lam1=1e-3, lam2=1e-2)).fit(X, A, Y, W=W, Z=Z)
+
+    assert est._W1.shape[0] == len(Y)
+    assert est._A2.shape[0] == len(Y)
+    assert est._alpha.shape == (len(Y), len(Y))
 
 
 def test_loocv_scores_add_over_arms():

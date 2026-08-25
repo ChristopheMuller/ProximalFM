@@ -6,14 +6,14 @@ regularised kernel regression stages.
 
 Reference: Mastouri et al. "Proximal Causal Learning with Kernels" (ICML 2021)
 
-Pipeline:
-  Stage 1 (data split D1):
-      Γ = (K_ZAX + λ₁ n₁ I)⁻¹ K_ZAX(D1, D2)
+Pipeline (the full context is reused in both stages, as in the released code):
+  Stage 1:
+      Γ = (K_ZAX + λ₁ n I)⁻¹ K_ZAX
       Bridges outcome proxy W to the (A, Z, X) space.
 
-  Stage 2 (data split D2):
-      Σ = (Γᵀ K_W Γ) ⊙ K_A(D2, D2) ⊙ K_X(D2, D2)
-      α = Γ ⊙ [(Σ + λ₂ n₂ I)⁻¹ Y₂]     (n₁ × n₂)
+  Stage 2:
+      Σ = (Γᵀ K_W Γ) ⊙ K_A ⊙ K_X
+      α = Γ ⊙ [(Σ + λ₂ n I)⁻¹ Y]     (n × n)
 
   Prediction of E[Y | do(a)] marginalises over the *joint* empirical (X, W):
       β̂(a) = (1/n) Σ_ijk α_ij k_A(ã_j, a) k_X(x̃_j, x_k) k_W(w_i, w_k)
@@ -71,13 +71,8 @@ from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKe
 
 #: The only :class:`KPVConfig` fields a `tune:` block may search. The benchmark
 #: wrapper validates `tune.grid` against this set; everything else in the
-#: dataclass is excluded on purpose, and for three different reasons:
+#: dataclass is excluded on purpose, and for two different reasons:
 #:
-#: - ``split_ratio`` and ``seed`` are **unscoreable**. `_loocv_stage2_block`
-#:   drops the ``1/m₂`` prefactor, so its scores are not on a common scale once
-#:   ``m₂`` changes — a search over `split_ratio` would rank candidates by how
-#:   many terms their sum has. `seed` is scoreable but selecting *which rows
-#:   land in D1* on the fit criterion is fitting the split, not the model.
 #: - ``lam1_min``/``lam1_max``/``n_lam1_search`` (and λ₂'s) are the *grid* the
 #:   paper's LOOCV searches over, not statistics. Widening or refining a grid
 #:   can only lower the LOOCV minimum, so a search over them is monotone and
@@ -102,9 +97,6 @@ TUNABLE_PARAMS = frozenset(
 @dataclass
 class KPVConfig:
     # ── Data split ────────────────────────────────────────────────────────────
-    # Fraction of training data used in Stage 1 (remainder goes to Stage 2).
-    split_ratio: float = 0.5
-
     # ── Kernel length-scale ───────────────────────────────────────────────────
     # One shared multiplicative rescaling of the per-dimension
     # median-heuristic bandwidth σ². Each scalar dimension still gets its own
@@ -139,7 +131,6 @@ class KPVConfig:
     n_lam2_search: int = 10
 
     # ── Reproducibility ───────────────────────────────────────────────────────
-    seed: int = 1234
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,9 +194,9 @@ def _loocv_stage2_block(
     **What the resulting score may be compared across.** Dropping ``1/m₂`` is
     free over a λ grid and over kernel bandwidths — the target Y₂ is the same
     vector and the sum has the same number of terms — which is what makes this
-    a valid selection criterion for `kernel_scale`. It is *not* free across
-    anything that changes ``m₂``: a different `split_ratio` changes the term
-    count, so the raw scores are not on a common scale. See TUNABLE_PARAMS.
+    a valid selection criterion for `kernel_scale`. The full context is reused
+    in both stages, so ``m₂ = n`` for every candidate and the omitted constant
+    never changes during tuning.
     """
     H, inv_diag = _ridge_influence(Sigma, lam2, n_full)
     r = inv_diag * (H @ Y)
@@ -233,7 +224,7 @@ class KPVEstimator:
 
     Usage::
 
-        cfg = KPVConfig(split_ratio=0.5, lam1=1e-3, lam2=1e-3)
+        cfg = KPVConfig(lam1=1e-3, lam2=1e-3)
         est = KPVEstimator(cfg)
         est.fit(X_train, A_train, Y_train, W=W_train, Z=Z_train)
         cate = est.predict(X_test)   # shape (n_test,)
@@ -291,12 +282,6 @@ class KPVEstimator:
         Returns:
             self (for method chaining).
         """
-        cfg = self.cfg
-        # A local Generator, not np.random.seed: the benchmark runs many
-        # estimators inside one worker process, and reseeding the global RNG
-        # here would silently reset every other method's stream too.
-        rng = np.random.default_rng(cfg.seed)
-
         A = as_2d(A)
         Y = np.asarray(Y, dtype=float).reshape(-1)
         W = as_2d(W)
@@ -304,17 +289,17 @@ class KPVEstimator:
         X = as_2d(X)
 
         # ── Split ──────────────────────────────────────────────────────────
+        # Reuse the complete context in both stages, matching the released KPV
+        # implementation's ``samp1 = samp2 = train_sample``. The paper permits
+        # two distinct samples but gives no practical rule for splitting one
+        # complete sample; reuse avoids halving each stage's effective size.
         n = len(Y)
-        n1 = int(n * cfg.split_ratio)
-        idx = rng.permutation(n)
-        i1, i2 = idx[:n1], idx[n1:]
-
-        A1, A2 = A[i1], A[i2]
-        W1, W2 = W[i1], W[i2]
-        Z1, Z2 = Z[i1], Z[i2]
-        X1, X2 = X[i1], X[i2]
-        Y2 = Y[i2]
-        n1, n2 = len(i1), len(i2)
+        A1 = A2 = A
+        W1 = W
+        Z1 = Z2 = Z
+        X1 = X2 = X
+        Y2 = Y
+        n1 = n2 = n
         has_x = X1.shape[1] > 0
 
         # ── Fit both stages at the configured length-scales ────────────────
