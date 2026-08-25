@@ -86,10 +86,16 @@ def _solve_pd(
     jittering only the blocks whose Cholesky fails would define a different
     matrix from conditionally jittering the assembled system. The jitter is
     numerical insurance, not a statistical parameter, and is never tuned.
+
+    ``lhs`` is freshly allocated by ``_PreparedSystem.solve_into`` for this
+    one solve, so adding the diagonal in place is safe.  In particular, it
+    cannot mutate the prepared ``LPhiL`` matrix shared by a lambda sweep.
+    This avoids allocating a dense identity and its dense sum at every arm.
     """
     where = f" {context}" if context else ""
     try:
-        return solve(lhs + jitter * np.eye(lhs.shape[0]), rhs, assume_a="pos")
+        lhs[np.diag_indices_from(lhs)] += jitter
+        return solve(lhs, rhs, assume_a="pos")
     except LinAlgError as exc:
         raise LinAlgError(
             f"PMMR normal equations{where} remained non-positive-definite "
