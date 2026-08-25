@@ -485,6 +485,9 @@ class KPV_Wrapper(CATEEstimator):
         "kernel_scale_min": "the low end of tune.grid.kernel_scale",
         "kernel_scale_max": "the high end of tune.grid.kernel_scale",
         "n_kernel_scale_search": "the length of tune.grid.kernel_scale",
+        "kernel_scale_z": "the shared `kernel_scale`",
+        "kernel_scale_w": "the shared `kernel_scale`",
+        "kernel_scale_x": "the shared `kernel_scale`",
     }
 
     def __init__(self, **kwargs):
@@ -502,6 +505,18 @@ class KPV_Wrapper(CATEEstimator):
                 f"generic `tune:` block. Translate: {hints}. A geometric grid "
                 f"is now written out, e.g. "
                 f"`tune: {{enabled: true, grid: {{kernel_scale: [0.5, 1.0, 2.0]}}}}`."
+            )
+
+        raw_tune = kwargs.get("tune") or {}
+        retired_scale_keys = sorted(
+            (set(raw_tune.get("grid", {}) or {}) | set(raw_tune.get("sweep", {}) or {}))
+            & {"kernel_scale_z", "kernel_scale_w", "kernel_scale_x"}
+        )
+        if retired_scale_keys:
+            raise ValueError(
+                f"KPV: {retired_scale_keys} are not supported in `tune`; KPV uses "
+                "one shared continuous-kernel multiplier. Replace them with "
+                "`tune.grid.kernel_scale` (or set method-level `kernel_scale`)."
             )
 
         cfg = KPVConfig(
@@ -567,7 +582,6 @@ class KPV_Wrapper(CATEEstimator):
         # would hold rows out twice and score every candidate on a smaller
         # sample than the fit it selects. Refuse an explicit setting rather
         # than accept a key that does nothing.
-        raw_tune = kwargs.get("tune") or {}
         if "val_frac" in raw_tune:
             raise ValueError(
                 "KPV: `tune.val_frac` has no effect — candidates are ranked on "

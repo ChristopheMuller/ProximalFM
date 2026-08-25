@@ -24,8 +24,7 @@ from benchmarks.methods.kpv import TUNABLE_PARAMS, KPVConfig, KPVEstimator
 
 from test_bench_kpv_blocks import make_data
 
-#: The grid both configs ship, identical to the retired
-#: ``logspace(0.5, 2.0, 5)`` so the move is behaviour-preserving.
+#: A narrow multiplicative grid around the per-dimension median heuristic.
 _SCALES = [0.5, 0.7071067811865476, 1.0, 1.4142135623730951, 2.0]
 
 #: Passed explicitly everywhere below. ``KPVConfig.seed`` is 1234 but
@@ -122,70 +121,54 @@ def test_one_fit_backs_every_output():
     assert est.diagnostics()["tune_n_candidates"] == 2.0
 
 
-def test_per_variable_scales_compose_with_the_global():
-    """`kernel_scale * kernel_scale_<v>` is what reaches each kernel.
-
-    The two-level spelling is only worth having if the levels genuinely
-    multiply, so pin the product rather than either factor: a global of 2 with
-    a relative of 0.5 must be the same fit as leaving both at 1.
-    """
+def test_one_shared_scale_is_reported_for_all_continuous_kernels():
+    """The public KPV scale matches the reference's single multiplier."""
     X, A, Y, W, Z = make_data(n=140, seed=7)
-
-    both = KPVEstimator(
-        KPVConfig(kernel_scale=2.0, kernel_scale_z=0.5, seed=_SEED)
-    ).fit(X, A, Y, W=W, Z=Z)
-    neither = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
-
-    assert both.kernel_scales_["Z"] == pytest.approx(1.0)
-    # W and X carry the global alone, so they are *not* the same fit.
-    assert both.kernel_scales_["W"] == pytest.approx(2.0)
-    np.testing.assert_allclose(
-        neither.kernel_scales_["Z"], both.kernel_scales_["Z"], rtol=1e-12
-    )
-
-    # And the global alone still moves everything, the pre-per-variable
-    # behaviour a config setting only `kernel_scale` relies on.
-    glob = KPVEstimator(KPVConfig(kernel_scale=2.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
-    assert glob.kernel_scales_ == {"Z": 2.0, "W": 2.0, "X": 2.0}
+    est = KPVEstimator(KPVConfig(kernel_scale=2.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    assert est.kernel_scale_ == pytest.approx(2.0)
 
 
 def test_scales_default_to_the_plain_median_heuristic():
     """All-1.0 is the paper's initialisation, and must stay the default."""
     X, A, Y, W, Z = make_data(n=120, seed=8)
     est = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
-    assert est.kernel_scales_ == {"Z": 1.0, "W": 1.0, "X": 1.0}
+    assert est.kernel_scale_ == pytest.approx(1.0)
 
 
-def test_no_covariates_reports_no_x_scale():
-    """k_X is never fitted at d_X = 0, so there is no effective scale to report."""
+def test_shared_scale_is_used_without_covariates():
+    """The same scale applies when the empty X product is omitted."""
     X, A, Y, W, Z = make_data(n=120, seed=9, d_x=0)
-    est = KPVEstimator(KPVConfig(kernel_scale_x=4.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
-    assert "X" not in est.kernel_scales_
-
-    # ... and `kernel_scale_x` is then inert: searching it on such a set is
-    # empty rather than wrong, which `tune_score_range` is what surfaces.
-    ref = KPVEstimator(KPVConfig(seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
-    np.testing.assert_allclose(est._alpha, ref._alpha, rtol=1e-12)
+    est = KPVEstimator(KPVConfig(kernel_scale=4.0, seed=_SEED)).fit(X, A, Y, W=W, Z=Z)
+    assert est.kernel_scale_ == pytest.approx(4.0)
 
 
-def test_per_variable_grid_searches_the_product_space():
-    X, A, Y, W, Z = make_data(n=160, seed=10)
-    grid = {"kernel_scale_z": [0.5, 2.0], "kernel_scale_w": [0.5, 2.0]}
-
-    est = _kpv(seed=_SEED, tune={"enabled": True, "n_trials": 4, "grid": grid})
-    est.fit(X, A, Y, W=W, Z=Z)
-
-    base = KPVConfig(seed=_SEED)
-    expected = min(
-        ((z, w) for z in grid["kernel_scale_z"] for w in grid["kernel_scale_w"]),
-        key=lambda zw: KPVEstimator(
-            replace(base, kernel_scale_z=zw[0], kernel_scale_w=zw[1])
-        )
-        .fit(X, A, Y, W=W, Z=Z)
-        .loocv_score_,
+def test_wrapper_forwards_all_supported_config_fields():
+    est = _kpv(
+        split_ratio=0.6,
+        kernel_scale=1.7,
+        lam1=1e-3,
+        lam1_min=1e-6,
+        lam1_max=2.0,
+        n_lam1_search=7,
+        lam2=2e-3,
+        lam2_min=2e-6,
+        lam2_max=3.0,
+        n_lam2_search=8,
+        seed=91,
     )
-    assert (est.model.cfg.kernel_scale_z, est.model.cfg.kernel_scale_w) == expected
-    assert est.diagnostics()["tune_n_candidates"] == 4.0
+    assert est._base_cfg == KPVConfig(
+        split_ratio=0.6,
+        kernel_scale=1.7,
+        lam1=1e-3,
+        lam1_min=1e-6,
+        lam1_max=2.0,
+        n_lam1_search=7,
+        lam2=2e-3,
+        lam2_min=2e-6,
+        lam2_max=3.0,
+        n_lam2_search=8,
+        seed=91,
+    )
 
 
 # ── Refusals ─────────────────────────────────────────────────────────────────
@@ -198,12 +181,21 @@ def test_per_variable_grid_searches_the_product_space():
         "kernel_scale_min",
         "kernel_scale_max",
         "n_kernel_scale_search",
+        "kernel_scale_z",
+        "kernel_scale_w",
+        "kernel_scale_x",
     ],
 )
 def test_retired_scale_search_kwargs_raise_with_the_translation(key):
     """A stale config must not quietly collapse to one un-searched scale."""
     with pytest.raises(ValueError, match="no longer method-level keys"):
         _kpv(**{key: 0.5})
+
+
+@pytest.mark.parametrize("key", ["kernel_scale_z", "kernel_scale_w", "kernel_scale_x"])
+def test_retired_per_variable_scales_raise_in_tune_grid(key):
+    with pytest.raises(ValueError, match="one shared continuous-kernel multiplier"):
+        _kpv(tune={"enabled": True, "grid": {key: [0.5, 1.0]}})
 
 
 @pytest.mark.parametrize("param", sorted(TUNABLE_PARAMS))
