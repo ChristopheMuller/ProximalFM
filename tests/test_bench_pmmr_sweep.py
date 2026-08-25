@@ -94,6 +94,19 @@ def test_solve_omitting_lambda_keeps_the_prepared_value():
     assert got.cfg.lam1 == 0.25
 
 
+def test_cached_validation_moment_kernel_preserves_score():
+    """Caching the fixed V-statistic kernel must change no candidate ranking."""
+    X, A, Y, W, Z = make_data(n=120)
+    est = PMMREstimator(PMMRConfig()).fit(X[:80], A[:80], Y[:80], W=W[:80], Z=Z[:80])
+    Xva, Ava, Yva, Wva, Zva = X[80:], A[80:], Y[80:], W[80:], Z[80:]
+
+    direct = est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+    cached_kernel = PMMREstimator.validation_moment_kernel(Xva, Ava, Zva)
+    cached = est.score(Xva, Ava, Yva, W=Wva, Z=Zva, moment_kernel=cached_kernel)
+
+    assert cached == direct
+
+
 def test_solve_refuses_a_parameter_that_would_need_new_grams():
     """The silent-wrong-answer guard: cfg must never disagree with the grams."""
     X, A, Y, W, Z = make_data()

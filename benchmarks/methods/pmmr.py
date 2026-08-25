@@ -476,6 +476,7 @@ class PMMREstimator:
         Z: np.ndarray,
         kernel_scale: float = 1.0,
         loss: Literal["v_stat", "u_stat"] = "v_stat",
+        moment_kernel: np.ndarray | None = None,
     ) -> float:
         """Held-out MMR statistic (lower is better) for model selection.
 
@@ -518,11 +519,19 @@ class PMMREstimator:
 
         d = self.predict_bridge(A, W=W, X=X) - Y
 
-        # Fixed reference kernel over (A, Z, X) — see the docstring.
-        K = BinaryKernel().fit(A)(A, A)
-        K = K * ColumnWiseGaussianKernel().fit(Z, scale=kernel_scale)(Z, Z)
-        if X.shape[1] > 0:
-            K = K * ColumnWiseGaussianKernel().fit(X, scale=kernel_scale)(X, X)
+        # Fixed reference kernel over (A, Z, X) — see the docstring.  The
+        # wrapper builds it once per validation split and shares it across all
+        # candidates; accepting it here keeps the public score calculation and
+        # the cached tuning calculation bit-for-bit the same.
+        if moment_kernel is None:
+            K = self.validation_moment_kernel(X, A, Z, kernel_scale=kernel_scale)
+        else:
+            K = np.asarray(moment_kernel, dtype=float)
+            if K.shape != (n, n):
+                raise ValueError(
+                    "moment_kernel must have shape (n_validation, n_validation); "
+                    f"got {K.shape} for n_validation={n}."
+                )
 
         if loss == "u_stat":
             K = K - np.diag(np.diag(K))
@@ -530,6 +539,31 @@ class PMMREstimator:
         if loss != "v_stat":
             raise ValueError(f"Unknown loss {loss!r}; choose 'v_stat' or 'u_stat'.")
         return float(d @ K @ d / (n * n))
+
+    @staticmethod
+    def validation_moment_kernel(
+        X: np.ndarray,
+        A: np.ndarray,
+        Z: np.ndarray,
+        *,
+        kernel_scale: float = 1.0,
+    ) -> np.ndarray:
+        """Reference V-statistic kernel over a fixed validation split.
+
+        This intentionally has no dependence on a fitted PMMR model.  Tuning
+        builds it once and shares it across candidates so bandwidth candidates
+        are judged by one common moment norm, rather than paying to rebuild an
+        identical matrix for every value of ``lam1``.
+        """
+        X = as_2d(X)
+        A = as_2d(A)
+        Z = as_2d(Z)
+
+        K = BinaryKernel().fit(A)(A, A)
+        K *= ColumnWiseGaussianKernel().fit(Z, scale=kernel_scale)(Z, Z)
+        if X.shape[1] > 0:
+            K *= ColumnWiseGaussianKernel().fit(X, scale=kernel_scale)(X, X)
+        return K
 
     def predict(
         self,

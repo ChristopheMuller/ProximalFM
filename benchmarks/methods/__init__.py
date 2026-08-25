@@ -844,6 +844,10 @@ class PMMR_Wrapper(CATEEstimator):
 
         Xtr, Atr, Ytr, Wtr, Ztr = split(train_idx)
         Xva, Ava, Yva, Wva, Zva = split(val_idx)
+        # The held-out V-statistic uses one fixed reference kernel for every
+        # candidate.  It depends only on the validation rows, so build it once
+        # rather than rebuilding the same O(n_val^2) matrix for every lambda.
+        val_moment_kernel = self._PMMREstimator.validation_moment_kernel(Xva, Ava, Zva)
 
         def prepare(hparams: dict):
             est = self._PMMREstimator(replace(self._base_cfg, **hparams))
@@ -861,7 +865,14 @@ class PMMR_Wrapper(CATEEstimator):
                 # A candidate whose normal equations will not factorise is not
                 # a usable model; non-finite scores are skipped.
                 return float("inf")
-            return est.score(Xva, Ava, Yva, W=Wva, Z=Zva)
+            return est.score(
+                Xva,
+                Ava,
+                Yva,
+                W=Wva,
+                Z=Zva,
+                moment_kernel=val_moment_kernel,
+            )
 
         best, best_score, results = search_nested(outer, inner, prepare, score)
 
