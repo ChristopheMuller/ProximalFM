@@ -389,13 +389,13 @@ there and is reported with a non-zero failure rate rather than taking the run do
 ```bash
 uv run benchmarks/plots.py --path data/synt_eval/<name>/bench    # everything
 uv run benchmarks/plots.py --exp <name> --list                   # what "everything" is
-uv run benchmarks/plots.py --exp <name> --only scorecard iso_npehe --tasks cate
+uv run benchmarks/plots.py --exp <name> --only rank_profile iso_npehe --tasks cate
 ```
 
 Figures are a **registry**, and the task-scope ones are drawn once per task from
 [`metrics.py`](metrics.py)'s `TASKS` — the same object that decides the tables. A figure asks the
 task what it ranks on, which metrics it shows and which methods it admits, so `ate` is not a special
-case and a new `Metric` appears in the ECDF grid and the scorecard without an edit here. Options:
+case and a new `Metric` appears in the benchmark figures without an edit here. Options:
 `--tasks` (default: every task the run scored), `--only`/`--skip`, `--top` (how many methods the
 one-line-per-method figures keep), `--baseline` (what `paired_delta` compares against; defaults to
 ProximalFM), `--episodes`, `--meta` (a frozen set's root, adding its `sampled_hp` as stratification
@@ -406,24 +406,16 @@ and never compete** (no rank, no win rate, no Pareto front), and every paired st
 **complete block** — an episode any method missed is dropped for all of them, with the dropped count
 printed on the figure. Get either wrong and the picture is quietly wrong rather than visibly broken.
 
-Start at **`scorecard`**: one row per method with its rank profile, error ECDF, error anatomy,
-position on all three tasks and cost, aligned so the columns compare. Then:
-
 | figure | what it answers |
 |---|---|
-| `ecdf` | the whole distribution per metric — and the missing mass above a curve is that method's unscored share |
-| `rank_profile` / `cd_diagram` / `head2head` | how often a method wins, whether the gap is significant, and who beats whom |
-| `performance_profile` | peak vs robustness: share of episodes within a factor τ of the per-episode best |
-| `paired_delta` | the same-episode difference against one baseline — difficulty cancels, so it separates what the ECDFs overlap |
+| `rank_profile` / `cd_diagram` | how often a method wins and whether the gap is significant |
+| `paired_delta` | the same-episode difference against one baseline — difficulty cancels, separating methods the summary metrics pool together |
 | `decomposition` / `iso_npehe` | is the error level or shape (see below) |
 | `excess_over_oracle` | error ÷ the oracle's on the same episode; the only readable view of the ITE task |
 | `strata` | where a method wins — weak proxies, strong confounding, poor overlap, high noise |
-| `robustness` | failure rate, and how often a method loses to the trivial predictor |
 | `cost_accuracy` | accuracy against wall-clock, with the Pareto front |
-| `bias_caterpillar` / `ate_scatter` | the ATE level: systematic bias vs episode-to-episode spread, which `ATE RMSE` pools |
+| `ate_scatter` | predicted against true episode ATE |
 | `cross_task_ranks` | consistency across ATE / CATE / ITE — a method high on ATE and low on CATE gets the level right and the shape wrong |
-| `task_compression` | why the benchmark leads with CATE: the ITE axis is squeezed onto ≈1 by the noise floor |
-| `target_noise` | whether the Monte-Carlo target is good enough to rank on at all |
 | `episode_fit` | row-level predictions on an easy, a median and a hard episode |
 
 **The identity two of them are drawn on.** Per episode, with `b` the normalised ATE bias and `s` the

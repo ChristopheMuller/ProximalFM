@@ -1,38 +1,32 @@
 """plots.py — every figure the benchmark produces.
 
     uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
-    uv run benchmarks/plots.py --exp <name> --only scorecard iso_npehe
+    uv run benchmarks/plots.py --exp <name> --only rank_profile iso_npehe
     uv run benchmarks/plots.py --list
 
 Figures are **generated per task from the registry**, not per hardcoded metric:
 :data:`benchmarks.metrics.TASKS` says what each task scores, which methods it
 admits, what it ranks on and which metrics it shows, and every generic figure
 below reads those four things rather than naming ``npehe`` itself. Adding a
-metric to a task therefore adds it to the ECDF grid and the scorecard without
-touching this file, and the ``ate`` task is not a special case — it is a task
-with level-only metrics and its own rank key.
+metric to a task therefore adds it to the figures without touching this file,
+and the ``ate`` task is not a special case — it is a task with level-only
+metrics and its own rank key.
 
 Two rules the figures obey, enforced once in
 :mod:`benchmarks.plot_frames` (read its docstring before adding a figure):
 oracles annotate, they never compete; and every paired statistic (rank,
-win-rate, performance profile, critical difference) runs on a **complete
-block** of episodes, with the dropped count printed.
+critical difference) runs on a **complete block** of episodes, with the dropped
+count printed.
 
 What is here
 ────────────
 *Per task* (written as ``results/plots/<name>_<task>.png``):
 
-``ecdf``                 per-metric ECDFs; the missing mass above each curve is
-                         that method's failure/degenerate share.
 ``rank_profile``         how often each method took rank 1, 2, 3, …
 ``cd_diagram``           Friedman + Nemenyi critical-difference diagram.
-``performance_profile``  Dolan–Moré: share of episodes within a factor τ of the
-                         per-episode best. Peak performance vs robustness.
-``head2head``            pairwise win-rate matrix — what the CD diagram is a
-                         one-dimensional summary of.
 ``paired_delta``         per-episode difference against one baseline method.
                          Episode difficulty cancels, so this separates methods
-                         the marginal ECDFs show as overlapping.
+                         the summary metrics pool together.
 ``decomposition``        nPEHE² split into its level and shape halves — an exact
                          identity, see below.
 ``iso_npehe``            the same identity as a plane: shape R² against ATE
@@ -42,18 +36,11 @@ What is here
 ``cost_accuracy``        accuracy against wall-clock, with the Pareto front.
 ``strata``               accuracy against episode difficulty axes (proxy
                          strength, confounding, overlap, noise…).
-``robustness``           failure rate and share of episodes lost to the trivial
-                         predictor.
-``bias_caterpillar``     per-episode signed ATE bias, sorted — separates
-                         systematic bias from spread, which ``ATE RMSE`` pools.
 ``ate_scatter``          predicted against true ATE, one panel per method.
-``scorecard``            the summary sheet: one row per method, six aligned
-                         panels. Start here.
 
 *Per run*: ``cross_task_ranks`` (rank on ATE vs CATE vs ITE, one line per
-method), ``task_compression`` (why the ITE table is insensitive),
-``target_noise`` (is the Monte-Carlo target good enough to rank on), and
-``episode_fit`` (row-level predictions on an easy, a median and a hard episode).
+method) and ``episode_fit`` (row-level predictions on an easy, a median and a
+hard episode).
 
 The identity everything leans on
 ────────────────────────────────
@@ -83,8 +70,6 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 
-# Run as a script (`uv run benchmarks/plots.py`), so the repo root has to be on
-# the path before the `benchmarks.` imports resolve — same as run.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.metrics import Task
@@ -96,7 +81,6 @@ from benchmarks.plot_frames import (
     terciles,
 )
 from benchmarks.plot_style import (
-    METRIC_ANCHORS,
     REFERENCE_STYLE,
     abbreviate,
     color_for,
@@ -108,19 +92,8 @@ from benchmarks.plot_style import (
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-#: Methods pinned into every figure that has to thin the field, whatever their
-#: rank — the point of the benchmark is where *this* model lands.
 ALWAYS_SHOW = ("ProximalFM",)
 
-#: |ATE bias| ÷ SD(τ) above which a level-only estimate is called a failure.
-#: The row-level tasks get an exact per-episode reference instead (the
-#: Oracle-ATE row), so this constant is only ever used by the ``ate`` task,
-#: whose oracle is unbiased by construction and therefore no threshold at all.
-ATE_FAILURE_THRESHOLD = 0.5
-
-#: Share of each method's worst episodes dropped before the nPEHE²
-#: decomposition is averaged. See :func:`_decomposition` — the identity survives
-#: it, the axis does not survive without it.
 DECOMPOSITION_TRIM = 0.05
 
 
@@ -194,80 +167,16 @@ def _method_legend(ax, methods: Sequence[str], *, references: Sequence[str] = ()
     )
 
 
-def _direction_hint(direction: Optional[str]) -> str:
-    """The axis-label parenthesis, from the same ``direction`` the tables bold
-    on — including ``"zero"``, which is neither lower nor higher."""
-    return {
-        "min": "lower is better",
-        "max": "higher is better",
-        "zero": "closer to zero is better",
-    }.get(direction or "", "informational")
-
-
 def _finish(fig, header_inches: float = 1.0) -> None:
-    """Lay the panels out, then reserve absolute room above them for the title.
-
-    ``tight_layout`` reserves a *fraction*, so on a tall multi-row figure a
-    three-line suptitle lands inside the first row of panels. Reserving inches
-    keeps the header the same size whatever the figure grows to.
-    """
     with warnings.catch_warnings():
-        # Legends are deliberately placed outside the axes; `bbox_inches="tight"`
-        # at save time is what makes room for them, not tight_layout.
         warnings.simplefilter("ignore", UserWarning)
         fig.tight_layout()
     fig.subplots_adjust(top=1 - header_inches / fig.get_figheight())
 
 
-def _robust_limits(values: np.ndarray, key: str) -> tuple[float, float]:
-    """Axis limits showing the body of a distribution, not its worst outlier.
-
-    nPEHE has an unbounded right tail — a handful of near-homogeneous episodes
-    reach the hundreds — so the 90th percentile sets the frame and the tail runs
-    off it. The metric's own anchors are always kept in view, because a figure
-    that crops ``nPEHE = 1`` has thrown away its reference point.
-    """
-    v = np.asarray(values, dtype=float)
-    v = v[np.isfinite(v)]
-    if v.size == 0:
-        return (0.0, 1.0)
-    if key in ("shape_r2", "cate_r2"):
-        return (max(-2.0, float(np.quantile(v, 0.05))), 1.05)
-    if key == "ate_bias_norm":
-        m = float(np.quantile(np.abs(v), 0.95))
-        return (-m * 1.15, m * 1.15)
-    anchors = [a for a, _, _ in METRIC_ANCHORS.get(key, []) if a > 0]
-    hi = max([float(np.quantile(v, 0.90))] + [a * 1.3 for a in anchors])
-    return (0.0, hi * 1.05 + 1e-9)
-
-
-def _ecdf(values: np.ndarray, n_total: int) -> tuple[np.ndarray, np.ndarray]:
-    """ECDF whose ceiling is the *scored* share, so the gap below 1 is visible.
-
-    An episode a method failed on, or one the metric is undefined on, is not
-    dropped from the denominator — it would otherwise reward a method for
-    scoring only the episodes it found easy.
-    """
-    v = np.sort(np.asarray(values, dtype=float))
-    v = v[np.isfinite(v)]
-    return v, np.arange(1, v.size + 1) / max(n_total, 1)
-
-
 def _decomposition(
     run: BenchmarkRun, task: Task, trim: float = DECOMPOSITION_TRIM
 ) -> Optional[pd.DataFrame]:
-    """Per-method ``level`` / ``shape`` halves of mean nPEHE², or None.
-
-    Aggregated as squares so the two halves still add to ``mean(nPEHE²)`` — see
-    the module docstring. Returns None for a task without both halves.
-
-    The tail is trimmed because ``mean(nPEHE²)`` is otherwise a plot of the
-    worst three episodes: a near-homogeneous one divides by a Var(τ) close to
-    the threshold and contributes thousands. Trimming keeps the identity
-    *exact*, because a mean over a subset is still linear in episodes and all
-    three components are averaged over the **same** subset — which is precisely
-    why the trim happens here, once, rather than per figure.
-    """
     f = run.frame(task)
     keys = {m.key for m in task.metrics} & set(f.columns)
     if not {"ate_bias_norm", "shape_r2", "npehe"} <= keys:
@@ -286,60 +195,6 @@ def _decomposition(
             "is_reference": bool(g["is_reference"].any()),
         }
     return pd.DataFrame.from_dict(rows, orient="index")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-task figures — distributions
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@figure("ecdf")
-def plot_ecdf(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """Per-metric ECDFs, one panel per metric the task shows."""
-    f = run.frame(task)
-    # An older results.csv may predate a metric the task now declares; the
-    # figure shows what the file has rather than failing on the whole grid.
-    metrics = [m for m in task.metrics if m.show and m.key in f.columns]
-    if not metrics:
-        return
-    order = run.method_order(task)
-    refs = run.references(task)
-    n_ep = run.n_episodes(task)
-
-    fig, axes = plt.subplots(
-        1, len(metrics), figsize=(5.2 * len(metrics), 4.4), squeeze=False
-    )
-    for ax, m in zip(axes[0], metrics):
-        pooled = f[m.key].to_numpy(dtype=float)
-        for method in order + refs:
-            v = f.loc[f["method"] == method, m.key]
-            xs, ys = _ecdf(v.to_numpy(dtype=float), n_ep)
-            if xs.size == 0:
-                continue
-            style = style_for(method)
-            kw = dict(
-                color=style.get("color", "gray"),
-                linewidth=1.5,
-                linestyle=style.get("linestyle", "-"),
-            )
-            if method in refs:
-                kw.update(REFERENCE_STYLE)
-            ax.step(xs, ys, where="post", **kw)
-        draw_anchors(ax, m.key, axis="x", label=False)
-        ax.set_xlim(*_robust_limits(pooled, m.key))
-        ax.set_ylim(0, 1.02)
-        ax.set_xlabel(f"{m.label}  ({_direction_hint(m.direction)})")
-        ax.set_ylabel("share of episodes ≤ x")
-        ax.set_title(m.label)
-
-    _method_legend(axes[0][-1], order + refs, references=refs)
-    fig.suptitle(
-        f"{task.title}\n{n_ep} episodes · a curve ending below 1.0 means that "
-        "method was unscored on the rest (failed or homogeneous)",
-        fontsize=11,
-    )
-    _finish(fig, 1.0)
-    save_figure(fig, out_path(run, "ecdf", task), dpi=opts.dpi)
 
 
 @figure("rank_profile")
@@ -424,91 +279,6 @@ def plot_cd_diagram(run: BenchmarkRun, task: Task, opts: Options) -> None:
         y=1.06,
     )
     save_figure(fig, out_path(run, "cd_diagram", task), dpi=opts.dpi)
-
-
-@figure("performance_profile")
-def plot_performance_profile(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """Dolan–Moré: share of episodes within a factor τ of the per-episode best."""
-    wide, dropped = run.pivot(task, task.rank_by)
-    if wide.empty or wide.shape[1] < 2:
-        return
-    best = wide.min(axis=1)
-    wide = wide[best > 0]
-    best = best[best > 0]
-    if wide.empty:
-        return
-    ratio = wide.div(best, axis=0)
-    taus = np.geomspace(1.0, float(np.nanquantile(ratio.to_numpy(), 0.99)) * 1.2, 300)
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    for m in run.method_order(task):
-        if m not in ratio.columns:
-            continue
-        style = style_for(m)
-        kw = dict(
-            color=style.get("color", "gray"),
-            linewidth=1.6,
-            linestyle=style.get("linestyle", "-"),
-        )
-        y = (ratio[m].to_numpy()[:, None] <= taus[None, :]).mean(axis=0)
-        ax.step(taus, y, where="post", **kw)
-    ax.set_xscale("log")
-    ax.set_xlim(1, taus[-1])
-    ax.set_ylim(0, 1.02)
-    ax.set_xlabel("τ — factor of the per-episode best")
-    ax.set_ylabel("share of episodes within τ of the best")
-    ax.set_title(
-        f"{task.title}\nperformance profile on {task.metric(task.rank_by).label} · "
-        f"{wide.shape[0]} complete episodes ({dropped} dropped)\n"
-        "height at τ=1 is how often a method *is* the best; the right tail is "
-        "how badly it fails when it is not",
-        fontsize=10,
-    )
-    _method_legend(ax, run.method_order(task))
-    fig.tight_layout()
-    save_figure(fig, out_path(run, "performance_profile", task), dpi=opts.dpi)
-
-
-@figure("head2head")
-def plot_head2head(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """Pairwise win-rate matrix over the same episodes."""
-    wide, dropped = run.pivot(task, task.rank_by)
-    if wide.empty or wide.shape[1] < 2:
-        return
-    order = [m for m in run.method_order(task) if m in wide.columns]
-    v = wide[order].to_numpy()
-    wins = (v[:, :, None] < v[:, None, :]).mean(axis=0)
-    ties = (v[:, :, None] == v[:, None, :]).mean(axis=0)
-    rate = wins + 0.5 * ties
-    np.fill_diagonal(rate, np.nan)
-
-    n = len(order)
-    fig, ax = plt.subplots(figsize=(0.55 * n + 4, 0.55 * n + 3.4))
-    im = ax.imshow(rate, cmap="RdBu", vmin=0, vmax=1)
-    ax.set_xticks(range(n), [abbreviate(m, 18) for m in order], rotation=90, fontsize=8)
-    ax.set_yticks(range(n), [abbreviate(m, 18) for m in order], fontsize=8)
-    if n <= 16:
-        for i in range(n):
-            for j in range(n):
-                if i != j:
-                    ax.text(
-                        j,
-                        i,
-                        f"{rate[i, j]:.2f}",
-                        ha="center",
-                        va="center",
-                        fontsize=7,
-                        color="black" if 0.25 < rate[i, j] < 0.75 else "white",
-                    )
-    fig.colorbar(im, ax=ax, shrink=0.7, label="P(row beats column)")
-    ax.set_title(
-        f"{task.title}\nhead-to-head win rate on {task.metric(task.rank_by).label} · "
-        f"{wide.shape[0]} complete episodes ({dropped} dropped)",
-        fontsize=10,
-    )
-    # No tight_layout: it is incompatible with a figure that already has a
-    # colorbar, and `bbox_inches="tight"` at save time does the same job.
-    save_figure(fig, out_path(run, "head2head", task), dpi=opts.dpi)
 
 
 @figure("paired_delta")
@@ -825,92 +595,6 @@ def plot_cost_accuracy(run: BenchmarkRun, task: Task, opts: Options) -> None:
     save_figure(fig, out_path(run, "cost_accuracy", task), dpi=opts.dpi)
 
 
-@figure("robustness")
-def plot_robustness(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """Failure rate and share of episodes lost to the trivial predictor."""
-    order = run.method_order(task)
-    fail = run.failure_rate(task).reindex(order)
-
-    both, _ = run.pivot(task, task.rank_by, complete=False, include_references=True)
-    if ORACLE_ATE in both.columns:
-        threshold = both[ORACLE_ATE]
-        label = f"worse than {ORACLE_ATE} on the same episode"
-    else:
-        threshold = pd.Series(ATE_FAILURE_THRESHOLD, index=both.index)
-        label = f"{task.metric(task.rank_by).label} > {ATE_FAILURE_THRESHOLD}"
-    lost = pd.Series(
-        {m: float(both[m].gt(threshold).mean()) for m in order if m in both.columns}
-    ).reindex(order)
-
-    fig, axes = plt.subplots(1, 2, figsize=(11, 0.4 * len(order) + 2.6), sharey=True)
-    for ax, series, title in (
-        (axes[0], fail, "failure rate (all-NaN predictions)"),
-        (axes[1], lost, label),
-    ):
-        ax.barh(
-            order,
-            series.to_numpy(dtype=float),
-            color=[color_for(m) for m in order],
-            alpha=0.8,
-        )
-        ax.set_xlim(0, 1)
-        ax.set_title(title, fontsize=10)
-        ax.set_xlabel("share of episodes")
-    axes[0].invert_yaxis()
-    axes[0].set_yticks(range(len(order)), [abbreviate(m) for m in order])
-    fig.suptitle(
-        f"{task.title}\nrobustness — the two ways a good median hides a bad method",
-        fontsize=11,
-    )
-    _finish(fig, 1.0)
-    save_figure(fig, out_path(run, "robustness", task), dpi=opts.dpi)
-
-
-@figure("bias_caterpillar")
-def plot_bias_caterpillar(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """Per-episode signed ATE bias, sorted — bias against spread."""
-    if "ate_bias_norm" not in {m.key for m in task.metrics}:
-        return
-    wide, _ = run.pivot(task, "ate_bias_norm", complete=False, include_references=True)
-    if wide.empty:
-        return
-    order = run.method_order(task)
-    refs = run.references(task)
-    shown = select_methods(order, opts.top, always=ALWAYS_SHOW) + refs
-
-    fig, ax = plt.subplots(figsize=(9, 5.4))
-    for m in shown:
-        if m not in wide.columns:
-            continue
-        v = np.sort(wide[m].dropna().to_numpy())
-        if v.size == 0:
-            continue
-        q = np.linspace(0, 1, v.size)
-        style = style_for(m)
-        kw = dict(
-            color=style.get("color", "gray"),
-            linewidth=1.5,
-            linestyle=style.get("linestyle", "-"),
-        )
-        if m in refs:
-            kw.update(REFERENCE_STYLE)
-        ax.plot(q, v, **kw)
-    ax.axhline(0, color="black", linewidth=1.0)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(*_robust_limits(wide.to_numpy(dtype=float).ravel(), "ate_bias_norm"))
-    ax.set_xlabel("episode quantile (episodes sorted per method)")
-    ax.set_ylabel("normalised ATE bias  (÷ SD(τ))")
-    ax.set_title(
-        f"{task.title}\nsorted per-episode ATE bias · a curve offset from zero is "
-        "systematic bias; a steep curve is variance.\n"
-        "ATE RMSE pools the two — this separates them.",
-        fontsize=10,
-    )
-    _method_legend(ax, [m for m in shown if m in wide.columns], references=refs)
-    fig.tight_layout()
-    save_figure(fig, out_path(run, "bias_caterpillar", task), dpi=opts.dpi)
-
-
 @figure("ate_scatter")
 def plot_ate_scatter(run: BenchmarkRun, task: Task, opts: Options) -> None:
     """Predicted against true episode ATE, one panel per method."""
@@ -1019,184 +703,6 @@ def plot_strata(run: BenchmarkRun, task: Task, opts: Options) -> None:
     save_figure(fig, out_path(run, "strata", task), dpi=opts.dpi)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The summary sheet
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@figure("scorecard")
-def plot_scorecard(run: BenchmarkRun, task: Task, opts: Options) -> None:
-    """One row per method: ranks, error distribution, anatomy, cost — aligned."""
-    order = run.method_order(task)
-    if not order:
-        return
-    ranks = run.ranks(task)
-    dec = _decomposition(run, task)
-    f = run.frame(task)
-    n_ep = run.n_episodes(task)
-    key = task.rank_by
-    if key not in run.results.columns:
-        return
-    metric = task.metric(key)
-    fail = run.failure_rate(task)
-    time = run.mean_time(task)
-
-    # Cross-task position, normalised so tasks with different method counts are
-    # comparable: 0 = best of its field, 1 = worst.
-    cross = {}
-    for other in run.tasks:
-        mr = run.mean_rank(other)
-        if mr.empty:
-            continue
-        n = len(mr)
-        cross[other.name] = (mr - 1) / max(n - 1, 1)
-
-    widths = [1.6, 1.5, 2.4, 2.0, 1.1, 0.9]
-    fig, axs = plt.subplots(
-        len(order),
-        6,
-        figsize=(sum(widths) * 1.55, 0.42 * len(order) + 2.2),
-        gridspec_kw={"width_ratios": widths, "hspace": 0.0, "wspace": 0.25},
-        squeeze=False,
-    )
-    pooled = f[key].to_numpy(dtype=float)
-    x_lo, x_hi = _robust_limits(pooled, key)
-    dec_hi = (
-        float(np.nanquantile((dec["level"] + dec["shape"]).to_numpy(), 0.9)) * 1.4 + 0.3
-        if dec is not None
-        else 1.0
-    )
-    t_lo = max(float(time.min()), 1e-3) if len(time) else 1e-3
-    t_hi = max(float(time.max()), t_lo * 10)
-
-    for i, m in enumerate(order):
-        row = axs[i]
-        for ax in row:
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.grid(False)
-            for s in ax.spines.values():
-                s.set_visible(False)
-
-        # 0 — name and mean rank
-        row[0].text(
-            0.0,
-            0.5,
-            abbreviate(m, 22),
-            va="center",
-            ha="left",
-            fontsize=8,
-            color=color_for(m),
-            fontweight="bold",
-        )
-        if m in ranks.columns:
-            row[0].text(
-                1.0, 0.5, f"{ranks[m].mean():.2f}", va="center", ha="right", fontsize=7
-            )
-        row[0].set_xlim(0, 1)
-
-        # 1 — rank profile
-        if m in ranks.columns:
-            cmap = plt.get_cmap("RdYlGn_r")
-            left = 0.0
-            n_m = ranks.shape[1]
-            for r in range(1, n_m + 1):
-                w = float((ranks[m] == r).mean())
-                row[1].barh(
-                    [0], [w], left=[left], color=cmap((r - 1) / max(n_m - 1, 1))
-                )
-                left += w
-        row[1].set_xlim(0, 1)
-        row[1].set_ylim(-0.5, 0.5)
-
-        # 2 — the metric's ECDF, against the pooled one
-        xs, ys = _ecdf(f.loc[f["method"] == m, key].to_numpy(dtype=float), n_ep)
-        px, py = _ecdf(pooled, n_ep * max(len(order), 1))
-        row[2].step(px, py, where="post", color="#cccccc", linewidth=1.0)
-        if xs.size:
-            row[2].step(xs, ys, where="post", color=color_for(m), linewidth=1.4)
-        draw_anchors(row[2], key, axis="x", label=False)
-        row[2].set_xlim(x_lo, x_hi)
-        row[2].set_ylim(0, 1.05)
-
-        # 3 — the level/shape decomposition
-        if dec is not None and m in dec.index:
-            row[3].barh([0], [dec.loc[m, "level"]], color="#ff7f0e")
-            row[3].barh(
-                [0], [dec.loc[m, "shape"]], left=[dec.loc[m, "level"]], color="#1f77b4"
-            )
-            row[3].axvline(1.0, color="#d62728", linestyle=":", linewidth=1.0)
-        row[3].set_xlim(0, dec_hi)
-        row[3].set_ylim(-0.5, 0.5)
-
-        # 4 — position on each task (0 = best of its field)
-        for j, (tname, series) in enumerate(cross.items()):
-            if m in series.index:
-                row[4].scatter(
-                    series[m],
-                    -j,
-                    color=color_for(m),
-                    s=28,
-                    edgecolors="white",
-                    linewidths=0.6,
-                )
-            row[4].plot([0, 1], [-j, -j], color="#e5e5e5", linewidth=0.8, zorder=0)
-        row[4].set_xlim(-0.05, 1.05)
-        row[4].set_ylim(-len(cross) + 0.5, 0.5)
-
-        # 5 — cost and failures
-        row[5].set_xscale("log")  # before the ticks: it installs its own
-        if m in time.index and np.isfinite(time[m]):
-            row[5].scatter([max(time[m], t_lo)], [0], color=color_for(m), s=26)
-        row[5].set_xlim(t_lo * 0.7, t_hi * 1.4)
-        row[5].set_ylim(-0.5, 0.5)
-        row[5].set_xticks([])
-        row[5].set_xticks([], minor=True)
-        rate = float(fail.get(m, 0.0))
-        if rate > 0:
-            row[5].text(
-                1.02,
-                0.5,
-                f"{rate:.0%} fail",
-                transform=row[5].transAxes,
-                va="center",
-                fontsize=6.5,
-                color="#d62728",
-            )
-
-    headers = [
-        "method / mean rank",
-        "rank profile (green = 1st)",
-        f"{metric.label} ECDF (grey = field)",
-        "nPEHE² = level + shape" if dec is not None else "—",
-        "position per task\n" + " / ".join(cross),
-        "time (log)",
-    ]
-    for ax, title in zip(axs[0], headers):
-        ax.set_title(title, fontsize=7.5, pad=10)
-    # Axis ticks only on the bottom row, so the columns read as shared scales.
-    axs[-1][2].set_xticks([x_lo, x_hi], [f"{x_lo:.2g}", f"{x_hi:.2g}"], fontsize=6)
-    axs[-1][3].set_xticks([0, dec_hi], ["0", f"{dec_hi:.2g}"], fontsize=6)
-    axs[-1][4].set_xticks([0, 1], ["best", "worst"], fontsize=6)
-    axs[-1][5].set_xticks([t_lo, t_hi], [f"{t_lo:.2g}s", f"{t_hi:.2g}s"], fontsize=6)
-    axs[-1][5].set_xticks([], minor=True)
-
-    fig.suptitle(
-        f"{task.title}\n{n_ep} episodes · rows ordered by mean rank · every panel "
-        "is a distribution over episodes, not a point estimate",
-        fontsize=11,
-    )
-    # Not tight_layout: the rows are deliberately glued together (hspace=0) and
-    # it would prise them apart again.
-    fig.subplots_adjust(top=1 - 1.0 / fig.get_figheight(), bottom=0.06, right=0.93)
-    save_figure(fig, out_path(run, "scorecard", task), dpi=opts.dpi)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-run figures
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @figure("cross_task_ranks", scope="run")
 def plot_cross_task_ranks(run: BenchmarkRun, opts: Options) -> None:
     """Where each method places on ATE vs CATE vs ITE."""
@@ -1249,93 +755,6 @@ def plot_cross_task_ranks(run: BenchmarkRun, opts: Options) -> None:
     )
     fig.tight_layout()
     save_figure(fig, out_path(run, "cross_task_ranks"), dpi=opts.dpi)
-
-
-@figure("task_compression", scope="run")
-def plot_task_compression(run: BenchmarkRun, opts: Options) -> None:
-    """Why the ITE table is insensitive: the same methods, both targets."""
-    names = {t.name: t for t in run.tasks}
-    if not {"cate", "ite"} <= set(names):
-        return
-    cate = run.summary_stat(names["cate"], "npehe", "median")
-    ite = run.summary_stat(names["ite"], "npehe", "median")
-    shared = [m for m in run.method_order(names["cate"]) if m in ite.index]
-    if not shared:
-        return
-
-    fig, ax = plt.subplots(figsize=(7, 6.4))
-    for m in shared:
-        style = style_for(m)
-        ax.scatter(
-            cate[m],
-            ite[m],
-            color=style.get("color"),
-            marker=style.get("marker", "o"),
-            s=style.get("s", 120),
-            edgecolors="white",
-            linewidths=0.8,
-            zorder=5,
-        )
-        ax.annotate(
-            abbreviate(m, 16),
-            (cate[m], ite[m]),
-            textcoords="offset points",
-            xytext=(6, 3),
-            fontsize=7,
-        )
-    lim = max(float(np.nanmax(cate[shared])), float(np.nanmax(ite[shared]))) * 1.15
-    ax.plot([0, lim], [0, lim], ls="--", color="black", alpha=0.5, linewidth=1)
-    ax.axhline(1.0, color="#d62728", linestyle=":", linewidth=1.2)
-    ax.axvline(1.0, color="#d62728", linestyle=":", linewidth=1.2)
-    ax.set_xlim(0, lim)
-    ax.set_ylim(0, lim)
-    ax.set_xlabel("median nPEHE on the CATE target  τ*(x)")
-    ax.set_ylabel("median nPEHE on the realized ITE")
-    ax.set_title(
-        "The same methods against both targets\n"
-        "the ITE axis is compressed onto ≈1 by E[Var(Y1−Y0 | X)] — which is why "
-        "the benchmark leads with CATE",
-        fontsize=10,
-    )
-    fig.tight_layout()
-    save_figure(fig, out_path(run, "task_compression"), dpi=opts.dpi)
-
-
-@figure("target_noise", scope="run")
-def plot_target_noise(run: BenchmarkRun, opts: Options) -> None:
-    """How much of the scored target's variance is Monte-Carlo noise."""
-    s2 = run.results.groupby("episode")["s2_over_var"].median().dropna()
-    if s2.empty:
-        return
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    ax.hist(s2.to_numpy(), bins=40, color="#1f77b4", alpha=0.8)
-    ax.axvline(
-        0.05,
-        color="#d62728",
-        linestyle="--",
-        linewidth=1.4,
-        label="0.05 — the run warns above this",
-    )
-    ax.axvline(
-        float(s2.median()),
-        color="black",
-        linestyle="-",
-        linewidth=1.2,
-        label=f"median {float(s2.median()):.4f}",
-    )
-    k = run.data.get("cate_K_eff") if (run.dir / "data.pt").exists() else None
-    k_txt = f" · K_eff = {int(np.asarray(k).min())}" if k is not None else ""
-    ax.set_xlabel("s²_over_var — Monte-Carlo noise share of Var(τ*)")
-    ax.set_ylabel("episodes")
-    ax.set_title(
-        f"Is the target good enough to rank on?{k_txt}\n"
-        "never subtracted: a large share means every method scores worse than it "
-        "is, the target's own noise having landed in the residual",
-        fontsize=10,
-    )
-    ax.legend(frameon=False, fontsize=8)
-    fig.tight_layout()
-    save_figure(fig, out_path(run, "target_noise"), dpi=opts.dpi)
 
 
 @figure("episode_fit", scope="run")
