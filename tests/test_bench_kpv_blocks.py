@@ -29,10 +29,12 @@ from benchmarks.methods.kernels import BinaryKernel, ColumnWiseGaussianKernel
 from benchmarks.methods.kpv import (
     KPVConfig,
     KPVEstimator,
+    _RidgeSpectrum,
     _loocv_stage1,
     _loocv_stage1_block,
     _loocv_stage2,
     _loocv_stage2_block,
+    _loocv_stage2_spectral_block,
 )
 
 #: Relative agreement demanded of alpha; see the module docstring.
@@ -174,3 +176,33 @@ def test_loocv_scores_add_over_arms():
 
     assert per_arm1 == pytest.approx(_loocv_stage1(K, K_W, lam), rel=1e-10)
     assert np.sqrt(per_arm2) == pytest.approx(_loocv_stage2(K, Y, lam), rel=1e-10)
+
+
+@pytest.mark.parametrize("rank", [3, 24])
+def test_stage2_spectral_sweep_matches_dense_solves(rank):
+    """One spectrum reproduces every dense-solve score, including singular K."""
+    rng = np.random.default_rng(41 + rank)
+    m = 24
+    features = rng.normal(size=(m, rank))
+    Sigma = features @ features.T
+    Y = rng.normal(size=m)
+    n_full = 57
+    spectrum = _RidgeSpectrum.from_psd(Sigma)
+
+    for lam in np.logspace(-5, 1, 10):
+        expected = _loocv_stage2_block(Sigma, Y, lam, n_full)
+        actual = _loocv_stage2_spectral_block(spectrum, Y, lam, n_full)
+        assert actual == pytest.approx(expected, rel=2e-11, abs=1e-12)
+
+        expected_v = solve(Sigma + lam * n_full * np.eye(m), Y, assume_a="pos")
+        # The deliberately rank-deficient case becomes ill-conditioned at the
+        # smallest lambda; Cholesky and eigen solves then differ at the
+        # condition-number-amplified roundoff floor despite solving the same
+        # system. Full-rank systems agree more tightly.
+        solve_rtol = 5e-10 if rank < m else 2e-11
+        np.testing.assert_allclose(
+            spectrum.solve(Y, lam, n_full),
+            expected_v,
+            rtol=solve_rtol,
+            atol=1e-12,
+        )

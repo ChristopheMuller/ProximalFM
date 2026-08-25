@@ -64,7 +64,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-from scipy.linalg import solve
+from scipy.linalg import eigh, solve
 
 from benchmarks.methods.kernels import ColumnWiseGaussianKernel, as_2d, BinaryKernel
 
@@ -157,6 +157,57 @@ def _ridge_influence(K: np.ndarray, lam: float, n_full: int) -> tuple:
     return H, 1.0 / diag_H
 
 
+@dataclass(frozen=True)
+class _RidgeSpectrum:
+    """Reusable eigendecomposition of one symmetric PSD ridge system.
+
+    For ``K = Q diag(mu) Q.T`` and ``c = lam * n_full``, the residual-maker
+    used by LOOCV is
+
+        H = c (K + c I)^-1 = Q diag(c / (mu + c)) Q.T.
+
+    Applying ``H`` to a vector and forming ``diag(H)`` therefore cost O(m^2)
+    per lambda after one O(m^3) decomposition.  This is especially useful for
+    Stage 2, whose LOOCV criterion needs only ``H @ Y`` and ``diag(H)``.
+
+    Stage 1 cannot use the same O(m^2) sweep: its exact criterion also contains
+    the dense, unrelated proxy Gram matrix ``K_W`` through
+    ``tr(D H K_W H D)``.  It deliberately stays on the solve path below.
+    """
+
+    eigenvalues: np.ndarray
+    eigenvectors: np.ndarray
+
+    @classmethod
+    def from_psd(cls, K: np.ndarray) -> "_RidgeSpectrum":
+        # ``solve(..., assume_a='pos')`` reads one triangle of a symmetric
+        # matrix too. Use the upper triangle here so both numerical routes see
+        # the same input when roundoff makes the two triangles differ slightly.
+        eigenvalues, eigenvectors = eigh(K, lower=False, check_finite=False)
+        return cls(eigenvalues=eigenvalues, eigenvectors=eigenvectors)
+
+    def _shrinkage(self, lam: float, n_full: int) -> np.ndarray:
+        c = lam * n_full
+        return c / (self.eigenvalues + c)
+
+    def influence_vector_and_inverse_diagonal(
+        self, Y: np.ndarray, lam: float, n_full: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return ``H @ Y`` and ``1 / diag(H)`` without constructing H."""
+        shrinkage = self._shrinkage(lam, n_full)
+        Q = self.eigenvectors
+        HY = Q @ (shrinkage * (Q.T @ Y))
+        diag_H = (Q * Q) @ shrinkage
+        diag_H = np.where(np.abs(diag_H) < 1e-12, 1e-12, diag_H)
+        return HY, 1.0 / diag_H
+
+    def solve(self, Y: np.ndarray, lam: float, n_full: int) -> np.ndarray:
+        """Return ``(K + lam * n_full I)^-1 Y`` from the cached spectrum."""
+        c = lam * n_full
+        Q = self.eigenvectors
+        return Q @ ((Q.T @ Y) / (self.eigenvalues + c))
+
+
 def _loocv_stage1_block(
     K_ZAX: np.ndarray, K_W: np.ndarray, lam1: float, n_full: int
 ) -> float:
@@ -200,6 +251,18 @@ def _loocv_stage2_block(
     """
     H, inv_diag = _ridge_influence(Sigma, lam2, n_full)
     r = inv_diag * (H @ Y)
+    return float(r @ r)
+
+
+def _loocv_stage2_spectral_block(
+    spectrum: _RidgeSpectrum,
+    Y: np.ndarray,
+    lam2: float,
+    n_full: int,
+) -> float:
+    """Stage-2 squared LOOCV contribution from a cached eigendecomposition."""
+    HY, inv_diag = spectrum.influence_vector_and_inverse_diagonal(Y, lam2, n_full)
+    r = inv_diag * HY
     return float(r @ r)
 
 
@@ -497,21 +560,39 @@ class KPVEstimator:
                 Sigma_a = np.zeros((i2.size, i2.size), dtype=float)
             sigma_blocks.append((i2, Sigma_a))
 
-        def stage2_score(lam: float) -> float:
-            return float(
-                np.sqrt(
-                    sum(
-                        _loocv_stage2_block(Sigma_a, Y2[i2], lam, n2)
-                        for i2, Sigma_a in sigma_blocks
-                    )
-                )
-            )
-
         lam2 = cfg.lam2
         if lam2 is None:
+            # Stage 2's LOOCV criterion only needs H @ Y and diag(H). Cache one
+            # eigendecomposition per treatment block, reducing every lambda
+            # after the first O(m^3) decomposition to O(m^2) contractions.
+            spectral_blocks = [
+                (i2, _RidgeSpectrum.from_psd(Sigma_a)) for i2, Sigma_a in sigma_blocks
+            ]
+
+            def stage2_score(lam: float) -> float:
+                return float(
+                    np.sqrt(
+                        sum(
+                            _loocv_stage2_spectral_block(spectrum, Y2[i2], lam, n2)
+                            for i2, spectrum in spectral_blocks
+                        )
+                    )
+                )
+
             lam2 = self._tune(
                 stage2_score, cfg.lam2_min, cfg.lam2_max, cfg.n_lam2_search
             )
+        else:
+
+            def stage2_score(lam: float) -> float:
+                return float(
+                    np.sqrt(
+                        sum(
+                            _loocv_stage2_block(Sigma_a, Y2[i2], lam, n2)
+                            for i2, Sigma_a in sigma_blocks
+                        )
+                    )
+                )
 
         # Stage-2 LOOCV loss at the chosen λ₂ — the criterion for ranking
         # scales. Comparable across scales because the target Y₂ is fixed.
@@ -519,8 +600,16 @@ class KPVEstimator:
 
         # v = (Σ + λ₂ n₂ I)⁻¹ Y₂  → (n2,)
         v = np.zeros(n2, dtype=float)
-        for i2, Sigma_a in sigma_blocks:
-            v[i2] = solve(Sigma_a + lam2 * n2 * np.eye(i2.size), Y2[i2], assume_a="pos")
+        if cfg.lam2 is None:
+            for i2, spectrum in spectral_blocks:
+                v[i2] = spectrum.solve(Y2[i2], lam2, n2)
+        else:
+            for i2, Sigma_a in sigma_blocks:
+                v[i2] = solve(
+                    Sigma_a + lam2 * n2 * np.eye(i2.size),
+                    Y2[i2],
+                    assume_a="pos",
+                )
 
         # α[i, j] = Γ[i, j] * v[j]  → (n1, n2)
         alpha = Gamma * v[np.newaxis, :]
