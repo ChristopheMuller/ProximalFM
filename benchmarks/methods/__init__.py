@@ -1710,6 +1710,9 @@ def _make_proximalfm(cfg: dict, compute) -> CATEEstimator:
         transforms=cfg.get("transforms") or None,
         outputs=cfg.get("outputs") or None,
         all=cfg.get("all", False),
+        # Evaluation-only corruption of the proxy role labels. This is kept
+        # outside the checkpoint/model config so normal inference is unchanged.
+        swap_diag=cfg.get("swap_diag", False),
     )
 
 

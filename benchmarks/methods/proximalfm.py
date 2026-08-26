@@ -151,6 +151,9 @@ class ProximalFM_Estimator(CATEEstimator):
         transforms: bijective value transforms cycled across ensemble views
             (e.g. `[sign, signed_log, arcsinh, quantile]`); unset means
             permutation-only.
+        swap_diag: diagnostic mode that exchanges the W and Z proxy blocks
+            before fitting and prediction. This intentionally gives the model
+            the proxies under the wrong structural role labels.
         outputs: the config's `outputs:` list; each entry may name its own
             `checkpoint:`, and all of them share this one stored context.
     """
@@ -164,10 +167,12 @@ class ProximalFM_Estimator(CATEEstimator):
         transforms: Optional[list[str]] = None,
         outputs: Optional[list[dict]] = None,
         all: bool = False,
+        swap_diag: bool = False,
     ):
         self.device = torch.device(device)
         self.n_ensemble = int(ensemble or 1)
         self.transforms = transforms or None
+        self.swap_diag = bool(swap_diag)
 
         base_cfg = {"checkpoint": checkpoint, "all": all}
         if outputs:
@@ -189,11 +194,22 @@ class ProximalFM_Estimator(CATEEstimator):
     def _t(self, arr: np.ndarray) -> torch.Tensor:
         return torch.as_tensor(np.asarray(arr, dtype=np.float32), device=self.device)
 
+    def _proxy_inputs(self, W, Z):
+        """Return proxy blocks in the roles presented to the model.
+
+        ``swap_diag`` is deliberately applied to both context and query
+        inputs. The query proxies are hidden by ProximalFM, but swapping them
+        there keeps the adapter's input protocol consistent and matters for
+        the inferred ``d_W``/``d_Z`` values.
+        """
+        return (Z, W) if self.swap_diag else (W, Z)
+
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError(
                 "ProximalFM requires both W (outcome) and Z (treatment) proxies."
             )
+        W, Z = self._proxy_inputs(W, Z)
         self._ctx = {
             "X": self._t(X),
             "W": self._t(W),
@@ -213,6 +229,7 @@ class ProximalFM_Estimator(CATEEstimator):
             raise ValueError("ProximalFM requires both W and Z at predict time.")
 
         ctx = self._ctx
+        W, Z = self._proxy_inputs(W, Z)
         # The model reads one sequence of context-then-query rows and infers the
         # split from the length of `y_train`; only the context rows' A is used
         # (`ProximalFM.forward` truncates it), and the query rows' proxies are

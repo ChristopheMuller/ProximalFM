@@ -125,6 +125,40 @@ def test_the_checkpoint_is_loaded_once_per_process(ckpt):
     assert len(_MODEL_CACHE) == 1
 
 
+def test_swap_diag_exchanges_proxy_values_and_dimensions(ckpt):
+    """The diagnostic presents original Z as W and original W as Z."""
+    path, model = ckpt
+    ep = make_episode(d_W=2, d_Z=3)
+    cfg = {
+        "name": "PFM-swap",
+        "cls": "ProximalFM",
+        "checkpoint": str(path),
+        "swap_diag": True,
+    }
+
+    swapped = fit_predict(cfg, ep)[None]
+    expected = (
+        model.predict(
+            X=torch.tensor(ep["X"]).unsqueeze(0),
+            # The role-labelled inputs are exchanged, so these dimensions must be
+            # exchanged too when they differ.
+            W=torch.tensor(ep["Z"]).unsqueeze(0),
+            Z=torch.tensor(ep["W"]).unsqueeze(0),
+            A=torch.tensor(ep["A"]).unsqueeze(0),
+            y_train=torch.tensor(ep["Y"]).unsqueeze(0),
+            d_X=torch.tensor([ep["X"].shape[-1]]),
+            d_W=torch.tensor([ep["Z"].shape[-1]]),
+            d_Z=torch.tensor([ep["W"].shape[-1]]),
+            target="cate",
+            output_type="mean",
+        )
+        .numpy()
+        .squeeze(0)
+    )
+
+    np.testing.assert_allclose(swapped, expected, atol=1e-5)
+
+
 def test_device_comes_from_compute_not_from_the_config(ckpt):
     """A stale `device:` in a YAML cannot outrank the resolved ComputeConfig."""
     path, _ = ckpt
