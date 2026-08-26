@@ -4,7 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from benchmarks.data_csv import load_benchmark_from_csv
+from benchmarks.data_csv import (
+    load_benchmark_from_csv,
+    load_benchmark_from_csvs,
+    resolve_csv_paths,
+)
 
 
 def make_chamber_csv(tmp_path, T=20):
@@ -148,3 +152,47 @@ def test_unknown_csv_column_raises(tmp_path):
     columns = dict(COLUMNS, X=["not_a_real_column"])
     with pytest.raises(ValueError, match="not_a_real_column"):
         load_benchmark_from_csv(path, columns, shuffle=False)
+
+
+def test_multiple_csvs_are_independent_episodes(tmp_path):
+    first, _ = make_chamber_csv(tmp_path, T=20)
+    second = tmp_path / "second.csv"
+    frame = pd.read_csv(first)
+    frame["ir_3"] += 1000  # a distinct outcome scale for the second episode
+    frame.to_csv(second, index=False)
+
+    data = load_benchmark_from_csvs(
+        [first, second], COLUMNS, prop_train=0.75, shuffle=False
+    )
+
+    assert data["N_BATCH"] == 2
+    assert data["X"].shape == (2, 20, 1)
+    assert data["true_ITEs"].shape == (2, 5)
+    assert data["episode_files"] == [str(first), str(second)]
+    # Adding a level shift to one file must disappear under that file's own
+    # context-only outcome standardization.
+    np.testing.assert_allclose(data["Y"][0], data["Y"][1])
+
+
+def test_multiple_csvs_require_matching_row_counts(tmp_path):
+    first, _ = make_chamber_csv(tmp_path, T=20)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    second, _ = make_chamber_csv(other_dir, T=24)
+    with pytest.raises(ValueError, match="same train/test sizes"):
+        load_benchmark_from_csvs([first, second], COLUMNS, shuffle=False)
+
+
+def test_resolve_csv_directory_is_sorted_and_filters_pattern(tmp_path):
+    (tmp_path / "b.csv").touch()
+    (tmp_path / "a.csv").touch()
+    (tmp_path / "ignore.txt").touch()
+    assert resolve_csv_paths({"csv_dir": tmp_path}) == [
+        tmp_path / "a.csv",
+        tmp_path / "b.csv",
+    ]
+
+
+def test_resolve_csv_paths_refuses_ambiguous_inputs(tmp_path):
+    with pytest.raises(ValueError, match="exactly one"):
+        resolve_csv_paths({"csv_path": tmp_path / "a.csv", "csv_dir": tmp_path})

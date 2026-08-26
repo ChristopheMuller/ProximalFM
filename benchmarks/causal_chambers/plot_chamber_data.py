@@ -17,6 +17,12 @@ the two questions that decide how its benchmark results may be read:
                                           (g) Z vs U -- treatment-proxy relevance
                                           (h) W vs U -- outcome-proxy relevance
 
+``chamber_<name>_ite_signal.pdf/.png`` — a four-panel diagnostic of the
+realized individual treatment effect, ``ITE = Y1 - Y0``, against each observed
+block (X, W, Z) and the latent U.  It makes any signal available to a CATE
+learner visually explicit, rather than inferring it from the outcome-level
+plots in the main audit.
+
 ``chamber_comparison.pdf/.png`` — every file side by side on the three numbers
 that matter: the unadjusted confounding bias (what a method must remove),
 SD(tau)/ATE (whether CATE metrics mean anything at all), and the share of rows
@@ -125,6 +131,49 @@ def _propensity(df: pd.DataFrame, treated: np.ndarray) -> np.ndarray:
 def _extreme_share(e_hat: np.ndarray, cut: float = POSITIVITY_CUT) -> float:
     """Fraction of rows with e in [0, cut] u [1 - cut, 1]."""
     return float(((e_hat < cut) | (e_hat > 1 - cut)).mean())
+
+
+def plot_ite_signal(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
+    """Plot realized ITE against the first X, W, Z, and U coordinates.
+
+    Prepared Causal Chambers files currently have one coordinate per block.
+    Naming the coordinate explicitly keeps this diagnostic honest if a
+    multi-coordinate mapping is later supplied to ``prepare_chamber_csv.py``.
+    """
+    tau = df["Y1"].to_numpy() - df["Y0"].to_numpy()
+    ate = tau.mean()
+    blocks = (
+        ("X", "covariate"),
+        ("W", "outcome proxy"),
+        ("Z", "treatment proxy"),
+        ("U", "latent confounder"),
+    )
+
+    fig, axes = plt.subplots(
+        1,
+        4,
+        figsize=figsize_grid(
+            4, 1, fraction=1.7, panel_aspect=0.95, extra_height_in=0.4
+        ),
+    )
+    for ax, (block, description), letter in zip(axes, blocks, "abcd"):
+        col = f"{block}_1"
+        if col not in df:
+            raise ValueError(f"{name}: ITE diagnostic requires column {col!r}")
+        values = df[col].to_numpy()
+        corr = np.corrcoef(values, tau)[0, 1]
+        ax.scatter(values, tau, color=block_color(block), **SCATTER)
+        ax.plot(*_binned_mean(values, tau), **ROLES["trend"])
+        ax.axhline(ate, color="0.6", lw=0.8, ls="--")
+        _note(ax, f"corr({block}, ITE) = {corr:+.3f}")
+        _panel_label(ax, letter, rf"ITE vs {description} ${block}$")
+        ax.set_xlabel(f"${col}$")
+        ax.set_ylabel(r"ITE $= Y_1-Y_0$")
+        ax.xaxis.set_major_locator(plt.MaxNLocator(4))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(5))
+
+    fig.suptitle(f"{name.replace('_', ' ')} — ITE signal", fontsize="medium")
+    return save_figure(fig, outdir, f"chamber_{name}_ite_signal")
 
 
 def plot_dataset(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
@@ -410,6 +459,8 @@ def main() -> None:
 
     for name, df in frames.items():
         for out in plot_dataset(df, name, outdir):
+            print(f"  ✓ {out}")
+        for out in plot_ite_signal(df, name, outdir):
             print(f"  ✓ {out}")
     if len(frames) > 1:
         for out in plot_comparison(frames, outdir):

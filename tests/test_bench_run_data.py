@@ -132,14 +132,16 @@ def _make_chamber_csv(tmp_path, T=20):
 
 
 def test_get_data_builds_from_csv_and_caches(tmp_path):
-    from benchmarks.data_csv import load_benchmark_from_csv
+    from benchmarks.data_csv import load_benchmark_from_csvs
 
     csv_path = _make_chamber_csv(tmp_path)
     output_dir = tmp_path / "exp"
     cfg = _csv_cfg(csv_path)
 
     data = run.get_data(cfg, output_dir)
-    expected = load_benchmark_from_csv(csv_path, cfg["data"]["columns"], shuffle=False)
+    expected = load_benchmark_from_csvs(
+        [csv_path], cfg["data"]["columns"], shuffle=False
+    )
     assert_dicts_equal(data, expected)
 
     cached = torch.load(output_dir / "data.pt", weights_only=False)

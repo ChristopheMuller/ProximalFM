@@ -69,7 +69,7 @@ from benchmarks.compute import (
     resolve_method_compute,
 )
 from benchmarks.data import load_benchmark_from_val_dir
-from benchmarks.data_csv import load_benchmark_from_csv
+from benchmarks.data_csv import load_benchmark_from_csvs, resolve_csv_paths
 from benchmarks.methods import method_estimand, normalize_method_cfg
 from benchmarks.runners import method_output_names, run_method
 from benchmarks.metrics import TASKS, TaskReport, primary_task, score_method
@@ -117,7 +117,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     """Return the standardized dataset dict named by the config.
 
     Every benchmark run scores a *pre-built* set — one of the three builders
-    (`prior_eval`, `synt_eval`, `lit_eval`), or a single real-world CSV. There
+    (`prior_eval`, `synt_eval`, `lit_eval`), or real-world CSV files. There
     is no on-the-fly prior sampling: a set that only exists inside one run is
     one nobody else can score against.
 
@@ -127,9 +127,9 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
          as written by ``proximalfm.prior._genload.write_batch_file``) and cache
          it as ``data.pt`` in the run's output dir (plots.py reads it there).
       2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
-         standardized dict from a single real-world CSV (e.g. a Causal
-         Chambers export) via ``data.csv_path`` + ``data.columns``, a
-         column-name to variable-block mapping. Always yields ``N_BATCH=1``.
+         standardized dict from one or more real-world CSVs. Each file becomes
+         one independently standardized episode, selected by ``csv_path``,
+         ``csv_paths``, or ``csv_dir``.
       3. Otherwise fall back to an existing ``data.pt`` in the output dir.
 
     A ``data.pt`` cached before the CATE target existed carries no
@@ -153,10 +153,12 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
         )
 
     if source == "csv" and (force_regen or not data_path.exists()):
-        csv_path = data_cfg["csv_path"]
-        console.print(f"    Building benchmark data from CSV [cyan]{csv_path}[/]…")
-        data = load_benchmark_from_csv(
-            csv_path,
+        csv_paths = resolve_csv_paths(data_cfg)
+        console.print(
+            f"    Building benchmark data from [cyan]{len(csv_paths)} CSV file(s)[/]…"
+        )
+        data = load_benchmark_from_csvs(
+            csv_paths,
             data_cfg["columns"],
             prop_train=data_cfg.get("prop_train", 0.75),
             shuffle=data_cfg.get("shuffle", True),
@@ -183,7 +185,7 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     raise FileNotFoundError(
         f"Data file not found at {data_path}. "
         "Point data.val_dir at a directory of batch_*.pt files, or set "
-        "data.source: csv with data.csv_path + data.columns in config_*.yaml."
+        "data.source: csv with a CSV input and data.columns in config_*.yaml."
     )
 
 
@@ -451,12 +453,16 @@ def print_partial_results(
     accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
     estimands: dict[str, str],
     targets: dict[str, np.ndarray],
+    *,
+    episode_aggregation: Optional[str] = None,
 ) -> None:
     if not accumulated:
         return
     task = TASKS[primary_task(targets)]
     all_df = score_everything(accumulated, estimands, {task.name: targets[task.name]})
-    report = TaskReport.from_results(all_df, task)
+    report = TaskReport.from_results(
+        all_df, task, episode_aggregation=episode_aggregation
+    )
     if report.empty:
         return
     console.print(
@@ -538,6 +544,13 @@ def main() -> None:
         console.print()
 
     accumulated: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    eval_cfg = cfg.get("eval", {})
+    episode_aggregation = eval_cfg.get("episode_aggregation")
+    if episode_aggregation not in (None, "mean"):
+        raise ValueError(
+            "eval.episode_aggregation must be omitted or 'mean', got "
+            f"{episode_aggregation!r}."
+        )
 
     progress = Progress(
         SpinnerColumn(),
@@ -607,7 +620,12 @@ def main() -> None:
                 )
                 accumulated[out_name] = (preds, times)
 
-            print_partial_results(accumulated, estimands, targets)
+            print_partial_results(
+                accumulated,
+                estimands,
+                targets,
+                episode_aggregation=episode_aggregation,
+            )
 
     # ── Step 3: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 3  Evaluation[/]"))
@@ -617,20 +635,28 @@ def main() -> None:
         console.print("  [red]No method predictions found. Exiting.[/]")
         return
 
-    eval_cfg = cfg.get("eval", {})
     references = (
         reference_predictions(targets) if eval_cfg.get("reference_rows", True) else None
     )
     all_results = score_everything(
         accumulated, estimands, targets, s2=cate_s2, references=references
     )
+    if data.get("episode_files") is not None:
+        episode_files = data["episode_files"]
+        all_results.insert(
+            all_results.columns.get_loc("episode") + 1,
+            "episode_file",
+            all_results["episode"].map(lambda episode: episode_files[int(episode)]),
+        )
 
     # One table per task. `cate` is the headline; `ite` is where the methods
     # that read the query rows' proxies are allowed their advantage; `ate` is
     # the level-only view, and the only place a constant-prediction method says
     # anything.
     for task in TASKS.values():
-        report = TaskReport.from_results(all_results, task)
+        report = TaskReport.from_results(
+            all_results, task, episode_aggregation=episode_aggregation
+        )
         if report.empty:
             continue
         console.print(Padding(report.rich_table(), (1, 4)))
@@ -638,9 +664,11 @@ def main() -> None:
 
     # summary.csv keeps its name and its meaning "the headline table", so
     # anything downstream that globs for it still finds the primary task.
-    TaskReport.from_results(all_results, TASKS[primary_task(targets)]).summary().to_csv(
-        results_dir / "summary.csv"
-    )
+    TaskReport.from_results(
+        all_results,
+        TASKS[primary_task(targets)],
+        episode_aggregation=episode_aggregation,
+    ).summary().to_csv(results_dir / "summary.csv")
 
     results_csv = results_dir / "results.csv"
     all_results.to_csv(results_csv, index=False)

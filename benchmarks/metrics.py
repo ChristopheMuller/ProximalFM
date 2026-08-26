@@ -577,13 +577,29 @@ class TaskReport:
 
     task: Task
     frame: pd.DataFrame
+    episode_aggregation: Optional[str] = None
     _summary: Optional[pd.DataFrame] = field(default=None, repr=False)
 
     @classmethod
-    def from_results(cls, results: pd.DataFrame, task: Task) -> "TaskReport":
+    def from_results(
+        cls,
+        results: pd.DataFrame,
+        task: Task,
+        *,
+        episode_aggregation: Optional[str] = None,
+    ) -> "TaskReport":
         """Pick this task's rows out of the long frame ``run.py`` writes."""
         rows = results[results["target"] == task.name]
-        return cls(task, rows.reset_index(drop=True))
+        if episode_aggregation not in (None, "mean"):
+            raise ValueError(
+                "episode_aggregation must be omitted or 'mean', got "
+                f"{episode_aggregation!r}."
+            )
+        return cls(
+            task,
+            rows.reset_index(drop=True),
+            episode_aggregation=episode_aggregation,
+        )
 
     @classmethod
     def from_summary_csv(cls, path, task: Task) -> "TaskReport":
@@ -632,7 +648,15 @@ class TaskReport:
                 RANK_COLUMN.label: g["method_rank"].mean(),
             }
             for m in self.task.metrics:
-                for suffix, value in _aggregate(g[m.key], m.agg).items():
+                # A real-data run can request literal equal-weight means over
+                # files. Preserve pooled_rms: changing that would make the
+                # metric labelled "RMSE" cease to be an RMS quantity.
+                agg = (
+                    "mean"
+                    if self.episode_aggregation == "mean" and m.agg == "median"
+                    else m.agg
+                )
+                for suffix, value in _aggregate(g[m.key], agg).items():
                     out[m.label + suffix] = value
             out[FAILURE_COLUMN.label] = g["failed"].mean()
             out[TIME_COLUMN.label] = g["time"].mean()

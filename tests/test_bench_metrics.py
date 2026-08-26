@@ -239,6 +239,15 @@ def _summary(results, task):
     return TaskReport.from_results(results, task).summary()
 
 
+def test_report_can_average_ordinary_metrics_over_episodes(results):
+    report = TaskReport.from_results(
+        results, CATE, episode_aggregation="mean"
+    ).summary()
+    rows = results[(results["target"] == "cate") & (results["method"] == "S-OLS")]
+    assert report.loc["S-OLS", "nPEHE"] == pytest.approx(rows["npehe"].mean())
+    assert "nPEHE p25" not in report.columns
+
+
 def test_cate_task_excludes_proxy_conditioned_and_ate_methods(results):
     assert set(_summary(results, CATE).index) == {"S-OLS", "Oracle-CATE(X)"}
 

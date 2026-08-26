@@ -116,7 +116,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
-| **[`data_csv.py`](data_csv.py)** | The same dict from a single real-world CSV (Causal Chambers), given a column→variable-block mapping. Always one episode. No CATE target exists here, so this path is ITE-only by construction. |
+| **[`data_csv.py`](data_csv.py)** | The same dict from one or more real-world CSVs (Causal Chambers), given a column→variable-block mapping. Each file is an independently standardized episode, so reporting aggregates over files instead of concatenating rows. No CATE target exists here, so this path is ITE-only by construction. |
 | **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `plearner.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
@@ -127,7 +127,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the enumeration and the selection. Two search blocks, because they cost differently: `tune.grid` is **sampled** (`n_trials` draws), `tune.sweep` is **enumerated** for every draw, so the evaluated count is `n_trials * \|sweep\|`. `sweep` is a *declaration* that the axis is nearly free once a candidate is part-built, and the method must validate which of its parameters may appear there — PMMR's `lam1` (one Cholesky off a prepared system) and NMMR's `n_epochs` (one score off a paused training run) are the ones that qualify. `search_nested` collects the saving structurally rather than by memoising, so nothing carries data identity across episodes. Used by KPV's, PMMR's and NMMR's `tune:` blocks. |
 | **[`causal_chambers/`](causal_chambers/)** | Real-data benchmark (Causal Chambers), notebook/Rmd driven, separate from the main run. `prepare_chamber_csv.py` turns a raw export into the canonical CSV. |
 | `config_val.yaml` | The main config: a fixed synthetic build and the full method list (ProximalFM checkpoints included). |
-| `config_chamber.yaml` | The single-CSV real-data path. |
+| `config_chamber.yaml` | The multi-file Causal Chambers real-data path. |
 
 ---
 
@@ -177,7 +177,7 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 | `source:` | keys |
 |---|---|
 | `load` *(default)* | `val_dir` |
-| `csv` | `csv_path`, `columns`, `prop_train`, `shuffle`, `normalize_treatment` |
+| `csv` | exactly one of `csv_path`, `csv_paths`, or `csv_dir` (`csv_pattern` defaults to `*.csv`), plus `columns`, `prop_train`, `shuffle`, `normalize_treatment` |
 
 The benchmark scores **pre-built sets only**. There is no on-the-fly prior sampling: a set that
 exists only inside one run is one nobody else can score against, so the row split, the replicate
@@ -186,6 +186,11 @@ count and the seed belong to a builder (`prior_eval.build`, `synt_eval/build_pro
 `n_context`/`n_query`/`n_batch`/`prior:` keys are gone; a config still asking for it is **refused
 with an error** rather than quietly falling back to a cache. `prop_train` survives only under `csv`,
 where the row count is a property of the file and a ratio is the only thing there is to give.
+For multi-file CSV input, every file is one equally weighted episode and is standardized from its
+own context rows. Files must share their row count and mapped dimensions; use `csv_paths: [...]` for
+an explicit subset or `csv_dir` plus an optional `csv_pattern` for a directory. Set
+`eval: {episode_aggregation: mean}` to average the ordinary per-episode metrics literally over
+files; mathematically pooled metrics such as ATE RMSE retain their declared RMS aggregation.
 
 **Common method keys.** `name` (display + output filename), `cls` (dispatch), `base`
 (`linear` | `rf` | `tabicl`), `use_W`/`use_Z` (whether proxies enter the design matrix — **default
