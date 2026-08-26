@@ -121,7 +121,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
 | **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each through `TaskReport.latex()`, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. It holds no column spec of its own — the columns, formats, bolding direction and caption all live on the `Task`. |
-| **[`plots.py`](plots.py)** | Every figure, as a registry: `--list` names them, `--only`/`--skip` select, and each *task-scope* figure is drawn once per task with the task's own rank metric. See §6. |
+| **[`plots.py`](plots.py)** | The CATE error-anatomy figure: median squared normalised ATE bias against median Shape R², coloured by median nPEHE, with analytic single-episode reference contours. See §6. |
 | **[`plot_frames.py`](plot_frames.py)** | The numbers behind the figures — `BenchmarkRun`, which owns loading, the complete-block pivots, the ranks, and the per-episode difficulty covariates derived from `data.pt`. No figure computes its own. |
 | **[`plot_style.py`](plot_style.py)** | Colour (family) and marker (variant) per method, the reference lines each metric is read against (`METRIC_ANCHORS`), and the theme/save chores. |
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the enumeration and the selection. Two search blocks, because they cost differently: `tune.grid` is **sampled** (`n_trials` draws), `tune.sweep` is **enumerated** for every draw, so the evaluated count is `n_trials * \|sweep\|`. `sweep` is a *declaration* that the axis is nearly free once a candidate is part-built, and the method must validate which of its parameters may appear there — PMMR's `lam1` (one Cholesky off a prepared system) and NMMR's `n_epochs` (one score off a paused training run) are the ones that qualify. `search_nested` collects the saving structurally rather than by memoising, so nothing carries data identity across episodes. Used by KPV's, PMMR's and NMMR's `tune:` blocks. |
@@ -392,51 +392,31 @@ there and is reported with a non-zero failure rate rather than taking the run do
 ## 6. Figures
 
 ```bash
-uv run benchmarks/plots.py --path data/synt_eval/<name>/bench    # everything
-uv run benchmarks/plots.py --exp <name> --list                   # what "everything" is
-uv run benchmarks/plots.py --exp <name> --only rank_profile iso_npehe --tasks cate
+uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 ```
 
-Figures are a **registry**, and the task-scope ones are drawn once per task from
-[`metrics.py`](metrics.py)'s `TASKS` — the same object that decides the tables. A figure asks the
-task what it ranks on, which metrics it shows and which methods it admits, so `ate` is not a special
-case and a new `Metric` appears in the benchmark figures without an edit here. Options:
-`--tasks` (default: every task the run scored), `--only`/`--skip`, `--top` (how many methods the
-one-line-per-method figures keep), `--baseline` (what `paired_delta` compares against; defaults to
-ProximalFM), `--episodes`, `--meta` (a frozen set's root, adding its `sampled_hp` as stratification
-axes), `--dpi`. A figure that cannot be drawn says why and the rest still render.
+The plotting entry point currently produces one CATE-only figure,
+`results/plots/cate_iso_nrmse.png`. Its x-axis is median squared normalised ATE
+bias, its y-axis is median Shape R², and point colour is median nPEHE. The
+data grid is censored at x = 3 and y = −1; out-of-range methods are shown just
+outside the relevant boundary (for example, x = 4 is displayed at x = 3.05).
+The contour lines are single-episode CATE NRMSE reference guides. `--dpi` is
+the sole output option.
 
-Two invariants live in [`plot_frames.py`](plot_frames.py), not in the figures: **oracles annotate
-and never compete** (no rank, no win rate, no Pareto front), and every paired statistic runs on a
-**complete block** — an episode any method missed is dropped for all of them, with the dropped count
-printed on the figure. Get either wrong and the picture is quietly wrong rather than visibly broken.
-
-| figure | what it answers |
-|---|---|
-| `rank_profile` / `cd_diagram` | how often a method wins and whether the gap is significant |
-| `paired_delta` | the same-episode difference against one baseline — difficulty cancels, separating methods the summary metrics pool together |
-| `decomposition` / `iso_npehe` | is the error level or shape (see below) |
-| `excess_over_oracle` | error ÷ the oracle's on the same episode; the only readable view of the ITE task |
-| `strata` | where a method wins — weak proxies, strong confounding, poor overlap, high noise |
-| `cost_accuracy` | accuracy against wall-clock, with the Pareto front |
-| `ate_scatter` | predicted against true episode ATE |
-| `cross_task_ranks` | consistency across ATE / CATE / ITE — a method high on ATE and low on CATE gets the level right and the shape wrong |
-| `episode_fit` | row-level predictions on an easy, a median and a hard episode |
-
-**The identity two of them are drawn on.** Per episode, with `b` the normalised ATE bias and `s` the
-shape R²:
+The figure uses the following identity. Per episode, with `b` the normalised
+ATE bias and `s` the shape R²:
 
 ```
 nPEHE² = b² + (1 − s)
 ```
 
-exactly — level error plus shape error. `decomposition` is that as a stacked bar and `iso_npehe` as
-a plane with *analytic* contours (nothing is fitted). It also fixes the aggregation: the components
-are averaged as squares, so `sqrt` of the total is an RMS nPEHE and the point lands on its own
-contour; medians of the parts would not. `mean(nPEHE²)` has an unbounded tail (a near-homogeneous
-episode divides by a Var(τ) just above the threshold), so the worst 5% of episodes are trimmed per
-method — the identity is linear in episodes and survives it, which is why the trim happens in one
-place rather than per figure.
+exactly — level error plus shape error. The plot uses *analytic* contours
+(nothing is fitted) as a per-episode error-anatomy reference. Its method
+positions use the same median convention as the terminal tables: the x-axis
+is the median of squared normalised ATE bias, the y-axis is median Shape R²,
+and colour is median nPEHE. Because these are medians, the contours are guides
+rather than an exact aggregate identity; a few near-homogeneous episodes no
+longer pull the plotted positions arbitrarily far down.
 
 ---
 

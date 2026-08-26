@@ -219,11 +219,12 @@ def use_theme(font_scale: float = 1.0) -> None:
     plt.rcParams["savefig.facecolor"] = "white"
 
 
-def save_figure(fig, path: Path, *, dpi: int = 200) -> Path:
-    """Write ``fig`` to ``path``, creating the directory, and close it."""
+def save_figure(fig, path: Path, *, dpi: int = 200, close: bool = True) -> Path:
+    """Write ``fig`` to ``path``, creating the directory, and optionally close it."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=dpi, bbox_inches="tight")
-    plt.close(fig)
+    if close:
+        plt.close(fig)
     print(f"  ✓ {path}")
     return path
