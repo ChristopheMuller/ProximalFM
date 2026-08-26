@@ -2,13 +2,17 @@
 
     uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 
-The entry point produces two CATE-only figures. ``cate_iso_nrmse.png`` places
+The entry point produces two CATE figures and one ATE figure.
+``cate_iso_nrmse.png`` places
 each method by its robust level error (median squared normalised ATE bias) and
 heterogeneity recovery (median Shape R²), with point colour showing median
 nPEHE. ``cate_speed_rank.png`` shows the accuracy/speed trade-off: median
 benchmark time per episode on a log x-axis, against the median paired rank on
 CATE nPEHE with 25th–75th percentile whiskers. Reference rows are excluded
 from the rank plot, as they are from every competitor comparison.
+``ate_scatter.png`` compares each method's episode-level estimated ATE with
+the corresponding true ATE from the ``ate`` task, with one shared-axis panel
+per method.
 """
 
 from __future__ import annotations
@@ -274,6 +278,96 @@ def plot_cate_speed_rank(run: BenchmarkRun, opts: Options) -> None:
     save_figure(fig, run.plots_dir / "cate_speed_rank.pdf")
 
 
+def plot_ate_scatter(run: BenchmarkRun, opts: Options) -> None:
+    """Draw one true-versus-estimated ATE panel per method.
+
+    The ``ate`` task is the level-only view of the benchmark. Its rows already
+    contain ``ate_true`` (the episode target mean) and ``ate_pred`` (the mean
+    predicted effect), so this figure does not need to reconstruct an ATE from
+    the row-level predictions. Reference rows are retained as useful anchors;
+    methods with no finite estimate contribute no panel. All panels share the
+    same axis limits so their calibration and spread can be compared directly.
+    """
+    if "ate" not in {task.name for task in run.tasks}:
+        print("  · ate_scatter: ATE results are absent — skipped")
+        return
+
+    frame = run.frame(TASKS["ate"])
+    required = {"method", "ate_true", "ate_pred"}
+    if not required.issubset(frame.columns):
+        print("  · ate_scatter: ATE columns are absent — skipped")
+        return
+    frame = frame.dropna(subset=["ate_true", "ate_pred"])
+    frame = frame[
+        np.isfinite(frame["ate_true"].to_numpy())
+        & np.isfinite(frame["ate_pred"].to_numpy())
+    ]
+    if frame.empty:
+        print("  · ate_scatter: no finite ATE estimates — skipped")
+        return
+
+    true_values = frame["ate_true"].to_numpy()
+    pred_values = frame["ate_pred"].to_numpy()
+    low = float(min(true_values.min(), pred_values.min()))
+    high = float(max(true_values.max(), pred_values.max()))
+    span = high - low
+    pad = 0.05 * span if span > 0 else max(0.05 * abs(low), 0.05)
+    limits = (low - pad, high + pad)
+
+    groups = list(frame.groupby("method", sort=False))
+    n_methods = len(groups)
+    n_columns = min(4, n_methods)
+    n_rows = int(np.ceil(n_methods / n_columns))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_columns,
+        figsize=(3.6 * n_columns, 3.5 * n_rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    for ax in axes[n_methods:]:
+        fig.delaxes(ax)
+
+    for ax, (method, group) in zip(axes[:n_methods], groups):
+        style = style_for(method)
+        ax.plot(
+            limits,
+            limits,
+            color="#333333",
+            linestyle="--",
+            linewidth=1.2,
+            alpha=0.8,
+            zorder=1,
+        )
+        ax.scatter(
+            group["ate_true"],
+            group["ate_pred"],
+            color=style.get("color", "gray"),
+            marker=style.get("marker", "o"),
+            s=style.get("s", 110),
+            edgecolors="white",
+            linewidths=0.7,
+            alpha=0.78,
+            zorder=2,
+        )
+        ax.set(xlim=limits, ylim=limits, title=method)
+        ax.set_aspect("equal", adjustable="box")
+
+    fig.supxlabel("True ATE")
+    fig.supylabel("Estimated ATE")
+    fig.suptitle("Estimated versus true ATE by method", y=0.995)
+    fig.tight_layout(rect=(0.04, 0.04, 1.0, 0.95))
+    save_figure(
+        fig,
+        run.plots_dir / "ate_scatter.png",
+        dpi=opts.dpi,
+        close=False,
+    )
+    save_figure(fig, run.plots_dir / "ate_scatter.pdf")
+
+
 def resolve_exp_dir(exp: str) -> Path:
     """Resolve an experiment name to its benchmark output directory."""
     candidates = [
@@ -306,6 +400,7 @@ def main() -> None:
     use_theme()
     plot_cate_iso_nrmse(run, Options(dpi=args.dpi))
     plot_cate_speed_rank(run, Options(dpi=args.dpi))
+    plot_ate_scatter(run, Options(dpi=args.dpi))
 
 
 if __name__ == "__main__":

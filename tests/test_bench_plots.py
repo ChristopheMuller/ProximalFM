@@ -10,6 +10,7 @@ where a silent mistake is invisible afterwards:
   competitor by one;
 * the CATE iso-curve summary uses the same robust median aggregation as the
   terminal tables;
+* the ATE scatter uses the level-only task's true and estimated ATE columns;
 * every figure survives a degenerate run (one episode, two methods, a failed
   method) rather than taking the whole sheet down with it.
 """
@@ -249,6 +250,44 @@ def test_cate_speed_rank_draws(run):
     plots.plot_cate_speed_rank(run, plots.Options())
     assert (run.plots_dir / "cate_speed_rank.png").exists()
     assert (run.plots_dir / "cate_speed_rank.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_ate_scatter_draws(run):
+    plots.plot_ate_scatter(run, plots.Options())
+    assert (run.plots_dir / "ate_scatter.png").exists()
+    assert (run.plots_dir / "ate_scatter.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_ate_scatter_has_one_panel_per_method(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_ate_scatter(run, plots.Options())
+
+    fig = captured["fig"]
+    axes = fig.axes
+    methods = {
+        "S-OLS",
+        "S-RF",
+        "ProximalFM",
+        "T-RF",
+        "Oracle-CATE(X)",
+        "Oracle-ATE",
+    }
+    assert {ax.get_title() for ax in axes} == methods
+    assert len(axes) == len(methods)
+    assert {text.get_text() for text in fig.texts} >= {
+        "True ATE",
+        "Estimated ATE",
+    }
+
+    for ax in axes:
+        assert len(ax.collections) == 1
+        diagonal = ax.lines[0]
+        np.testing.assert_allclose(diagonal.get_xdata(), diagonal.get_ydata())
 
 
 def test_cate_speed_rank_uses_log_x_and_best_rank_at_top(run, monkeypatch):
