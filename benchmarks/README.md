@@ -121,7 +121,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
 | **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each through `TaskReport.latex()`, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. It holds no column spec of its own — the columns, formats, bolding direction and caption all live on the `Task`. |
-| **[`plots.py`](plots.py)** | The CATE error-anatomy figure: median squared normalised ATE bias against median Shape R², coloured by median nPEHE, with analytic single-episode reference contours. See §6. |
+| **[`plots.py`](plots.py)** | The CATE figures: error anatomy (median squared normalised ATE bias against median Shape R², coloured by median nPEHE) and the accuracy/speed trade-off (median runtime against paired median nPEHE rank with 25th–75th percentile whiskers). See §6. |
 | **[`plot_frames.py`](plot_frames.py)** | The numbers behind the figures — `BenchmarkRun`, which owns loading, the complete-block pivots, the ranks, and the per-episode difficulty covariates derived from `data.pt`. No figure computes its own. |
 | **[`plot_style.py`](plot_style.py)** | Colour (family) and marker (variant) per method, the reference lines each metric is read against (`METRIC_ANCHORS`), and the theme/save chores. |
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the enumeration and the selection. Two search blocks, because they cost differently: `tune.grid` is **sampled** (`n_trials` draws), `tune.sweep` is **enumerated** for every draw, so the evaluated count is `n_trials * \|sweep\|`. `sweep` is a *declaration* that the axis is nearly free once a candidate is part-built, and the method must validate which of its parameters may appear there — PMMR's `lam1` (one Cholesky off a prepared system) and NMMR's `n_epochs` (one score off a paused training run) are the ones that qualify. `search_nested` collects the saving structurally rather than by memoising, so nothing carries data identity across episodes. Used by KPV's, PMMR's and NMMR's `tune:` blocks. |
@@ -395,12 +395,20 @@ there and is reported with a non-zero failure rate rather than taking the run do
 uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 ```
 
-The plotting entry point currently produces one CATE-only figure,
-`results/plots/cate_iso_nrmse.png`. Its x-axis is median squared normalised ATE
-bias, its y-axis is median Shape R², and point colour is median nPEHE. The
-data grid is censored at x = 3 and y = −1; out-of-range methods are shown just
-outside the relevant boundary (for example, x = 4 is displayed at x = 3.05).
-The contour lines are single-episode CATE NRMSE reference guides. `--dpi` is
+The plotting entry point produces two CATE-only figures. The error-anatomy
+figure is `results/plots/cate_iso_nrmse.png`: its x-axis is median squared
+normalised ATE bias, its y-axis is median Shape R², and point colour is median
+nPEHE. The data grid is censored at x = 3 and y = −1; out-of-range methods are
+shown just outside the relevant boundary (for example, x = 4 is displayed at
+x = 3.05). The contour lines are single-episode CATE NRMSE reference guides.
+
+The accuracy/speed figure is `results/plots/cate_speed_rank.png`. It places
+each non-reference method at its median recorded fit-plus-predict time per
+benchmark episode (seconds, log-scaled x-axis) and its median paired rank on
+CATE nPEHE; whiskers show the 25th–75th percentile of that rank across the
+complete episode block. Rank 1 is at the top, so methods nearer the upper-left
+are faster and more accurate. Timing is wall-clock and therefore depends on
+the benchmark's resolved device, thread and worker configuration. `--dpi` is
 the sole output option.
 
 The figure uses the following identity. Per episode, with `b` the normalised

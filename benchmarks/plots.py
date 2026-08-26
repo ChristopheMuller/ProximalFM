@@ -1,13 +1,14 @@
-"""The CATE error-anatomy plot for a finished benchmark run.
+"""Benchmark figures for a finished benchmark run.
 
     uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 
-The sole figure, ``cate_iso_nrmse.png``, places each method by its robust
-level error (median squared normalised ATE bias) and heterogeneity recovery
-(median Shape R²), with point colour showing median nPEHE. Its analytic
-contours are single-episode CATE NRMSE reference contours. It is deliberately
-CATE-only: the identity used to construct the contours is not an identity for
-the median summaries.
+The entry point produces two CATE-only figures. ``cate_iso_nrmse.png`` places
+each method by its robust level error (median squared normalised ATE bias) and
+heterogeneity recovery (median Shape R²), with point colour showing median
+nPEHE. ``cate_speed_rank.png`` shows the accuracy/speed trade-off: median
+benchmark time per episode on a log x-axis, against the median paired rank on
+CATE nPEHE with 25th–75th percentile whiskers. Reference rows are excluded
+from the rank plot, as they are from every competitor comparison.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.colors import Normalize
+from matplotlib.ticker import MaxNLocator
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -71,6 +73,52 @@ def _display_coordinate(value: float, low: float, high: float) -> float:
     if value > high:
         return high + CENSOR_PAD
     return value
+
+
+def _cate_speed_rank_summary(run: BenchmarkRun) -> pd.DataFrame:
+    """Summarize runtime and paired CATE nPEHE ranks for each competitor.
+
+    Ranks come from :meth:`BenchmarkRun.ranks`, so they are computed on the
+    complete episode block and never include reference rows. Runtime is the
+    recorded fit-plus-predict wall time for the same block. Non-positive times
+    are omitted because they cannot be represented on the log-scaled x-axis;
+    this also makes old prediction caches with missing timing arrays fail
+    closed instead of plotting a misleading zero-speed point.
+    """
+    cate: Task = TASKS["cate"]
+    ranks = run.ranks(cate)
+    if ranks.empty:
+        return pd.DataFrame(
+            columns=[
+                "median_time_s",
+                "median_rank",
+                "rank_p25",
+                "rank_p75",
+                "n_episodes",
+            ]
+        )
+
+    times = run.competitor_frame(cate).pivot_table(
+        index="episode", columns="method", values="time", aggfunc="first"
+    )
+    times = times.reindex(index=ranks.index, columns=ranks.columns)
+
+    rows = {}
+    for method in ranks.columns:
+        method_times = times[method]
+        valid = method_times.notna() & np.isfinite(method_times) & (method_times > 0)
+        if not valid.any():
+            continue
+        method_ranks = ranks.loc[valid, method]
+        method_times = method_times.loc[valid]
+        rows[method] = {
+            "median_time_s": float(method_times.median()),
+            "median_rank": float(method_ranks.median()),
+            "rank_p25": float(method_ranks.quantile(0.25)),
+            "rank_p75": float(method_ranks.quantile(0.75)),
+            "n_episodes": int(len(method_ranks)),
+        }
+    return pd.DataFrame.from_dict(rows, orient="index")
 
 
 def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
@@ -148,6 +196,84 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
     save_figure(fig, run.plots_dir / "cate_iso_nrmse.pdf")
 
 
+def plot_cate_speed_rank(run: BenchmarkRun, opts: Options) -> None:
+    """Draw runtime against the robust paired rank on CATE nPEHE.
+
+    The x-axis is the median fit-plus-predict wall time per benchmark episode,
+    in seconds and on a log scale. The y-axis is inverted so rank 1 (best) is
+    at the top, with whiskers spanning the per-episode 25th–75th percentile.
+    """
+    if "cate" not in {task.name for task in run.tasks}:
+        print("  · cate_speed_rank: CATE results are absent — skipped")
+        return
+    summary = _cate_speed_rank_summary(run)
+    if summary.empty:
+        print("  · cate_speed_rank: no finite CATE ranks and timings — skipped")
+        return
+
+    fig, ax = plt.subplots(figsize=(9.2, 7.0))
+    label_offsets = ((6, 8), (6, -17), (-6, 8), (-6, -17))
+
+    for i, (method, row) in enumerate(summary.iterrows()):
+        style = style_for(method)
+        color = style.get("color", "gray")
+        x = float(row["median_time_s"])
+        y = float(row["median_rank"])
+        yerr = np.array(
+            [
+                [max(0.0, y - float(row["rank_p25"]))],
+                [max(0.0, float(row["rank_p75"]) - y)],
+            ]
+        )
+        ax.errorbar(
+            x,
+            y,
+            yerr=yerr,
+            fmt="none",
+            ecolor=color,
+            elinewidth=2.2,
+            alpha=0.85,
+            capsize=0,
+            zorder=2,
+        )
+        ax.scatter(
+            x,
+            y,
+            color=color,
+            marker=style.get("marker", "o"),
+            s=style.get("s", 110),
+            edgecolors="white",
+            linewidths=0.9,
+            zorder=3,
+        )
+        dx, dy = label_offsets[i % len(label_offsets)]
+        ax.annotate(
+            abbreviate(method),
+            (x, y),
+            xytext=(dx, dy),
+            textcoords="offset points",
+            ha="left" if dx > 0 else "right",
+            va="center",
+            fontsize=7,
+            color="0.25",
+        )
+
+    ax.set_xscale("log")
+    lower_rank = max(0.5, float(summary["rank_p25"].min()) - 0.5)
+    upper_rank = float(summary["rank_p75"].max()) + 0.5
+    ax.set_ylim(upper_rank, lower_rank)
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_xlabel("Median time per benchmark episode (seconds, log scale)")
+    ax.set_ylabel("Median rank on CATE nPEHE (25th–75th percentile)")
+    save_figure(
+        fig,
+        run.plots_dir / "cate_speed_rank.png",
+        dpi=opts.dpi,
+        close=False,
+    )
+    save_figure(fig, run.plots_dir / "cate_speed_rank.pdf")
+
+
 def resolve_exp_dir(exp: str) -> Path:
     """Resolve an experiment name to its benchmark output directory."""
     candidates = [
@@ -167,7 +293,7 @@ def resolve_exp_dir(exp: str) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Draw the CATE iso-NRMSE plot.")
+    parser = argparse.ArgumentParser(description="Draw benchmark figures.")
     parser.add_argument("--exp", default=None, help="Experiment name.")
     parser.add_argument("--path", default=None, help="Benchmark output directory.")
     parser.add_argument("--dpi", type=int, default=200)
@@ -178,12 +304,8 @@ def main() -> None:
     )
     run = BenchmarkRun.load(exp_dir)
     use_theme()
-    print(
-        "Figures → "
-        f"{run.plots_dir / 'cate_iso_nrmse.png'} and "
-        f"{run.plots_dir / 'cate_iso_nrmse.pdf'}"
-    )
     plot_cate_iso_nrmse(run, Options(dpi=args.dpi))
+    plot_cate_speed_rank(run, Options(dpi=args.dpi))
 
 
 if __name__ == "__main__":

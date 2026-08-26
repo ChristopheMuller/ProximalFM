@@ -25,7 +25,7 @@ matplotlib.use("Agg")  # before benchmarks.plots pulls in pyplot
 from benchmarks import plots
 from benchmarks.metrics import TASKS, score_method
 from benchmarks.plot_frames import BenchmarkRun, select_methods, terciles
-from benchmarks.plots import _cate_summary
+from benchmarks.plots import _cate_speed_rank_summary, _cate_summary
 
 CATE, ITE, ATE = TASKS["cate"], TASKS["ite"], TASKS["ate"]
 
@@ -219,6 +219,19 @@ def test_cate_summary_uses_medians(run):
     assert summary.loc["Oracle-CATE(X)", "npehe"] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_cate_speed_rank_summary_uses_paired_rank_quantiles(run):
+    summary = _cate_speed_rank_summary(run)
+
+    # The failed episode is removed by the complete-block rank calculation,
+    # and references never appear as competitors.
+    assert set(summary.index) == {"S-OLS", "S-RF", "ProximalFM", "T-RF"}
+    assert "Oracle-CATE(X)" not in summary.index
+    assert (summary["n_episodes"] == 11).all()
+    assert np.allclose(summary["median_time_s"].to_numpy(), 0.1)
+    assert (summary["rank_p25"] <= summary["median_rank"]).all()
+    assert (summary["median_rank"] <= summary["rank_p75"]).all()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Every figure runs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -230,6 +243,26 @@ def test_cate_iso_curve_draws(run):
     # oracle at zero error); what it may not do is raise.
     assert (run.plots_dir / "cate_iso_nrmse.png").exists()
     assert (run.plots_dir / "cate_iso_nrmse.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_cate_speed_rank_draws(run):
+    plots.plot_cate_speed_rank(run, plots.Options())
+    assert (run.plots_dir / "cate_speed_rank.png").exists()
+    assert (run.plots_dir / "cate_speed_rank.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_cate_speed_rank_uses_log_x_and_best_rank_at_top(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_cate_speed_rank(run, plots.Options())
+
+    ax = captured["fig"].axes[0]
+    assert ax.get_xscale() == "log"
+    assert ax.yaxis_inverted()
 
 
 def test_cate_iso_curve_uses_censored_linear_axes(run, monkeypatch):
@@ -279,3 +312,4 @@ def test_degenerate_run_draws_without_raising(tmp_path):
     root = _write_run(tmp_path, n_episodes=1, n_rows=8, fail_method=False)
     run = BenchmarkRun.load(root)
     plots.plot_cate_iso_nrmse(run, plots.Options())
+    plots.plot_cate_speed_rank(run, plots.Options())
