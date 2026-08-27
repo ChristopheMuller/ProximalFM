@@ -218,31 +218,21 @@ Four panels, each answering something the others cannot:
   loss**. The level of the distributional term is therefore not comparable across the anneal, and a
   curve that moves inside the shaded window is the schedule, not the model. The shading in (a) marks
   that window; nothing else in the appendix would tell a reader to distrust that segment.
-- **(d) the mean head's accuracy.** `loss/cate_mse / target/cate_std²` is `1 − R²`; it ends at
-  **0.020**.
+- **(d) the weighted mean term in detail.** This is the exact same
+  `loss/cate_mse_weighted = lambda_cate × loss/cate_mse` curve shown in orange in (a) and (b),
+  magnified on its own log y-axis; the grey region again marks the σ anneal, and the curve ends at
+  **0.018**.
 
 `(c)` sits under `(a)` on purpose, and `build_figure` pins the log-step limits of every panel that
 uses one rather than letting them autoscale: a binned panel stops at its last bin's median step and a
 raw one at the final step, so autoscaled limits put the shaded σ window at a *slightly different* x in
 (a) than in (c) — the one thing the column layout exists to prevent. A test pins it.
 
-### The baseline in (d) is an oracle, not a do-nothing
+### Why (d) is separate
 
-Worth stating because the obvious reading is wrong. `target/cate_std` is the spread of `τ` about its
-**own mean**, so `1 − R² = 1` is attained by the single constant `τ ≡ E[τ]` — a predictor that needs
-the ground truth. `R² = 0` is therefore already non-trivial, not a free floor, and the line is drawn
-with `ROLES["oracle"]` (black dotted) rather than `ROLES["reference"]` so it does not read as
-something cheap the model beat. A genuinely naive estimator — an unadjusted difference in means,
-biased by exactly the confounding this model exists to handle — sits **above** 1. That level is *not*
-derivable from the logged keys: it is a property of the prior rather than of the run, and drawing it
-needs a separate sampling pass.
-
-Two more things the panel cannot claim, both because of pooling. `loss/cate_mse` and
-`target/cate_std` are computed over *all* elements of the `(micro_batch, n_query)` tensor
-(`_run.py`'s `true_cate_std.std()`), i.e. over 16 episodes at once, so:
-
-- the implied constant is one number across all 16 episodes, weaker than a per-episode ATE;
-- the denominator carries the **between**-episode spread of `τ` as well as the within-episode spread,
-  where the benchmark's nPEHE normalises per episode. Same formula (`r2 = 1 − nrmse²` in
-  [`benchmarks/metrics.py`](../benchmarks/metrics.py)), strictly easier denominator — so **0.020 is
-  optimistic against the benchmark's cate-task nPEHE² and the two must not be read side by side.**
+The objective identity in (a) and (b),
+`loss/total = loss/cate_dist + loss/cate_mse_weighted`, is visually meaningful because all three
+curves share one y-axis. Putting the much smaller mean term on a twin axis in (b) would make its
+apparent height and slope depend on arbitrary axis limits and obscure that it is a regularizer rather
+than a co-equal half of the objective. Panel (d) preserves the shared scale in the objective panels
+while giving the same orange curve enough vertical resolution to inspect its convergence.

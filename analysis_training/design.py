@@ -87,9 +87,6 @@ SERIES = {
     "loss/cate_mse": Series(r"mean term", OKABE_ITO["orange"]),
     "loss/hl_sigma": Series(r"$\sigma$", OKABE_ITO["vermillion"]),
     "lr": Series(r"learning rate", OKABE_ITO["green"]),
-    # Not a logged key: the mean head's residual variance as a fraction of the
-    # target's, i.e. 1 - R^2 against predicting the context mean.
-    "unexplained": Series(r"$1 - R^2$", OKABE_ITO["purple"]),
 }
 
 

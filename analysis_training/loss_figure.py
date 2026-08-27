@@ -32,14 +32,10 @@ shaded window is the schedule, not the model. The shading in (a) marks that
 window; nothing else in the appendix would tell a reader to distrust that
 segment.
 
-**(d) the mean head's accuracy.** ``loss/cate_mse`` over ``target/cate_std**2``
-is ``1 - R^2``. The reference at 1 is **not** a free baseline and is drawn as an
-oracle: ``target/cate_std`` is the spread of ``tau`` about its own mean, so 1 is
-what the single constant ``tau = E[tau]`` achieves, and that constant needs the
-ground truth. ``R^2 = 0`` is therefore already non-trivial -- a genuinely naive
-estimator would sit *above* the line. See :func:`panel_unexplained` for the two
-things this panel cannot claim: the naive level is not in the logs, and the
-pooling makes the ratio optimistic against the benchmark's per-episode nPEHE.
+**(d) the weighted mean term in detail.** This is the exact same
+``loss/cate_mse_weighted`` curve shown as the orange component in (a) and (b),
+now on its own log scale so its progress remains visible without giving it a
+second, visually arbitrary scale inside the objective panels.
 
 Style comes from :mod:`analysis_training.design`, which re-exports Appendix B's
 identity so the two appendices' figures are typographically the same figures.
@@ -174,44 +170,18 @@ def panel_plateau(ax, history: History, run: TrainingRun, n_bins: int) -> None:
     ax.legend(loc="upper right")
 
 
-def panel_unexplained(ax, history: History, n_bins: int) -> None:
-    """The mean head's residual variance share, ``1 - R^2``.
-
-    The baseline the ratio is normalized by is **not** a free one, and the label
-    says so. ``target/cate_std`` is the spread of ``tau`` around its own mean, so
-    ``1`` is attained by the single constant equal to ``E[tau]`` -- a predictor
-    that needs the ground truth. Reaching ``R^2 = 0`` is therefore already
-    non-trivial, and a genuinely naive estimator (an unadjusted difference in
-    means, biased by the confounding this whole model exists to handle) would sit
-    *above* 1. That level is not derivable from the logged keys; it is a property
-    of the prior rather than of the run, and drawing it would take a separate
-    sampling pass.
-
-    One caveat this panel cannot escape, stated in the caption: both quantities
-    are pooled over the whole micro-batch (16 episodes x 128 query rows,
-    ``_run.py``'s ``true_cate_std.std()``), so the denominator carries the
-    *between*-episode spread of ``tau`` as well as the within-episode spread.
-    The benchmark's nPEHE normalizes per episode instead. Numerically identical
-    formula, strictly easier denominator -- so this number is optimistic against
-    the benchmark's and the two must not be read side by side.
-    """
+def panel_mean_term_detail(ax, history: History, run: TrainingRun, n_bins: int) -> None:
+    """Magnify the weighted mean term already shown in panels (a) and (b)."""
     frame = history.frame
-    ratio = frame["loss/cate_mse"] / frame["target/cate_std"] ** 2
-    summary = binned(frame["_step"], ratio, log=True, n_bins=n_bins)
-    draw_binned(ax, summary, series("unexplained"))
+    lo, hi = sigma_window(run)
+    ax.axvspan(lo, hi, **SCHEDULE_SPAN)
 
-    style = series("unexplained")
+    key = "loss/cate_mse_weighted"
+    summary = binned(frame["_step"], frame[key], log=True, n_bins=n_bins)
+    draw_binned(ax, summary, series(key))
+
+    style = series(key)
     final = float(summary.median[-1])
-    # `oracle`, not `reference`: this level needs E[tau], so it is not what a
-    # do-nothing estimator achieves.
-    reference_line(
-        ax,
-        1.0,
-        r"ATE, $\tau \equiv \mathbb{E}[\tau]$",
-        x=0.68,
-        above=False,
-        role="oracle",
-    )
     ax.annotate(
         f"${final:.3f}$",
         xy=(summary.x[-1], final),
@@ -224,8 +194,8 @@ def panel_unexplained(ax, history: History, n_bins: int) -> None:
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("step")
-    ax.set_ylabel(r"$1 - R^2 = \mathcal{L}_{\mathrm{mse}} / \mathrm{Var}(\tau)$")
-    ax.set_title("mean-head accuracy")
+    ax.set_ylabel(r"$\lambda_{\mathrm{mean}}\,\mathcal{L}_{\mathrm{mse}}$")
+    ax.set_title("mean term in detail")
 
 
 def panel_schedules(ax, history: History, run: TrainingRun) -> None:
@@ -301,7 +271,7 @@ def build_figure(
     panel_overview(axes[0, 0], history, run, n_bins)
     panel_plateau(axes[0, 1], history, run, n_bins)
     panel_schedules(axes[1, 0], history, run)
-    panel_unexplained(axes[1, 1], history, n_bins)
+    panel_mean_term_detail(axes[1, 1], history, run, n_bins)
 
     # Pin the log-step axis on every panel that uses one. Autoscaling would give
     # each its own limits -- a binned panel stops at its last bin's median step,

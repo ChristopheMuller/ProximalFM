@@ -126,7 +126,7 @@ def test_builds_four_labelled_panels(history, run):
     fig = loss_figure.build_figure(history, run, n_bins=20)
     try:
         axes = fig.get_axes()
-        # Four panels plus the twin axis in (d).
+        # Four panels plus the schedule panel's twin axis.
         assert len(axes) == 5
         titles = [ax.get_title(loc="left") for ax in axes[:4]]
         assert [t[:3] for t in titles] == ["(a)", "(b)", "(c)", "(d)"]
@@ -139,13 +139,14 @@ def test_schedules_sits_under_the_overview(history, run):
     axes and the shaded sigma window line up vertically."""
     fig = loss_figure.build_figure(history, run, n_bins=20)
     try:
-        overview, plateau, schedules, unexplained = fig.get_axes()[:4]
+        overview, plateau, schedules, mean_term_detail = fig.get_axes()[:4]
         assert overview.get_subplotspec().colspan == schedules.get_subplotspec().colspan
         assert overview.get_xscale() == schedules.get_xscale() == "log"
         assert overview.get_xlim() == pytest.approx(schedules.get_xlim())
-        # Both mark the anneal; the other two panels do not.
+        # Every log-step diagnostic marks the anneal; the post-anneal panel does not.
         assert _has_span(overview) and _has_span(schedules)
-        assert not _has_span(plateau) and not _has_span(unexplained)
+        assert _has_span(mean_term_detail)
+        assert not _has_span(plateau)
     finally:
         design.plt.close(fig)
 
@@ -157,25 +158,21 @@ def _has_span(ax) -> bool:
     )
 
 
-def test_the_constant_baseline_is_drawn_as_an_oracle(history, run):
-    """R^2 = 0 is what the constant E[tau] achieves, and that needs the ground
-    truth -- drawing it as a plain reference would read as a free baseline."""
+def test_panel_d_is_the_weighted_mean_term_in_detail(history, run):
+    """Panel (d) magnifies the exact orange component from panels (a) and (b)."""
     fig = loss_figure.build_figure(history, run, n_bins=20)
     try:
-        unexplained = fig.get_axes()[3]
-        flat = [
-            line
-            for line in unexplained.get_lines()
-            if len(set(np.round(line.get_ydata(), 12))) == 1
-        ]
-        assert flat, "no baseline drawn"
-        assert any(
-            line.get_linestyle() == design.ROLES["oracle"]["linestyle"] for line in flat
+        mean_term_detail = fig.get_axes()[3]
+        expected = design.binned(
+            history.frame["_step"],
+            history.frame["loss/cate_mse_weighted"],
+            log=True,
+            n_bins=20,
         )
-        # Matched on the math, not the prose: the wording of the label is a
-        # presentation choice, that it names E[tau] is the claim.
-        labels = [t.get_text() for t in unexplained.texts]
-        assert any(r"\mathbb{E}[\tau]" in text for text in labels)
+        [curve] = mean_term_detail.get_lines()
+        assert curve.get_ydata() == pytest.approx(expected.median)
+        assert curve.get_color() == design.series("loss/cate_mse_weighted").color
+        assert mean_term_detail.get_yscale() == "log"
     finally:
         design.plt.close(fig)
 
