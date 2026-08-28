@@ -20,6 +20,7 @@ directory instead.
 | `\Cref{fig:training_curves}` | `uv run python -m analysis_training.loss_figure` | [`loss_figure.py`](loss_figure.py) |
 | `\Cref{fig:point_validation}` | `uv run python -m analysis_training.point_figure` | [`point_figure.py`](point_figure.py) |
 | `\Cref{fig:distributional_validation}` | `uv run python -m analysis_training.distributional_figure` | [`distributional_figure.py`](distributional_figure.py) |
+| `\Cref{fig:posterior_snapshot}` | `uv run python -m analysis_training.posterior_snapshot --ckpt ... --data-dir ... --dataset-index ... --n-ctx ... --query-index ...` | [`posterior_snapshot.py`](posterior_snapshot.py) |
 
 Artifacts derived from a *run* rather than from a config go through
 [`wandb_history.py`](wandb_history.py), which fetches and caches history into
