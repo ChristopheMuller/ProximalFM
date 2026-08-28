@@ -18,6 +18,7 @@ directory instead.
 | `\Cref{tab:training_hparams}` | `uv run python -m analysis_training.hparam_table` | [`hparam_table.py`](hparam_table.py) |
 | `\Cref{tab:training_cost}` | `uv run python -m analysis_training.time_table` | [`time_table.py`](time_table.py) |
 | `\Cref{fig:training_curves}` | `uv run python -m analysis_training.loss_figure` | [`loss_figure.py`](loss_figure.py) |
+| `\Cref{fig:point_validation}` | `uv run python -m analysis_training.point_figure` | [`point_figure.py`](point_figure.py) |
 
 Artifacts derived from a *run* rather than from a config go through
 [`wandb_history.py`](wandb_history.py), which fetches and caches history into

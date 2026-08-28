@@ -87,6 +87,12 @@ SERIES = {
     "loss/cate_mse": Series(r"mean term", OKABE_ITO["orange"]),
     "loss/hl_sigma": Series(r"$\sigma$", OKABE_ITO["vermillion"]),
     "lr": Series(r"learning rate", OKABE_ITO["green"]),
+    "synt_point/ate/rmse": Series(r"ATE RMSE", OKABE_ITO["blue"]),
+    "synt_point/ate/bias_norm": Series(r"normalized ATE bias", OKABE_ITO["orange"]),
+    "synt_point/cate/npehe": Series(r"CATE nPEHE", OKABE_ITO["green"]),
+    "synt_point/cate/r2_shape": Series(
+        r"CATE $R^2_{\mathrm{shape}}$", OKABE_ITO["purple"]
+    ),
 }
 
 
