@@ -13,10 +13,11 @@ are per-episode summaries; their logged p25--p75 values are drawn as shaded
 bands. The bands describe variation across validation episodes, not uncertainty
 in the estimated training trajectory.
 
-All metrics are read at their logged validation cadence rather than binned: the
-validation pass already produces one robust summary at each checkpoint, and
-the p25--p75 columns are themselves summaries that should not be re-aggregated.
-The x-axis is logarithmic to make the early and late parts of training visible.
+All metrics are read at their logged validation cadence and lightly summarized
+with log-spaced median bins for display. The p25--p75 columns are binned in the
+same way as their central metric; they are not recomputed from per-episode
+predictions. The x-axis is logarithmic to make the early and late parts of
+training visible.
 """
 
 from __future__ import annotations
@@ -25,8 +26,12 @@ import argparse
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
 from analysis_training.design import (
     apply_style,
+    binned,
+    draw_binned,
     figsize_grid,
     panel_tag,
     plt,
@@ -70,34 +75,53 @@ def _metric_frame(history: History, key: str, *, band: bool):
     return frame
 
 
-def _draw_metric(ax, history: History, key: str, *, ylabel: str, band: bool) -> None:
-    """Draw one checkpoint trajectory and its optional episode IQR."""
+def _draw_metric(
+    ax,
+    history: History,
+    key: str,
+    *,
+    ylabel: str,
+    band: bool,
+    n_bins: int,
+) -> None:
+    """Draw a log-binned checkpoint trajectory and its optional episode IQR."""
     frame = _metric_frame(history, key, band=band)
     style = series(key)
 
+    summary = binned(frame["_step"], frame[key], log=True, n_bins=n_bins)
     if band:
+        lower = binned(
+            frame["_step"],
+            frame[f"{key}/p25"],
+            log=True,
+            n_bins=n_bins,
+        )
+        upper = binned(
+            frame["_step"],
+            frame[f"{key}/p75"],
+            log=True,
+            n_bins=n_bins,
+        )
+        if not (
+            np.array_equal(summary.x, lower.x) and np.array_equal(summary.x, upper.x)
+        ):
+            raise ValueError(f"Band bins do not align for {key!r}")
         ax.fill_between(
-            frame["_step"].to_numpy(),
-            frame[f"{key}/p25"].to_numpy(),
-            frame[f"{key}/p75"].to_numpy(),
+            summary.x,
+            lower.median,
+            upper.median,
             color=style.color,
             alpha=0.18,
             lw=0,
             label="episode p25--p75",
         )
-    ax.plot(
-        frame["_step"].to_numpy(),
-        frame[key].to_numpy(),
-        color=style.color,
-        lw=style.lw,
-        label=style.label,
-    )
+    draw_binned(ax, summary, style, band=False)
     ax.set_xscale("log")
     ax.set_xlabel("training step")
     ax.set_ylabel(ylabel)
 
 
-def build_figure(history: History) -> "plt.Figure":
+def build_figure(history: History, *, n_bins: int = 70) -> "plt.Figure":
     """Assemble the four point-estimate validation panels."""
     apply_style()
     fig, axes = plt.subplots(
@@ -112,6 +136,7 @@ def build_figure(history: History) -> "plt.Figure":
         "synt_point/ate/rmse",
         ylabel="RMSE",
         band=False,
+        n_bins=n_bins,
     )
     axes[0, 0].set_title("ATE RMSE")
 
@@ -121,6 +146,7 @@ def build_figure(history: History) -> "plt.Figure":
         "synt_point/ate/bias_norm",
         ylabel="bias / SD(CATE)",
         band=True,
+        n_bins=n_bins,
     )
     axes[0, 1].set_title("normalized ATE bias")
     reference_line(
@@ -137,6 +163,7 @@ def build_figure(history: History) -> "plt.Figure":
         "synt_point/cate/npehe",
         ylabel="nPEHE",
         band=True,
+        n_bins=n_bins,
     )
     axes[1, 0].set_title("CATE nPEHE")
     reference_line(
@@ -153,6 +180,7 @@ def build_figure(history: History) -> "plt.Figure":
         "synt_point/cate/r2_shape",
         ylabel=r"shape $R^2$",
         band=True,
+        n_bins=n_bins,
     )
     axes[1, 1].set_title(r"CATE shape $R^2$")
     reference_line(
@@ -178,10 +206,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
     parser.add_argument("--name", default=NAME)
     parser.add_argument("--force", action="store_true", help="Refetch from wandb.")
+    parser.add_argument(
+        "--n-bins",
+        type=int,
+        default=70,
+        help="Log-spaced bins for the display summary (default: 70).",
+    )
     args = parser.parse_args(argv)
 
     history = fetch(list(KEYS), run=args.run, force=args.force)
-    fig = build_figure(history)
+    fig = build_figure(history, n_bins=args.n_bins)
     paths = save_figure(fig, args.outdir, args.name)
     print("wrote " + ", ".join(str(path) for path in paths))
 

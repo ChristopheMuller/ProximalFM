@@ -51,6 +51,16 @@ def test_ate_rmse_has_no_episode_band_but_other_metrics_do():
         point_figure.plt.close(fig)
 
 
+def test_trajectories_are_log_binned_for_display():
+    fig = point_figure.build_figure(history(), n_bins=2)
+    try:
+        axes = fig.get_axes()
+        assert len(axes[0].lines[0].get_xdata()) == 2
+        assert len(axes[1].lines[0].get_xdata()) == 2
+    finally:
+        point_figure.plt.close(fig)
+
+
 def test_constant_ate_reference_lines_are_present():
     fig = point_figure.build_figure(history())
     try:

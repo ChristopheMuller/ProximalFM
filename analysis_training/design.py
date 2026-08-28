@@ -93,6 +93,13 @@ SERIES = {
     "synt_point/cate/r2_shape": Series(
         r"CATE $R^2_{\mathrm{shape}}$", OKABE_ITO["purple"]
     ),
+    "synt_dist/crps": Series(r"CRPS", OKABE_ITO["blue"]),
+    "synt_dist/sd_over_rmse": Series(r"predictive SD / RMSE", OKABE_ITO["orange"]),
+    "synt_dist/cov50_pooled": Series(r"50% coverage", OKABE_ITO["sky_blue"]),
+    "synt_dist/cov90_pooled": Series(r"90% coverage", OKABE_ITO["green"]),
+    "synt_dist/mean_sd": Series(r"mean predictive SD", OKABE_ITO["purple"]),
+    "synt_dist/width90": Series(r"90% interval width", OKABE_ITO["purple"]),
+    "synt_dist/width50": Series(r"50% interval width", OKABE_ITO["sky_blue"]),
 }
 
 
