@@ -22,6 +22,7 @@ directory instead.
 | `\Cref{fig:distributional_validation}` | `uv run python -m analysis_training.distributional_figure` | [`distributional_figure.py`](distributional_figure.py) |
 | `\Cref{fig:posterior_snapshot}` | `uv run python -m analysis_training.posterior_snapshot --ckpt ... --data-dir ... --dataset-index ... --n-ctx ... --query-index ...` | [`posterior_snapshot.py`](posterior_snapshot.py) |
 | `\Cref{fig:posterior_contraction}` | `uv run python -m analysis_training.posterior_contraction --ckpt-dir ... --data-dir ...` | [`posterior_contraction.py`](posterior_contraction.py) |
+| `\Cref{fig:posterior_evolution}` | `uv run python -m analysis_training.posterior_evolution --data-dir ... --dataset-index ... --query-index ...` | [`posterior_evolution.py`](posterior_evolution.py) |
 
 Artifacts derived from a *run* rather than from a config go through
 [`wandb_history.py`](wandb_history.py), which fetches and caches history into
