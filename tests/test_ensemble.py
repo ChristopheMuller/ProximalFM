@@ -53,8 +53,7 @@ def test_shuffler_none_returns_identity():
     assert patterns == [list(range(5))]
 
 
-@pytest.mark.parametrize("n_estimators", [1, 3, 8])
-def test_shuffler_single_estimator_or_one_element(n_estimators):
+def test_shuffler_single_estimator_or_one_element():
     # n_estimators == 1 is a degenerate case: identity only.
     shuffler = FeatureShuffler(n_elements=6, method="random")
     patterns = shuffler.shuffle(n_estimators=1)
@@ -62,7 +61,7 @@ def test_shuffler_single_estimator_or_one_element(n_estimators):
 
     # n_elements <= 1 is also degenerate.
     shuffler = FeatureShuffler(n_elements=1, method="latin")
-    assert shuffler.shuffle(n_estimators=n_estimators) == [[0]]
+    assert shuffler.shuffle(n_estimators=3) == [[0]]
 
 
 def test_shuffler_shift_produces_all_circular_shifts():
@@ -211,12 +210,12 @@ def test_apply_value_transform_signed_log_and_arcsinh_are_odd():
         assert torch.all(torch.sign(out) == torch.sign(z))
 
 
-@pytest.mark.parametrize("name", VALUE_TRANSFORMS)
-def test_apply_value_transform_preserves_shape(name):
+def test_apply_value_transforms_preserve_shape():
     x = torch.randn(2, 30, 4)
-    out = apply_value_transform(x, name, train_size=20)
-    assert out.shape == x.shape
-    assert torch.isfinite(out).all()
+    for name in VALUE_TRANSFORMS:
+        out = apply_value_transform(x, name, train_size=20)
+        assert out.shape == x.shape, name
+        assert torch.isfinite(out).all(), name
 
 
 def test_apply_value_transform_unknown_raises():

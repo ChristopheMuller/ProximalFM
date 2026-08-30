@@ -122,47 +122,20 @@ def test_sigma_window_is_warmup_then_decay(run):
 # --------------------------------------------------------------------------- #
 
 
-def test_builds_four_labelled_panels(history, run):
+def test_loss_figure_content_layout_and_shared_styling(history, run):
     fig = loss_figure.build_figure(history, run, n_bins=20)
     try:
         axes = fig.get_axes()
-        # Four panels plus the schedule panel's twin axis.
         assert len(axes) == 5
         titles = [ax.get_title(loc="left") for ax in axes[:4]]
         assert [t[:3] for t in titles] == ["(a)", "(b)", "(c)", "(d)"]
-    finally:
-        design.plt.close(fig)
-
-
-def test_schedules_sits_under_the_overview(history, run):
-    """The layout is load-bearing: (c) shares (a)'s column so their log-step
-    axes and the shaded sigma window line up vertically."""
-    fig = loss_figure.build_figure(history, run, n_bins=20)
-    try:
         overview, plateau, schedules, mean_term_detail = fig.get_axes()[:4]
         assert overview.get_subplotspec().colspan == schedules.get_subplotspec().colspan
         assert overview.get_xscale() == schedules.get_xscale() == "log"
         assert overview.get_xlim() == pytest.approx(schedules.get_xlim())
-        # Every log-step diagnostic marks the anneal; the post-anneal panel does not.
         assert _has_span(overview) and _has_span(schedules)
         assert _has_span(mean_term_detail)
         assert not _has_span(plateau)
-    finally:
-        design.plt.close(fig)
-
-
-def _has_span(ax) -> bool:
-    """Whether the axes carries the anneal shading, matched by its alpha."""
-    return any(
-        patch.get_alpha() == design.SCHEDULE_SPAN["alpha"] for patch in ax.patches
-    )
-
-
-def test_panel_d_is_the_weighted_mean_term_in_detail(history, run):
-    """Panel (d) magnifies the exact orange component from panels (a) and (b)."""
-    fig = loss_figure.build_figure(history, run, n_bins=20)
-    try:
-        mean_term_detail = fig.get_axes()[3]
         expected = design.binned(
             history.frame["_step"],
             history.frame["loss/cate_mse_weighted"],
@@ -173,8 +146,20 @@ def test_panel_d_is_the_weighted_mean_term_in_detail(history, run):
         assert curve.get_ydata() == pytest.approx(expected.median)
         assert curve.get_color() == design.series("loss/cate_mse_weighted").color
         assert mean_term_detail.get_yscale() == "log"
+
+        with_legend = [ax for ax in axes if ax.get_legend() is not None]
+        assert len(with_legend) == 1
+        labels = [t.get_text() for t in with_legend[0].get_legend().get_texts()]
+        assert labels == [design.series(k).label for k in loss_figure.COMPONENTS]
+        assert fig.get_figwidth() == pytest.approx(design.TEXT_WIDTH_IN)
     finally:
         design.plt.close(fig)
+
+
+def _has_span(ax) -> bool:
+    return any(
+        patch.get_alpha() == design.SCHEDULE_SPAN["alpha"] for patch in ax.patches
+    )
 
 
 def test_panel_tag_clears_the_centred_title(history, run):
@@ -186,28 +171,6 @@ def test_panel_tag_clears_the_centred_title(history, run):
         design.panel_tag(ax, "a")
         assert ax.get_title(loc="center") == ""
         assert ax.get_title(loc="left") == "(a) objective"
-    finally:
-        design.plt.close(fig)
-
-
-def test_only_one_legend_in_the_figure(history, run):
-    """Four panels of legends would cover the curves; (b) carries the shared one
-    and the references label themselves."""
-    fig = loss_figure.build_figure(history, run, n_bins=20)
-    try:
-        with_legend = [ax for ax in fig.get_axes() if ax.get_legend() is not None]
-        assert len(with_legend) == 1
-        labels = [t.get_text() for t in with_legend[0].get_legend().get_texts()]
-        assert labels == [design.series(k).label for k in loss_figure.COMPONENTS]
-    finally:
-        design.plt.close(fig)
-
-
-def test_figure_is_text_width(history, run):
-    """Figures are included unscaled, so the saved width is the paper width."""
-    fig = loss_figure.build_figure(history, run, n_bins=20)
-    try:
-        assert fig.get_figwidth() == pytest.approx(design.TEXT_WIDTH_IN)
     finally:
         design.plt.close(fig)
 

@@ -372,21 +372,19 @@ def test_sparse2dense():
         sparse2dense(sparse, torch.tensor([2, 2]))
 
 
-@pytest.mark.parametrize("dims", [[3], [2, 5, 1], [4, 4, 4], [1, 7]])
-@pytest.mark.parametrize("seq_len", [1, 6])
-def test_sparse2dense_blocks_matches_sparse2dense(dims, seq_len):
+def test_sparse2dense_blocks_matches_sparse2dense():
     # sparse2dense_blocks is a structure-aware fast path, not a new semantic:
     # it must agree bit for bit with the generic function on the layout the
     # batch files use (seq_len consecutive rows per dataset, all of width d_i).
-    dims = torch.tensor(dims)
-    sparse = torch.arange(float(int((dims * seq_len).sum())))
-
-    fast = sparse2dense_blocks(sparse, dims, seq_len)
-    reference = sparse2dense(
-        sparse, dims.repeat_interleave(seq_len), max_len=int(dims.max())
-    ).view(len(dims), seq_len, -1)
-
-    assert torch.equal(fast, reference)
+    for raw_dims in ([3], [2, 5, 1], [4, 4, 4], [1, 7]):
+        for seq_len in (1, 6):
+            dims = torch.tensor(raw_dims)
+            sparse = torch.arange(float(int((dims * seq_len).sum())))
+            fast = sparse2dense_blocks(sparse, dims, seq_len)
+            reference = sparse2dense(
+                sparse, dims.repeat_interleave(seq_len), max_len=int(dims.max())
+            ).view(len(dims), seq_len, -1)
+            assert torch.equal(fast, reference), (raw_dims, seq_len)
 
 
 def test_sparse2dense_blocks_rejects_a_length_mismatch():
@@ -1978,10 +1976,10 @@ def test_sample_split_with_n_query_survives_replay_small(monkeypatch):
     assert 200 <= train_size <= 1000  # the replayed value became the context
 
 
-@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "8"])
-def test_n_query_must_be_a_positive_int(bad):
-    with pytest.raises(ValueError, match="n_query"):
-        SCMPrior(n_query=bad)
+def test_n_query_must_be_a_positive_int():
+    for bad in (0, -1, 1.5, True, "8"):
+        with pytest.raises(ValueError, match="n_query"):
+            SCMPrior(n_query=bad)
 
 
 def test_n_query_batch_metadata_and_no_clamp():

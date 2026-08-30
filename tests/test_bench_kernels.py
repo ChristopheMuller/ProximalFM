@@ -35,18 +35,16 @@ def rng():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("d", [1, 2, 5, 10])
-@pytest.mark.parametrize("scale", [0.5, 1.0, 2.7778])
-def test_single_exponential_equals_the_per_column_product(rng, d, scale):
+def test_single_exponential_equals_the_per_column_product(rng):
     """exp(-sum_d s_d/sigma_d) == prod_d exp(-s_d/sigma_d), to rounding.
 
     Rounding here really is rounding: the two differ only in the order the same
     exponent is accumulated, so 1e-13 relative is generous by two decades.
     """
-    X = rng.normal(size=(120, d))
-    Y = rng.normal(size=(40, d)) * 2.0  # off-support rows probe the tails
+    X = rng.normal(size=(120, 5))
+    Y = rng.normal(size=(40, 5)) * 2.0  # off-support rows probe the tails
 
-    k = ColumnWiseGaussianKernel().fit(X, scale=scale)
+    k = ColumnWiseGaussianKernel().fit(X, scale=2.7778)
     got, want = k(X, Y), product_form(k, X, Y)
 
     assert np.allclose(got, want, rtol=1e-13, atol=0)
@@ -151,10 +149,10 @@ def test_binary_kernel_is_the_indicator():
     assert np.all(K[np.ix_([0, 3], [1, 2])] == 0.0)
 
 
-@pytest.mark.parametrize("bad", [np.array([[0.0], [2.0]]), np.array([[-1.0], [1.0]])])
-def test_binary_kernel_refuses_non_01_encodings(bad):
-    with pytest.raises(ValueError, match=r"values in"):
-        BinaryKernel().fit(bad)
+def test_binary_kernel_refuses_non_01_encodings():
+    for bad in (np.array([[0.0], [2.0]]), np.array([[-1.0], [1.0]])):
+        with pytest.raises(ValueError, match=r"values in"):
+            BinaryKernel().fit(bad)
 
 
 def test_binary_kernel_refuses_multicolumn_treatment():

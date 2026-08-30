@@ -52,9 +52,8 @@ def test_digest_is_insensitive_to_override_key_order():
     assert a.digest() == b.digest()
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
+def test_digest_changes_with_every_field():
+    for kwargs in [
         {"name": "other"},
         {"n_datasets": 2},
         {"seq_len": 999},
@@ -64,12 +63,8 @@ def test_digest_is_insensitive_to_override_key_order():
         {"seed": 1},
         {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
-    ],
-)
-def test_digest_changes_with_every_field(kwargs):
-    # Any field that changes the generated data must change the cache key,
-    # otherwise a stale cache would be served for a different configuration.
-    assert PriorSpec(**kwargs).digest() != PriorSpec().digest()
+    ]:
+        assert PriorSpec(**kwargs).digest() != PriorSpec().digest(), kwargs
 
 
 def test_cache_key_is_content_addressed():
@@ -96,26 +91,23 @@ def test_same_data_as():
     assert not PriorSpec(seed=0).same_data_as(PriorSpec(seed=1))
 
 
-@pytest.mark.parametrize("name", ["", "has space", "has.dot", "has/slash"])
-def test_invalid_names_rejected(name):
-    with pytest.raises(ValueError, match="name must be"):
-        PriorSpec(name=name)
+def test_invalid_names_rejected():
+    for name in ("", "has space", "has.dot", "has/slash"):
+        with pytest.raises(ValueError, match="name must be"):
+            PriorSpec(name=name)
 
 
-@pytest.mark.parametrize(
-    "kwargs, match",
-    [
+def test_validation_rejects_bad_specs():
+    for kwargs, match in [
         ({"n_datasets": 0}, "n_datasets"),
         ({"seq_len": 1}, "seq_len"),
         ({"mc_cate": 0}, "mc_cate"),
         ({"prior_type": "nope"}, "Unknown prior_type"),
         ({"min_dim_U": 6, "max_dim_U": 5}, "min_dim_U must be <= max_dim_U"),
         ({"min_dim_W": 0}, "min_dim_W must be >= 1"),
-    ],
-)
-def test_validation_rejects_bad_specs(kwargs, match):
-    with pytest.raises(ValueError, match=match):
-        PriorSpec(**kwargs)
+    ]:
+        with pytest.raises(ValueError, match=match):
+            PriorSpec(**kwargs)
 
 
 def test_non_serialisable_overrides_rejected():
@@ -182,9 +174,8 @@ def test_dataset_seed_stable_when_renamed():
     ]
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
+def test_dataset_seed_changes_with_generative_fields():
+    for kwargs in [
         {"seq_len": 999},
         {"max_dim_U": 9},
         {"prior_type": "tree_scm"},
@@ -192,17 +183,16 @@ def test_dataset_seed_stable_when_renamed():
         {"seed": 1},
         {"fixed_hp_overrides": {"proxy_cat_cover_prob": 0.0}},
         {"sampled_hp_overrides": {"propensity_shift": pinned(0.0)}},
-    ],
-)
-def test_dataset_seed_changes_with_generative_fields(kwargs):
-    # Anything that changes what a dataset looks like must reseed it, otherwise a
-    # spec change could silently produce the old data.
-    assert PriorSpec(**kwargs).dataset_seed(0) != PriorSpec().dataset_seed(0)
+    ]:
+        assert PriorSpec(**kwargs).dataset_seed(0) != PriorSpec().dataset_seed(
+            0
+        ), kwargs
 
 
-@pytest.mark.parametrize("kwargs", [{"name": "other"}, {"n_datasets": 128}])
-def test_generative_digest_ignores_non_generative_fields(kwargs):
-    assert PriorSpec(**kwargs).generative_digest() == PriorSpec().generative_digest()
+def test_generative_digest_ignores_non_generative_fields():
+    baseline = PriorSpec().generative_digest()
+    for kwargs in ({"name": "other"}, {"n_datasets": 128}):
+        assert PriorSpec(**kwargs).generative_digest() == baseline
 
 
 def test_generative_digest_differs_from_full_digest():
@@ -218,10 +208,10 @@ def test_dataset_seed_in_valid_numpy_range():
         assert 0 <= spec.dataset_seed(i) < 2**31 - 1
 
 
-@pytest.mark.parametrize("index", [-1, 5])
-def test_dataset_seed_rejects_out_of_range_index(index):
-    with pytest.raises(IndexError):
-        PriorSpec(n_datasets=5).dataset_seed(index)
+def test_dataset_seed_rejects_out_of_range_index():
+    for index in (-1, 5):
+        with pytest.raises(IndexError):
+            PriorSpec(n_datasets=5).dataset_seed(index)
 
 
 def test_pinned_is_a_degenerate_distribution():
@@ -305,10 +295,10 @@ def test_family_rejects_empty_interventions():
         _family(interventions={})
 
 
-@pytest.mark.parametrize("label", ["", "has space", "has.dot"])
-def test_family_rejects_bad_labels(label):
-    with pytest.raises(ValueError, match="label"):
-        _family(interventions={label: {}})
+def test_family_rejects_bad_labels():
+    for label in ("", "has space", "has.dot"):
+        with pytest.raises(ValueError, match="label"):
+            _family(interventions={label: {}})
 
 
 def test_family_rejects_name_intervention():

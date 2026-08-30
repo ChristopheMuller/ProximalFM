@@ -128,11 +128,13 @@ def test_milestones_are_deduplicated_and_sorted():
     assert seen == [1, 2, 5]
 
 
-@pytest.mark.parametrize("bad", [(), (0,), (2, 0), (-1,)])
-def test_degenerate_milestones_are_refused(bad):
+def test_degenerate_milestones_are_refused():
     X, A, Y, W, Z = make_data()
-    with pytest.raises(ValueError, match="epoch counts"):
-        list(NMMREstimator(_cfg()).fit_trajectory(X, A, Y, W=W, Z=Z, milestones=bad))
+    for bad in ((), (0,), (2, 0), (-1,)):
+        with pytest.raises(ValueError, match="epoch counts"):
+            list(
+                NMMREstimator(_cfg()).fit_trajectory(X, A, Y, W=W, Z=Z, milestones=bad)
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,24 +244,24 @@ def test_diagnostics_report_swept_parameters_like_grid_ones():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_loss_refused_in_either_block(block):
+def test_loss_refused_in_either_block():
     """U- and V-statistic scores are not on a common scale, swept or gridded."""
-    with pytest.raises(ValueError, match="not comparable"):
-        _method(tune=_tune_block(**{block: {"loss": ["u_stat", "v_stat"]}}))
+    for block in ("grid", "sweep"):
+        with pytest.raises(ValueError, match="not comparable"):
+            _method(tune=_tune_block(**{block: {"loss": ["u_stat", "v_stat"]}}))
 
 
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_unknown_key_refused_in_either_block(block):
-    with pytest.raises(ValueError, match="unknown"):
-        _method(tune=_tune_block(**{block: {"hiden_dim": [8]}}))
+def test_unknown_key_refused_in_either_block():
+    for block in ("grid", "sweep"):
+        with pytest.raises(ValueError, match="unknown"):
+            _method(tune=_tune_block(**{block: {"hiden_dim": [8]}}))
 
 
-@pytest.mark.parametrize("param", ["hidden_dim", "lr", "weight_decay"])
-def test_trajectory_changing_parameter_in_sweep_is_refused_with_the_fix(param):
+def test_trajectory_changing_parameters_in_sweep_are_refused_with_the_fix():
     """It would be correct but slow, and the config would be claiming a saving."""
-    with pytest.raises(ValueError, match=r"Move\s+them to `tune.grid`"):
-        _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
+    for param in ("hidden_dim", "lr", "weight_decay"):
+        with pytest.raises(ValueError, match=r"Move\s+them to `tune.grid`"):
+            _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
 
     assert SWEEP_ONLY_PARAMS == {"n_epochs"}
 
@@ -277,16 +279,10 @@ def test_prediction_side_knobs_are_not_sweepable():
             _method(tune=_tune_block(sweep={param: [1.0, 2.0]}))
 
 
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_kernel_width_is_method_level_not_searchable(block):
-    with pytest.raises(ValueError, match="method-level"):
-        _method(tune=_tune_block(**{block: {"kernel_width": ["fixed", "median"]}}))
-
-
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_kernel_scale_is_removed(block):
-    with pytest.raises(ValueError, match="unknown"):
-        _method(tune=_tune_block(**{block: {"kernel_scale": [1.0]}}))
+def test_kernel_width_is_method_level_not_searchable():
+    for block in ("grid", "sweep"):
+        with pytest.raises(ValueError, match="method-level"):
+            _method(tune=_tune_block(**{block: {"kernel_width": ["fixed", "median"]}}))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

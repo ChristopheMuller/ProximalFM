@@ -21,31 +21,22 @@ from analysis_prior.config import PriorSpec
 # --------------------------------------------------------------------------
 
 
-def test_completeness_all_hold():
+def test_completeness_uses_both_proxy_dimensions_and_handles_unconfounded_data():
     stats = completeness_stats(
         d_U=np.array([2, 3]), d_W=np.array([3, 3]), d_Z=np.array([2, 4])
     )
     assert stats["overall_fraction"] == 1.0
     assert stats["holds"].tolist() == [True, True]
 
-
-def test_completeness_violation_detected():
-    # d_W=1 < d_U=2 in the second dataset: min(d_W,d_Z)=1 < 2.
     stats = completeness_stats(
         d_U=np.array([2, 2]), d_W=np.array([3, 1]), d_Z=np.array([3, 3])
     )
     assert stats["holds"].tolist() == [True, False]
     assert stats["overall_fraction"] == 0.5
 
-
-def test_completeness_uses_the_min_of_both_proxies():
-    # Fails through Z rather than W.
     stats = completeness_stats(d_U=np.array([3]), d_W=np.array([5]), d_Z=np.array([2]))
     assert stats["holds"].tolist() == [False]
 
-
-def test_completeness_unconfounded_datasets_trivially_hold():
-    # d_U == 0 (unconfounded draw): min(d_W, d_Z) >= 0 always.
     stats = completeness_stats(d_U=np.array([0]), d_W=np.array([0]), d_Z=np.array([0]))
     assert stats["holds"].tolist() == [True]
 
@@ -63,14 +54,14 @@ def test_completeness_by_d_U_breakdown():
     assert table.loc[3, "fraction_hold"] == 1.0
 
 
-def test_completeness_rejects_mismatched_lengths():
-    with pytest.raises(ValueError, match="equal length"):
-        completeness_stats(np.array([1, 2]), np.array([1]), np.array([1, 2]))
-
-
-def test_completeness_rejects_empty():
-    with pytest.raises(ValueError, match="at least one"):
-        completeness_stats(np.array([]), np.array([]), np.array([]))
+def test_completeness_rejects_invalid_inputs():
+    cases = [
+        ((np.array([1, 2]), np.array([1]), np.array([1, 2])), "equal length"),
+        ((np.array([]), np.array([]), np.array([])), "at least one"),
+    ]
+    for args, message in cases:
+        with pytest.raises(ValueError, match=message):
+            completeness_stats(*args)
 
 
 # --------------------------------------------------------------------------
@@ -78,46 +69,32 @@ def test_completeness_rejects_empty():
 # --------------------------------------------------------------------------
 
 
-def test_joint_counts_basic():
-    # (d_U, d_other) pairs: (1,2), (1,2), (2,3)
+def test_joint_counts_layout_and_explicit_bounds():
     grid = joint_counts(np.array([1, 1, 2]), np.array([2, 2, 3]))
-    assert grid.shape == (3, 4)  # rows 0..2, cols 0..3
+    assert grid.shape == (3, 4)
     assert grid[1, 2] == 2
     assert grid[2, 3] == 1
     assert grid.sum() == 3
 
-
-def test_joint_counts_includes_zero_row():
-    # d_U == 0 must get its own row, not be dropped.
     grid = joint_counts(np.array([0, 1]), np.array([1, 1]))
     assert grid[0, 1] == 1
     assert grid[1, 1] == 1
 
-
-def test_joint_counts_respects_explicit_max():
     grid = joint_counts(np.array([1]), np.array([1]), row_max=5, col_max=7)
     assert grid.shape == (6, 8)
     assert grid[1, 1] == 1
 
 
-def test_joint_counts_rejects_too_small_max():
-    with pytest.raises(ValueError, match="must be >="):
-        joint_counts(np.array([4]), np.array([1]), row_max=2)
-
-
-def test_joint_counts_rejects_mismatched_lengths():
-    with pytest.raises(ValueError, match="equal length"):
-        joint_counts(np.array([1, 2]), np.array([1]))
-
-
-def test_joint_counts_rejects_empty():
-    with pytest.raises(ValueError, match="at least one"):
-        joint_counts(np.array([]), np.array([]))
-
-
-def test_joint_counts_rejects_negative():
-    with pytest.raises(ValueError, match="non-negative"):
-        joint_counts(np.array([-1]), np.array([1]))
+def test_joint_counts_rejects_invalid_inputs():
+    cases = [
+        ((np.array([4]), np.array([1])), {"row_max": 2}, "must be >="),
+        ((np.array([1, 2]), np.array([1])), {}, "equal length"),
+        ((np.array([]), np.array([])), {}, "at least one"),
+        ((np.array([-1]), np.array([1])), {}, "non-negative"),
+    ]
+    for args, kwargs, message in cases:
+        with pytest.raises(ValueError, match=message):
+            joint_counts(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------

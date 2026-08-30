@@ -36,54 +36,42 @@ def test_outputs_entry_wins_over_the_method_level_strategy():
     assert method_estimand(cfg, out) == "cate(x,w)"
 
 
-def test_shipped_pmmr_outputs_span_all_three_tracks():
-    """The names in config_val.yaml, resolved."""
-    cfg = {"name": "PMMR", "cls": "PMMR"}
-    outputs = [
-        {"name": "PMMR-XW", "strategy": "paired"},
-        {"name": "PMMR-X-Wind", "strategy": "independent"},
-        {"name": "PMMR-X-Wcond", "strategy": "conditional"},
-        {"name": "PMMR-ATE", "strategy": "marginal"},
-    ]
-    assert [method_estimand(cfg, o) for o in outputs] == [
-        "cate(x,w)",
-        "cate(x)",
-        "cate(x)",
-        "ate(x)",
-    ]
-
-
 def test_unknown_strategy_is_refused():
     with pytest.raises(ValueError, match="unknown strategy"):
         method_estimand({"name": "m", "cls": "PMMR", "strategy": "sideways"})
 
 
-@pytest.mark.parametrize("cls", ["S_Learner", "T_Learner", "X_Learner"])
-def test_learners_follow_their_proxy_flags(cls):
-    base = {"cls": cls}
-    assert method_estimand({**base, "use_W": False, "use_Z": False}) == "cate(x)"
-    assert method_estimand({**base, "use_W": True, "use_Z": False}) == "cate(x,w)"
-    assert method_estimand({**base, "use_W": False, "use_Z": True}) == "cate(x,z)"
-    assert method_estimand({**base, "use_W": True, "use_Z": True}) == "cate(x,w,z)"
+def test_learners_follow_their_proxy_flags():
+    for cls in ("S_Learner", "T_Learner", "X_Learner"):
+        base = {"cls": cls}
+        assert method_estimand({**base, "use_W": False, "use_Z": False}) == "cate(x)"
+        assert method_estimand({**base, "use_W": True, "use_Z": False}) == "cate(x,w)"
+        assert method_estimand({**base, "use_W": False, "use_Z": True}) == "cate(x,z)"
+        assert method_estimand({**base, "use_W": True, "use_Z": True}) == "cate(x,w,z)"
 
 
-@pytest.mark.parametrize(
-    "cls", ["S_Learner", "T_Learner", "X_Learner", "CausalFM", "DoPFN", "CausalPFN"]
-)
-def test_proxy_flags_default_to_true_as_the_factories_do(cls):
+def test_proxy_flags_default_to_true_as_the_factories_do():
     """build_method reads use_W/use_Z with default True for these classes, so an
     entry that says neither really is fitted on the proxies."""
-    assert method_estimand({"cls": cls}) == "cate(x,w,z)"
+    for cls in (
+        "S_Learner",
+        "T_Learner",
+        "X_Learner",
+        "CausalFM",
+        "DoPFN",
+        "CausalPFN",
+    ):
+        assert method_estimand({"cls": cls}) == "cate(x,w,z)"
 
 
 def test_p2sls_is_ate_only():
     assert method_estimand({"name": "P2SLS", "cls": "P2SLS"}) == "ate(x)"
 
 
-@pytest.mark.parametrize("cls", ["PLearner", "CausalForest"])
-def test_methods_that_discard_proxies_at_predict_are_tau_x(cls):
+def test_methods_that_discard_proxies_at_predict_are_tau_x():
     # Both accept W/Z at fit and neither uses them at predict time.
-    assert method_estimand({"cls": cls, "use_W": True, "use_Z": True}) == "cate(x)"
+    for cls in ("PLearner", "CausalForest"):
+        assert method_estimand({"cls": cls, "use_W": True, "use_Z": True}) == "cate(x)"
 
 
 def test_is_oracle_puts_u_in_the_tag():

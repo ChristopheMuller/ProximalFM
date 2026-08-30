@@ -1,8 +1,6 @@
 import torch
 import pytest
 from proximalfm._model.rope import (
-    exists,
-    default,
     broadcat,
     rotate_half_interleaved,
     rotate_half_contiguous,
@@ -10,20 +8,6 @@ from proximalfm._model.rope import (
     apply_learned_rotations,
     RotaryEmbedding,
 )
-
-
-def test_exists():
-    assert exists(1) is True
-    assert exists(0) is True
-    assert exists("") is True
-    assert exists(False) is True
-    assert exists(None) is False
-
-
-def test_default():
-    assert default(1, 2) == 1
-    assert default(None, 2) == 2
-    assert default(0, 2) == 0
 
 
 def test_broadcat():

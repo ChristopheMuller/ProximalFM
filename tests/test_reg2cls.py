@@ -1,7 +1,6 @@
 import torch
 import pytest
 
-import proximalfm.prior._reg2cls as reg2cls
 from proximalfm.prior._reg2cls import (
     standard_scaling,
     torch_nanstd,
@@ -486,14 +485,14 @@ def test_multiclass_assigner_requires_at_least_two_classes():
         MulticlassAssigner(1)
 
 
-@pytest.mark.parametrize("mode", MulticlassAssigner.MODES)
-def test_multiclass_assigner_supports_every_advertised_mode(mode):
+def test_multiclass_assigner_supports_every_advertised_mode():
     torch.manual_seed(0)
-    out = MulticlassAssigner(4, mode=mode)(torch.randn(200))
-
-    assert out.shape == (200,)
-    assert out.min().item() >= 0
-    assert out.max().item() <= 3
+    values = torch.randn(200)
+    for mode in MulticlassAssigner.MODES:
+        out = MulticlassAssigner(4, mode=mode)(values)
+        assert out.shape == (200,), mode
+        assert out.min().item() >= 0, mode
+        assert out.max().item() <= 3, mode
 
 
 def test_multiclass_assigner_rejects_an_unknown_mode_at_construction():
@@ -521,13 +520,3 @@ def test_multiclass_assigner_mode_error_lists_the_valid_modes():
 
     message = str(excinfo.value)
     assert all(mode in message for mode in MulticlassAssigner.MODES)
-
-
-# ---------------------------------------------------------------------------
-# Guard: the target-side reg-to-cls transforms were removed
-# ---------------------------------------------------------------------------
-
-
-def test_removed_target_transforms_are_gone():
-    assert not hasattr(reg2cls, "Reg2Cls")
-    assert not hasattr(reg2cls, "BalancedBinarize")

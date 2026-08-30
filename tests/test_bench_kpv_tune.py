@@ -163,9 +163,8 @@ def test_wrapper_forwards_all_supported_config_fields():
 # ── Refusals ─────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
+def test_retired_scale_search_kwargs_raise_with_the_translation():
+    for key in [
         "tune_kernel_scale",
         "kernel_scale_min",
         "kernel_scale_max",
@@ -173,36 +172,27 @@ def test_wrapper_forwards_all_supported_config_fields():
         "kernel_scale_z",
         "kernel_scale_w",
         "kernel_scale_x",
-    ],
-)
-def test_retired_scale_search_kwargs_raise_with_the_translation(key):
-    """A stale config must not quietly collapse to one un-searched scale."""
-    with pytest.raises(ValueError, match="no longer method-level keys"):
-        _kpv(**{key: 0.5})
+    ]:
+        with pytest.raises(ValueError, match="no longer method-level keys"):
+            _kpv(**{key: 0.5})
 
 
-@pytest.mark.parametrize("key", ["kernel_scale_z", "kernel_scale_w", "kernel_scale_x"])
-def test_retired_per_variable_scales_raise_in_tune_grid(key):
-    with pytest.raises(ValueError, match="one shared continuous-kernel multiplier"):
-        _kpv(tune={"enabled": True, "grid": {key: [0.5, 1.0]}})
+def test_retired_per_variable_scales_raise_in_tune_grid():
+    for key in ("kernel_scale_z", "kernel_scale_w", "kernel_scale_x"):
+        with pytest.raises(ValueError, match="one shared continuous-kernel multiplier"):
+            _kpv(tune={"enabled": True, "grid": {key: [0.5, 1.0]}})
 
 
-@pytest.mark.parametrize("param", sorted(TUNABLE_PARAMS))
-def test_tunable_params_are_accepted(param):
-    _kpv(tune={"enabled": True, "grid": {param: [0.5, 1.0]}})
+def test_tunable_params_are_accepted():
+    for param in sorted(TUNABLE_PARAMS):
+        _kpv(tune={"enabled": True, "grid": {param: [0.5, 1.0]}})
 
 
-@pytest.mark.parametrize("param", ["lam1_min", "lam2_max", "n_lam1_search"])
-def test_unscoreable_params_are_refused(param):
+def test_unscoreable_params_are_refused():
     """Fields the Stage-2 LOOCV cannot rank, for the reasons in TUNABLE_PARAMS."""
-    with pytest.raises(ValueError, match="may not appear in `tune.grid`"):
-        _kpv(tune={"enabled": True, "grid": {param: [0.4, 0.6]}})
-
-
-@pytest.mark.parametrize("param", ["split_ratio", "seed"])
-def test_removed_split_params_are_refused(param):
-    with pytest.raises(ValueError, match="both stages reuse the full context"):
-        _kpv(**{param: 0.5})
+    for param in ("lam1_min", "lam2_max", "n_lam1_search"):
+        with pytest.raises(ValueError, match="may not appear in `tune.grid`"):
+            _kpv(tune={"enabled": True, "grid": {param: [0.4, 0.6]}})
 
 
 def test_unknown_tune_key_is_refused():

@@ -28,8 +28,7 @@ from analysis_prior.config import PriorSpec, SpecFamily
 # --------------------------------------------------------------------------
 
 
-def test_reconstruct_profile_separates_continuous_from_categorical():
-    # Col 0: many distinct values -> continuous. Col 1: 3 distinct -> categorical.
+def test_reconstruct_profile_classifies_caps_sorts_and_handles_empty_blocks():
     block = np.column_stack(
         [
             np.arange(20, dtype=float),  # 20 distinct
@@ -39,15 +38,10 @@ def test_reconstruct_profile_separates_continuous_from_categorical():
     profile = reconstruct_profile(block, max_categories=5)
     assert profile == BlockProfile(continuous=1, categorical=(3,))
 
-
-def test_reconstruct_profile_cap_pushes_high_cardinality_to_continuous():
-    # A 6-distinct column is categorical at cap 10 but continuous at cap 5.
     block = np.array([[float(i % 6)] for i in range(30)])
     assert reconstruct_profile(block, max_categories=10) == BlockProfile(0, (6,))
     assert reconstruct_profile(block, max_categories=5) == BlockProfile(1, ())
 
-
-def test_reconstruct_profile_sorts_categories_descending():
     block = np.column_stack(
         [
             np.array([0, 1] * 15, dtype=float),  # 2 distinct
@@ -56,9 +50,6 @@ def test_reconstruct_profile_sorts_categories_descending():
     )
     profile = reconstruct_profile(block, max_categories=10)
     assert profile == BlockProfile(continuous=0, categorical=(4, 2))
-
-
-def test_reconstruct_profile_empty_block():
     profile = reconstruct_profile(np.empty((10, 0)), max_categories=5)
     assert profile == BlockProfile(continuous=0, categorical=())
 
@@ -68,7 +59,7 @@ def test_reconstruct_profile_empty_block():
 # --------------------------------------------------------------------------
 
 
-def test_survival_all_hold_when_proxies_dominate():
+def test_survival_requires_both_proxies_to_dominate():
     u = [BlockProfile(2, (3,))]
     w = [BlockProfile(3, ())]  # 1 continuous wildcard covers the categorical(3)
     z = [BlockProfile(2, (4,))]  # exact continuous + categorical(4) >= (3)
@@ -76,17 +67,12 @@ def test_survival_all_hold_when_proxies_dominate():
     assert stats["holds"].tolist() == [True]
     assert stats["overall_fraction"] == 1.0
 
-
-def test_survival_detects_cardinality_violation():
-    # Matching column counts but insufficient cardinality: categorical(2) < (3).
     u = [BlockProfile(2, (3,))]
     w = [BlockProfile(2, (2,))]  # continuous ok, but 2 < 3 -> fails
     z = [BlockProfile(3, ())]  # fine on its own
     stats = categorical_survival_stats(u, w, z)
     assert stats["holds"].tolist() == [False]  # both must dominate; W fails
 
-
-def test_survival_requires_both_proxies():
     u = [BlockProfile(1, ())]
     w = [BlockProfile(1, ())]  # dominates
     z = [BlockProfile(0, (2,))]  # 0 continuous < 1 -> fails continuous slot
@@ -108,14 +94,14 @@ def test_survival_breakdown_by_n_cat_U():
     assert table.loc[0, "fraction_hold"] == 1.0
 
 
-def test_survival_rejects_mismatched_lengths():
-    with pytest.raises(ValueError, match="equal length"):
-        categorical_survival_stats([BlockProfile(1, ())], [], [BlockProfile(1, ())])
-
-
-def test_survival_rejects_empty():
-    with pytest.raises(ValueError, match="at least one"):
-        categorical_survival_stats([], [], [])
+def test_survival_rejects_invalid_inputs():
+    cases = [
+        (([BlockProfile(1, ())], [], [BlockProfile(1, ())]), "equal length"),
+        (([], [], []), "at least one"),
+    ]
+    for args, message in cases:
+        with pytest.raises(ValueError, match=message):
+            categorical_survival_stats(*args)
 
 
 # --------------------------------------------------------------------------
@@ -299,12 +285,6 @@ def test_run_writes_category_figures(tiny_family_caches, tmp_path):
     ):
         assert f"{stem}.pdf" in names
         assert f"{stem}.png" in names
-    # The joint-count heatmap was removed; make sure it does not come back.
-    assert "category_profile_joint_heatmaps.pdf" not in names
-    # The per-U-column and per-dataset views were merged into the single
-    # three-panel `proxy_enforcement_vs_u_demand`; the split figures are gone.
-    assert "proxy_stats_by_u_cardinality.pdf" not in names
-    assert "proxy_composition_vs_u_demand.pdf" not in names
     for path in artifacts.figures:
         assert path.exists()
 

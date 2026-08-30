@@ -29,8 +29,8 @@ def history() -> History:
     return History(frame=frame, keys=tuple(frame.columns))
 
 
-def test_builds_four_labelled_panels():
-    fig = distributional_figure.build_figure(history())
+def test_distributional_figure_content_and_layout():
+    fig = distributional_figure.build_figure(history(), n_bins=2)
     try:
         axes = fig.get_axes()
         assert len(axes) == 4
@@ -39,14 +39,6 @@ def test_builds_four_labelled_panels():
         assert all(ax.get_xscale() == "log" for ax in axes)
         assert axes[1].get_yscale() == "log"
         assert axes[3].get_yscale() == "log"
-    finally:
-        distributional_figure.plt.close(fig)
-
-
-def test_coverage_panel_has_two_curves_and_episode_bands_outside_legend():
-    fig = distributional_figure.build_figure(history())
-    try:
-        axes = fig.get_axes()
         assert len(axes[0].collections) == 0
         assert len(axes[1].collections) == 0
         assert len(axes[2].collections) == 2
@@ -55,24 +47,8 @@ def test_coverage_panel_has_two_curves_and_episode_bands_outside_legend():
         assert labels == ["90% coverage", "50% coverage"]
         assert len(axes[3].collections) == 0
         assert len(axes[3].lines) == 2
-    finally:
-        distributional_figure.plt.close(fig)
-
-
-def test_trajectories_are_log_binned_for_display():
-    fig = distributional_figure.build_figure(history(), n_bins=2)
-    try:
-        axes = fig.get_axes()
         assert len(axes[0].lines[0].get_xdata()) == 2
         assert len(axes[2].lines[0].get_xdata()) == 2
-    finally:
-        distributional_figure.plt.close(fig)
-
-
-def test_calibration_reference_lines_are_present():
-    fig = distributional_figure.build_figure(history())
-    try:
-        axes = fig.get_axes()
         assert any(np.allclose(line.get_ydata(), 1.0) for line in axes[1].lines)
         assert any(np.allclose(line.get_ydata(), 0.9) for line in axes[2].lines)
         assert any(np.allclose(line.get_ydata(), 0.5) for line in axes[2].lines)

@@ -59,7 +59,7 @@ def test_ssmax():
     assert torch.allclose(out, expected_out)
 
 
-def test_ssmax_mlp():
+def test_ssmax_mlp_variants():
     num_heads = 4
     seq_len = 10
     head_dim = 16
@@ -77,30 +77,15 @@ def test_ssmax_mlp():
     out = model_elementwise(q, n)
     assert out.shape == q.shape
 
+    for elementwise in (False, True):
+        model = QASSMaxMLP(num_heads, head_dim, elementwise=elementwise)
+        assert model(q, n).shape == q.shape
+
     # Verify ValueError if elementwise=True but head_dim=None
     with pytest.raises(
         ValueError, match="head_dim must be provided when elementwise=True"
     ):
         SSMaxMLP(num_heads, elementwise=True, head_dim=None)
-
-
-def test_qassmax_mlp():
-    num_heads = 4
-    seq_len = 10
-    head_dim = 16
-    bs = 2
-    n = 20
-
-    # Test elementwise=False
-    model_non_elementwise = QASSMaxMLP(num_heads, head_dim, elementwise=False)
-    q = torch.randn(bs, num_heads, seq_len, head_dim)
-    out = model_non_elementwise(q, n)
-    assert out.shape == q.shape
-
-    # Test elementwise=True
-    model_elementwise = QASSMaxMLP(num_heads, head_dim, elementwise=True)
-    out = model_elementwise(q, n)
-    assert out.shape == q.shape
 
 
 def test_create_ssmax_layer():

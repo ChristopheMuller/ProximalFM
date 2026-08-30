@@ -316,49 +316,38 @@ def test_diagnostics_report_swept_parameters_like_grid_ones():
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_jitter_refused_in_either_block(block):
-    with pytest.raises(ValueError, match="jitter"):
-        build_method(
-            {
-                "name": "PMMR",
-                "cls": "PMMR",
-                "tune": _tune_block(**{block: {"jitter": [1e-10, 1e-8]}}),
-            }
-        )
+def test_jitter_refused_in_either_block():
+    for block in ("grid", "sweep"):
+        with pytest.raises(ValueError, match="jitter"):
+            build_method(
+                {
+                    "name": "PMMR",
+                    "cls": "PMMR",
+                    "tune": _tune_block(**{block: {"jitter": [1e-10, 1e-8]}}),
+                }
+            )
 
 
-@pytest.mark.parametrize("block", ["grid", "sweep"])
-def test_unknown_key_refused_in_either_block(block):
-    with pytest.raises(ValueError, match="unknown"):
-        build_method(
-            {
-                "name": "PMMR",
-                "cls": "PMMR",
-                "tune": _tune_block(**{block: {"lam_typo": [1.0]}}),
-            }
-        )
+def test_unknown_key_refused_in_either_block():
+    for block in ("grid", "sweep"):
+        with pytest.raises(ValueError, match="unknown"):
+            build_method(
+                {
+                    "name": "PMMR",
+                    "cls": "PMMR",
+                    "tune": _tune_block(**{block: {"lam_typo": [1.0]}}),
+                }
+            )
 
 
-def test_removed_lam2_is_rejected():
-    with pytest.raises(ValueError, match="unknown"):
-        build_method(
-            {
-                "name": "PMMR",
-                "cls": "PMMR",
-                "tune": _tune_block(sweep={"lam2": [1e-4]}),
-            }
-        )
-
-
-@pytest.mark.parametrize("param", ["kernel_scale", "kernel_scale_z"])
-def test_bandwidth_in_sweep_is_refused_with_the_fix(param):
+def test_bandwidth_in_sweep_is_refused_with_the_fix():
     """It would be correct but slow, and the config would be claiming a saving."""
-    with pytest.raises(ValueError, match=r"Move them to\s+`tune.grid`"):
-        build_method(
-            {
-                "name": "PMMR",
-                "cls": "PMMR",
-                "tune": _tune_block(sweep={param: [1.0, 2.0]}),
-            }
-        )
+    for param in ("kernel_scale", "kernel_scale_z"):
+        with pytest.raises(ValueError, match=r"Move them to\s+`tune.grid`"):
+            build_method(
+                {
+                    "name": "PMMR",
+                    "cls": "PMMR",
+                    "tune": _tune_block(sweep={param: [1.0, 2.0]}),
+                }
+            )

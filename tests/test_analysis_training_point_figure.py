@@ -29,42 +29,18 @@ def history() -> History:
     return History(frame=frame, keys=tuple(frame.columns))
 
 
-def test_builds_four_labelled_panels():
-    fig = point_figure.build_figure(history())
+def test_point_figure_content_and_layout():
+    fig = point_figure.build_figure(history(), n_bins=2)
     try:
         axes = fig.get_axes()
         assert len(axes) == 4
         titles = [ax.get_title(loc="left") for ax in axes]
         assert [title[:3] for title in titles] == ["(a)", "(b)", "(c)", "(d)"]
         assert all(ax.get_xscale() == "log" for ax in axes)
-    finally:
-        point_figure.plt.close(fig)
-
-
-def test_ate_rmse_has_no_episode_band_but_other_metrics_do():
-    fig = point_figure.build_figure(history())
-    try:
-        axes = fig.get_axes()
         assert len(axes[0].collections) == 0
         assert all(len(ax.collections) == 1 for ax in axes[1:])
-    finally:
-        point_figure.plt.close(fig)
-
-
-def test_trajectories_are_log_binned_for_display():
-    fig = point_figure.build_figure(history(), n_bins=2)
-    try:
-        axes = fig.get_axes()
         assert len(axes[0].lines[0].get_xdata()) == 2
         assert len(axes[1].lines[0].get_xdata()) == 2
-    finally:
-        point_figure.plt.close(fig)
-
-
-def test_constant_ate_reference_lines_are_present():
-    fig = point_figure.build_figure(history())
-    try:
-        axes = fig.get_axes()
         assert any(np.allclose(line.get_ydata(), 1.0) for line in axes[2].lines)
         assert any(np.allclose(line.get_ydata(), 0.0) for line in axes[3].lines)
     finally:

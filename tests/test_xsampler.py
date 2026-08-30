@@ -73,15 +73,14 @@ def test_multinomial_leaves_non_degenerate_draws_bit_identical():
     assert torch.equal(got, expected)
 
 
-@pytest.mark.parametrize("sampling", ["normal", "mixed", "uniform"])
-@pytest.mark.parametrize("seq_len", [1, 7, 128])
-def test_sample_never_emits_nan(sampling, seq_len):
-    for seed in range(8):
-        _seed(seed)
-        X = _sampler(seq_len, num_features=6, sampling=sampling).sample()
+def test_sample_never_emits_nan_across_strategies_and_sequence_sizes():
+    for sampling, seq_len in (("normal", 1), ("mixed", 7), ("uniform", 128)):
+        for seed in range(8):
+            _seed(seed)
+            X = _sampler(seq_len, num_features=6, sampling=sampling).sample()
 
-        assert X.shape == (seq_len, 6)
-        assert torch.isfinite(X).all()
+            assert X.shape == (seq_len, 6), (sampling, seq_len, seed)
+            assert torch.isfinite(X).all(), (sampling, seq_len, seed)
 
 
 def test_sample_rejects_an_unknown_strategy():

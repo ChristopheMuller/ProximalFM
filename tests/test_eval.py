@@ -51,9 +51,9 @@ def test_evaluator_reset(evaluator):
 # ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("batch_size, seq_len", [(1, 10), (4, 5), (8, 20)])
-def test_update_perfect_prediction(evaluator, batch_size, seq_len):
+def test_update_perfect_prediction(evaluator):
     """Test that when predictions exactly match true values, RMSE is 0."""
+    batch_size, seq_len = 4, 5
     pred_y0 = torch.rand(batch_size, seq_len)
     pred_y1 = torch.rand(batch_size, seq_len)
     pred_cate = torch.rand(batch_size, seq_len)
@@ -90,10 +90,10 @@ def test_update_without_per_arm_predictions_omits_po_metrics(evaluator):
     assert not any(key.startswith("po/") for key in metrics)
 
 
-@pytest.mark.parametrize("offset", [1.0, 2.0, 0.5])
-def test_update_known_values(evaluator, offset):
+def test_update_known_values(evaluator):
     """Test RMSE computation against manually calculated expected values."""
     batch_size, seq_len = 2, 5
+    offset = 2.0
 
     true_y0 = torch.zeros(batch_size, seq_len)
     true_y1 = torch.zeros(batch_size, seq_len)

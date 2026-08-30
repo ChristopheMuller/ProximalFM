@@ -242,10 +242,7 @@ def test_build_writes_only_val_format(tmp_path):
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "n_max,n_q", [(1536, 512), (2048, 128), (1000, 1), (3, 4093), (1, 1)]
-)
-def test_n_max_n_q_resolve_to_that_exact_context_size(n_max, n_q):
+def test_n_max_n_q_resolve_to_that_exact_context_size():
     """The float round-trip must land on n_max exactly, not near it.
 
     ``--n_max``/``--n_q`` resolve to ``prop_train = n_max/seq_len``, which the
@@ -253,14 +250,15 @@ def test_n_max_n_q_resolve_to_that_exact_context_size(n_max, n_q):
     that ever came back off by one, the set would still build and still look
     self-consistent -- so pin it.
     """
-    args = bpd.parse_args(["--name", "x", "--n_max", str(n_max), "--n_q", str(n_q)])
-    assert args.seq_len == n_max + n_q
-    assert (
-        RealisticProximalGenerator._resolve_train_size(
-            None, args.prop_train, args.seq_len
+    for n_max, n_q in ((1536, 512), (2048, 128), (1000, 1), (3, 4093), (1, 1)):
+        args = bpd.parse_args(["--name", "x", "--n_max", str(n_max), "--n_q", str(n_q)])
+        assert args.seq_len == n_max + n_q
+        assert (
+            RealisticProximalGenerator._resolve_train_size(
+                None, args.prop_train, args.seq_len
+            )
+            == n_max
         )
-        == n_max
-    )
 
 
 def test_seq_len_prop_train_still_report_the_split_both_ways():
@@ -269,17 +267,14 @@ def test_seq_len_prop_train_still_report_the_split_both_ways():
     assert (args.n_max, args.n_q) == (1536, 512)
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
+def test_row_split_flag_misuse_is_refused():
+    for bad in [
         ["--n_max", "10"],  # n_q missing
         ["--n_q", "10"],  # n_max missing
         ["--n_max", "10", "--n_q", "5", "--seq_len", "20"],  # mixed spellings
         ["--n_max", "10", "--n_q", "5", "--prop_train", "0.5"],  # mixed spellings
         ["--n_max", "0", "--n_q", "5"],  # empty context
         ["--n_max", "5", "--n_q", "0"],  # no query rows to replicate
-    ],
-)
-def test_row_split_flag_misuse_is_refused(bad):
-    with pytest.raises(SystemExit):
-        bpd.parse_args(["--name", "x", *bad])
+    ]:
+        with pytest.raises(SystemExit):
+            bpd.parse_args(["--name", "x", *bad])

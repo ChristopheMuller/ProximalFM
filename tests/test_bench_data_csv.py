@@ -110,12 +110,12 @@ def test_u_optional_yields_zero_width(tmp_path):
     assert data["U"].shape[-1] == 0
 
 
-@pytest.mark.parametrize("missing_key", ["X", "W", "Z", "A", "Y", "Y0", "Y1"])
-def test_missing_required_column_key_raises(tmp_path, missing_key):
+def test_missing_required_column_keys_raise(tmp_path):
     path, _ = make_chamber_csv(tmp_path)
-    columns = {k: v for k, v in COLUMNS.items() if k != missing_key}
-    with pytest.raises(ValueError, match=missing_key):
-        load_benchmark_from_csv(path, columns, shuffle=False)
+    for missing_key in ("X", "W", "Z", "A", "Y", "Y0", "Y1"):
+        columns = {k: v for k, v in COLUMNS.items() if k != missing_key}
+        with pytest.raises(ValueError, match=missing_key):
+            load_benchmark_from_csv(path, columns, shuffle=False)
 
 
 def test_loads_csv_written_without_index_column(tmp_path):
