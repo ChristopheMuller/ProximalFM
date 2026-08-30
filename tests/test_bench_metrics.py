@@ -23,6 +23,7 @@ from benchmarks.estimands import (
 )
 from benchmarks.metrics import (
     ESTIMAND_COLUMN,
+    INPUTS_COLUMN,
     RANK_COLUMN,
     TARGET_VAR_THRESHOLD,
     TASKS,
@@ -287,6 +288,27 @@ def test_reference_rows_are_shown_but_never_ranked(results):
     assert not summary.loc["S-OLS", "Reference"]
 
 
+def test_methods_are_ranked_only_within_exact_input_groups(results):
+    """An X+W method cannot improve or worsen an X-only method's rank."""
+    worse_x = results[
+        (results["target"] == "ite") & (results["method"] == "S-OLS")
+    ].copy()
+    worse_x["method"] = "Worse-X"
+    worse_x[ITE.rank_by] = 100.0
+    summary = _summary(pd.concat([results, worse_x], ignore_index=True), ITE)
+    assert summary.loc["S-OLS", RANK_COLUMN.label] == pytest.approx(1.0)
+    assert summary.loc["Worse-X", RANK_COLUMN.label] == pytest.approx(2.0)
+    assert summary.loc["PMMR-XW", RANK_COLUMN.label] == pytest.approx(1.0)
+    assert summary.loc["S-OLS", INPUTS_COLUMN.label] == "X"
+    assert summary.loc["PMMR-XW", INPUTS_COLUMN.label] == "X+W"
+    assert list(summary.index) == [
+        "S-OLS",
+        "Worse-X",
+        "PMMR-XW",
+        "Oracle-CATE(X)",
+    ]
+
+
 def test_oracle_is_exact_on_cate_and_noise_bound_on_ite(results):
     """The invariant the whole rework rests on.
 
@@ -346,9 +368,9 @@ def test_both_renderers_read_the_same_task_columns(results):
     report = TaskReport.from_results(results, CATE)
     labels = [c.label for c in CATE.columns()]
 
-    headings = [c.heading for c in CATE.columns() if c is not ESTIMAND_COLUMN]
+    headings = [c.heading for c in CATE.columns()]
     console_labels = [c.header for c in report.rich_table().columns]
-    assert console_labels == ["Method", "Est.", *headings]
+    assert console_labels == ["Method", *headings]
 
     latex = report.latex()
     for label in labels:
@@ -380,10 +402,8 @@ def test_latex_never_bolds_a_reference_row(results):
 def test_latex_right_aligns_the_numeric_columns(results):
     """The cells are pre-formatted strings, which pandas would left-align."""
     latex = TaskReport.from_results(results, CATE).latex()
-    # index + Estimand are left-aligned; every metric column is right-aligned.
-    expected = "l" + "".join(
-        "l" if c is ESTIMAND_COLUMN else "r" for c in CATE.columns()
-    )
+    # index + Inputs are left-aligned; every metric column is right-aligned.
+    expected = "l" + "".join("l" if c is INPUTS_COLUMN else "r" for c in CATE.columns())
     assert f"\\begin{{tabular}}{{{expected}}}" in latex
 
 

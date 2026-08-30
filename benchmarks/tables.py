@@ -18,8 +18,9 @@ run.py writes one summary per *task* — the three views of the same run:
 This script is a thin front-end: the columns, their formats, the bolding
 direction and the caption all live on the ``Task`` objects in
 [metrics.py](metrics.py), so the console table and these LaTeX tables cannot
-drift apart. Reference rows (the oracles) carry no Mean Rank and are printed
-last, exactly as they are ranked: they are anchors, not competitors.
+drift apart. Methods are ordered by exact predict-time input block and then by
+Mean Rank computed only within that block. Reference rows (the oracles) carry
+no Mean Rank and are printed last: they are anchors, not competitors.
 """
 from pathlib import Path
 

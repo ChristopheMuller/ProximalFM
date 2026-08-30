@@ -50,8 +50,9 @@ Adding a metric is one :class:`Metric` in one :class:`Task`; both renderers pick
 it up, because there is no second column spec anywhere.
 
 Note that a per-method object is deliberately *not* part of this: ``Mean Rank``
-is a comparison across methods within an episode, so the natural unit is the
-task, and per-method numbers are a ``groupby`` on the frame the CSV needs anyway.
+is a comparison across methods with the same predict-time inputs within an
+episode, so the natural unit is the task, and per-method numbers are a
+``groupby`` on the frame the CSV needs anyway.
 
 ``s2_over_var`` (``cate`` target only) is ``mean(S2)/Var(τ*)``: how much of the
 scored target's variance is Monte-Carlo sampling noise in the target *itself*.
@@ -230,6 +231,7 @@ class Metric(Column):
 
 # The per-method aggregates. Not metrics — they are computed from the
 # bookkeeping columns, not from (pred, target) — but they render identically.
+INPUTS_COLUMN = Column("Inputs", "{}", None)
 RANK_COLUMN = Column("Mean Rank", "{:.2f}", "min", short="Rank")
 FAILURE_COLUMN = Column("Failure Rate", "{:.0%}", "min", _style_failure, short="Fail")
 TIME_COLUMN = Column("Time (s)", "{:.2f}", None)
@@ -373,7 +375,7 @@ class Task:
         """Every rendered column, in table order. The one spec both renderers
         read — there is deliberately no second copy."""
         return [
-            ESTIMAND_COLUMN,
+            INPUTS_COLUMN,
             RANK_COLUMN,
             *[m for m in self.metrics if m.show],
             FAILURE_COLUMN,
@@ -571,6 +573,27 @@ def _aggregate(values: pd.Series, agg: str) -> dict[str, float]:
     raise ValueError(f"unknown aggregation {agg!r}")
 
 
+def _input_group(estimand: str) -> tuple[str, ...]:
+    """The exact predict-time inputs used for fair, within-group ranking."""
+    return parse_estimand(estimand)[1]
+
+
+def _input_label(inputs: tuple[str, ...], *, reference: bool = False) -> str:
+    """Compact human-facing label for a comparison block."""
+    if reference:
+        return "Oracle"
+    return "+".join(part.upper() for part in inputs) or "None"
+
+
+def _input_sort_key(inputs: tuple[str, ...], *, reference: bool = False) -> tuple:
+    """Observed-input blocks first, U-assisted blocks next, references last."""
+    if reference:
+        return (2, 0, ())
+    # Within each tier, move from fewer inputs to more inputs, retaining the
+    # canonical x,w,z,u order for otherwise equal sets.
+    return (1 if "u" in inputs else 0, len(inputs), inputs)
+
+
 @dataclass
 class TaskReport:
     """One task's per-episode rows, and the three views anyone wants of them."""
@@ -610,6 +633,12 @@ class TaskReport:
         :meth:`latex` (and :meth:`summary`) work on the result.
         """
         summary = pd.read_csv(path, index_col="method")
+        if INPUTS_COLUMN.label not in summary.columns:
+            raise ValueError(
+                f"{path} predates input-block ranking (no "
+                f"{INPUTS_COLUMN.label!r} column). Re-run benchmarks/run.py; "
+                "cached predictions are reused, so methods are not refit."
+            )
         return cls(task, pd.DataFrame(), _summary=summary)
 
     @property
@@ -620,9 +649,11 @@ class TaskReport:
         """One row per method: the metrics aggregated as each one declares,
         plus the rank, the failure rate and the timing.
 
-        Rows are ordered by the mean rank (best head-to-head first). Reference
-        rows (the oracles) are shown but never ranked: an oracle is not a
-        competitor, and letting it take rank 1 would shift every real method.
+        Rows are ordered first by their exact predict-time inputs, then by mean
+        rank within that block. Methods using different inputs are never ranked
+        against one another. Reference rows (the oracles) are shown last but
+        never ranked: an oracle is not a competitor, and letting it take rank 1
+        would shift every real method.
         """
         if self._summary is not None:
             return self._summary
@@ -634,14 +665,19 @@ class TaskReport:
 
         # Failed and homogeneous episodes have a NaN rank key and are simply
         # excluded from both the rank and its mean.
+        df["input_group"] = df["estimand"].map(_input_group)
         rankable = df[~df["is_reference"]]
-        df["method_rank"] = rankable.groupby("episode")[self.task.rank_by].rank(
-            method="min", ascending=True
-        )
+        df["method_rank"] = rankable.groupby(["episode", "input_group"])[
+            self.task.rank_by
+        ].rank(method="min", ascending=True)
 
         def _agg(g: pd.DataFrame) -> pd.Series:
             out = {
                 ESTIMAND_COLUMN.label: g["estimand"].iloc[0],
+                INPUTS_COLUMN.label: _input_label(
+                    g["input_group"].iloc[0],
+                    reference=bool(g["is_reference"].any()),
+                ),
                 # An anchor for reading the table, not a competitor: unranked
                 # here, and excluded from the LaTeX best-of bolding.
                 "Reference": bool(g["is_reference"].any()),
@@ -663,11 +699,24 @@ class TaskReport:
             return pd.Series(out)
 
         summary = df.groupby("method", sort=False).apply(_agg)
-        # Push all-NaN ranks to the end, which is where the unranked reference
-        # rows land.
-        self._summary = summary.sort_values(
-            RANK_COLUMN.label, ascending=True, na_position="last"
+        sort_keys = pd.DataFrame(
+            [
+                _input_sort_key(
+                    _input_group(row[ESTIMAND_COLUMN.label]),
+                    reference=bool(row["Reference"]),
+                )
+                for _, row in summary.iterrows()
+            ],
+            index=summary.index,
+            columns=["_tier", "_n_inputs", "_inputs"],
         )
+        ordered = summary.join(sort_keys).sort_values(
+            ["_tier", "_n_inputs", "_inputs", RANK_COLUMN.label],
+            ascending=True,
+            na_position="last",
+            kind="stable",
+        )
+        self._summary = ordered.drop(columns=sort_keys.columns)
         return self._summary
 
     # ── Rendering ────────────────────────────────────────────────────────────
@@ -682,15 +731,19 @@ class TaskReport:
             title=title or self.task.title, box=box.SIMPLE_HEAD, show_footer=False
         )
         tbl.add_column("Method", style="bold cyan", no_wrap=True)
-        # Wide enough for the longest tag ("cate(x,w,z,u)"): rich shrinks
-        # flexible columns on a narrow terminal, and a truncated "cate…" says
-        # nothing.
-        tbl.add_column("Est.", justify="center", no_wrap=True, min_width=13)
-        columns = [c for c in self.task.columns() if c is not ESTIMAND_COLUMN]
+        columns = self.task.columns()
         for col in columns:
-            tbl.add_column(col.heading, justify="right")
+            tbl.add_column(
+                col.heading,
+                justify="center" if col is INPUTS_COLUMN else "right",
+                no_wrap=col is INPUTS_COLUMN,
+            )
 
+        previous_group = None
         for method, row in summary.iterrows():
+            group = str(row[INPUTS_COLUMN.label])
+            if previous_group is not None and group != previous_group:
+                tbl.add_section()
             cells = []
             for col in columns:
                 v = row[col.label]
@@ -700,7 +753,8 @@ class TaskReport:
                 s = col.fmt.format(v)
                 style = col.style(v) if col.style else ""
                 cells.append(f"[{style}]{s}[/{style}]" if style else s)
-            tbl.add_row(str(method), str(row[ESTIMAND_COLUMN.label]), *cells)
+            tbl.add_row(str(method), *cells)
+            previous_group = group
         return tbl
 
     def latex(self, methods: Optional[Sequence[str]] = None) -> str:
@@ -723,9 +777,12 @@ class TaskReport:
             df, reference = df.loc[keep], reference.loc[keep]
 
         columns = [c for c in self.task.columns() if c.label in df.columns]
+        groups = df[INPUTS_COLUMN.label]
         rendered = pd.DataFrame(
             {
-                c.label: _format_column(df[c.label], c, ranked=~reference)
+                c.label: _format_column(
+                    df[c.label], c, ranked=~reference, groups=groups
+                )
                 for c in columns
             },
             index=df.index,
@@ -735,7 +792,7 @@ class TaskReport:
         # The cells are pre-formatted strings, so pandas would left-align every
         # column; the numbers want to line up on the right.
         column_format = "l" + "".join(
-            "l" if c is ESTIMAND_COLUMN else "r" for c in columns
+            "l" if c is INPUTS_COLUMN else "r" for c in columns
         )
         return rendered.style.to_latex(
             caption=self.task.caption,
@@ -745,29 +802,34 @@ class TaskReport:
         ).replace("\\begin{table}\n", "\\begin{table}[htbp]\n\\centering\n")
 
 
-def _format_column(series: pd.Series, column: Column, ranked: pd.Series) -> list[str]:
-    """One column's cells as LaTeX, its best three *competing* rows bolded.
+def _format_column(
+    series: pd.Series,
+    column: Column,
+    ranked: pd.Series,
+    groups: pd.Series,
+) -> list[str]:
+    """One column's cells as LaTeX, its best three rows per input block bolded.
 
     ``ranked`` restricts which rows may win the bold: the oracle rows would
     otherwise take every slot on the metrics they define. The winners are picked
     by row, not by value, so a reference row that happens to tie a winner is not
     bolded along with it.
     """
-    pool = series[ranked].dropna()
-    if column.direction == "max":
-        best = set(pool.nlargest(3).index)
-    elif column.direction == "min":
-        best = set(pool.nsmallest(3).index)
-    elif column.direction == "zero":
-        best = set(pool.abs().nsmallest(3).index)
-    else:  # informational — never bolded
-        best = set()
+    best = set()
+    for _, members in series[ranked].groupby(groups[ranked], sort=False):
+        pool = members.dropna()
+        if column.direction == "max":
+            best.update(pool.nlargest(3).index)
+        elif column.direction == "min":
+            best.update(pool.nsmallest(3).index)
+        elif column.direction == "zero":
+            best.update(pool.abs().nsmallest(3).index)
 
     cells = []
     for method, val in series.items():
         if pd.isna(val):
             cells.append("-")
-        elif isinstance(val, str):  # the Estimand tag
+        elif isinstance(val, str):  # the input-block label
             cells.append(f"\\texttt{{{val}}}")
         else:
             # The shared format strings are written for the console, where `%`

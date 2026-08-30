@@ -28,8 +28,14 @@ Without them the run falls back to the ITE task and says so on the console.
 
 ### The three tasks
 
-Methods do not all answer the same question, so they are not all ranked in the same table. Each
-table is one `Task` object in [`metrics.py`](metrics.py) — the single place that says which target it
+Methods do not all answer the same question, so they are not all ranked in the same table. Within a
+table, methods are additionally ranked only against methods with the exact same predict-time inputs;
+the rows are ordered by input block first and mean rank second. The ITE order is observed-input
+blocks (`X`, then progressively richer proxy sets such as `X+W+Z`), followed by `U`-assisted blocks
+(up to `X+W+Z+U`), then the unranked oracle reference rows. Thus a lower-information method is never
+given a head-to-head rank against one with more information. The live terminal table uses this ITE
+view whenever realized ITE targets are present. Each table is one `Task` object in
+[`metrics.py`](metrics.py) — the single place that says which target it
 scores, which methods it admits, what it ranks on and which columns it shows. Every
 prediction output carries an **estimand tag** that spells out what it answers — a *kind* and the
 variables the prediction reads at **predict** time, in the canonical order `x,w,z,u`:
