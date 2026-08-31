@@ -123,7 +123,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from one or more real-world CSVs (Causal Chambers), given a column→variable-block mapping. Each file is an independently standardized episode, so reporting aggregates over files instead of concatenating rows. No CATE target exists here, so this path is ITE-only by construction. |
-| **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `plearner.py`, `tabicl_gcomp.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
+| **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `plearner.py`, `proxy_marginalizer.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
 | **[`tables.py`](tables.py)** | A `# %%` script: reads `summary_{cate,ite,ate}.csv` and prints one LaTeX table each through `TaskReport.latex()`, top-3 bolded (direction-aware, oracles excluded). Set `experiment_dir` at the top. It holds no column spec of its own — the columns, formats, bolding direction and caption all live on the `Task`. |
@@ -249,37 +249,38 @@ pass at `fit()` time and reproduces the uncached predictions **bit for bit**. 48
 accumulation order, not a change of estimator. Check the memory column against `n_workers` before
 using it.
 
-**Proxy-marginalised TabICL.** `cls: TabICLGComp` is a diagnostic g-computation baseline, not a
-proximal estimator. It fits one TabICL outcome regression
-`m(a,x,w,z) = E[Y | A=a,X=x,W=w,Z=z]`, then reports
+**Proxy marginalisation.** `cls: ProxyMarginalizer` wraps any single-output estimator whose derived
+estimand is proxy-conditional — `cate(x,w)`, `cate(x,z)`, or `cate(x,w,z)` — and reports
 
 $$
 \hat\tau(x)=\sum_{i\in\operatorname{top-k}(x)}q_i(x)
-\{\hat m(1,x,W_i,Z_i)-\hat m(0,x,W_i,Z_i)\}.
+\hat\tau(x,W_i,Z_i).
 $$
 
-The atoms are the context's aligned `(W_i, Z_i)` rows — never the Cartesian product. The weights
-are a Gaussian Nadaraya-Watson estimate of `P(W,Z | X=x)`, using per-X-column median bandwidths,
-truncated to the `proxy_top_k` largest weights and renormalised. Query-time W/Z are ignored, so the
-output is tagged `cate(x)` and enters the headline table. This is ordinary proxy adjustment:
-proximal completeness does **not** imply `Y(a) independent of A | X,W,Z`, so agreement with
-ProximalFM says the datasets are also amenable to this simpler adjustment, not that TabICL recovered
-a proximal bridge.
+The wrapped estimator fits once on the ordinary context and still owns the meaning of
+`tau_hat(x,w,z)` — for example an S-, T-, or X-learner with proxies in its design matrix. The
+wrapper's atoms are the context's aligned `(W_i, Z_i)` rows, never their Cartesian product. One
+median-scaled X-distance ordering feeds both integration rules: `knn` averages its nearest prefix
+uniformly; `kernel` applies stable Gaussian weights to that same prefix. Query-time W/Z are ignored,
+so every output is tagged `cate(x)` and enters the headline table. This remains ordinary proxy
+adjustment: proximal completeness does **not** imply `Y(a) independent of A | X,W,Z`.
 
 ```yaml
-  - name: TabICL-GComp-WZ
-    cls: TabICLGComp
-    proxy_top_k: 32
-    kernel_scale: 1.0
+  - name: S-RF-WZ-Marginalized
+    cls: ProxyMarginalizer
+    estimator: {cls: S_Learner, base: rf, use_W: true, use_Z: true}
     predict_batch_size: 4096
-    tabicl: { kv_cache: true }
-    compute: { torch_threads: 2 }
+    outputs:
+      - {name: S-RF-WZ-kNN-8, integration: {method: knn, n_points: 8}}
+      - {name: S-RF-WZ-Kernel-32, integration: {method: kernel, n_points: 32, kernel_scale: 1.0}}
 ```
 
-At `proxy_top_k: 32`, each query produces 32 proxy-adjusted counterfactual rows per treatment arm:
-about 32 times the query workload of the ordinary two-arm S-TabICL prediction. `predict_batch_size`
-only chunks those synthetic rows for memory; it does not change the estimator. `kernel_scale`
-multiplies the median-heuristic bandwidths and is fixed rather than outcome-tuned.
+An `outputs:` list is one fit and one prediction on the largest requested support: smaller point
+counts and both weighting rules reuse prefixes of that result. Without `outputs:`, set one
+`integration:` block at method level. `n_points` is capped at the context size;
+`predict_batch_size` only chunks expanded calls for memory, and `kernel_scale` multiplies the
+median-heuristic bandwidth without outcome-based tuning. Nested estimators may not themselves have
+`outputs`, `compute`, `is_oracle`, or an explicit `estimand`; those belong to the outer method.
 
 ### 3.1 Compute
 

@@ -5,8 +5,8 @@ This module is the registry: the thin wrappers that adapt an implementation to
 the benchmark's interface, plus `build_method` (config dict → estimator) and
 `method_estimand` (config dict → what the output answers). The implementations
 themselves are the sibling modules — `kpv.py`, `pmmr.py`, `nmmr.py`,
-`plearner.py` (+ the shared `kernels.py`), and `proximalfm.py`. The interface
-they all implement is in `base.py`.
+`plearner.py`, `proxy_marginalizer.py` (+ the shared `kernels.py`), and
+`proximalfm.py`. The interface they all implement is in `base.py`.
 
 ProximalFM is one of them. It is *this* project's model, but it is not a
 privileged one: it is configured under `methods:` like everything else, takes
@@ -44,7 +44,7 @@ import warnings
 # The estimand taxonomy has its own module: both this package and the metrics
 # layer need it, and neither may import the other (metrics must stay free of
 # torch, sklearn and the competitor submodules that this file drags in).
-from benchmarks.estimands import canonical_estimand, format_estimand
+from benchmarks.estimands import canonical_estimand, format_estimand, parse_estimand
 from benchmarks.methods.base import CATEEstimator, FeatureBuilder
 
 # Add this at the very top of your script
@@ -1618,9 +1618,9 @@ _CLS_ESTIMAND = {
     # it is handed: the model masks them (`_hide_query_proxies`), so the
     # prediction is a function of x and the context alone.
     "ProximalFM": ("cate", ("x",)),
-    # W/Z are used to fit the outcome regression and then marginalised over
-    # aligned context atoms; query-time W/Z are ignored.
-    "TabICLGComp": ("cate", ("x",)),
+    # The wrapped proxy-conditional estimator is evaluated on context atoms;
+    # query-time W/Z are integrated out.
+    "ProxyMarginalizer": ("cate", ("x",)),
 }
 
 # Classes that stack W/Z into the design matrix used at *predict* time, so
@@ -1724,15 +1724,39 @@ def _make_proximalfm(cfg: dict, compute) -> CATEEstimator:
     )
 
 
-def _make_tabicl_gcomp(cfg: dict, compute) -> CATEEstimator:
-    """Instantiate the proxy-marginalised TabICL diagnostic baseline."""
-    from benchmarks.methods.tabicl_gcomp import TabICLGComp
+def _make_proxy_marginalizer(cfg: dict, compute) -> CATEEstimator:
+    """Build and validate a proxy-conditional estimator, then wrap it."""
+    from benchmarks.methods.proxy_marginalizer import ProxyMarginalizer
 
-    return TabICLGComp(
-        outcome_model=_make_tabicl(cfg.get("tabicl") or None, device=compute.device),
-        proxy_top_k=int(cfg.get("proxy_top_k", 32)),
-        kernel_scale=float(cfg.get("kernel_scale", 1.0)),
-        predict_batch_size=int(cfg.get("predict_batch_size", 4096)),
+    nested = cfg.get("estimator")
+    if not isinstance(nested, dict):
+        raise ValueError("ProxyMarginalizer.estimator must be a mapping.")
+    if not nested.get("cls"):
+        raise ValueError("ProxyMarginalizer.estimator.cls is required.")
+    forbidden = sorted(set(nested) & {"outputs", "compute", "is_oracle", "estimand"})
+    if forbidden:
+        raise ValueError(
+            "ProxyMarginalizer.estimator may not contain "
+            f"{forbidden}; configure those on the outer method."
+        )
+    if nested["cls"] == "ProxyMarginalizer":
+        raise ValueError("ProxyMarginalizer may not recursively wrap itself.")
+
+    nested_cfg = {**nested, "name": f"{cfg['name']}::estimator"}
+    nested_tag = method_estimand(nested_cfg)
+    kind, inputs = parse_estimand(nested_tag)
+    if kind != "cate" or not ({"w", "z"} & set(inputs)):
+        raise ValueError(
+            "ProxyMarginalizer.estimator must be a proxy-conditional CATE "
+            f"estimator, got {nested_tag!r}."
+        )
+
+    _, estimator = build_method(nested_cfg, compute)
+    return ProxyMarginalizer(
+        estimator,
+        integration=cfg.get("integration"),
+        outputs=cfg.get("outputs"),
+        predict_batch_size=cfg.get("predict_batch_size", 4096),
     )
 
 
@@ -1835,7 +1859,7 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
         # This project's own model. Device comes from `compute` like everywhere
         # else; the checkpoint is loaded once per process, not once per episode.
         "ProximalFM": lambda: _make_proximalfm(cfg, compute),
-        "TabICLGComp": lambda: _make_tabicl_gcomp(cfg, compute),
+        "ProxyMarginalizer": lambda: _make_proxy_marginalizer(cfg, compute),
         "CausalForest": lambda: CausalForest_Wrapper(
             n_trees=cfg.get("n_trees", 200),
             min_leaf_size=cfg.get("min_leaf_size", 10),
