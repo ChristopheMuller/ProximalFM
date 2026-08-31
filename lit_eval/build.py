@@ -1,7 +1,7 @@
 """Build a fixed literature-dataset evaluation set.
 
-    python -m lit_eval.build --dataset dummy_linear --name dummy_v1 \
-        --n_datasets 48 --n_max 512 --n_q 64 --mc_cate 200 --seed 20260811
+    python -m lit_eval.build --dataset sverdrup_appB --name sverdrup_appB_v1 \
+        --n_datasets 48 --n_max 4000 --n_q 2000 --mc_cate 2 --seed 20260811
 
 Output is the ONE on-disk format the rest of the project consumes -- a directory
 of raw sparse ``batch_*.pt`` files plus ``metadata.json``, exactly what
@@ -76,6 +76,7 @@ from lit_eval.base import (  # noqa: E402
 from lit_eval.registry import available_datasets, build_dataset  # noqa: E402
 from lit_eval.sidecar import (  # noqa: E402
     LitBuildConfig,
+    LitSetConflictError,
     check_no_silent_mutation,
     episode_records,
     write_sidecar,
@@ -290,6 +291,34 @@ def write_config(
 # -----------------------------------------------------------------------------
 
 
+def _has_generated_outputs(root: Path) -> bool:
+    val = root / "val"
+    return any(val.glob("batch_*.pt")) or any(
+        (root / name).exists()
+        for name in ("frozen_meta.pt", "manifest.json", "config.yaml")
+    )
+
+
+def _clear_generated_outputs(root: Path) -> None:
+    """Remove only files owned by this builder before an explicit force rebuild."""
+    val = root / "val"
+    for pattern in ("batch_*.pt", "batch_*.pt.tmp"):
+        for path in val.glob(pattern):
+            path.unlink()
+    metadata = val / "metadata.json"
+    if metadata.exists():
+        metadata.unlink()
+    for name in (
+        "frozen_meta.pt",
+        "frozen_meta.pt.tmp",
+        "manifest.json",
+        "config.yaml",
+    ):
+        path = root / name
+        if path.exists():
+            path.unlink()
+
+
 def build(args: argparse.Namespace) -> Path:
     dataset = build_dataset(args.dataset, **parse_options(args.option))
     root = Path(args.out_root) / args.name
@@ -310,8 +339,16 @@ def build(args: argparse.Namespace) -> Path:
             seed=args.seed,
             options=dict(dataset.options),
         )
-        if root.exists():
-            check_no_silent_mutation(root, sidecar_cfg, force=args.force)
+    replace_outputs = root.exists() and args.force
+    if root.exists() and not replace_outputs:
+        if sidecar_cfg is not None and (root / "frozen_meta.pt").exists():
+            check_no_silent_mutation(root, sidecar_cfg)
+        elif _has_generated_outputs(root):
+            raise LitSetConflictError(
+                f"{root} already contains a generated set without a compatible "
+                "replicate sidecar. Choose a new --name, or pass --force to "
+                "replace the builder-owned outputs."
+            )
 
     train_n = args.n_max
     print(
@@ -330,6 +367,12 @@ def build(args: argparse.Namespace) -> Path:
         seed=args.seed,
         mem_budget=args.mc_mem_budget,
     )
+
+    # Generate successfully before discarding the old set. This is not a full
+    # directory transaction, but a bad option or memory-budget failure cannot
+    # destroy a previously usable build.
+    if replace_outputs:
+        _clear_generated_outputs(root)
 
     n_val_files, dpf = save_validation(
         pool, val_dir, dataset, args.mc_cate, args.datasets_per_file, cli_command
@@ -413,7 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         type=str,
         default=None,
-        help="Subfolder / identifier for this build (e.g. demand_val_v1). Use a "
+        help="Subfolder / identifier for this build (e.g. sverdrup_appB_v1). Use a "
         "different name -- never a rebuild in place -- for a different config.",
     )
     p.add_argument(

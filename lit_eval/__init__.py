@@ -19,10 +19,8 @@ Consequently a build here is consumed exactly like a ``synt_eval`` build:
 Adding a dataset is one module under :mod:`lit_eval.datasets` implementing
 :class:`lit_eval.base.ProximalDataset` and registering itself; everything else
 (replicate layout, Monte Carlo targets, on-disk writing, sidecar, digest) is
-shared and lives here. :mod:`lit_eval.datasets.dummy_linear` is the reference
-implementation and the thing the tests exercise -- it is a placeholder DGP, not
-a literature dataset, and it exists so the plumbing can be built and verified
-before any external code is vendored.
+shared and lives here. The first adapter is ``sverdrup_appB``, the illustrative
+mechanism in Appendix B of Sverdrup and Cui (2023).
 
 Two invariants inherited from the rest of the project, both of which the base
 class enforces so an adapter cannot get them wrong:

@@ -17,9 +17,10 @@ here, once, so no adapter can get the load-bearing parts wrong.
 The two rules the base class enforces, restated because they are the ones that
 silently produce plausible-looking wrong numbers:
 
-* ``Y0``/``Y1`` are **structural**: observation noise reaches ``Y_obs`` only.
-  Adding it to the potential outcomes would inflate the target and its Monte
-  Carlo variance.
+* ``Y0``/``Y1`` are paired potential-outcome draws. An adapter may put a shared
+  outcome-noise draw in both arms (as a published DGP often does), but must not
+  draw independent noise for the two arms unless that coupling is part of the
+  estimand.
 * ``MU0``/``MU1`` are the Monte Carlo mean over replicates of the *query* rows,
   NaN on the context prefix. They are estimates of ``E[Y_a | X = x]``, so the
   estimand is ``tau*(x) = E[Y1 - Y0 | X = x]`` -- marginalizing over the latent,
@@ -101,13 +102,17 @@ class RawEpisode:
     W: Tensor  # (N, d_W)   replicate rows
     Z: Tensor  # (T|N, d_Z) leaf -> observed rows are fine
     A_probs: Tensor  # (T|N, 1)   propensity, pre-clamp
-    Y0: Tensor  # (N, 1)     structural, no observation noise
-    Y1: Tensor  # (N, 1)     structural, no observation noise
+    Y0: Tensor  # (N, 1)     paired potential-outcome draw
+    Y1: Tensor  # (N, 1)     paired potential-outcome draw
     d_U: int
     d_X: int
     d_W: int
     d_Z: int
     U: Optional[Tensor] = None  # (N, d_U), diagnostic only
+    # Some published observational mechanisms draw A before the proxies. Such
+    # adapters supply that draw here so the shared finalizer does not replace
+    # it with a second, inconsistent treatment draw.
+    A: Optional[Tensor] = None  # (T|N, 1), binary
 
     # Closed-form ``tau*`` on the query rows, when the DGP has one. Never used
     # as the training/scoring target -- it is stored in the sidecar so a test
@@ -228,16 +233,25 @@ class ProximalDataset(ABC):
             else torch.zeros((T, 0), dtype=self.dtype)
         )
 
-        A_probs = (
-            rep.observed(raw.A_probs)
-            .reshape(T, 1)
-            .to(self.dtype)
-            .clamp(self.overlap_eps, 1.0 - self.overlap_eps)
-        )
-        A = (self.rand(T, 1) < A_probs).to(self.dtype)
+        raw_A_probs = rep.observed(raw.A_probs).reshape(T, 1).to(self.dtype)
+        A_probs = raw_A_probs.clamp(self.overlap_eps, 1.0 - self.overlap_eps)
+        if raw.A is None:
+            A = (self.rand(T, 1) < A_probs).to(self.dtype)
+        else:
+            if not torch.equal(raw_A_probs, A_probs):
+                raise ValueError(
+                    f"{self.name}: supplied A was drawn before overlap_eps "
+                    "clamped A_probs; emit already-clamped probabilities or "
+                    "set overlap_eps=0 so the stored propensity matches the "
+                    "treatment law"
+                )
+            A = rep.observed(raw.A).reshape(T, 1).to(self.dtype)
+            if not torch.logical_or(A == 0, A == 1).all():
+                raise ValueError(f"{self.name}: supplied A is not binary")
 
-        # Observation noise reaches Y_obs only; Y0/Y1 stay structural, and the
-        # Monte Carlo target is built from those.
+        # Adapters may already include a shared structural outcome disturbance
+        # in Y0/Y1. This optional term is additional measurement noise on the
+        # observed outcome only.
         Y_obs = A * Y1 + (1.0 - A) * Y0
         if self.extra_observation_noise:
             Y_obs = Y_obs + float(self.extra_observation_noise) * self.randn(T, 1)
