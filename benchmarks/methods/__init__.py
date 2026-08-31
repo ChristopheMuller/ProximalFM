@@ -1492,7 +1492,7 @@ class CausalPFN_Estimator(CATEEstimator):
 _TABICL_DEFAULTS: dict = {"kv_cache": True}
 
 
-def _make_tabicl(options: dict | None = None):
+def _make_tabicl(options: dict | None = None, *, device: str = "cpu"):
     """Return a fresh TabICLRegressor with the benchmark's inference options.
 
     Fresh, not shared: T-/X-learners call the base-model factory once per arm and
@@ -1502,8 +1502,12 @@ def _make_tabicl(options: dict | None = None):
     if not _TABICL_AVAILABLE:
         raise ImportError("tabicl is not installed.")
 
+    # `compute` is the benchmark's sole device owner.  Put it last so a stale
+    # `tabicl.device` cannot make a pooled method auto-grab a GPU.
     with silent():
-        return TabICLRegressor(**{**_TABICL_DEFAULTS, **(options or {})})
+        return TabICLRegressor(
+            **{**_TABICL_DEFAULTS, **(options or {}), "device": device}
+        )
 
 
 def _make_base_model(
@@ -1512,6 +1516,7 @@ def _make_base_model(
     *,
     base_cv: dict | None = None,
     n_jobs: int = 1,
+    device: str = "cpu",
 ):
     """Return a fresh regression model, optionally tuned by prediction CV.
 
@@ -1538,7 +1543,7 @@ def _make_base_model(
     if name == "tabicl":
         if base_cv:
             raise ValueError("base_cv does not support `base: tabicl`")
-        return _make_tabicl(tabicl_options)
+        return _make_tabicl(tabicl_options, device=device)
 
     if name not in {"linear", "rf"}:
         raise ValueError(
@@ -1613,6 +1618,9 @@ _CLS_ESTIMAND = {
     # it is handed: the model masks them (`_hide_query_proxies`), so the
     # prediction is a function of x and the context alone.
     "ProximalFM": ("cate", ("x",)),
+    # W/Z are used to fit the outcome regression and then marginalised over
+    # aligned context atoms; query-time W/Z are ignored.
+    "TabICLGComp": ("cate", ("x",)),
 }
 
 # Classes that stack W/Z into the design matrix used at *predict* time, so
@@ -1716,6 +1724,18 @@ def _make_proximalfm(cfg: dict, compute) -> CATEEstimator:
     )
 
 
+def _make_tabicl_gcomp(cfg: dict, compute) -> CATEEstimator:
+    """Instantiate the proxy-marginalised TabICL diagnostic baseline."""
+    from benchmarks.methods.tabicl_gcomp import TabICLGComp
+
+    return TabICLGComp(
+        outcome_model=_make_tabicl(cfg.get("tabicl") or None, device=compute.device),
+        proxy_top_k=int(cfg.get("proxy_top_k", 32)),
+        kernel_scale=float(cfg.get("kernel_scale", 1.0)),
+        predict_batch_size=int(cfg.get("predict_batch_size", 4096)),
+    )
+
+
 def normalize_method_cfg(cfg: dict) -> dict:
     """Resolve a config entry's shorthands before the run acts on it.
 
@@ -1771,6 +1791,7 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
             tabicl_opts,
             base_cv=cfg.get("base_cv") or None,
             n_jobs=compute.n_jobs,
+            device=compute.device,
         )
 
     factories: dict[str, Callable[[], CATEEstimator]] = {
@@ -1814,6 +1835,7 @@ def build_method(cfg: dict, compute=None) -> tuple[str, CATEEstimator]:
         # This project's own model. Device comes from `compute` like everywhere
         # else; the checkpoint is loaded once per process, not once per episode.
         "ProximalFM": lambda: _make_proximalfm(cfg, compute),
+        "TabICLGComp": lambda: _make_tabicl_gcomp(cfg, compute),
         "CausalForest": lambda: CausalForest_Wrapper(
             n_trees=cfg.get("n_trees", 200),
             min_leaf_size=cfg.get("min_leaf_size", 10),
