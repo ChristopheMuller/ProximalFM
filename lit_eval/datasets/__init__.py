@@ -6,5 +6,6 @@ dataset-specific branch.
 """
 
 from lit_eval.datasets.sverdrup_appb import SverdrupAppB  # noqa: F401
+from lit_eval.datasets.wu_apph2 import WuAppH2  # noqa: F401
 
-__all__ = ["SverdrupAppB"]
+__all__ = ["SverdrupAppB", "WuAppH2"]

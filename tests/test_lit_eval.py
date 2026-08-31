@@ -18,8 +18,8 @@ def make_spec(seed=11, T=96, n_ctx=64, K=8):
     return EpisodeSpec(index=0, seed=seed, seq_len=T, train_size=n_ctx, mc_cate=K)
 
 
-def test_only_sverdrup_dataset_is_registered():
-    assert available_datasets() == ["sverdrup_appB"]
+def test_literature_datasets_are_registered():
+    assert available_datasets() == ["sverdrup_appB", "wu_appH2"]
     assert build_dataset("sverdrup_appB").name == "sverdrup_appB"
 
 
