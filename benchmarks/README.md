@@ -437,9 +437,10 @@ uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 The plotting entry point produces two CATE figures and one ATE figure. The error-anatomy
 figure is `results/plots/cate_iso_nrmse.png`: its x-axis is median squared
 normalised ATE bias, its y-axis is median Shape R², and point colour is median
-nPEHE. The data grid is censored at x = 3 and y = −1; out-of-range methods are
-shown just outside the relevant boundary (for example, x = 4 is displayed at
-x = 3.05). The contour lines are single-episode CATE NRMSE reference guides.
+nPEHE. The readable grid is derived from the observed method summaries: the
+upper 5% of level-error values and lower 5% of Shape R² values are censored,
+with out-of-range methods shown just outside the relevant boundary. The
+contour lines are single-episode CATE NRMSE reference guides.
 
 The accuracy/speed figure is `results/plots/cate_speed_rank.png`. It places
 each non-reference method at its median recorded fit-plus-predict time per

@@ -304,7 +304,7 @@ def test_cate_speed_rank_uses_log_x_and_best_rank_at_top(run, monkeypatch):
     assert ax.yaxis_inverted()
 
 
-def test_cate_iso_curve_uses_censored_linear_axes(run, monkeypatch):
+def test_cate_iso_curve_uses_observed_censored_linear_axes(run, monkeypatch):
     captured = {}
 
     def capture_figure(fig, path, *, dpi=200, close=True):
@@ -315,8 +315,14 @@ def test_cate_iso_curve_uses_censored_linear_axes(run, monkeypatch):
 
     ax = captured["fig"].axes[0]
     assert ax.get_yscale() == "linear"
-    assert ax.get_xlim() == pytest.approx((0.0, 3.1))
-    assert ax.get_ylim() == pytest.approx((-1.1, 1.07))
+    summary = plots._cate_summary(run)
+    x_max, y_min = plots._cate_grid_bounds(summary)
+    x_censored = (summary["ate_bias_norm_sq"] > x_max).any()
+    y_censored = (summary["shape_r2"] < y_min).any()
+    expected_x_max = x_max + plots.CENSOR_PAD + plots.VIEW_PAD if x_censored else x_max
+    expected_y_min = y_min - plots.CENSOR_PAD - plots.VIEW_PAD if y_censored else y_min
+    assert ax.get_xlim() == pytest.approx((0.0, expected_x_max))
+    assert ax.get_ylim() == pytest.approx((expected_y_min, 1.07))
 
 
 def test_censored_methods_are_shown_just_outside_the_grid(run, monkeypatch):
@@ -327,11 +333,11 @@ def test_censored_methods_are_shown_just_outside_the_grid(run, monkeypatch):
 
     summary = pd.DataFrame(
         {
-            "ate_bias_norm_sq": [4.0, 0.25],
-            "shape_r2": [0.25, -2.0],
-            "npehe": [2.0, 2.0],
+            "ate_bias_norm_sq": [0.25] * 20 + [4.0],
+            "shape_r2": [0.25] * 20 + [-2.0],
+            "npehe": [2.0] * 21,
         },
-        index=["x-out", "y-out"],
+        index=[f"method-{i}" for i in range(21)],
     )
     monkeypatch.setattr(plots, "_cate_summary", lambda _: summary)
     monkeypatch.setattr(plots, "save_figure", capture_figure)
@@ -342,8 +348,35 @@ def test_censored_methods_are_shown_just_outside_the_grid(run, monkeypatch):
         for collection in captured["fig"].axes[0].collections
         if hasattr(collection, "get_offsets")
     ]
-    assert (3.05, 0.25) in offsets
-    assert (0.25, -1.05) in offsets
+    # The extreme values are censored against bounds derived from the
+    # observed upper/lower tails, rather than against x=3 and y=-1.
+    assert (0.375, 0.25) in offsets
+    assert (0.25, -0.1) in offsets
+
+
+def test_cate_iso_curve_omits_empty_out_of_scope_zones(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    summary = pd.DataFrame(
+        {
+            "ate_bias_norm_sq": [0.01, 0.02, 0.03],
+            "shape_r2": [0.2, 0.4, 0.6],
+            "npehe": [0.9, 0.7, 0.5],
+        },
+        index=["a", "b", "c"],
+    )
+    monkeypatch.setattr(plots, "_cate_summary", lambda _: summary)
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_cate_iso_nrmse(run, plots.Options())
+
+    ax = captured["fig"].axes[0]
+    x_max, y_min = plots._cate_grid_bounds(summary)
+    assert ax.get_xlim() == pytest.approx((0.0, x_max))
+    assert ax.get_ylim() == pytest.approx((y_min, 1.07))
+    assert not ax.lines
 
 
 def test_degenerate_run_draws_without_raising(tmp_path):

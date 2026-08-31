@@ -35,10 +35,14 @@ from benchmarks.plot_frames import BenchmarkRun
 from benchmarks.plot_style import abbreviate, save_figure, style_for, use_theme
 
 
+# The readable region is derived from the observed method summaries below.
+# Shape R² is unbounded below, so retain a robust lower-tail censor and keep a
+# small amount of room below the constant-ATE anchor at zero.
 X_GRID_MIN = 0.0
-X_GRID_MAX = 3.0
-Y_GRID_MIN = -1.0
 Y_GRID_MAX = 1.02
+CENSOR_QUANTILE = 0.95
+Y_CENSOR_QUANTILE = 0.05
+CENSOR_FLOOR = 0.05
 CENSOR_PAD = 0.05
 VIEW_PAD = 0.05
 
@@ -77,6 +81,31 @@ def _display_coordinate(value: float, low: float, high: float) -> float:
     if value > high:
         return high + CENSOR_PAD
     return value
+
+
+def _cate_grid_bounds(summary: pd.DataFrame) -> tuple[float, float]:
+    """Choose robust censoring bounds from the observed CATE summaries.
+
+    The level coordinate is non-negative, while Shape R² can be arbitrarily
+    negative on difficult or nearly homogeneous episodes. The upper 5% of
+    level-error summaries and lower 5% of shape summaries are therefore shown
+    just outside the plot rather than stretching the whole figure. The
+    constants here are only degenerate-data fallbacks; ordinary runs determine
+    both bounds from their observed values.
+    """
+    x_values = summary["ate_bias_norm_sq"].to_numpy(dtype=float)
+    y_values = summary["shape_r2"].to_numpy(dtype=float)
+    x_values = x_values[np.isfinite(x_values)]
+    y_values = y_values[np.isfinite(y_values)]
+    if not len(x_values) or not len(y_values):
+        raise ValueError("CATE summary has no finite axis values")
+
+    x_quantile = float(np.quantile(x_values, CENSOR_QUANTILE))
+    x_max = max(CENSOR_FLOOR, x_quantile * 1.30)
+
+    y_quantile = float(np.quantile(y_values, Y_CENSOR_QUANTILE))
+    y_min = max(-4.0, min(-CENSOR_FLOOR, y_quantile - CENSOR_FLOOR))
+    return x_max, y_min
 
 
 def _cate_speed_rank_summary(run: BenchmarkRun) -> pd.DataFrame:
@@ -137,9 +166,12 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
 
     x = summary["ate_bias_norm_sq"].to_numpy()
     y = summary["shape_r2"].to_numpy()
+    x_grid_max, y_grid_min = _cate_grid_bounds(summary)
+    x_censored = x > x_grid_max
+    y_censored = y < y_grid_min
     gx, gy = np.meshgrid(
-        np.linspace(X_GRID_MIN, X_GRID_MAX, 400),
-        np.linspace(Y_GRID_MIN, 1.0, 400),
+        np.linspace(X_GRID_MIN, x_grid_max, 400),
+        np.linspace(y_grid_min, 1.0, 400),
     )
     cate_nrmse = np.sqrt(np.maximum(gx + 1.0 - gy, 0.0))
 
@@ -156,8 +188,8 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
 
     for method, row in summary.iterrows():
         style = style_for(method)
-        x_display = _display_coordinate(row.ate_bias_norm_sq, X_GRID_MIN, X_GRID_MAX)
-        y_display = _display_coordinate(row.shape_r2, Y_GRID_MIN, Y_GRID_MAX)
+        x_display = _display_coordinate(row.ate_bias_norm_sq, X_GRID_MIN, x_grid_max)
+        y_display = _display_coordinate(row.shape_r2, y_grid_min, Y_GRID_MAX)
         point = ax.scatter(
             x_display,
             y_display,
@@ -181,11 +213,18 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
             color="0.25",
         )
 
-    ax.axvline(X_GRID_MAX, color="0.45", linewidth=0.8, linestyle=":", zorder=1)
-    ax.axhline(Y_GRID_MIN, color="0.45", linewidth=0.8, linestyle=":", zorder=1)
+    # Only reserve and mark an out-of-scope strip when at least one observed
+    # method was actually censored. Otherwise the axes end at the readable
+    # region, so an empty strip is not mistaken for data space.
+    x_view_max = x_grid_max + CENSOR_PAD + VIEW_PAD if x_censored.any() else x_grid_max
+    y_view_min = y_grid_min - CENSOR_PAD - VIEW_PAD if y_censored.any() else y_grid_min
+    if x_censored.any():
+        ax.axvline(x_grid_max, color="0.45", linewidth=0.8, linestyle=":", zorder=1)
+    if y_censored.any():
+        ax.axhline(y_grid_min, color="0.45", linewidth=0.8, linestyle=":", zorder=1)
     ax.set(
-        xlim=(X_GRID_MIN, X_GRID_MAX + CENSOR_PAD + VIEW_PAD),
-        ylim=(Y_GRID_MIN - CENSOR_PAD - VIEW_PAD, Y_GRID_MAX + VIEW_PAD),
+        xlim=(X_GRID_MIN, x_view_max),
+        ylim=(y_view_min, Y_GRID_MAX + VIEW_PAD),
     )
     ax.set_xlabel("median (normalised ATE bias)²")
     ax.set_ylabel("median Shape R²")
