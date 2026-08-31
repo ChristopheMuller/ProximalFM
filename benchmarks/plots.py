@@ -2,7 +2,7 @@
 
     uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 
-The entry point produces two CATE figures and one ATE figure.
+The entry point produces three CATE figures, one ITE figure, and one ATE figure.
 ``cate_iso_nrmse.png`` places
 each method by its robust level error (median squared normalised ATE bias) and
 heterogeneity recovery (median Shape R²), with point colour showing median
@@ -10,6 +10,10 @@ nPEHE. ``cate_speed_rank.png`` shows the accuracy/speed trade-off: median
 benchmark time per episode on a log x-axis, against the median paired rank on
 CATE nPEHE with 25th–75th percentile whiskers. Reference rows are excluded
 from the rank plot, as they are from every competitor comparison.
+``cate_npehe_boxplot.png`` shows the distribution of per-dataset CATE nPEHE
+values for every method on one shared axis.
+``ite_npehe_boxplot.png`` shows the corresponding per-dataset ITE nPEHE
+distribution.
 ``ate_scatter.png`` compares each method's episode-level estimated ATE with
 the corresponding true ATE from the ``ate`` task, with one shared-axis panel
 per method.
@@ -32,7 +36,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.metrics import TASKS, Task
 from benchmarks.plot_frames import BenchmarkRun
-from benchmarks.plot_style import abbreviate, save_figure, style_for, use_theme
+from benchmarks.plot_style import (
+    abbreviate,
+    draw_anchors,
+    save_figure,
+    style_for,
+    use_theme,
+)
 
 
 # The readable region is derived from the observed method summaries below.
@@ -108,6 +118,42 @@ def _cate_grid_bounds(summary: pd.DataFrame) -> tuple[float, float]:
     return x_max, y_min
 
 
+def _place_cate_labels(fig, ax, labels: list) -> None:
+    """Spread nearby labels apart using display-space collision checks."""
+    if not labels:
+        return
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    occupied = []
+    candidates = (
+        (5, 4),
+        (5, -14),
+        (5, 22),
+        (5, -32),
+        (-5, 22),
+        (-5, -32),
+        (5, 40),
+        (5, -50),
+        (-5, 40),
+        (-5, -50),
+    )
+    axes_box = ax.get_window_extent(renderer)
+    for label in labels:
+        chosen = None
+        for offset in candidates:
+            label.set_position(offset)
+            fig.canvas.draw()
+            box = label.get_window_extent(renderer).expanded(1.02, 1.05)
+            if box.y1 > axes_box.y1 + 2 or box.y0 < axes_box.y0 - 2:
+                continue
+            if not any(box.overlaps(previous) for previous in occupied):
+                chosen = box
+                break
+        if chosen is None:
+            chosen = label.get_window_extent(renderer)
+        occupied.append(chosen)
+
+
 def _cate_speed_rank_summary(run: BenchmarkRun) -> pd.DataFrame:
     """Summarize runtime and paired CATE nPEHE ranks for each competitor.
 
@@ -154,6 +200,120 @@ def _cate_speed_rank_summary(run: BenchmarkRun) -> pd.DataFrame:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def _npehe_boxplot_data(run: BenchmarkRun, task: Task) -> dict[str, np.ndarray]:
+    """Return finite, per-dataset nPEHE values grouped by method.
+
+    Unlike paired ranks, this distribution is method-local: a failed episode
+    is omitted only from the method that failed. The result therefore retains
+    the useful spread of each method across all datasets it completed.
+    """
+    frame = run.frame(task)
+    if "npehe" not in frame.columns:
+        return {}
+
+    values: dict[str, np.ndarray] = {}
+    for method, group in frame.groupby("method", sort=False):
+        npehe = group["npehe"].to_numpy(dtype=float)
+        npehe = npehe[np.isfinite(npehe)]
+        if len(npehe):
+            values[method] = npehe
+    return values
+
+
+def _cate_npehe_boxplot_data(run: BenchmarkRun) -> dict[str, np.ndarray]:
+    """Return finite, per-dataset CATE nPEHE values grouped by method."""
+    return _npehe_boxplot_data(run, TASKS["cate"])
+
+
+def _ite_npehe_boxplot_data(run: BenchmarkRun) -> dict[str, np.ndarray]:
+    """Return finite, per-dataset ITE nPEHE values grouped by method."""
+    return _npehe_boxplot_data(run, TASKS["ite"])
+
+
+def _plot_npehe_boxplot(
+    run: BenchmarkRun, task_name: str, task_label: str, opts: Options
+) -> None:
+    """Draw one horizontal nPEHE boxplot per method for a task."""
+    task = TASKS[task_name]
+    plot_name = f"{task_name}_npehe_boxplot"
+    if task_name not in {task.name for task in run.tasks}:
+        print(f"  · {plot_name}: {task_label} results are absent — skipped")
+        return
+
+    data = _npehe_boxplot_data(run, task)
+    if not data:
+        print(f"  · {plot_name}: no finite {task_label} nPEHE values — skipped")
+        return
+
+    # Put ranked competitors first, followed by references in the same stable
+    # order used by the other task figures. The final clause keeps this robust
+    # to any non-standard rows in an externally produced results file.
+    methods = [method for method in run.method_order(task) if method in data]
+    methods += [method for method in run.references(task) if method in data]
+    methods += [method for method in data if method not in methods]
+    labels = [abbreviate(method) for method in methods]
+
+    fig_height = max(4.8, 0.38 * len(methods) + 1.6)
+    fig, ax = plt.subplots(figsize=(10.0, fig_height))
+    positions = np.arange(1, len(methods) + 1)
+    artists = ax.boxplot(
+        [data[method] for method in methods],
+        positions=positions,
+        vert=False,
+        patch_artist=True,
+        widths=0.62,
+        showfliers=True,
+        medianprops={"color": "#222222", "linewidth": 1.8},
+        whiskerprops={"color": "#555555", "linewidth": 1.0},
+        capprops={"color": "#555555", "linewidth": 1.0},
+        flierprops={
+            "marker": ".",
+            "markersize": 3.5,
+            "markerfacecolor": "#555555",
+            "markeredgecolor": "none",
+            "alpha": 0.45,
+        },
+    )
+    for method, box in zip(methods, artists["boxes"]):
+        color = style_for(method).get("color", "gray")
+        box.set_facecolor(color)
+        box.set_edgecolor(color)
+        box.set_alpha(0.72)
+
+    draw_anchors(ax, "npehe", axis="x")
+    ax.set(
+        yticks=positions,
+        yticklabels=labels,
+        xlabel=f"{task_label} nPEHE per dataset",
+        ylabel="Method",
+        title=f"{task_label} nPEHE across datasets",
+    )
+    ax.margins(x=0.04)
+    fig.tight_layout()
+    save_figure(
+        fig,
+        run.plots_dir / f"{plot_name}.png",
+        dpi=opts.dpi,
+        close=False,
+    )
+    save_figure(fig, run.plots_dir / f"{plot_name}.pdf")
+
+
+def plot_cate_npehe_boxplot(run: BenchmarkRun, opts: Options) -> None:
+    """Draw one horizontal CATE nPEHE boxplot per method.
+
+    Each observation is one dataset/episode-level nPEHE. Reference rows are
+    retained as anchors, while failed or non-finite observations are omitted
+    only from their own method's box.
+    """
+    _plot_npehe_boxplot(run, "cate", "CATE", opts)
+
+
+def plot_ite_npehe_boxplot(run: BenchmarkRun, opts: Options) -> None:
+    """Draw one horizontal ITE nPEHE boxplot per method."""
+    _plot_npehe_boxplot(run, "ite", "ITE", opts)
+
+
 def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
     """Draw median squared normalised ATE bias × median Shape R²."""
     if "cate" not in {task.name for task in run.tasks}:
@@ -185,6 +345,7 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
 
     colour_norm = Normalize(vmin=0.0, vmax=upper)
     colour_mappable = None
+    labels = []
 
     for method, row in summary.iterrows():
         style = style_for(method)
@@ -204,13 +365,15 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
         )
         if colour_mappable is None:
             colour_mappable = point
-        ax.annotate(
-            abbreviate(method),
-            (x_display, y_display),
-            xytext=(5, 4),
-            textcoords="offset points",
-            fontsize=7,
-            color="0.25",
+        labels.append(
+            ax.annotate(
+                abbreviate(method),
+                (x_display, y_display),
+                xytext=(5, 4),
+                textcoords="offset points",
+                fontsize=7,
+                color="0.25",
+            )
         )
 
     # Only reserve and mark an out-of-scope strip when at least one observed
@@ -230,6 +393,7 @@ def plot_cate_iso_nrmse(run: BenchmarkRun, opts: Options) -> None:
     ax.set_ylabel("median Shape R²")
     if colour_mappable is not None:
         fig.colorbar(colour_mappable, ax=ax, shrink=0.82, label="median nPEHE")
+    _place_cate_labels(fig, ax, labels)
     save_figure(
         fig,
         run.plots_dir / "cate_iso_nrmse.png",
@@ -439,6 +603,8 @@ def main() -> None:
     use_theme()
     plot_cate_iso_nrmse(run, Options(dpi=args.dpi))
     plot_cate_speed_rank(run, Options(dpi=args.dpi))
+    plot_cate_npehe_boxplot(run, Options(dpi=args.dpi))
+    plot_ite_npehe_boxplot(run, Options(dpi=args.dpi))
     plot_ate_scatter(run, Options(dpi=args.dpi))
 
 

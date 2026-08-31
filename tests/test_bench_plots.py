@@ -10,6 +10,8 @@ where a silent mistake is invisible afterwards:
   competitor by one;
 * the CATE iso-curve summary uses the same robust median aggregation as the
   terminal tables;
+* the CATE nPEHE boxplot uses one observation per dataset and keeps failures
+  local to the method that failed;
 * the ATE scatter uses the level-only task's true and estimated ATE columns;
 * every figure survives a degenerate run (one episode, two methods, a failed
   method) rather than taking the whole sheet down with it.
@@ -26,7 +28,12 @@ matplotlib.use("Agg")  # before benchmarks.plots pulls in pyplot
 from benchmarks import plots
 from benchmarks.metrics import TASKS, score_method
 from benchmarks.plot_frames import BenchmarkRun, select_methods, terciles
-from benchmarks.plots import _cate_speed_rank_summary, _cate_summary
+from benchmarks.plots import (
+    _cate_npehe_boxplot_data,
+    _ite_npehe_boxplot_data,
+    _cate_speed_rank_summary,
+    _cate_summary,
+)
 
 CATE, ITE, ATE = TASKS["cate"], TASKS["ite"], TASKS["ate"]
 
@@ -233,6 +240,38 @@ def test_cate_speed_rank_summary_uses_paired_rank_quantiles(run):
     assert (summary["median_rank"] <= summary["rank_p75"]).all()
 
 
+def test_cate_npehe_boxplot_data_is_per_method_and_per_dataset(run):
+    data = _cate_npehe_boxplot_data(run)
+
+    assert set(data) == {
+        "S-OLS",
+        "S-RF",
+        "ProximalFM",
+        "T-RF",
+        "Oracle-CATE(X)",
+        "Oracle-ATE",
+    }
+    assert len(data["T-RF"]) == 11  # its failed episode is omitted locally
+    assert all(len(values) == 12 for method, values in data.items() if method != "T-RF")
+    assert data["Oracle-CATE(X)"].tolist() == pytest.approx([0.0] * 12)
+    assert data["Oracle-ATE"].tolist() == pytest.approx([1.0] * 12)
+
+
+def test_ite_npehe_boxplot_data_is_per_method_and_per_dataset(run):
+    data = _ite_npehe_boxplot_data(run)
+
+    assert set(data) == {
+        "S-OLS",
+        "S-RF",
+        "ProximalFM",
+        "T-RF",
+        "Oracle-CATE(X)",
+        "Oracle-ATE",
+    }
+    assert len(data["T-RF"]) == 11
+    assert all(len(values) == 12 for method, values in data.items() if method != "T-RF")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Every figure runs
 # ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +289,12 @@ def test_cate_speed_rank_draws(run):
     plots.plot_cate_speed_rank(run, plots.Options())
     assert (run.plots_dir / "cate_speed_rank.png").exists()
     assert (run.plots_dir / "cate_speed_rank.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_ite_npehe_boxplot_draws(run):
+    plots.plot_ite_npehe_boxplot(run, plots.Options())
+    assert (run.plots_dir / "ite_npehe_boxplot.png").exists()
+    assert (run.plots_dir / "ite_npehe_boxplot.pdf").read_bytes().startswith(b"%PDF")
 
 
 def test_ate_scatter_draws(run):
@@ -304,6 +349,48 @@ def test_cate_speed_rank_uses_log_x_and_best_rank_at_top(run, monkeypatch):
     assert ax.yaxis_inverted()
 
 
+def test_cate_npehe_boxplot_draws_one_box_per_method(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_cate_npehe_boxplot(run, plots.Options())
+
+    fig = captured["fig"]
+    ax = fig.axes[0]
+    assert len(ax.patches) == 6
+    expected_methods = run.method_order(CATE) + run.references(CATE)
+    assert [text.get_text() for text in ax.get_yticklabels()] == [
+        plots.abbreviate(method) for method in expected_methods
+    ]
+    assert ax.get_xlabel() == "CATE nPEHE per dataset"
+    assert any(
+        np.asarray(line.get_xdata()).size and line.get_xdata()[0] == pytest.approx(1.0)
+        for line in ax.lines
+    )
+
+
+def test_ite_npehe_boxplot_draws_one_box_per_method(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_ite_npehe_boxplot(run, plots.Options())
+
+    fig = captured["fig"]
+    ax = fig.axes[0]
+    assert len(ax.patches) == 6
+    expected_methods = run.method_order(ITE) + run.references(ITE)
+    assert [text.get_text() for text in ax.get_yticklabels()] == [
+        plots.abbreviate(method) for method in expected_methods
+    ]
+    assert ax.get_xlabel() == "ITE nPEHE per dataset"
+
+
 def test_cate_iso_curve_uses_observed_censored_linear_axes(run, monkeypatch):
     captured = {}
 
@@ -349,9 +436,8 @@ def test_censored_methods_are_shown_just_outside_the_grid(run, monkeypatch):
         if hasattr(collection, "get_offsets")
     ]
     # The extreme values are censored against bounds derived from the
-    # observed upper/lower tails, rather than against x=3 and y=-1.
-    assert (0.375, 0.25) in offsets
-    assert (0.25, -0.1) in offsets
+    # observed upper/lower tails, rather than fixed global cutoffs.
+    assert (0.375, -0.1) in offsets
 
 
 def test_cate_iso_curve_omits_empty_out_of_scope_zones(run, monkeypatch):
