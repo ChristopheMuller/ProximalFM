@@ -189,8 +189,20 @@ class S_Learner(CATEEstimator):
 
     def predict(self, X, *, W=None, Z=None):
         n = X.shape[0]
-        y1 = self.model.predict(self.fb.build(X, A=np.ones(n), W=W, Z=Z))
-        y0 = self.model.predict(self.fb.build(X, A=np.zeros(n), W=W, Z=Z))
+        # Query rows do not attend to one another in the PFN bases.  Present both
+        # counterfactual arms in one call so an expensive in-context model can
+        # reuse its fitted context and amortise the Python / preprocessing / model
+        # dispatch overhead.  Ordinary sklearn regressors are row-wise too, so the
+        # same path is exact for every supported base model.
+        both = self.model.predict(
+            self.fb.build(
+                np.concatenate([X, X], axis=0),
+                A=np.concatenate([np.ones(n), np.zeros(n)]),
+                W=None if W is None else np.concatenate([W, W], axis=0),
+                Z=None if Z is None else np.concatenate([Z, Z], axis=0),
+            )
+        )
+        y1, y0 = np.split(np.asarray(both), [n])
         return y1 - y0
 
 
@@ -426,6 +438,7 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
                 tabicl_opts,
                 base_cv=base_cv,
                 n_jobs=compute.n_jobs,
+                device=compute.device,
             )
 
     learner = PLearner(
@@ -1467,18 +1480,18 @@ class CausalPFN_Estimator(CATEEstimator):
 
 # TabICL inference options, overridable per method with a `tabicl:` block in the
 # config. The defaults are the ones that were measured to matter (n=2048 context,
-# 128 queries, an S-learner's one fit + two predicts, per-episode wall time on a
+# 128 queries, an S-learner's one fit + two predicts (before the two arms were
+# joined into one query call), per-episode wall time on a
 # 12-core M-series, 6 worker processes at one torch thread each):
 #
 #   kv_cache=False (the library default)   30.6 min / 480 episodes
 #   kv_cache="repr"                        22.7 min      bit-identical
 #   kv_cache=True                          16.6 min      max|Δ| ~ 3e-7 (2 float32 ulp)
 #
-# `fit()` re-runs the whole 2048-row context through the model on *every* predict
-# when there is no cache, and an S-learner predicts twice (A=1 and A=0) off one
-# fit — that redundant context pass is where the time goes, not the checkpoint
-# load (~0.15 s) or the ensemble size. Caching it once at fit() time is what buys
-# the speedup. "repr" caches the column-embedding KV and the row-interaction
+# Without a cache, every prediction re-runs the whole 2048-row context through
+# the model. Caching it once at fit() time is what buys the speedup. The S-learner
+# now joins A=1 and A=0 into one query call, avoiding a second dispatch without
+# changing its predictions. "repr" caches the column-embedding KV and row-interaction
 # outputs and re-runs the ICL transformer at predict time: less saving, ~24x less
 # memory than "kv", and exactly reproducing the uncached numbers. True/"kv" also
 # caches the ICL layers' KV projections; the residual 1e-6 relative difference is

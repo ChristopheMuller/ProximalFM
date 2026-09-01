@@ -230,17 +230,21 @@ For P-learner this is intentionally distinct from `bridge_params.lam_grid`: the 
 ranked by held-out proximal moment loss, while `base_cv` ranks the final regression of the
 cross-fitted score on `X` by prediction MSE.
 
-**`base: tabicl` speed.** TabICL dominates the wall clock for a reason that is entirely outside the
-model: with no cache, every `predict()` re-runs the whole context (2048 rows × 8 ensemble members)
-through the network, and an S-learner predicts twice off one fit. The `tabicl:` block passes options
-straight to `TabICLRegressor`; the benchmark defaults to `kv_cache: repr`, which caches that context
-pass at `fit()` time and reproduces the uncached predictions **bit for bit**. 480 episodes, 6 workers:
+**`base: tabicl` speed.** The backbone may resemble ProximalFM, but the workload does not. The
+package default makes **8 transformed ensemble views**. An S-learner evaluates both treatment arms;
+a T-learner owns 2 TabICL regressors; and an X-learner owns 4, including the outcome-model
+predictions used to build its pseudo-effects. ProximalFM's default benchmark entry instead uses one
+model, one view, and one two-headed CATE pass. Without a cache, every TabICL `predict()` also re-runs
+the whole 2048-row context through the network. The benchmark defaults to `kv_cache: true`, and the
+S-learner sends both treatment arms through one joined query call (exactly the same predictions as
+two calls). The older cache benchmark below predates that joined-query optimization: 480 episodes,
+6 workers.
 
 | `kv_cache`        | 480 episodes | vs uncached                                  | peak RSS / worker |
 |-------------------|--------------|----------------------------------------------|-------------------|
 | `false` (library) | 30.6 min     | —                                            | 1.61 GiB          |
-| `repr` (default)  | 22.7 min     | bit-identical                                | 1.54 GiB          |
-| `true`            | 16.6 min     | max abs Δ ≈ 3e-7 — 2 float32 ulp             | 2.44 GiB          |
+| `repr`            | 22.7 min     | bit-identical                                | 1.54 GiB          |
+| `true` (default)  | 16.6 min     | max abs Δ ≈ 3e-7 — 2 float32 ulp             | 2.44 GiB          |
 
 ```yaml
   - name: S-TabICL
@@ -252,7 +256,20 @@ pass at `fit()` time and reproduces the uncached predictions **bit for bit**. 48
 
 `kv_cache: true` additionally caches the ICL layers' KV projections; the residual difference is
 accumulation order, not a change of estimator. Check the memory column against `n_workers` before
-using it.
+using it. `n_estimators: 1` is the largest optional speed lever and makes the compute budget much
+closer to ProximalFM's default, but it is a different estimator rather than a pure optimization. On
+a small five-episode check it reduced median per-episode time from the existing roughly 10 s result
+to 1.5 s; mean nPEHE moved from 0.464 to 0.474. Use it for a declared single-view comparison or a
+smoke run, not as an invisible replacement for the official 8-view TabICL default:
+
+```yaml
+    tabicl: { kv_cache: true, n_estimators: 1 }
+```
+
+Using a repo-local copy of the package or weights does not remove this compute. The installed
+`tabicl==2.0.3` code is already local in the environment, and the downloaded checkpoint is cached
+locally after its first use. A local `model_path:` is useful for offline reproducibility, but is not
+a runtime optimization.
 
 **Proxy marginalisation.** `cls: ProxyMarginalizer` wraps any single-output estimator whose derived
 estimand is proxy-conditional — `cate(x,w)`, `cate(x,z)`, or `cate(x,w,z)` — and reports
