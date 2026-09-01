@@ -20,6 +20,7 @@ whole existing metrics stack — meaningful for real, non-synthetic data.
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,32 @@ def _as_list(value) -> list[str]:
     return [value] if isinstance(value, str) else list(value)
 
 
+def _resolve_feature_columns(
+    configured, available: list[str], *, key: str
+) -> list[str]:
+    """Resolve exact names and shell-style patterns in one feature block.
+
+    Matches follow CSV header order within each pattern. Overlapping patterns
+    select a column only once, which makes spellings such as
+    ``["demographic_*", "X_*"]`` safe to compose.
+    """
+    resolved: list[str] = []
+    unmatched: list[str] = []
+    for pattern in _as_list(configured):
+        matches = [name for name in available if fnmatchcase(name, pattern)]
+        if not matches:
+            unmatched.append(pattern)
+            continue
+        resolved.extend(name for name in matches if name not in resolved)
+
+    if unmatched:
+        raise ValueError(
+            f"columns['{key}'] references unknown CSV column(s) or unmatched "
+            f"pattern(s) {unmatched}"
+        )
+    return resolved
+
+
 def load_benchmark_from_csv(
     csv_path: str | Path,
     columns: dict,
@@ -47,9 +74,9 @@ def load_benchmark_from_csv(
     """Load a single chamber-style CSV into the standardized benchmark dict.
 
     ``columns`` maps variable blocks to CSV column names: ``X``/``W``/``Z``
-    (lists, possibly multi-dimensional), ``A``/``Y``/``Y0``/``Y1`` (single
-    column names), and an optional ``U`` (list; omitted => zero-width, used
-    only by oracle methods when present).
+    (lists or shell-style patterns such as ``"X_*"``),
+    ``A``/``Y``/``Y0``/``Y1`` (single exact column names), and an optional
+    ``U`` (list/pattern; omitted => zero-width, used only by oracle methods).
     """
     missing = [k for k in _REQUIRED_KEYS if k not in columns]
     if missing:
@@ -69,13 +96,11 @@ def load_benchmark_from_csv(
         df = df.drop(columns=df.columns[0])
 
     def cols(key: str) -> list[str]:
-        names = _as_list(columns[key]) if key in columns else []
-        unknown = [c for c in names if c not in df.columns]
-        if unknown:
-            raise ValueError(
-                f"columns['{key}'] references unknown CSV column(s) {unknown}"
-            )
-        return names
+        if key not in columns:
+            return []
+        return _resolve_feature_columns(
+            columns[key], [str(name) for name in df.columns], key=key
+        )
 
     x_cols, w_cols, z_cols, u_cols = (cols(k) for k in ("X", "W", "Z", "U"))
     a_col, y_col, y0_col, y1_col = (columns[k] for k in ("A", "Y", "Y0", "Y1"))

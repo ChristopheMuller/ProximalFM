@@ -533,6 +533,17 @@ def main() -> None:
     console.print(
         f"    [green]✓[/] Loaded: {N_BATCH} episodes × (n_train={data['N_TRAIN']}, n_test={N_TEST})"
     )
+    if cfg["data"].get("source", "load") == "csv":
+        widths = {
+            "X": int(data["d_X"][0]),
+            "W": int(data["d_W"][0]),
+            "Z": int(data["d_Z"][0]),
+            "U": int(data["U"].shape[-1]),
+        }
+        detail = ", ".join(f"{key}={value}" for key, value in widths.items())
+        console.print(
+            f"    [green]✓[/] Feature columns: {sum(widths.values())} total ({detail})"
+        )
     batches = build_batches(data)
     targets, cate_s2 = build_targets(data, batches)
     describe_targets(targets, cate_s2, data)

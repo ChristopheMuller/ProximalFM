@@ -198,6 +198,11 @@ an explicit subset or `csv_dir` plus an optional `csv_pattern` for a directory. 
 `eval: {episode_aggregation: mean}` to average the ordinary per-episode metrics literally over
 files; mathematically pooled metrics such as ATE RMSE retain their declared RMS aggregation.
 
+Feature blocks (`X`, `W`, `Z`, and optional `U`) accept shell-style column patterns as either a
+string or an item in a list. For example, `X: "X_*"` selects every `X_1`, …, `X_p` column in CSV
+header order. Patterns must match at least one column; scalar fields (`A`, `Y`, `Y0`, `Y1`) remain
+exact column names. The terminal data summary prints the resolved width of every feature block.
+
 **Common method keys.** `name` (display + output filename), `cls` (dispatch), `base`
 (`linear` | `rf` | `tabicl`), `use_W`/`use_Z` (whether proxies enter the design matrix — **default
 `True`** for the learners and the PFN wrappers), `interactions`, `is_oracle: true` (concatenates the
