@@ -13,6 +13,7 @@ benchmarks/results/*
 
 analysis_prior/cache/*
 analysis_prior/results/*
+analysis_eval/results/*
 analysis_training/results/*
 
 wandb/*
@@ -30,6 +31,7 @@ NMMR/
 *.pdf
 *.pt
 *.json
+!analysis_eval/methods.json
 *.ckpt
 *.txt
 *.npz
