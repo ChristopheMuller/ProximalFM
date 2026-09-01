@@ -119,7 +119,7 @@ def verify(
     # Realistic replicate sets (synthetic/) share this schema so the evaluator
     # needs no branch, but they carry hand-written mechanisms rather than
     # sampled prior hyperparameters -- group 6 differs, nothing else does.
-    is_realistic = g.get("set_kind") == "realistic"
+    is_realistic = g.get("set_kind") in {"realistic", "inspect"}
 
     batch_files = sorted(p for p in val_dir.iterdir() if p.name.startswith("batch_"))
     tmp_files = [p for p in val_dir.iterdir() if p.name.endswith(".tmp")]

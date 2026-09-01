@@ -154,6 +154,28 @@ def test_unknown_csv_column_raises(tmp_path):
         load_benchmark_from_csv(path, columns, shuffle=False)
 
 
+def test_feature_column_pattern_expands_in_csv_header_order(tmp_path):
+    path, df = make_chamber_csv(tmp_path)
+    df.insert(3, "X_2", np.arange(len(df), dtype=np.float64) * 11)
+    df.insert(2, "X_1", np.arange(len(df), dtype=np.float64) * 7)
+    df.to_csv(path)
+    columns = dict(COLUMNS, X="X_*")
+
+    data = load_benchmark_from_csv(path, columns, shuffle=False)
+
+    assert data["X"].shape == (1, len(df), 2)
+    assert data["d_X"].tolist() == [2]
+    # Context standardization preserves the source columns' relative scaling.
+    np.testing.assert_allclose(data["X"][0, :, 1], data["X"][0, :, 0])
+
+
+def test_unmatched_feature_column_pattern_raises(tmp_path):
+    path, _ = make_chamber_csv(tmp_path)
+    columns = dict(COLUMNS, X="X_*")
+    with pytest.raises(ValueError, match=r"unmatched pattern.*X_\*"):
+        load_benchmark_from_csv(path, columns, shuffle=False)
+
+
 def test_multiple_csvs_are_independent_episodes(tmp_path):
     first, _ = make_chamber_csv(tmp_path, T=20)
     second = tmp_path / "second.csv"

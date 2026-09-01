@@ -579,6 +579,12 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
             # degrades to the directory name.
             return None
         return realistic_content_digest(meta)
+    if g.get("set_kind") == "inspect":
+        try:
+            from inspect_eval.sidecar import inspect_content_digest
+        except ImportError:
+            return None
+        return inspect_content_digest(meta)
     if g.get("set_kind") == "literature":
         try:
             from lit_eval.sidecar import lit_content_digest
