@@ -2,7 +2,7 @@
 
     uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 
-The entry point produces three CATE figures, one ITE figure, and one ATE figure.
+The entry point produces four CATE figures, one ITE figure, and one ATE figure.
 ``cate_iso_nrmse.png`` places
 each method by its robust level error (median squared normalised ATE bias) and
 heterogeneity recovery (median Shape R²), with point colour showing median
@@ -14,6 +14,8 @@ from the rank plot, as they are from every competitor comparison.
 values for every method on one shared axis.
 ``ite_npehe_boxplot.png`` shows the corresponding per-dataset ITE nPEHE
 distribution.
+``cate_scatter.png`` compares row-level predicted CATE with true CATE for one
+selected dataset, with one shared-axis panel per CATE-scored method.
 ``ate_scatter.png`` compares each method's episode-level estimated ATE with
 the corresponding true ATE from the ``ate`` task, with one shared-axis panel
 per method.
@@ -35,7 +37,12 @@ from matplotlib.ticker import MaxNLocator
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from benchmarks.metrics import TASKS, Task
-from benchmarks.plot_frames import BenchmarkRun
+from benchmarks.plot_frames import (
+    ORACLE_ATE,
+    ORACLE_CATE,
+    ORACLE_ITE,
+    BenchmarkRun,
+)
 from benchmarks.plot_style import (
     abbreviate,
     draw_anchors,
@@ -60,6 +67,7 @@ VIEW_PAD = 0.05
 @dataclass
 class Options:
     dpi: int = 200
+    dataset_idx: int = 0
 
 
 def _cate_summary(run: BenchmarkRun) -> pd.DataFrame:
@@ -481,6 +489,152 @@ def plot_cate_speed_rank(run: BenchmarkRun, opts: Options) -> None:
     save_figure(fig, run.plots_dir / "cate_speed_rank.pdf")
 
 
+def plot_cate_scatter(run: BenchmarkRun, opts: Options) -> None:
+    """Draw predicted-versus-true CATE panels for one dataset.
+
+    The CATE task's row-level target is the Monte Carlo estimate of
+    ``tau*(x)``. Predictions are read from the same per-method caches used by
+    the benchmark scorer, so this figure shows exactly the query rows that
+    produced the selected episode's CATE metrics. Oracle rows are reconstructed
+    from the cached targets and retained as reference panels when present.
+    All panels share limits and include the perfect-agreement diagonal.
+    """
+    task = TASKS["cate"]
+    if "cate" not in {task.name for task in run.tasks}:
+        print("  · cate_scatter: CATE results are absent — skipped")
+        return
+
+    target_kind, all_targets = run.target_for(task)
+    if target_kind != "cate" or all_targets is None:
+        print("  · cate_scatter: no Monte Carlo CATE target — skipped")
+        return
+    true_all = np.asarray(all_targets, dtype=float)
+    if true_all.ndim != 2:
+        raise ValueError(
+            f"CATE target cache has shape {true_all.shape}; expected [datasets, rows]."
+        )
+
+    dataset_idx = int(opts.dataset_idx)
+    if not 0 <= dataset_idx < true_all.shape[0]:
+        raise ValueError(
+            f"dataset_idx={dataset_idx} is out of range; expected an index in "
+            f"[0, {true_all.shape[0] - 1}]."
+        )
+    true = true_all[dataset_idx]
+
+    frame_methods = list(dict.fromkeys(run.frame(task)["method"].tolist()))
+    available = set(run.available_preds())
+    methods = [method for method in run.method_order(task) if method in frame_methods]
+    methods += [method for method in run.references(task) if method in frame_methods]
+    methods += [method for method in frame_methods if method not in methods]
+
+    series = []
+    ite_all = run.targets().get("ite")
+    for method in methods:
+        if method == ORACLE_CATE:
+            pred = true
+        elif method == ORACLE_ATE:
+            pred = np.full_like(true, true.mean())
+        elif method == ORACLE_ITE and ite_all is not None:
+            pred = np.asarray(ite_all, dtype=float)[dataset_idx]
+        else:
+            if method not in available:
+                print(
+                    f"  · cate_scatter: predictions for {method} are absent — skipped"
+                )
+                continue
+            cached = run.preds(method)
+            if cached is None:  # Defensive: `available` came from the same directory.
+                continue
+            cached = np.asarray(cached, dtype=float)
+            if cached.ndim != 2 or cached.shape[0] != true_all.shape[0]:
+                raise ValueError(
+                    f"prediction cache for {method!r} has shape {cached.shape}; "
+                    f"expected [{true_all.shape[0]}, {true_all.shape[1]}]."
+                )
+            pred = cached[dataset_idx]
+
+        pred = np.asarray(pred, dtype=float).reshape(-1)
+        if pred.shape != true.shape:
+            raise ValueError(
+                f"CATE prediction for {method!r} has {pred.size} rows; "
+                f"expected {true.size}."
+            )
+        keep = np.isfinite(true) & np.isfinite(pred)
+        if keep.any():
+            series.append((method, true[keep], pred[keep]))
+        else:
+            print(f"  · cate_scatter: no finite predictions for {method} — skipped")
+
+    if not series:
+        print("  · cate_scatter: no finite CATE predictions — skipped")
+        return
+
+    true_values = np.concatenate([x for _, x, _ in series])
+    pred_values = np.concatenate([y for _, _, y in series])
+    low = float(min(true_values.min(), pred_values.min()))
+    high = float(max(true_values.max(), pred_values.max()))
+    span = high - low
+    pad = 0.05 * span if span > 0 else max(0.05 * abs(low), 0.05)
+    limits = (low - pad, high + pad)
+
+    n_methods = len(series)
+    n_columns = min(4, n_methods)
+    n_rows = int(np.ceil(n_methods / n_columns))
+    fig, axes = plt.subplots(
+        n_rows,
+        n_columns,
+        figsize=(3.6 * n_columns, 3.5 * n_rows),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    axes = axes.ravel()
+    for ax in axes[n_methods:]:
+        fig.delaxes(ax)
+
+    for ax, (method, true_values_method, pred_values_method) in zip(
+        axes[:n_methods], series
+    ):
+        style = style_for(method)
+        ax.plot(
+            limits,
+            limits,
+            color="#333333",
+            linestyle="--",
+            linewidth=1.2,
+            alpha=0.8,
+            zorder=1,
+        )
+        ax.scatter(
+            true_values_method,
+            pred_values_method,
+            color=style.get("color", "gray"),
+            marker=style.get("marker", "o"),
+            s=style.get("s", 110),
+            edgecolors="white",
+            linewidths=0.7,
+            alpha=0.78,
+            zorder=2,
+        )
+        ax.set(xlim=limits, ylim=limits, title=method)
+        ax.set_aspect("equal", adjustable="box")
+
+    fig.supxlabel("True CATE")
+    fig.supylabel("Predicted CATE")
+    fig.suptitle(
+        f"Predicted versus true CATE by method — dataset {dataset_idx}", y=0.995
+    )
+    fig.tight_layout(rect=(0.04, 0.04, 1.0, 0.95))
+    save_figure(
+        fig,
+        run.plots_dir / "cate_scatter.png",
+        dpi=opts.dpi,
+        close=False,
+    )
+    save_figure(fig, run.plots_dir / "cate_scatter.pdf")
+
+
 def plot_ate_scatter(run: BenchmarkRun, opts: Options) -> None:
     """Draw one true-versus-estimated ATE panel per method.
 
@@ -594,6 +748,12 @@ def main() -> None:
     parser.add_argument("--exp", default=None, help="Experiment name.")
     parser.add_argument("--path", default=None, help="Benchmark output directory.")
     parser.add_argument("--dpi", type=int, default=200)
+    parser.add_argument(
+        "--dataset-idx",
+        type=int,
+        default=0,
+        help="Dataset/episode index for the row-level CATE scatter (default: 0).",
+    )
     args = parser.parse_args()
 
     exp_dir = (
@@ -601,11 +761,13 @@ def main() -> None:
     )
     run = BenchmarkRun.load(exp_dir)
     use_theme()
-    plot_cate_iso_nrmse(run, Options(dpi=args.dpi))
-    plot_cate_speed_rank(run, Options(dpi=args.dpi))
-    plot_cate_npehe_boxplot(run, Options(dpi=args.dpi))
-    plot_ite_npehe_boxplot(run, Options(dpi=args.dpi))
-    plot_ate_scatter(run, Options(dpi=args.dpi))
+    opts = Options(dpi=args.dpi, dataset_idx=args.dataset_idx)
+    plot_cate_iso_nrmse(run, opts)
+    plot_cate_speed_rank(run, opts)
+    plot_cate_npehe_boxplot(run, opts)
+    plot_cate_scatter(run, opts)
+    plot_ite_npehe_boxplot(run, opts)
+    plot_ate_scatter(run, opts)
 
 
 if __name__ == "__main__":

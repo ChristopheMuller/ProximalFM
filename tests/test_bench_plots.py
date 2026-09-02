@@ -12,6 +12,8 @@ where a silent mistake is invisible afterwards:
   terminal tables;
 * the CATE nPEHE boxplot uses one observation per dataset and keeps failures
   local to the method that failed;
+* the CATE scatter uses one selected dataset and one panel per CATE-scored
+  method;
 * the ATE scatter uses the level-only task's true and estimated ATE columns;
 * every figure survives a degenerate run (one episode, two methods, a failed
   method) rather than taking the whole sheet down with it.
@@ -301,6 +303,53 @@ def test_ate_scatter_draws(run):
     plots.plot_ate_scatter(run, plots.Options())
     assert (run.plots_dir / "ate_scatter.png").exists()
     assert (run.plots_dir / "ate_scatter.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_cate_scatter_draws(run):
+    plots.plot_cate_scatter(run, plots.Options())
+    assert (run.plots_dir / "cate_scatter.png").exists()
+    assert (run.plots_dir / "cate_scatter.pdf").read_bytes().startswith(b"%PDF")
+
+
+def test_cate_scatter_has_one_panel_per_method_and_selected_dataset(run, monkeypatch):
+    captured = {}
+
+    def capture_figure(fig, path, *, dpi=200, close=True):
+        captured["fig"] = fig
+
+    monkeypatch.setattr(plots, "save_figure", capture_figure)
+    plots.plot_cate_scatter(run, plots.Options(dataset_idx=2))
+
+    fig = captured["fig"]
+    methods = {
+        "S-OLS",
+        "S-RF",
+        "ProximalFM",
+        "T-RF",
+        "Oracle-CATE(X)",
+        "Oracle-ATE",
+    }
+    assert {ax.get_title() for ax in fig.axes} == methods
+    assert len(fig.axes) == len(methods)
+    assert {text.get_text() for text in fig.texts} >= {
+        "True CATE",
+        "Predicted CATE",
+        "Predicted versus true CATE by method — dataset 2",
+    }
+
+    true = run.targets()["cate"][2]
+    predicted = run.preds("S-OLS")[2]
+    s_ols_ax = next(ax for ax in fig.axes if ax.get_title() == "S-OLS")
+    np.testing.assert_allclose(
+        s_ols_ax.collections[0].get_offsets(), np.c_[true, predicted]
+    )
+    diagonal = s_ols_ax.lines[0]
+    np.testing.assert_allclose(diagonal.get_xdata(), diagonal.get_ydata())
+
+
+def test_cate_scatter_rejects_an_invalid_dataset_index(run):
+    with pytest.raises(ValueError, match="dataset_idx=12 is out of range"):
+        plots.plot_cate_scatter(run, plots.Options(dataset_idx=12))
 
 
 def test_ate_scatter_has_one_panel_per_method(run, monkeypatch):
