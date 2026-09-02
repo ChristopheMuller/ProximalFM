@@ -233,10 +233,17 @@ cate_estimates = model.predict(
 
 ProximalFM trains on an *infinite* synthetic stream, so model selection and method comparison need a **fixed, reproducible** set of datasets, **different from the prior**. The committed recipe [`synt_eval/validation_data/config.yaml`](synt_eval/validation_data/config.yaml) defines one such set: 480 realistic proximal datasets (2048 rows each, spread evenly across the 12 mechanisms of [`synt_eval/realistic_proximal_mechanisms.py`](synt_eval/realistic_proximal_mechanisms.py)). This data is useful for both: tuning and choosing a model, and comparing this model with other methods.
 
-For the smallest inspectable correctness case, [`inspect_eval/`](inspect_eval/README.md)
-provides a scalar linear-Gaussian SCM with randomized coefficients, no direct
-`Z -> A` edge, and no direct `W -> Y` edge. It writes the same `val/` and
-replicate-sidecar format as `synt_eval`.
+For diagnosing whether these datasets genuinely require proximal adjustment,
+[`inspect_eval/`](inspect_eval/README.md) copies the twelve realistic mechanisms
+and augments their replicate sidecars with the population limits of ordinary
+adjustment on `X`, `(X,W)`, `(X,Z)`, and `(X,W,Z)`, alongside the true CATE. It
+writes the same reusable `val/` format as `synt_eval` and keeps the diagnostic
+targets in `frozen_meta.pt`.
+
+[`inspect_eval_linear/`](inspect_eval_linear/README.md) provides the controlled
+linear-Gaussian version of that diagnostic. It sweeps a shared W/Z measurement-
+noise parameter, computes the adjustment propensities analytically, and reports
+how `Q_adj_WZ` approaches CATE* as the proxies become more informative.
 
 <details>
 <summary><b>Full guide — rebuild the datasets, validate during training, run the benchmark</b></summary>
@@ -358,4 +365,3 @@ Validation relies on `pytest`. To run the verification suites across model dimen
 ```bash
 uv run python -m pytest tests/
 ```
-

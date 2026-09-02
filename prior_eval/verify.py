@@ -119,7 +119,9 @@ def verify(
     # Realistic replicate sets (synthetic/) share this schema so the evaluator
     # needs no branch, but they carry hand-written mechanisms rather than
     # sampled prior hyperparameters -- group 6 differs, nothing else does.
-    is_realistic = g.get("set_kind") in {"realistic", "inspect"}
+    set_kind = g.get("set_kind")
+    is_realistic = set_kind in {"realistic", "inspect"}
+    is_linear_inspection = set_kind == "inspect_linear"
 
     batch_files = sorted(p for p in val_dir.iterdir() if p.name.startswith("batch_"))
     tmp_files = [p for p in val_dir.iterdir() if p.name.endswith(".tmp")]
@@ -386,7 +388,30 @@ def verify(
     for k, vals in dims.items():
         strata.note(f"{k}: {len(vals)} distinct values, range {min(vals)}..{max(vals)}")
     varying = [k for k, v in hp_keys.items() if len(v) > 1]
-    if is_realistic:
+    if is_linear_inspection:
+        expected_levels = {float(v) for v in g.get("proxy_noise_stds", [])}
+        observed_levels = {
+            float(r["proxy_noise_std"]) for r in records if "proxy_noise_std" in r
+        }
+        missing_reliability = [
+            r["index"] for r in records if "proxy_reliability" not in r
+        ]
+        if not expected_levels:
+            strata.fail("global proxy_noise_stds is absent or empty")
+        elif observed_levels != expected_levels:
+            strata.fail(
+                "per-episode proxy noise coverage does not match the global grid: "
+                f"observed={sorted(observed_levels)}, expected={sorted(expected_levels)}"
+            )
+        else:
+            strata.note(f"{len(observed_levels)} proxy-noise levels represented")
+        if missing_reliability:
+            strata.fail(f"{len(missing_reliability)} episode(s) omit proxy_reliability")
+        elif len({float(r["proxy_reliability"]) for r in records}) < 2:
+            strata.fail("proxy reliability does not vary across episodes")
+        else:
+            strata.note("proxy reliability is recorded and varies across episodes")
+    elif is_realistic:
         # Realistic sets have no sampled prior hyperparameters -- their
         # mechanisms are hand-written, and the natural cut is mechanism_id.
         mech_counts: Dict[int, int] = {}

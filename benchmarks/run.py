@@ -595,11 +595,29 @@ def main() -> None:
             # diagnostic is always found next to the predictions it explains.
             diag_files = {n: preds_dir / f"{n}_preds_diag.yaml" for n in output_names}
 
+            # A Precomputed entry is a cache-backed diagnostic/reference rather
+            # than an estimator. It must already exist and is never overwritten
+            # by --force; the producer named in its config owns the cache.
+            precomputed = mcfg.get("cls") == "Precomputed"
+            missing = [f for f in pred_files.values() if not f.exists()]
+            if precomputed and missing:
+                producer = mcfg.get("producer", "the configured producer script")
+                names = ", ".join(str(path) for path in missing)
+                raise FileNotFoundError(
+                    f"Precomputed method {name!r} is missing {names}. Run {producer}."
+                )
+
             # Skip only when every output of this config is already cached.
-            if not force and all(f.exists() for f in pred_files.values()):
+            if precomputed or (not force and not missing):
                 for out_name, f in pred_files.items():
                     loaded = np.load(f)
-                    preds = loaded["preds"]
+                    preds = np.asarray(loaded["preds"], dtype=np.float32)
+                    expected = (N_BATCH, N_TEST)
+                    if preds.shape != expected:
+                        raise ValueError(
+                            f"prediction cache {f} has shape {preds.shape}, "
+                            f"expected {expected}"
+                        )
                     times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
                     console.print(f"  [dim]↩  {out_name:<28} loaded from cache[/]")
                     accumulated[out_name] = (preds, times)

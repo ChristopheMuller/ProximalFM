@@ -585,6 +585,12 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
         except ImportError:
             return None
         return inspect_content_digest(meta)
+    if g.get("set_kind") == "inspect_linear":
+        try:
+            from inspect_eval_linear.sidecar import inspect_linear_content_digest
+        except ImportError:
+            return None
+        return inspect_linear_content_digest(meta)
     if g.get("set_kind") == "literature":
         try:
             from lit_eval.sidecar import lit_content_digest
