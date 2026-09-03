@@ -1,12 +1,12 @@
 # Version-controlled, authoritative recipe for semi-synthetic evaluation sets.
 # Every data-affecting value is explicit. A build copies the fully resolved
 # version of this file beside its generated val/ directory.
-format_version: 1
+format_version: 2
 
 build:
   data_dir: semisynt_eval/datasets
   out_root: data/semisynt_eval
-  csv: null
+  csv: all
   name: null
   mechanism: linear
   x_columns: null
@@ -16,7 +16,7 @@ build:
   n_features_u: 5
   split_seed: 0
   row_sampling: auto
-  n_datasets: 24
+  replicates_per_csv: 4
   seq_len: 1280
   prop_train: 0.8
   n_max: null

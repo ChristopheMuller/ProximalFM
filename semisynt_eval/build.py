@@ -3,12 +3,11 @@
 Examples::
 
     uv run python -m semisynt_eval.build --list
-    uv run python -m semisynt_eval.build --csv bank --name bank_linear_v1 \
-        --n_max 1024 --n_q 256
+    uv run python -m semisynt_eval.build --name all_linear_v1
 
-The package has no dependency on ``lit_eval`` and performs no Monte Carlo
-replication. Bundled mechanisms write their analytic CATE explicitly; a future
-ITE-only mechanism may omit it and the benchmark will use ``Y1 - Y0``.
+The package has no dependency on ``lit_eval`` and performs no row-level Monte
+Carlo replication. Bundled mechanisms write their analytic CATE explicitly; a
+future ITE-only mechanism may omit it and the benchmark will use ``Y1 - Y0``.
 """
 
 from __future__ import annotations
@@ -30,7 +29,7 @@ from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import discover_csvs, load_csv
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
     "data_dir",
@@ -45,7 +44,7 @@ BUILD_CONFIG_FIELDS = (
     "n_features_u",
     "split_seed",
     "row_sampling",
-    "n_datasets",
+    "replicates_per_csv",
     "seq_len",
     "prop_train",
     "n_max",
@@ -55,44 +54,72 @@ BUILD_CONFIG_FIELDS = (
 )
 
 
-def make_dataset(args: argparse.Namespace) -> CSVProximalDataset:
-    source = load_csv(
-        args.csv,
-        data_dir=args.data_dir,
-        x_columns=args.x_columns,
-        u_columns=args.u_columns,
-        drop_columns=args.drop_columns,
-        n_features_x=args.n_features_x,
-        n_features_u=args.n_features_u,
-        split_seed=args.split_seed,
-    )
-    if args._expected_source_sha256 not in (None, source.digest):
-        raise ValueError(
-            f"source SHA-256 mismatch for {source.path}: expected "
-            f"{args._expected_source_sha256}, found {source.digest}"
+def make_datasets(args: argparse.Namespace) -> list[CSVProximalDataset]:
+    selectors = discover_csvs(args.data_dir) if args.csv == "all" else [args.csv]
+    if not selectors:
+        raise ValueError(f"no CSV files found directly under {args.data_dir}")
+
+    datasets = []
+    for selector in selectors:
+        source = load_csv(
+            selector,
+            data_dir=args.data_dir,
+            x_columns=args.x_columns,
+            u_columns=args.u_columns,
+            drop_columns=args.drop_columns,
+            n_features_x=args.n_features_x,
+            n_features_u=args.n_features_u,
+            split_seed=args.split_seed,
         )
-    return CSVProximalDataset(
-        source,
-        mechanism=args.mechanism,
-        mechanism_config=args._mechanism_configs[args.mechanism],
-        row_sampling=args.row_sampling,
-    )
+        expected_digest = args._expected_source_sha256.get(source.path.name)
+        if expected_digest not in (None, source.digest):
+            raise ValueError(
+                f"source SHA-256 mismatch for {source.path}: expected "
+                f"{expected_digest}, found {source.digest}"
+            )
+        datasets.append(
+            CSVProximalDataset(
+                source,
+                mechanism=args.mechanism,
+                mechanism_config=args._mechanism_configs[args.mechanism],
+                row_sampling=args.row_sampling,
+            )
+        )
+
+    actual_files = {dataset.source.path.name for dataset in datasets}
+    expected_files = set(args._expected_source_sha256)
+    if expected_files and actual_files != expected_files:
+        raise ValueError(
+            "source set differs from the saved recipe: "
+            f"missing={sorted(expected_files-actual_files)}, "
+            f"unexpected={sorted(actual_files-expected_files)}"
+        )
+    return datasets
 
 
 def generate_episodes(
-    dataset: CSVProximalDataset,
+    datasets: Sequence[CSVProximalDataset],
     *,
-    n_datasets: int,
+    replicates_per_csv: int,
     seq_len: int,
     seed: int,
-) -> tuple[list[Episode], list[int]]:
+) -> tuple[list[Episode], list[dict]]:
     episodes: list[Episode] = []
-    seeds: list[int] = []
-    for index in range(n_datasets):
-        episode_seed = int(seed) + 1_000 * index
-        episodes.append(dataset.generate(seed=episode_seed, seq_len=seq_len))
-        seeds.append(episode_seed)
-    return episodes, seeds
+    records: list[dict] = []
+    episode_index = 0
+    for dataset in datasets:
+        for replicate in range(replicates_per_csv):
+            episode_seed = int(seed) + 1_000 * episode_index
+            episodes.append(dataset.generate(seed=episode_seed, seq_len=seq_len))
+            records.append(
+                {
+                    "source_file": dataset.source.path.name,
+                    "replicate": replicate,
+                    "seed": episode_seed,
+                }
+            )
+            episode_index += 1
+    return episodes, records
 
 
 def _stack(episodes: Sequence[Episode], field: str) -> torch.Tensor:
@@ -105,7 +132,7 @@ def save_validation(
     out_dir: Path,
     train_size: int,
     datasets_per_file: Optional[int],
-    dataset: CSVProximalDataset,
+    dataset: CSVProximalDataset | Sequence[CSVProximalDataset],
     cli_command: str,
 ) -> tuple[int, int]:
     """Write the canonical sparse ``val/`` format without replicate targets."""
@@ -155,26 +182,30 @@ def save_validation(
         )
         n_files += 1
 
+    datasets = [dataset] if isinstance(dataset, CSVProximalDataset) else list(dataset)
+    target_kinds = {item.target_capability for item in datasets}
+    if len(target_kinds) != 1:
+        raise ValueError("all CSV sources must use the same target capability")
     metadata = {
-        "prior_type": dataset.name,
+        "prior_type": "semisynt_eval",
         "batch_size": dpf,
         "batch_size_per_gp": 1,
         "min_seq_len": episodes[0].X.shape[0],
         "max_seq_len": episodes[0].X.shape[0],
         "log_seq_len": False,
         "seq_len_per_gp": False,
-        "min_dim_U": dataset.d_U,
-        "max_dim_U": dataset.d_U,
-        "min_dim_X": dataset.d_X,
-        "max_dim_X": dataset.d_X,
-        "min_dim_W": dataset.d_W,
-        "max_dim_W": dataset.d_W,
-        "min_dim_Z": dataset.d_Z,
-        "max_dim_Z": dataset.d_Z,
+        "min_dim_U": min(e.d_U for e in episodes),
+        "max_dim_U": max(e.d_U for e in episodes),
+        "min_dim_X": min(e.d_X for e in episodes),
+        "max_dim_X": max(e.d_X for e in episodes),
+        "min_dim_W": min(e.d_W for e in episodes),
+        "max_dim_W": max(e.d_W for e in episodes),
+        "min_dim_Z": min(e.d_Z for e in episodes),
+        "max_dim_Z": max(e.d_Z for e in episodes),
         "min_train_size": train_size,
         "max_train_size": train_size,
         "replay_small": False,
-        "target_kind": dataset.target_capability,
+        "target_kind": next(iter(target_kinds)),
         "cli_command": cli_command,
     }
     with open(out_dir / "metadata.json", "w") as f:
@@ -201,11 +232,13 @@ def _clear_owned_outputs(root: Path) -> None:
         path.unlink()
 
 
-def _content_digest(args: argparse.Namespace, dataset: CSVProximalDataset) -> str:
+def _content_digest(
+    args: argparse.Namespace, datasets: Sequence[CSVProximalDataset]
+) -> str:
     payload = {
         "format_version": FORMAT_VERSION,
-        "dataset": dataset.options,
-        "n_datasets": args.n_datasets,
+        "datasets": [dataset.options for dataset in datasets],
+        "replicates_per_csv": args.replicates_per_csv,
         "seq_len": args.seq_len,
         "train_size": args.n_max,
         "seed": args.seed,
@@ -217,30 +250,38 @@ def _content_digest(args: argparse.Namespace, dataset: CSVProximalDataset) -> st
 def _write_metadata_files(
     root: Path,
     args: argparse.Namespace,
-    dataset: CSVProximalDataset,
-    seeds: Sequence[int],
+    datasets: Sequence[CSVProximalDataset],
+    episode_records: Sequence[dict],
     *,
     n_files: int,
     datasets_per_file: int,
     cli_command: str,
 ) -> None:
-    source = dataset.source
+    sources = []
+    for dataset in datasets:
+        source = dataset.source
+        sources.append(
+            {
+                "file": source.path.name,
+                "path": str(source.path),
+                "sha256": source.digest,
+                "rows": int(source.values.shape[0]),
+                "encoded_columns": list(source.columns),
+                "x_columns": list(source.x_columns),
+                "u_columns": list(source.u_columns),
+            }
+        )
     manifest = {
         "format_version": FORMAT_VERSION,
-        "content_digest": _content_digest(args, dataset),
+        "content_digest": _content_digest(args, datasets),
         "name": args.name,
-        "source_file": source.path.name,
-        "source_path": str(source.path),
-        "source_sha256": source.digest,
-        "source_rows": int(source.values.shape[0]),
-        "encoded_columns": list(source.columns),
-        "x_columns": list(source.x_columns),
-        "u_columns": list(source.u_columns),
+        "sources": sources,
         "mechanism": args.mechanism,
-        "mechanism_config": dataset.options["mechanism_config"],
-        "target_kind": dataset.target_capability,
-        "n_datasets": args.n_datasets,
-        "episode_seeds": list(seeds),
+        "mechanism_config": datasets[0].options["mechanism_config"],
+        "target_kind": datasets[0].target_capability,
+        "replicates_per_csv": args.replicates_per_csv,
+        "n_episodes": len(episode_records),
+        "episodes": list(episode_records),
         "n_max": args.n_max,
         "n_q": args.n_q,
         "seq_len": args.seq_len,
@@ -260,17 +301,16 @@ def _write_metadata_files(
         "format_version": FORMAT_VERSION,
         "build": resolved_build,
         "mechanisms": args._raw_mechanisms,
-        "source": {
-            "file": source.path.name,
-            "sha256": source.digest,
-        },
+        "sources": [
+            {"file": source["file"], "sha256": source["sha256"]} for source in sources
+        ],
     }
     with open(root / "config.yaml", "w") as f:
         yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
 
 
 def build(args: argparse.Namespace) -> Path:
-    dataset = make_dataset(args)
+    datasets = make_datasets(args)
     root = Path(args.out_root) / args.name
     val_dir = root / "val"
     cli_command = shlex.join([Path(sys.argv[0]).name, *sys.argv[1:]])
@@ -281,18 +321,18 @@ def build(args: argparse.Namespace) -> Path:
             "or pass --force to replace builder-owned outputs."
         )
 
-    source = dataset.source
     print(
-        f"Building '{args.name}' from {source.path.name} with {args.mechanism}\n"
-        f"  rows={source.values.shape[0]}, X={list(source.x_columns)}, "
-        f"U={list(source.u_columns)}\n"
-        f"  {args.n_datasets} episodes x T={args.seq_len} "
+        f"Building '{args.name}' from {len(datasets)} CSV source(s) "
+        f"with {args.mechanism}\n"
+        f"  sources={[dataset.source.path.name for dataset in datasets]}\n"
+        f"  {args.replicates_per_csv} replicates/source, "
+        f"{len(datasets) * args.replicates_per_csv} episodes x T={args.seq_len} "
         f"(n_max={args.n_max} + n_q={args.n_q}), seed={args.seed}\n"
-        f"  target={dataset.target_capability} (no Monte Carlo replication)"
+        f"  target={datasets[0].target_capability} (no Monte Carlo replication)"
     )
-    episodes, seeds = generate_episodes(
-        dataset,
-        n_datasets=args.n_datasets,
+    episodes, episode_records = generate_episodes(
+        datasets,
+        replicates_per_csv=args.replicates_per_csv,
         seq_len=args.seq_len,
         seed=args.seed,
     )
@@ -303,14 +343,14 @@ def build(args: argparse.Namespace) -> Path:
         out_dir=val_dir,
         train_size=args.n_max,
         datasets_per_file=args.datasets_per_file,
-        dataset=dataset,
+        dataset=datasets,
         cli_command=cli_command,
     )
     _write_metadata_files(
         root,
         args,
-        dataset,
-        seeds,
+        datasets,
+        episode_records,
         n_files=n_files,
         datasets_per_file=dpf,
         cli_command=cli_command,
@@ -336,7 +376,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--data_dir", type=Path)
     parser.add_argument(
-        "--csv", default=None, help="CSV path, filename, or stem under --data_dir."
+        "--csv",
+        help=(
+            "CSV path/name/stem, or 'all' for every CSV directly under "
+            "--data_dir (default: all)."
+        ),
     )
     parser.add_argument("--name", default=None, help="Build name under --out_root.")
     parser.add_argument("--out_root", type=Path)
@@ -357,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--row_sampling",
         choices=("auto", "without_replacement", "bootstrap"),
     )
-    parser.add_argument("--n_datasets", type=int)
+    parser.add_argument("--replicates_per_csv", type=int)
     parser.add_argument("--seq_len", type=int)
     parser.add_argument("--prop_train", type=float)
     parser.add_argument("--n_max", type=int, default=None)
@@ -394,7 +438,7 @@ def resolve_rows(
 def _load_recipe(path: Path) -> dict:
     with open(path) as f:
         recipe = yaml.safe_load(f) or {}
-    allowed_top_level = {"format_version", "build", "mechanisms", "source"}
+    allowed_top_level = {"format_version", "build", "mechanisms", "sources"}
     unknown = set(recipe) - allowed_top_level
     missing = {"format_version", "build", "mechanisms"} - set(recipe)
     if missing or unknown:
@@ -414,6 +458,18 @@ def _load_recipe(path: Path) -> dict:
             f"missing={sorted(expected_build_keys-build_keys)}, "
             f"unknown={sorted(build_keys-expected_build_keys)}"
         )
+    sources = recipe.get("sources", [])
+    if not isinstance(sources, list):
+        raise ValueError("config sources must be a list")
+    source_files = []
+    for index, source in enumerate(sources):
+        if not isinstance(source, dict) or set(source) != {"file", "sha256"}:
+            raise ValueError(
+                f"config sources[{index}] must contain exactly file and sha256"
+            )
+        source_files.append(source["file"])
+    if len(source_files) != len(set(source_files)):
+        raise ValueError("config sources contains duplicate filenames")
     return recipe
 
 
@@ -433,14 +489,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args.out_root = Path(args.out_root)
     args._mechanism_configs = mechanism_configs
     args._raw_mechanisms = recipe["mechanisms"]
-    args._expected_source_sha256 = (recipe.get("source") or {}).get("sha256")
+    args._expected_source_sha256 = {
+        source["file"]: source["sha256"] for source in recipe.get("sources", [])
+    }
     if args.list:
         return args
-    for field in ("csv", "name"):
+    for field in ("name",):
         if getattr(args, field) is None:
             parser.error(f"--{field} is required (or supply it via --config)")
-    if args.n_datasets < 1:
-        parser.error("--n_datasets must be >= 1")
+    if args.replicates_per_csv < 1:
+        parser.error("--replicates_per_csv must be >= 1")
     return resolve_rows(parser, args, cli)
 
 

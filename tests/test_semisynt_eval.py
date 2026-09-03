@@ -39,6 +39,12 @@ def test_yaml_mechanism_config_is_complete_and_strict():
         load_mechanism_configs(incomplete, available=set(available_mechanisms()))
 
 
+def test_default_recipe_selects_all_csvs_and_replicates_per_csv():
+    args = parse_args(["--list"])
+    assert args.csv == "all"
+    assert args.replicates_per_csv == 24
+
+
 def _csv(path, delimiter=","):
     path.write_text(
         delimiter.join(("id", "numeric", "category", "missing", "constant"))
@@ -192,7 +198,7 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
         "8",
         "--n_q",
         "3",
-        "--n_datasets",
+        "--replicates_per_csv",
         "2",
         "--datasets_per_file",
         "1",
@@ -227,7 +233,7 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
     resolved = yaml.safe_load((tmp_path / "cate" / "config.yaml").read_text())
     assert resolved["build"]["csv"] == str(csv)
     assert resolved["build"]["n_max"] == 8
-    assert resolved["source"]["sha256"] == manifest["source_sha256"]
+    assert resolved["sources"][0]["sha256"] == manifest["sources"][0]["sha256"]
     assert set(resolved["mechanisms"]) == {"linear", "linear_quadratic"}
 
     # The saved recipe is directly reusable. Only the output name changes;
@@ -252,6 +258,48 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
         for key in original:
             if isinstance(original[key], torch.Tensor):
                 assert torch.equal(original[key], replica[key]), key
+
+
+def test_all_csvs_contribute_the_requested_number_of_replicates(tmp_path):
+    _csv(tmp_path / "a.csv")
+    _csv(tmp_path / "b.csv")
+    args = parse_args(
+        [
+            "--data_dir",
+            str(tmp_path),
+            "--out_root",
+            str(tmp_path),
+            "--name",
+            "all_sources",
+            "--n_features_x",
+            "2",
+            "--n_features_u",
+            "2",
+            "--n_max",
+            "8",
+            "--n_q",
+            "3",
+            "--replicates_per_csv",
+            "2",
+            "--datasets_per_file",
+            "1",
+        ]
+    )
+    assert args.csv == "all"
+    build(args)
+
+    data = load_benchmark_from_val_dir(tmp_path / "all_sources" / "val")
+    assert data["X"].shape[0] == 4
+    manifest = json.loads((tmp_path / "all_sources" / "manifest.json").read_text())
+    assert [source["file"] for source in manifest["sources"]] == ["a.csv", "b.csv"]
+    assert manifest["replicates_per_csv"] == 2
+    assert manifest["n_episodes"] == 4
+    assert [episode["source_file"] for episode in manifest["episodes"]] == [
+        "a.csv",
+        "a.csv",
+        "b.csv",
+        "b.csv",
+    ]
 
 
 def test_semisynt_eval_package_has_no_lit_eval_dependency():
