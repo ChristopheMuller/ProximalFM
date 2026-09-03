@@ -71,6 +71,7 @@ class PowerAllocationConfig:
 
 @dataclass(frozen=True)
 class MechanismConfig:
+    u_coefficient_multiplier: float
     proxies: ProxyConfig
     treatment: TreatmentConfig
     outcome: OutcomeConfig
@@ -102,7 +103,11 @@ def mechanism_config_from_dict(
     value: Mapping[str, Any], *, location: str
 ) -> MechanismConfig:
     """Strictly parse one mechanism; omitted values never fall back silently."""
-    _exact_keys(value, {"proxies", "treatment", "outcome", "powers"}, location=location)
+    _exact_keys(
+        value,
+        {"u_coefficient_multiplier", "proxies", "treatment", "outcome", "powers"},
+        location=location,
+    )
 
     proxies = dict(value["proxies"])
     _exact_keys(
@@ -174,6 +179,7 @@ def mechanism_config_from_dict(
         location=f"{location}.powers",
     )
     return MechanismConfig(
+        u_coefficient_multiplier=float(value["u_coefficient_multiplier"]),
         proxies=ProxyConfig(coefficients=proxy_coefficients, **proxies),
         treatment=TreatmentConfig(coefficients=treatment_coefficients, **treatment),
         outcome=OutcomeConfig(

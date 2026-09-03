@@ -29,7 +29,7 @@ from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import discover_csvs, load_csv
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 1
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
     "data_dir",
