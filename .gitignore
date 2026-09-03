@@ -38,6 +38,7 @@ NMMR/
 *.csv
 *.png
 *.yaml
+!semi_synt_eval/config.yaml
 
 .wandb_api_key
 

@@ -1,0 +1,122 @@
+# Version-controlled, authoritative recipe for semi-synthetic evaluation sets.
+# Every data-affecting value is explicit. A build copies the fully resolved
+# version of this file beside its generated val/ directory.
+format_version: 1
+
+build:
+  data_dir: semi_synt_eval/datasets
+  out_root: data/real_eval
+  csv: null
+  name: null
+  mechanism: linear
+  x_columns: null
+  u_columns: null
+  drop_columns: null
+  n_features_x: 7
+  n_features_u: 5
+  split_seed: 0
+  row_sampling: auto
+  n_datasets: 24
+  seq_len: 1280
+  prop_train: 0.8
+  n_max: null
+  n_q: null
+  seed: 20260903
+  datasets_per_file: null
+
+mechanisms:
+  linear:
+    proxies:
+      use_x: true
+      use_u: true
+      noise_std: 0.75
+      normalize_output: true
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+    treatment:
+      use_x: true
+      use_u: true
+      use_z: true
+      normalize_score: true
+      logit_scale: 1.0
+      logit_clip: 8.0
+      intercept_low: -0.5
+      intercept_high: 0.5
+      overlap_epsilon: 0.02
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+    outcome:
+      use_x: true
+      use_u: true
+      use_w: true
+      noise_std: 0.5
+      normalize_baseline: true
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+      effect:
+        use_x: true
+        intercept: 0.5
+        scale: 1.0
+        coefficients:
+          distribution: normal
+          scale: 1.0
+          normalize_by_input_dim: true
+    powers:
+      proxy_quadratic_probability: 0.0
+      treatment_quadratic_probability: 0.0
+      outcome_quadratic_probability: 0.0
+      effect_quadratic_probability: 0.0
+
+  linear_quadratic:
+    proxies:
+      use_x: true
+      use_u: true
+      noise_std: 0.75
+      normalize_output: true
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+    treatment:
+      use_x: true
+      use_u: true
+      use_z: true
+      normalize_score: true
+      logit_scale: 1.0
+      logit_clip: 8.0
+      intercept_low: -0.5
+      intercept_high: 0.5
+      overlap_epsilon: 0.02
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+    outcome:
+      use_x: true
+      use_u: true
+      use_w: true
+      noise_std: 0.5
+      normalize_baseline: true
+      coefficients:
+        distribution: normal
+        scale: 1.0
+        normalize_by_input_dim: true
+      effect:
+        use_x: true
+        intercept: 0.5
+        scale: 1.0
+        coefficients:
+          distribution: normal
+          scale: 1.0
+          normalize_by_input_dim: true
+    powers:
+      proxy_quadratic_probability: 0.5
+      treatment_quadratic_probability: 0.5
+      outcome_quadratic_probability: 0.5
+      effect_quadratic_probability: 0.5

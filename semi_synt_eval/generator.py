@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 import torch
@@ -46,44 +46,25 @@ class CSVProximalDataset:
         source: PreparedCSV,
         *,
         mechanism: str = "linear",
-        proxy_noise: float = 0.75,
-        treatment_scale: float = 1.0,
-        outcome_noise: float = 0.5,
-        effect_scale: float = 1.0,
-        overlap_eps: float = 0.02,
+        mechanism_config: MechanismConfig,
         row_sampling: str = "auto",
     ) -> None:
         if row_sampling not in {"auto", "without_replacement", "bootstrap"}:
             raise ValueError(
                 "row_sampling must be auto, without_replacement, or bootstrap"
             )
-        for name, value in (
-            ("proxy_noise", proxy_noise),
-            ("outcome_noise", outcome_noise),
-            ("effect_scale", effect_scale),
-        ):
-            if float(value) < 0:
-                raise ValueError(f"{name} must be non-negative")
-        if not 0.0 <= float(overlap_eps) < 0.5:
-            raise ValueError("overlap_eps must lie in [0, 0.5)")
-
         self.source = source
         self.name = f"real_csv:{source.path.stem}"
         self.mechanism_name = mechanism
-        self.mechanism_config = MechanismConfig(
-            proxy_noise=float(proxy_noise),
-            treatment_scale=float(treatment_scale),
-            outcome_noise=float(outcome_noise),
-            effect_scale=float(effect_scale),
-        )
-        self.overlap_eps = float(overlap_eps)
+        self.mechanism_config = mechanism_config
+        self.overlap_eps = float(self.mechanism_config.treatment.overlap_epsilon)
         self.row_sampling = row_sampling
         probe = build_mechanism(
             mechanism,
             self.d_X,
             self.d_U,
-            self.mechanism_config,
             torch.Generator().manual_seed(0),
+            config=self.mechanism_config,
         )
         self.target_capability = probe.target_capability
         self.options: dict[str, Any] = {
@@ -94,11 +75,7 @@ class CSVProximalDataset:
             "x_columns": list(source.x_columns),
             "u_columns": list(source.u_columns),
             "mechanism": mechanism,
-            "proxy_noise": float(proxy_noise),
-            "treatment_scale": float(treatment_scale),
-            "outcome_noise": float(outcome_noise),
-            "effect_scale": float(effect_scale),
-            "overlap_eps": float(overlap_eps),
+            "mechanism_config": asdict(self.mechanism_config),
             "row_sampling": row_sampling,
             "target_capability": self.target_capability,
         }
@@ -145,8 +122,8 @@ class CSVProximalDataset:
             self.mechanism_name,
             self.d_X,
             self.d_U,
-            self.mechanism_config,
             rng,
+            config=self.mechanism_config,
         )
 
         w, z = mechanism.proxies(x, u)

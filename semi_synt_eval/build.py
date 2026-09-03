@@ -25,11 +25,34 @@ import torch
 import yaml
 
 from proximalfm.prior._genload import write_batch_file
+from semi_synt_eval._config import load_mechanism_configs
 from semi_synt_eval.generator import CSVProximalDataset, Episode
 from semi_synt_eval.mechanisms import available_mechanisms
-from semi_synt_eval.source import DEFAULT_DATA_DIR, discover_csvs, load_csv
+from semi_synt_eval.source import discover_csvs, load_csv
 
 FORMAT_VERSION = 1
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
+BUILD_CONFIG_FIELDS = (
+    "data_dir",
+    "out_root",
+    "csv",
+    "name",
+    "mechanism",
+    "x_columns",
+    "u_columns",
+    "drop_columns",
+    "n_features_x",
+    "n_features_u",
+    "split_seed",
+    "row_sampling",
+    "n_datasets",
+    "seq_len",
+    "prop_train",
+    "n_max",
+    "n_q",
+    "seed",
+    "datasets_per_file",
+)
 
 
 def make_dataset(args: argparse.Namespace) -> CSVProximalDataset:
@@ -43,14 +66,15 @@ def make_dataset(args: argparse.Namespace) -> CSVProximalDataset:
         n_features_u=args.n_features_u,
         split_seed=args.split_seed,
     )
+    if args._expected_source_sha256 not in (None, source.digest):
+        raise ValueError(
+            f"source SHA-256 mismatch for {source.path}: expected "
+            f"{args._expected_source_sha256}, found {source.digest}"
+        )
     return CSVProximalDataset(
         source,
         mechanism=args.mechanism,
-        proxy_noise=args.proxy_noise,
-        treatment_scale=args.treatment_scale,
-        outcome_noise=args.outcome_noise,
-        effect_scale=args.effect_scale,
-        overlap_eps=args.overlap_eps,
+        mechanism_config=args._mechanism_configs[args.mechanism],
         row_sampling=args.row_sampling,
     )
 
@@ -213,6 +237,7 @@ def _write_metadata_files(
         "x_columns": list(source.x_columns),
         "u_columns": list(source.u_columns),
         "mechanism": args.mechanism,
+        "mechanism_config": dataset.options["mechanism_config"],
         "target_kind": dataset.target_capability,
         "n_datasets": args.n_datasets,
         "episode_seeds": list(seeds),
@@ -228,13 +253,20 @@ def _write_metadata_files(
     with open(root / "manifest.json", "w") as f:
         json.dump(manifest, f, indent=2)
 
-    config = dict(vars(args))
-    config.pop("config", None)
+    resolved_build = {key: getattr(args, key) for key in BUILD_CONFIG_FIELDS}
     for key in ("data_dir", "out_root"):
-        config[key] = str(config[key])
-    config["cli_command"] = cli_command
+        resolved_build[key] = str(resolved_build[key])
+    config = {
+        "format_version": FORMAT_VERSION,
+        "build": resolved_build,
+        "mechanisms": args._raw_mechanisms,
+        "source": {
+            "file": source.path.name,
+            "sha256": source.digest,
+        },
+    }
     with open(root / "config.yaml", "w") as f:
-        yaml.safe_dump(config, f, sort_keys=True, default_flow_style=False)
+        yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
 
 
 def build(args: argparse.Namespace) -> Path:
@@ -293,17 +325,22 @@ def build_parser() -> argparse.ArgumentParser:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", default=None, help="Resolved YAML build config.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="Complete YAML recipe (defaults to semi_synt_eval/config.yaml).",
+    )
     parser.add_argument(
         "--list", action="store_true", help="List available CSVs and mechanisms."
     )
-    parser.add_argument("--data_dir", type=Path, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--data_dir", type=Path)
     parser.add_argument(
         "--csv", default=None, help="CSV path, filename, or stem under --data_dir."
     )
     parser.add_argument("--name", default=None, help="Build name under --out_root.")
-    parser.add_argument("--out_root", type=Path, default=Path("data/real_eval"))
-    parser.add_argument("--mechanism", choices=available_mechanisms(), default="linear")
+    parser.add_argument("--out_root", type=Path)
+    parser.add_argument("--mechanism", choices=available_mechanisms())
     parser.add_argument(
         "--x_columns", default=None, help="Comma-separated explicit X columns."
     )
@@ -313,25 +350,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--drop_columns", default=None, help="Comma-separated columns to ignore."
     )
-    parser.add_argument("--n_features_x", type=int, default=7)
-    parser.add_argument("--n_features_u", type=int, default=5)
-    parser.add_argument("--split_seed", type=int, default=0)
+    parser.add_argument("--n_features_x", type=int)
+    parser.add_argument("--n_features_u", type=int)
+    parser.add_argument("--split_seed", type=int)
     parser.add_argument(
         "--row_sampling",
         choices=("auto", "without_replacement", "bootstrap"),
-        default="auto",
     )
-    parser.add_argument("--proxy_noise", type=float, default=0.75)
-    parser.add_argument("--treatment_scale", type=float, default=1.0)
-    parser.add_argument("--outcome_noise", type=float, default=0.5)
-    parser.add_argument("--effect_scale", type=float, default=1.0)
-    parser.add_argument("--overlap_eps", type=float, default=0.02)
-    parser.add_argument("--n_datasets", type=int, default=24)
-    parser.add_argument("--seq_len", type=int, default=1280)
-    parser.add_argument("--prop_train", type=float, default=0.8)
+    parser.add_argument("--n_datasets", type=int)
+    parser.add_argument("--seq_len", type=int)
+    parser.add_argument("--prop_train", type=float)
     parser.add_argument("--n_max", type=int, default=None)
     parser.add_argument("--n_q", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=20260903)
+    parser.add_argument("--seed", type=int)
     parser.add_argument("--datasets_per_file", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     return parser
@@ -360,20 +391,49 @@ def resolve_rows(
     return args
 
 
-def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    parser = build_parser()
-    pre = argparse.ArgumentParser(add_help=False)
-    pre.add_argument("--config", default=None)
-    known, _ = pre.parse_known_args(argv)
-    if known.config:
-        with open(known.config) as f:
-            file_config = yaml.safe_load(f) or {}
-        valid = {action.dest for action in parser._actions}
-        parser.set_defaults(
-            **{key: value for key, value in file_config.items() if key in valid}
+def _load_recipe(path: Path) -> dict:
+    with open(path) as f:
+        recipe = yaml.safe_load(f) or {}
+    allowed_top_level = {"format_version", "build", "mechanisms", "source"}
+    unknown = set(recipe) - allowed_top_level
+    missing = {"format_version", "build", "mechanisms"} - set(recipe)
+    if missing or unknown:
+        raise ValueError(
+            f"invalid config {path}: missing={sorted(missing)}, unknown={sorted(unknown)}"
         )
+    if recipe["format_version"] != FORMAT_VERSION:
+        raise ValueError(
+            f"unsupported config format_version={recipe['format_version']}; "
+            f"expected {FORMAT_VERSION}"
+        )
+    build_keys = set(recipe["build"])
+    expected_build_keys = set(BUILD_CONFIG_FIELDS)
+    if build_keys != expected_build_keys:
+        raise ValueError(
+            f"invalid config build keys: "
+            f"missing={sorted(expected_build_keys-build_keys)}, "
+            f"unknown={sorted(build_keys-expected_build_keys)}"
+        )
+    return recipe
+
+
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    known, _ = pre.parse_known_args(argv)
+    recipe = _load_recipe(known.config)
+    mechanism_configs = load_mechanism_configs(
+        recipe["mechanisms"], available=set(available_mechanisms())
+    )
+    parser = build_parser()
+    parser.set_defaults(**recipe["build"])
     cli = list(argv) if argv is not None else sys.argv[1:]
     args = parser.parse_args(argv)
+    args.data_dir = Path(args.data_dir)
+    args.out_root = Path(args.out_root)
+    args._mechanism_configs = mechanism_configs
+    args._raw_mechanisms = recipe["mechanisms"]
+    args._expected_source_sha256 = (recipe.get("source") or {}).get("sha256")
     if args.list:
         return args
     for field in ("csv", "name"):
