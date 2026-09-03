@@ -8,7 +8,7 @@ from typing import Optional
 
 import torch
 
-from semi_synt_eval._config import CoefficientConfig
+from semisynt_eval._config import CoefficientConfig
 
 Tensor = torch.Tensor
 

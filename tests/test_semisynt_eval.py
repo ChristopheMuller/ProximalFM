@@ -9,17 +9,17 @@ import torch
 import yaml
 
 from benchmarks.data import load_benchmark_from_val_dir
-from semi_synt_eval._config import load_mechanism_configs
-from semi_synt_eval.build import (
+from semisynt_eval._config import load_mechanism_configs
+from semisynt_eval.build import (
     DEFAULT_CONFIG_PATH,
     build,
     parse_args,
     save_validation,
 )
-from semi_synt_eval.generator import CSVProximalDataset
-from semi_synt_eval.mechanisms.base import Mechanism
-from semi_synt_eval.mechanisms import available_mechanisms, build_mechanism
-from semi_synt_eval.source import discover_csvs, load_csv, resolve_csv
+from semisynt_eval.generator import CSVProximalDataset
+from semisynt_eval.mechanisms.base import Mechanism
+from semisynt_eval.mechanisms import available_mechanisms, build_mechanism
+from semisynt_eval.source import discover_csvs, load_csv, resolve_csv
 
 
 def _mechanism_configs():
@@ -254,12 +254,12 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
                 assert torch.equal(original[key], replica[key]), key
 
 
-def test_semi_synt_eval_package_has_no_lit_eval_dependency():
+def test_semisynt_eval_package_has_no_lit_eval_dependency():
     from pathlib import Path
 
-    import semi_synt_eval
+    import semisynt_eval
 
-    root = Path(semi_synt_eval.__file__).parent
+    root = Path(semisynt_eval.__file__).parent
     sources = "\n".join(path.read_text() for path in root.rglob("*.py"))
     assert "from lit_eval" not in sources
     assert "import lit_eval" not in sources
@@ -280,7 +280,7 @@ def test_future_ite_only_mechanism_omits_exact_target(tmp_path, monkeypatch):
             return y0, y0 + u[:, :1]
 
     monkeypatch.setattr(
-        "semi_synt_eval.generator.build_mechanism",
+        "semisynt_eval.generator.build_mechanism",
         lambda *args, **kwargs: ITEOnly(),
     )
     csv = tmp_path / "source.csv"

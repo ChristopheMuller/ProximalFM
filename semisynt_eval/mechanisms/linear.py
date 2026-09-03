@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import torch
 
-from semi_synt_eval._config import MechanismConfig
-from semi_synt_eval.mechanisms.base import (
+from semisynt_eval._config import MechanismConfig
+from semisynt_eval.mechanisms.base import (
     Mechanism,
     RandomPolynomialRegression,
     normalize_columns,

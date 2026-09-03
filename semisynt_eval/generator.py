@@ -7,8 +7,8 @@ from typing import Any, Optional
 
 import torch
 
-from semi_synt_eval.mechanisms import MechanismConfig, build_mechanism
-from semi_synt_eval.source import PreparedCSV
+from semisynt_eval.mechanisms import MechanismConfig, build_mechanism
+from semisynt_eval.source import PreparedCSV
 
 Tensor = torch.Tensor
 

@@ -38,7 +38,7 @@ NMMR/
 *.csv
 *.png
 *.yaml
-!semi_synt_eval/config.yaml
+!semisynt_eval/config.yaml
 
 .wandb_api_key
 
@@ -46,4 +46,4 @@ benchmarks/causal_chambers/v2_smoothA_CP_Analysis_parkchan
 sverdrup
 wu
 
-semi_synt_eval/copula_idea
+semisynt_eval/copula_idea

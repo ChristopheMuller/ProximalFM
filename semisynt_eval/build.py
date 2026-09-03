@@ -2,8 +2,8 @@
 
 Examples::
 
-    uv run python -m semi_synt_eval.build --list
-    uv run python -m semi_synt_eval.build --csv bank --name bank_linear_v1 \
+    uv run python -m semisynt_eval.build --list
+    uv run python -m semisynt_eval.build --csv bank --name bank_linear_v1 \
         --n_max 1024 --n_q 256
 
 The package has no dependency on ``lit_eval`` and performs no Monte Carlo
@@ -25,10 +25,10 @@ import torch
 import yaml
 
 from proximalfm.prior._genload import write_batch_file
-from semi_synt_eval._config import load_mechanism_configs
-from semi_synt_eval.generator import CSVProximalDataset, Episode
-from semi_synt_eval.mechanisms import available_mechanisms
-from semi_synt_eval.source import discover_csvs, load_csv
+from semisynt_eval._config import load_mechanism_configs
+from semisynt_eval.generator import CSVProximalDataset, Episode
+from semisynt_eval.mechanisms import available_mechanisms
+from semisynt_eval.source import discover_csvs, load_csv
 
 FORMAT_VERSION = 1
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -321,7 +321,7 @@ def build(args: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m semi_synt_eval.build",
+        prog="python -m semisynt_eval.build",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -329,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=Path,
         default=DEFAULT_CONFIG_PATH,
-        help="Complete YAML recipe (defaults to semi_synt_eval/config.yaml).",
+        help="Complete YAML recipe (defaults to semisynt_eval/config.yaml).",
     )
     parser.add_argument(
         "--list", action="store_true", help="List available CSVs and mechanisms."

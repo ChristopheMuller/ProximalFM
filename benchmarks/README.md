@@ -179,7 +179,7 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 ```
 
 `prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
-`semi_synt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
+`semisynt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
 
 **Keys the `data:` block takes per `source:`.**
 

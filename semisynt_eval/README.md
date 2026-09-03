@@ -2,17 +2,17 @@
 
 This package builds semi-synthetic proximal datasets whose paired `(X, U)` rows
 come from arbitrary CSV files, while `W`, `Z`, `A`, and `Y` come from a known
-synthetic SCM. Every `*.csv` placed directly in `semi_synt_eval/datasets/` is
+synthetic SCM. Every `*.csv` placed directly in `semisynt_eval/datasets/` is
 discoverable without adding Python code:
 
 ```bash
-uv run python -m semi_synt_eval.build --list
+uv run python -m semisynt_eval.build --list
 ```
 
 ## Quick start
 
 ```bash
-uv run python -m semi_synt_eval.build \
+uv run python -m semisynt_eval.build \
   --csv heloc \
   --name heloc_linear_v1 \
   --n_features_x 7 \
@@ -100,6 +100,6 @@ SCM in a new mechanism module, add its typed sub-config to `config.py`, and
 register it in `mechanisms/__init__.py`. The signatures make it impossible for
 W to enter treatment or Z to enter the outcome accidentally.
 
-The builder and generator are self-contained within `semi_synt_eval`; their only
+The builder and generator are self-contained within `semisynt_eval`; their only
 project-level dependency is the canonical low-level `write_batch_file` format
 writer used by every benchmark dataset producer.

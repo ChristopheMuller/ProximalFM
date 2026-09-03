@@ -1,6 +1,6 @@
 """Closed-form SCM with randomly allocated linear and quadratic terms."""
 
-from semi_synt_eval.mechanisms.linear import LinearMechanism
+from semisynt_eval.mechanisms.linear import LinearMechanism
 
 
 class LinearQuadraticMechanism(LinearMechanism):

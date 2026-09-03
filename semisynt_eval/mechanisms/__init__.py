@@ -6,10 +6,10 @@ from typing import Type
 
 import torch
 
-from semi_synt_eval._config import MechanismConfig
-from semi_synt_eval.mechanisms.base import Mechanism
-from semi_synt_eval.mechanisms.linear import LinearMechanism
-from semi_synt_eval.mechanisms.linear_quadratic import LinearQuadraticMechanism
+from semisynt_eval._config import MechanismConfig
+from semisynt_eval.mechanisms.base import Mechanism
+from semisynt_eval.mechanisms.linear import LinearMechanism
+from semisynt_eval.mechanisms.linear_quadratic import LinearQuadraticMechanism
 
 _BUILDERS: dict[str, Type[Mechanism]] = {
     "linear": LinearMechanism,

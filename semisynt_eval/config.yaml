@@ -4,8 +4,8 @@
 format_version: 1
 
 build:
-  data_dir: semi_synt_eval/datasets
-  out_root: data/real_eval
+  data_dir: semisynt_eval/datasets
+  out_root: data/semisynt_eval
   csv: null
   name: null
   mechanism: linear
