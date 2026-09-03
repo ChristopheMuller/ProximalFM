@@ -886,6 +886,7 @@ def write_batch_file(
     train_sizes,
     S2,
     K_eff,
+    CATE=None,
     seq_len_per_gp=False,
 ):
     """Write one ``batch_{idx:06d}.pt`` file in the on-disk prior format.
@@ -895,6 +896,10 @@ def write_batch_file(
     what :class:`LoadPriorDataset` replays, so a second implementation drifts
     silently (see the missing ``MU0``/``MU1``/``S2``/``K_eff`` in
     ``synt_eval/build_proximal_datasets.py``).
+
+    ``CATE`` is an optional external-evaluation field for an analytic target.
+    It is not consumed by :class:`LoadPriorDataset`; the benchmark loader reads
+    it directly, without assigning Monte Carlo semantics to it.
 
     ``U``/``X``/``W``/``Z`` are flattened to the ragged 1-D layout
     :func:`sparse2dense` expects, unless ``seq_len_per_gp`` says the caller
@@ -927,31 +932,34 @@ def write_batch_file(
     # Create temporary file first
     batch_file = save_dir / f"batch_{batch_idx:06d}.pt"
     temp_file = save_dir / f"batch_{batch_idx:06d}.pt.tmp"
-    torch.save(
-        {
-            "U": U,
-            "X": X,
-            "W": W,
-            "Z": Z,
-            "A": A,
-            "A_probs": A_probs,
-            "Y_obs": Y_obs,
-            "Y0": Y0,
-            "Y1": Y1,
-            "MU0": MU0,
-            "MU1": MU1,
-            "S2": S2,
-            "K_eff": K_eff,
-            "d_U": d_U,
-            "d_X": d_X,
-            "d_W": d_W,
-            "d_Z": d_Z,
-            "seq_lens": seq_lens,
-            "train_sizes": train_sizes,
-            "batch_size": B,
-        },
-        temp_file,
-    )
+    payload = {
+        "U": U,
+        "X": X,
+        "W": W,
+        "Z": Z,
+        "A": A,
+        "A_probs": A_probs,
+        "Y_obs": Y_obs,
+        "Y0": Y0,
+        "Y1": Y1,
+        "MU0": MU0,
+        "MU1": MU1,
+        "S2": S2,
+        "K_eff": K_eff,
+        "d_U": d_U,
+        "d_X": d_X,
+        "d_W": d_W,
+        "d_Z": d_Z,
+        "seq_lens": seq_lens,
+        "train_sizes": train_sizes,
+        "batch_size": B,
+    }
+    # Some external evaluation sets know CATE analytically without having
+    # conditional expected potential-outcome targets. Keep that object explicit
+    # rather than overloading MU0/MU1 or pretending it came from MC replicates.
+    if CATE is not None:
+        payload["CATE"] = CATE
+    torch.save(payload, temp_file)
     # Atomic rename to ensure file integrity
     temp_file.replace(batch_file)
 

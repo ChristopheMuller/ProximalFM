@@ -20,11 +20,12 @@ the single most important thing to understand before reading any number here:
 
 | target | what it is | why it matters |
 |---|---|---|
-| **`cate`** *(primary)* | `tau*(x) = E[Y1 − Y0 \| X = x]`, estimated by the generator's Monte-Carlo average `MU1 − MU0` over `K_eff` replicates | the estimand ProximalFM is trained on, and the best any method seeing only `X` can attain |
+| **`cate`** *(primary)* | `tau*(x) = E[Y1 − Y0 \| X = x]`, supplied either analytically as `CATE` or as the generator's Monte-Carlo average `MU1 − MU0` over `K_eff` replicates | the estimand ProximalFM is trained on, and the best any method seeing only `X` can attain |
 | **`ite`** *(secondary)* | the realized draw `Y1 − Y0` for that row, carrying its own `U` and noise | irreducibly noisy: `E[Var(Y1−Y0 \| X)]` is typically ~95% of `Var(ITE)`, which flattens every method onto nPEHE ≈ 1 |
 
-The CATE target only exists when the set was built with replicates (`--mc_cate K`, `K > 1`).
-Without them the run falls back to the ITE task and says so on the console.
+The CATE target exists when every batch carries an explicit analytic `CATE`, or
+when the set was built with replicates (`--mc_cate K`, `K > 1`). Without either,
+the run falls back to the ITE task and says so on the console.
 
 ### The three tasks
 
@@ -105,8 +106,9 @@ Per episode, everything relative to `SD(tau)` so episodes can be pooled
   error removed — the most discriminative one).
 - `ate_bias_norm`, `ate_rmse` — the level component.
 - `s2_over_var` — the share of the CATE target's variance that is Monte-Carlo noise *in the target
-  itself*. **Reported, never subtracted**: ~0.004 at `K=1000`, ~0.2 at `K=8`. A warning fires past
-  5%; past that, every method scores worse than it is and the set wants a larger `--mc_cate`.
+  itself*. It is zero for an analytic `CATE`. For MC targets it is **reported, never subtracted**:
+  ~0.004 at `K=1000`, ~0.2 at `K=8`. A warning fires past 5%; past that, every method scores worse
+  than it is and the set wants a larger `--mc_cate`.
 
 Episodes with `Var(tau) < 1e-6` are dropped from the scale-free metrics (same cutoff as the
 trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task nPEHE and wandb's
@@ -121,7 +123,7 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`run.py`](run.py)** | The entry point. Loads the data, hands each method its resolved compute budget and runs it, scores all three tasks, writes `results/`. |
 | **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
-| **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs`/`cate_s2`/`cate_K_eff` when the set has replicates. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
+| **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs` when every batch has analytic `CATE` or the set has MC targets; `cate_K_eff` is `None` for the analytic case. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
 | **[`data_csv.py`](data_csv.py)** | The same dict from one or more real-world CSVs (Causal Chambers), given a column→variable-block mapping. Each file is an independently standardized episode, so reporting aggregates over files instead of concatenating rows. No CATE target exists here, so this path is ITE-only by construction. |
 | **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `plearner.py`, `proxy_marginalizer.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
@@ -169,7 +171,7 @@ methods:                                        # baselines; comment one out to 
     compute: { device: mps }                    # → execution: inline; see §3.1
 ```
 
-Build a set to point `val_dir` at with **`--mc_cate K` (K > 1)**, or there is no CATE task:
+For a synthetic replicate set, build with **`--mc_cate K` (K > 1)**:
 
 ```bash
 uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
@@ -177,6 +179,7 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 ```
 
 `prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
+`semi_synt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
 
 **Keys the `data:` block takes per `source:`.**
 

@@ -92,6 +92,7 @@ def build_benchmark_dict(
     MU1: Optional[Tensor] = None,
     S2: Optional[Tensor] = None,
     K_eff: Optional[Tensor] = None,
+    CATE: Optional[Tensor] = None,
 ) -> dict:
     """Standardize a raw pool of datasets into the benchmark data dict.
 
@@ -110,15 +111,20 @@ def build_benchmark_dict(
         ``Y1 − Y0`` on the query rows — one *realized* draw of the individual
         effect, carrying that row's own ``U`` and noise.
     ``true_CATEs``
-        ``MU1 − MU0``, the Monte-Carlo estimate of ``tau*(x) = E[Y1 − Y0 | X=x]``
-        that ``SCMPrior`` builds from ``K_eff`` replicates per query row. This is
-        the estimand ProximalFM is trained on; scoring against ``true_ITEs``
-        instead buries every method under an irreducible noise floor.
+        Either an explicit analytic ``CATE`` supplied by the dataset builder,
+        or ``MU1 − MU0``, the Monte-Carlo estimate of
+        ``tau*(x) = E[Y1 − Y0 | X=x]`` that ``SCMPrior`` builds from
+        ``K_eff`` replicates per query row. This is the estimand ProximalFM is
+        trained on; scoring against ``true_ITEs`` instead buries every method
+        under an irreducible noise floor.
 
-    ``true_CATEs`` is ``None`` unless ``MU0``/``MU1`` are given **and** every
-    episode has ``K_eff > 1``. At ``K = 1`` the "Monte-Carlo estimate" is a
-    single draw — the same object as the ITE, with none of its honesty — so the
-    gate is what keeps a ``--mc_cate 1`` set from silently scoring as a CATE set.
+    An explicit ``CATE`` takes precedence over the MC fields and does not carry
+    replicate semantics: its sampling variance is exactly zero and
+    ``cate_K_eff`` is ``None``. Otherwise ``true_CATEs`` is ``None`` unless
+    ``MU0``/``MU1`` are given **and** every episode has ``K_eff > 1``. At
+    ``K = 1`` the "Monte-Carlo estimate" is a single draw — the same object as
+    the ITE, with none of its honesty — so the gate is what keeps a
+    ``--mc_cate 1`` set from silently scoring as a CATE set.
     """
     train_size = int(train_size)
     B, T, _ = X.shape
@@ -153,7 +159,11 @@ def build_benchmark_dict(
     true_CATEs_std = None
     cate_s2_std = None
     cate_K_eff = None
-    if MU0 is not None and MU1 is not None and _has_replicates(K_eff):
+    if CATE is not None:
+        CATE = _squeeze_trailing(CATE)
+        true_CATEs_std = (CATE[:, train_size:] / y_ctx_std).cpu().numpy()
+        cate_s2_std = torch.zeros_like(CATE[:, train_size:]).cpu().numpy()
+    elif MU0 is not None and MU1 is not None and _has_replicates(K_eff):
         MU0, MU1 = (_squeeze_trailing(t) for t in (MU0, MU1))
         true_CATEs_std = (
             ((MU1[:, train_size:] - MU0[:, train_size:]) / y_ctx_std).cpu().numpy()
@@ -196,9 +206,10 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
     Requires all datasets to share a single ``seq_len`` and ``train_size``
     (the benchmark dict has one scalar ``N_TRAIN``/``N_TEST``).
 
-    ``MU0``/``MU1``/``S2``/``K_eff`` are picked up when the files carry them —
-    every file written by ``proximalfm.prior._genload.write_batch_file`` does,
-    but sets predating that writer do not, and those load as ITE-only.
+    An explicit analytic ``CATE`` is picked up when every file carries it.
+    Mixed presence is refused because silently dropping part of an exact target
+    would change the benchmark estimand. ``MU0``/``MU1``/``S2``/``K_eff`` are
+    picked up as before when the files carry them.
     """
     val_dir = Path(val_dir)
     files = sorted(val_dir.glob("batch_*.pt"))
@@ -247,6 +258,13 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
             return None
         return flat(field)
 
+    cate_presence = ["CATE" in p for p in payloads]
+    if any(cate_presence) and not all(cate_presence):
+        raise ValueError(
+            "CATE must be present in every batch file or none; found mixed "
+            "exact-target presence in the val directory."
+        )
+
     return build_benchmark_dict(
         U=densify("U", "d_U"),
         X=densify("X", "d_X"),
@@ -264,4 +282,5 @@ def load_benchmark_from_val_dir(val_dir: str | Path) -> dict:
         MU1=flat_opt("MU1"),
         S2=flat_opt("S2"),
         K_eff=flat_opt("K_eff"),
+        CATE=flat("CATE") if all(cate_presence) else None,
     )

@@ -89,6 +89,8 @@ def write_val_file(path, pool, sl=slice(None)):
         "train_sizes": pool["train_sizes"][sl],
         "batch_size": B,
     }
+    if "CATE" in pool:
+        payload["CATE"] = pool["CATE"][sl]
     torch.save(payload, path)
 
 
@@ -110,6 +112,7 @@ def build_from_pool(pool):
         MU1=pool["MU1"],
         S2=pool["S2"],
         K_eff=pool["K_eff"],
+        CATE=pool.get("CATE"),
     )
 
 
@@ -248,6 +251,33 @@ def test_no_cate_target_when_mu_absent():
     assert data["true_CATEs"] is None
 
 
+def test_explicit_cate_is_used_without_replicates():
+    """An analytic target is exact and independent of MU/K_eff semantics."""
+    pool = make_pool(K=1)
+    pool["CATE"] = torch.randn_like(pool["Y0"])
+    data = build_from_pool(pool)
+
+    train_size = int(pool["train_sizes"][0])
+    y_std = pool["Y_obs"][:, :train_size].std(dim=1, unbiased=False, keepdim=True)
+    expected = pool["CATE"][:, train_size:] / y_std
+    np.testing.assert_allclose(
+        data["true_CATEs"], expected.numpy(), rtol=1e-5, atol=1e-6
+    )
+    np.testing.assert_array_equal(data["cate_s2"], np.zeros_like(expected.numpy()))
+    assert data["cate_K_eff"] is None
+
+
+def test_explicit_cate_takes_precedence_over_mc_target():
+    pool = make_pool(K=8)
+    pool["CATE"] = torch.full_like(pool["Y0"], 17.0)
+    data = build_from_pool(pool)
+    train_size = int(pool["train_sizes"][0])
+    y_std = pool["Y_obs"][:, :train_size].std(dim=1, unbiased=False, keepdim=True)
+    expected = pool["CATE"][:, train_size:] / y_std
+    np.testing.assert_allclose(data["true_CATEs"], expected.numpy())
+    assert data["cate_K_eff"] is None
+
+
 def test_load_val_dir_without_mu_fields(tmp_path):
     """A val file written before MU0/MU1 existed loads as an ITE-only set."""
     pool = make_pool()
@@ -295,6 +325,24 @@ def test_load_multi_file_pads_to_global_max(tmp_path):
     write_val_file(tmp_path / "batch_000000.pt", pool, sl=slice(0, 3))
     write_val_file(tmp_path / "batch_000001.pt", pool, sl=slice(3, 6))
     assert_dicts_equal(load_benchmark_from_val_dir(tmp_path), build_from_pool(pool))
+
+
+def test_load_exact_cate_from_all_files(tmp_path):
+    pool = make_pool(B=6, K=1)
+    pool["CATE"] = torch.randn_like(pool["Y0"])
+    write_val_file(tmp_path / "batch_000000.pt", pool, sl=slice(0, 3))
+    write_val_file(tmp_path / "batch_000001.pt", pool, sl=slice(3, 6))
+    assert_dicts_equal(load_benchmark_from_val_dir(tmp_path), build_from_pool(pool))
+
+
+def test_load_mixed_exact_cate_presence_raises(tmp_path):
+    pool = make_pool(B=6)
+    pool["CATE"] = torch.randn_like(pool["Y0"])
+    write_val_file(tmp_path / "batch_000000.pt", pool, sl=slice(0, 3))
+    del pool["CATE"]
+    write_val_file(tmp_path / "batch_000001.pt", pool, sl=slice(3, 6))
+    with pytest.raises(ValueError, match="CATE must be present in every batch"):
+        load_benchmark_from_val_dir(tmp_path)
 
 
 def test_load_empty_dir_raises(tmp_path):
