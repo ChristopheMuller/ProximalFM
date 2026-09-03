@@ -13,11 +13,10 @@ uv run python -m semi_synt_eval.build --list
 
 ```bash
 uv run python -m semi_synt_eval.build \
-  --csv bank \
-  --name bank_linear_v1 \
-  --drop_columns y \
-  --x_columns age,education,marital \
-  --u_columns balance,housing,loan \
+  --csv heloc \
+  --name heloc_linear_v1 \
+  --n_features_x 7 \
+  --n_features_u 5 \
   --mechanism linear \
   --n_max 1024 \
   --n_q 256 \
@@ -25,11 +24,13 @@ uv run python -m semi_synt_eval.build \
 ```
 
 Without explicit column lists, the loader converts every usable CSV column to
-one numeric column, keeps at most `--max_features`, and creates a deterministic
-X/U split controlled by `--u_fraction` and `--split_seed`. Numeric missing
-values are median-imputed; categorical values use stable sorted category codes.
-This generic encoding is meant as a reproducible baseline. A scientifically
-chosen split should use `--x_columns`, `--u_columns`, and `--drop_columns`.
+one numeric column and selects exactly `--n_features_x` columns for X and
+`--n_features_u` columns for U, deterministically under `--split_seed`. The
+builder raises if the CSV does not have enough non-constant usable columns.
+Numeric missing values are median-imputed; categorical values use stable sorted
+category codes. This generic encoding is meant as a reproducible baseline. A
+scientifically chosen split should use `--x_columns`, `--u_columns`, and
+`--drop_columns`; the explicit lists must match the requested counts.
 
 The output lands in `data/real_eval/<name>/` and uses the standard sparse
 `val/` format:
@@ -37,7 +38,7 @@ The output lands in `data/real_eval/<name>/` and uses the standard sparse
 ```yaml
 data:
   source: load
-  val_dir: data/real_eval/bank_linear_v1/val
+  val_dir: data/real_eval/heloc_linear_v1/val
 ```
 
 The resolved X/U assignment, source SHA-256, exact target kind, and all

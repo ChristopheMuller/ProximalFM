@@ -38,8 +38,8 @@ def test_csv_discovery_delimiter_encoding_missing_and_deterministic_split(tmp_pa
     assert discover_csvs(tmp_path) == [path]
     assert resolve_csv("arbitrary", tmp_path) == path.resolve()
 
-    first = load_csv(path, split_seed=19, max_features=4, u_fraction=0.5)
-    second = load_csv(path, split_seed=19, max_features=4, u_fraction=0.5)
+    first = load_csv(path, split_seed=19, n_features_x=2, n_features_u=2)
+    second = load_csv(path, split_seed=19, n_features_x=2, n_features_u=2)
     assert first.columns == second.columns
     assert first.x_columns == second.x_columns
     assert first.u_columns == second.u_columns
@@ -47,7 +47,7 @@ def test_csv_discovery_delimiter_encoding_missing_and_deterministic_split(tmp_pa
     assert "constant" not in first.columns
     assert first.values.shape == (6, 4)
     assert torch.isfinite(first.values).all()
-    assert first.X.shape[1] >= 1 and first.U.shape[1] >= 1
+    assert first.X.shape[1] == 2 and first.U.shape[1] == 2
 
 
 def test_csv_rejects_duplicate_headers_and_explicit_columns(tmp_path):
@@ -59,7 +59,29 @@ def test_csv_rejects_duplicate_headers_and_explicit_columns(tmp_path):
     source = tmp_path / "source.csv"
     _csv(source)
     with pytest.raises(ValueError, match="must not contain duplicates"):
-        load_csv(source, x_columns="numeric,numeric", u_columns="category")
+        load_csv(
+            source,
+            x_columns="numeric,numeric",
+            u_columns="category",
+            n_features_x=2,
+            n_features_u=1,
+        )
+
+
+def test_csv_requires_exact_feature_counts(tmp_path):
+    source = tmp_path / "source.csv"
+    _csv(source)
+    with pytest.raises(ValueError, match="only 4 .* columns are available"):
+        load_csv(source, n_features_x=3, n_features_u=2)
+
+    with pytest.raises(ValueError, match="explicit lists must contain exactly"):
+        load_csv(
+            source,
+            x_columns="numeric",
+            u_columns="category",
+            n_features_x=2,
+            n_features_u=1,
+        )
 
 
 def test_mechanism_causal_interface_has_exact_cate_and_shared_noise():
@@ -93,6 +115,10 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
         "2",
         "--datasets_per_file",
         "1",
+        "--n_features_x",
+        "2",
+        "--n_features_u",
+        "2",
         "--seed",
         "7",
     ]
@@ -146,7 +172,9 @@ def test_future_ite_only_mechanism_omits_exact_target(tmp_path, monkeypatch):
     )
     csv = tmp_path / "source.csv"
     _csv(csv)
-    dataset = CSVProximalDataset(load_csv(csv), mechanism="linear")
+    dataset = CSVProximalDataset(
+        load_csv(csv, n_features_x=2, n_features_u=2), mechanism="linear"
+    )
     episode = dataset.generate(seed=3, seq_len=10)
     assert dataset.target_capability == "ite_only"
     assert episode.CATE is None

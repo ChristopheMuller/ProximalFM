@@ -39,8 +39,8 @@ def make_dataset(args: argparse.Namespace) -> CSVProximalDataset:
         x_columns=args.x_columns,
         u_columns=args.u_columns,
         drop_columns=args.drop_columns,
-        max_features=args.max_features,
-        u_fraction=args.u_fraction,
+        n_features_x=args.n_features_x,
+        n_features_u=args.n_features_u,
         split_seed=args.split_seed,
     )
     return CSVProximalDataset(
@@ -313,8 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--drop_columns", default=None, help="Comma-separated columns to ignore."
     )
-    parser.add_argument("--max_features", type=int, default=12)
-    parser.add_argument("--u_fraction", type=float, default=0.4)
+    parser.add_argument("--n_features_x", type=int, default=7)
+    parser.add_argument("--n_features_u", type=int, default=5)
     parser.add_argument("--split_seed", type=int, default=0)
     parser.add_argument(
         "--row_sampling",

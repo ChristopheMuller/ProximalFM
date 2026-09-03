@@ -143,16 +143,16 @@ def load_csv(
     x_columns: Optional[str | Sequence[str]] = None,
     u_columns: Optional[str | Sequence[str]] = None,
     drop_columns: Optional[str | Sequence[str]] = None,
-    max_features: int = 12,
-    u_fraction: float = 0.4,
+    n_features_x: int = 7,
+    n_features_u: int = 5,
     split_seed: int = 0,
 ) -> PreparedCSV:
     """Load any tabular CSV and deterministically split its features into X/U.
 
-    When ``x_columns`` and ``u_columns`` are omitted, at most ``max_features``
-    usable columns are selected by a stable hash order, then ``u_fraction`` of
-    them become U.  Explicit X and U lists must be supplied together and are
-    never truncated.
+    Exactly ``n_features_x`` and ``n_features_u`` usable columns are required.
+    When explicit column lists are omitted, that many columns are selected by a
+    stable hash order. Explicit lists must be supplied together and their
+    lengths must match the requested dimensions exactly.
     """
     path = resolve_csv(name, data_dir)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -172,10 +172,14 @@ def load_csv(
             values = _encode_column(frame[column])
             if values is not None:
                 encoded[column] = values
-    if len(encoded) < 2:
+    if n_features_x < 1 or n_features_u < 1:
+        raise ValueError("n_features_x and n_features_u must both be >= 1")
+    n_required = int(n_features_x) + int(n_features_u)
+    if len(encoded) < n_required:
         raise ValueError(
-            f"{path.name}: need at least two non-constant usable columns to split X/U; "
-            f"found {len(encoded)}"
+            f"{path.name}: requested n_features_x={n_features_x} and "
+            f"n_features_u={n_features_u} ({n_required} total), but only "
+            f"{len(encoded)} non-constant usable columns are available"
         )
 
     explicit_x = _parse_columns(x_columns)
@@ -196,17 +200,18 @@ def load_csv(
             raise ValueError(f"unusable or unknown X/U columns: {sorted(unknown)}")
         if not explicit_x or not explicit_u:
             raise ValueError("X and U must each contain at least one column")
+        if len(explicit_x) != n_features_x or len(explicit_u) != n_features_u:
+            raise ValueError(
+                f"explicit lists must contain exactly n_features_x={n_features_x} "
+                f"and n_features_u={n_features_u} columns; got "
+                f"{len(explicit_x)} and {len(explicit_u)}"
+            )
         x_names, u_names = explicit_x, explicit_u
         selected = list(dict.fromkeys([*x_names, *u_names]))
     else:
-        if max_features < 2:
-            raise ValueError("max_features must be >= 2")
-        if not 0.0 < u_fraction < 1.0:
-            raise ValueError("u_fraction must lie strictly between 0 and 1")
-        selected = _stable_order(encoded, split_seed)[: int(max_features)]
-        n_u = max(1, min(len(selected) - 1, round(len(selected) * u_fraction)))
-        u_names = selected[:n_u]
-        x_names = selected[n_u:]
+        selected = _stable_order(encoded, split_seed)[:n_required]
+        u_names = selected[:n_features_u]
+        x_names = selected[n_features_u:]
 
     values = torch.stack([encoded[c] for c in selected], dim=1)
     positions = {column: i for i, column in enumerate(selected)}
