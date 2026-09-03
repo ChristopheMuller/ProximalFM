@@ -3,7 +3,7 @@
 Examples::
 
     uv run python -m semisynt_eval.build --list
-    uv run python -m semisynt_eval.build --name all_linear_v1
+    uv run python -m semisynt_eval.build --name all_mechanisms_v1
 
 The package has no dependency on ``lit_eval`` and performs no row-level Monte
 Carlo replication. Bundled mechanisms write their analytic CATE explicitly; a
@@ -29,7 +29,7 @@ from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import discover_csvs, load_csv
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 3
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
     "data_dir",
@@ -59,7 +59,7 @@ def make_datasets(args: argparse.Namespace) -> list[CSVProximalDataset]:
     if not selectors:
         raise ValueError(f"no CSV files found directly under {args.data_dir}")
 
-    datasets = []
+    sources = []
     for selector in selectors:
         source = load_csv(
             selector,
@@ -77,16 +77,9 @@ def make_datasets(args: argparse.Namespace) -> list[CSVProximalDataset]:
                 f"source SHA-256 mismatch for {source.path}: expected "
                 f"{expected_digest}, found {source.digest}"
             )
-        datasets.append(
-            CSVProximalDataset(
-                source,
-                mechanism=args.mechanism,
-                mechanism_config=args._mechanism_configs[args.mechanism],
-                row_sampling=args.row_sampling,
-            )
-        )
+        sources.append(source)
 
-    actual_files = {dataset.source.path.name for dataset in datasets}
+    actual_files = {source.path.name for source in sources}
     expected_files = set(args._expected_source_sha256)
     if expected_files and actual_files != expected_files:
         raise ValueError(
@@ -94,7 +87,19 @@ def make_datasets(args: argparse.Namespace) -> list[CSVProximalDataset]:
             f"missing={sorted(expected_files-actual_files)}, "
             f"unexpected={sorted(actual_files-expected_files)}"
         )
-    return datasets
+    mechanism_names = (
+        available_mechanisms() if args.mechanism == "all" else [args.mechanism]
+    )
+    return [
+        CSVProximalDataset(
+            source,
+            mechanism=mechanism_name,
+            mechanism_config=args._mechanism_configs[mechanism_name],
+            row_sampling=args.row_sampling,
+        )
+        for source in sources
+        for mechanism_name in mechanism_names
+    ]
 
 
 def generate_episodes(
@@ -114,6 +119,7 @@ def generate_episodes(
             records.append(
                 {
                     "source_file": dataset.source.path.name,
+                    "mechanism": dataset.mechanism_name,
                     "replicate": replicate,
                     "seed": episode_seed,
                 }
@@ -257,10 +263,11 @@ def _write_metadata_files(
     datasets_per_file: int,
     cli_command: str,
 ) -> None:
-    sources = []
+    sources_by_file = {}
     for dataset in datasets:
         source = dataset.source
-        sources.append(
+        sources_by_file.setdefault(
+            source.path.name,
             {
                 "file": source.path.name,
                 "path": str(source.path),
@@ -269,15 +276,22 @@ def _write_metadata_files(
                 "encoded_columns": list(source.columns),
                 "x_columns": list(source.x_columns),
                 "u_columns": list(source.u_columns),
-            }
+            },
         )
+    sources = list(sources_by_file.values())
+    mechanisms_used = list(
+        dict.fromkeys(dataset.mechanism_name for dataset in datasets)
+    )
     manifest = {
         "format_version": FORMAT_VERSION,
         "content_digest": _content_digest(args, datasets),
         "name": args.name,
         "sources": sources,
         "mechanism": args.mechanism,
-        "mechanism_config": datasets[0].options["mechanism_config"],
+        "mechanisms_used": mechanisms_used,
+        "mechanism_configs": {
+            name: args._raw_mechanisms[name] for name in mechanisms_used
+        },
         "target_kind": datasets[0].target_capability,
         "replicates_per_csv": args.replicates_per_csv,
         "n_episodes": len(episode_records),
@@ -321,11 +335,16 @@ def build(args: argparse.Namespace) -> Path:
             "or pass --force to replace builder-owned outputs."
         )
 
+    source_names = list(dict.fromkeys(dataset.source.path.name for dataset in datasets))
+    mechanism_names = list(
+        dict.fromkeys(dataset.mechanism_name for dataset in datasets)
+    )
     print(
-        f"Building '{args.name}' from {len(datasets)} CSV source(s) "
-        f"with {args.mechanism}\n"
-        f"  sources={[dataset.source.path.name for dataset in datasets]}\n"
-        f"  {args.replicates_per_csv} replicates/source, "
+        f"Building '{args.name}' from {len(source_names)} CSV source(s) "
+        f"and {len(mechanism_names)} mechanism(s)\n"
+        f"  sources={source_names}\n"
+        f"  mechanisms={mechanism_names}\n"
+        f"  {args.replicates_per_csv} replicates/source/mechanism, "
         f"{len(datasets) * args.replicates_per_csv} episodes x T={args.seq_len} "
         f"(n_max={args.n_max} + n_q={args.n_q}), seed={args.seed}\n"
         f"  target={datasets[0].target_capability} (no Monte Carlo replication)"
@@ -384,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--name", default=None, help="Build name under --out_root.")
     parser.add_argument("--out_root", type=Path)
-    parser.add_argument("--mechanism", choices=available_mechanisms())
+    parser.add_argument("--mechanism", choices=["all", *available_mechanisms()])
     parser.add_argument(
         "--x_columns", default=None, help="Comma-separated explicit X columns."
     )

@@ -13,11 +13,11 @@ uv run python -m semisynt_eval.build --list
 
 ```bash
 uv run python -m semisynt_eval.build \
-  --name all_csvs_linear_v1 \
+  --name all_csvs_all_mechanisms_v1 \
   --replicates_per_csv 24 \
   --n_features_x 7 \
   --n_features_u 5 \
-  --mechanism linear \
+  --mechanism all \
   --n_max 1024 \
   --n_q 256 \
   --seed 20260903
@@ -31,9 +31,11 @@ recipe; explicit CLI arguments override its `build:` section.
 
 The default `csv: all` discovers every `*.csv` directly in the configured
 `data_dir`, in deterministic filename order. Each source contributes exactly
-`replicates_per_csv` independently seeded episodes to one combined benchmark
-set. Use `--csv heloc` (or another path/name/stem) to restrict a build to one
-source.
+`replicates_per_csv` independently seeded episodes for each selected mechanism
+to one combined benchmark set. The default `mechanism: all` runs every
+registered mechanism; use `--mechanism linear` or `--csv heloc` to restrict
+either axis. Thus the total episode count is `number of CSVs × number of
+mechanisms × replicates_per_csv`.
 
 Without explicit column lists, the loader converts every usable CSV column to
 one numeric column and selects exactly `--n_features_x` columns for X and
@@ -50,7 +52,7 @@ The output lands in `data/semisynt_eval/<name>/` and uses the standard sparse
 ```yaml
 data:
   source: load
-  val_dir: data/semisynt_eval/all_csvs_linear_v1/val
+  val_dir: data/semisynt_eval/all_csvs_all_mechanisms_v1/val
 ```
 
 Every output directory receives a fully resolved `config.yaml` containing the
@@ -59,7 +61,8 @@ source CSV's SHA-256. That saved file can be passed back to `--config` directly.
 The builder checks both the recorded source set and every digest before
 regenerating, while `manifest.json` also records each source's resolved X/U
 assignment, every episode's source/replicate/seed, target kind, and content
-digest.
+digest. When several mechanisms are selected, every episode also records its
+mechanism and the manifest includes all resolved mechanism configs.
 
 ## Causal contract
 

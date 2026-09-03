@@ -8,7 +8,7 @@ build:
   out_root: data/semisynt_eval
   csv: all
   name: null
-  mechanism: linear
+  mechanism: all
   x_columns: null
   u_columns: null
   drop_columns: null

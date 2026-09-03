@@ -42,6 +42,7 @@ def test_yaml_mechanism_config_is_complete_and_strict():
 def test_default_recipe_selects_all_csvs_and_replicates_per_csv():
     args = parse_args(["--list"])
     assert args.csv == "all"
+    assert args.mechanism == "all"
     assert args.replicates_per_csv == 4
 
 
@@ -223,6 +224,8 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
         str(csv),
         "--out_root",
         str(tmp_path),
+        "--mechanism",
+        "linear",
         "--n_max",
         "8",
         "--n_q",
@@ -256,8 +259,14 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
         for payload in payloads
     )
     manifest = json.loads((tmp_path / "cate" / "manifest.json").read_text())
-    assert manifest["mechanism_config"]["outcome"]["use_w"] is True
-    assert manifest["mechanism_config"]["powers"]["effect_quadratic_probability"] == 0
+    assert manifest["mechanisms_used"] == ["linear"]
+    assert manifest["mechanism_configs"]["linear"]["outcome"]["use_w"] is True
+    assert (
+        manifest["mechanism_configs"]["linear"]["powers"][
+            "effect_quadratic_probability"
+        ]
+        == 0
+    )
 
     resolved = yaml.safe_load((tmp_path / "cate" / "config.yaml").read_text())
     assert resolved["build"]["csv"] == str(csv)
@@ -289,7 +298,7 @@ def test_tiny_build_round_trip_uses_explicit_cate_without_replicates(tmp_path):
                 assert torch.equal(original[key], replica[key]), key
 
 
-def test_all_csvs_contribute_the_requested_number_of_replicates(tmp_path):
+def test_all_csvs_and_mechanisms_share_one_output_set(tmp_path):
     _csv(tmp_path / "a.csv")
     _csv(tmp_path / "b.csv")
     args = parse_args(
@@ -318,16 +327,32 @@ def test_all_csvs_contribute_the_requested_number_of_replicates(tmp_path):
     build(args)
 
     data = load_benchmark_from_val_dir(tmp_path / "all_sources" / "val")
-    assert data["X"].shape[0] == 4
+    assert args.mechanism == "all"
+    assert data["X"].shape[0] == 8
     manifest = json.loads((tmp_path / "all_sources" / "manifest.json").read_text())
     assert [source["file"] for source in manifest["sources"]] == ["a.csv", "b.csv"]
     assert manifest["replicates_per_csv"] == 2
-    assert manifest["n_episodes"] == 4
+    assert manifest["mechanisms_used"] == ["linear", "linear_quadratic"]
+    assert manifest["n_episodes"] == 8
     assert [episode["source_file"] for episode in manifest["episodes"]] == [
         "a.csv",
         "a.csv",
+        "a.csv",
+        "a.csv",
         "b.csv",
         "b.csv",
+        "b.csv",
+        "b.csv",
+    ]
+    assert [episode["mechanism"] for episode in manifest["episodes"]] == [
+        "linear",
+        "linear",
+        "linear_quadratic",
+        "linear_quadratic",
+        "linear",
+        "linear",
+        "linear_quadratic",
+        "linear_quadratic",
     ]
 
 
