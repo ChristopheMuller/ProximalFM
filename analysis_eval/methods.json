@@ -6,21 +6,21 @@
       "family": "Meta-learner",
       "proximal": false,
       "foundation_model": false,
-      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": null}
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
     },
     "T_Learner": {
       "label": "T-learner",
       "family": "Meta-learner",
       "proximal": false,
       "foundation_model": false,
-      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": null}
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
     },
     "X_Learner": {
       "label": "X-learner",
       "family": "Meta-learner",
       "proximal": false,
       "foundation_model": false,
-      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": null}
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
     },
     "CausalForest": {
       "label": "Causal forest",
@@ -94,7 +94,7 @@
     },
     "ProxyMarginalizer": {
       "label": "Proxy marginalization",
-      "family": "Marginalized meta-learner",
+      "family": "Marginalized meta-learner",  
       "proximal": false,
       "foundation_model": false,
       "citation": {"text": "This work", "bibtex_key": null}
