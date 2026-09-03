@@ -42,7 +42,7 @@ def test_yaml_mechanism_config_is_complete_and_strict():
 def test_default_recipe_selects_all_csvs_and_replicates_per_csv():
     args = parse_args(["--list"])
     assert args.csv == "all"
-    assert args.replicates_per_csv == 24
+    assert args.replicates_per_csv == 4
 
 
 def _csv(path, delimiter=","):
