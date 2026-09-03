@@ -458,11 +458,7 @@ def print_partial_results(
 ) -> None:
     if not accumulated:
         return
-    # The ITE view contains every per-row predictor, so it is the useful live
-    # comparison: its input blocks make the information advantage explicit.
-    # Fall back to the ordinary primary task only for unusual target sets that
-    # do not carry realized ITEs.
-    task = TASKS["ite" if "ite" in targets else primary_task(targets)]
+    task = TASKS[primary_task(targets)]
     all_df = score_everything(accumulated, estimands, {task.name: targets[task.name]})
     report = TaskReport.from_results(
         all_df, task, episode_aggregation=episode_aggregation
