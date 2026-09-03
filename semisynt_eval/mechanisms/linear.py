@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from semisynt_eval._config import MechanismConfig
@@ -53,6 +55,8 @@ class LinearMechanism(Mechanism):
             raise ValueError("d_x and d_u must both be positive")
         self.config = config
         self.generator = generator
+        self.d_x = d_x
+        self.d_u = d_u
         self.d_w = d_u
         self.d_z = d_u
         self._validate_config()
@@ -97,6 +101,16 @@ class LinearMechanism(Mechanism):
             config.outcome.coefficients,
             quadratic_probability=outcome_p,
         )
+        self._scale_u_coefficients(
+            self.treatment_regression,
+            use_x=config.treatment.use_x,
+            use_u=config.treatment.use_u,
+        )
+        self._scale_u_coefficients(
+            self.outcome_regression,
+            use_x=config.outcome.use_x,
+            use_u=config.outcome.use_u,
+        )
         self.effect_regression = (
             RandomPolynomialRegression.sample(
                 generator,
@@ -123,6 +137,10 @@ class LinearMechanism(Mechanism):
 
     def _validate_config(self) -> None:
         config = self.config
+        if not math.isfinite(float(config.u_coefficient_multiplier)):
+            raise ValueError("u_coefficient_multiplier must be finite")
+        if config.u_coefficient_multiplier < 0:
+            raise ValueError("u_coefficient_multiplier must be non-negative")
         if not (config.proxies.use_x or config.proxies.use_u):
             raise ValueError("proxy equations need X and/or U")
         if not (
@@ -141,6 +159,22 @@ class LinearMechanism(Mechanism):
             raise ValueError("treatment intercept bounds are reversed")
         if not 0.0 <= config.treatment.overlap_epsilon < 0.5:
             raise ValueError("overlap_epsilon must lie in [0, 0.5)")
+
+    def _scale_u_coefficients(
+        self,
+        regression: RandomPolynomialRegression,
+        *,
+        use_x: bool,
+        use_u: bool,
+    ) -> None:
+        """Scale the direct U arrows while leaving X/proxy arrows unchanged."""
+        if not use_u:
+            return
+        start = int(use_x) * self.d_x
+        stop = start + self.d_u
+        regression.coefficients[start:stop] *= float(
+            self.config.u_coefficient_multiplier
+        )
 
     def _proxy_inputs(self, x: Tensor, u: Tensor) -> Tensor:
         return _selected_blocks(

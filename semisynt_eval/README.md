@@ -80,7 +80,12 @@ that the builder can sample `U | X`.
 By default, W and Z are normalized after adding their structural noise, the
 treatment score is normalized before its logistic link, and the noisy untreated
 outcome baseline is normalized before adding `tau(X)` to form `Y(1)`. Thus the
-normalization never changes the closed-form treatment effect.
+normalization never changes the closed-form treatment effect. The
+`u_coefficient_multiplier` mechanism knob scales the direct U coefficients in
+both the treatment and outcome equations before those normalizations; `1.0`
+recovers the previous behavior, while the default linear recipe uses `4.0` for
+substantially stronger hidden-U confounding. The linear-quadratic recipe keeps
+its own independent setting.
 
 A future mechanism with no analytic CATE declares
 `target_capability = "ite_only"`, returns no CATE, and is evaluated using its
@@ -100,8 +105,9 @@ The repository `config.yaml` is the single generative configuration surface.
 Its `mechanisms:` mapping contains one complete sub-config per family, including
 the input blocks used by each equation (for example, whether W enters Y),
 coefficient distributions and scales, noise levels, normalization switches,
-treatment overlap, and quadratic allocation probabilities. Change defaults or
-add mechanism-level settings there rather than adding duplicate CLI flags.
+treatment overlap, the direct-U coefficient multiplier, and quadratic allocation
+probabilities. Change defaults or add mechanism-level settings there rather than
+adding duplicate CLI flags.
 
 To add a family, implement the small interface in `mechanisms/base.py`, put the
 SCM in a new mechanism module, add its complete sub-config to `config.yaml`, and

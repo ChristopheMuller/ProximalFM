@@ -1,7 +1,7 @@
 # Version-controlled, authoritative recipe for semi-synthetic evaluation sets.
 # Every data-affecting value is explicit. A build copies the fully resolved
 # version of this file beside its generated val/ directory.
-format_version: 2
+format_version: 3
 
 build:
   data_dir: semisynt_eval/datasets
@@ -26,6 +26,7 @@ build:
 
 mechanisms:
   linear:
+    u_coefficient_multiplier: 4.0
     proxies:
       use_x: true
       use_u: true
@@ -74,6 +75,7 @@ mechanisms:
       effect_quadratic_probability: 0.0
 
   linear_quadratic:
+    u_coefficient_multiplier: 1.0
     proxies:
       use_x: true
       use_u: true

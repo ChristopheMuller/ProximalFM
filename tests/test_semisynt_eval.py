@@ -162,6 +162,35 @@ def test_mechanisms_are_separate_closed_form_families():
     assert set(mixed_powers.tolist()) == {1, 2}
 
 
+def test_u_coefficient_multiplier_only_scales_direct_u_arrows():
+    default = _mechanism_configs()["linear"]
+    baseline_config = replace(default, u_coefficient_multiplier=1.0)
+    strong_config = replace(default, u_coefficient_multiplier=4.0)
+    baseline = build_mechanism(
+        "linear", 2, 3, torch.Generator().manual_seed(12), config=baseline_config
+    )
+    strong = build_mechanism(
+        "linear", 2, 3, torch.Generator().manual_seed(12), config=strong_config
+    )
+
+    for name in ("treatment_regression", "outcome_regression"):
+        baseline_coefficients = getattr(baseline, name).coefficients
+        strong_coefficients = getattr(strong, name).coefficients
+        torch.testing.assert_close(strong_coefficients[:2], baseline_coefficients[:2])
+        torch.testing.assert_close(
+            strong_coefficients[2:5], 4.0 * baseline_coefficients[2:5]
+        )
+        torch.testing.assert_close(strong_coefficients[5:], baseline_coefficients[5:])
+
+
+def test_u_coefficient_multiplier_rejects_negative_values():
+    config = replace(_mechanism_configs()["linear"], u_coefficient_multiplier=-1.0)
+    with pytest.raises(ValueError, match="u_coefficient_multiplier"):
+        build_mechanism(
+            "linear", 2, 3, torch.Generator().manual_seed(12), config=config
+        )
+
+
 @pytest.mark.parametrize("mechanism_name", available_mechanisms())
 def test_generated_proxies_and_outcome_baseline_are_renormalized(mechanism_name):
     generator = torch.Generator().manual_seed(25)
