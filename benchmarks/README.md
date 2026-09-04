@@ -442,7 +442,10 @@ The difference between the columns is the tuning overhead. New prediction
 caches store both arrays. When an old cache is loaded, an untuned method can be
 backfilled exactly, but a tuned method receives `NaN` for `time_post_tune`
 because the historical total cannot be decomposed honestly; use `--force` to
-remeasure it.
+remeasure it. For a tuned S-learner this is one prediction-model search; a
+tuned T-learner accumulates the two treatment-arm searches, and a tuned
+X-learner accumulates its four outcome/effect-model searches. The X-learner's
+ordinary propensity fit remains in `time_post_tune` because it is not searched.
 
 Every metric summarized as a median also carries `<label> p25` / `<label> p75` companions in
 `summary_*.csv` — the same convention as the trainer's `synt_point/*` keys, and for the same reason:

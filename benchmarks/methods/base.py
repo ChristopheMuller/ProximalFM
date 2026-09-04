@@ -7,11 +7,33 @@ package it is part of.
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 import numpy as np
 
-__all__ = ["CATEEstimator", "FeatureBuilder"]
+__all__ = ["CATEEstimator", "FeatureBuilder", "fit_and_measure_tuning"]
+
+
+def fit_and_measure_tuning(estimator, X, y) -> float:
+    """Fit a regressor and return its search-only wall time.
+
+    Ordinary regressors return zero. ``GridSearchCV``-like estimators expose
+    ``refit_time_`` after fitting; subtracting that final full-data refit from
+    the complete fit isolates the work that disappears when the selected
+    hyperparameters are known. Capability detection keeps the meta-learners
+    independent of sklearn's concrete class.
+    """
+    started = time.perf_counter()
+    estimator.fit(X, y)
+    elapsed = time.perf_counter() - started
+    refit_time = getattr(estimator, "refit_time_", None)
+    if refit_time is None:
+        return 0.0
+    refit_time = float(refit_time)
+    if not np.isfinite(refit_time) or refit_time < 0:
+        raise ValueError(f"invalid final refit time {refit_time!r}")
+    return max(0.0, elapsed - refit_time)
 
 
 class FeatureBuilder:

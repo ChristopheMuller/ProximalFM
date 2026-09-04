@@ -46,7 +46,11 @@ import warnings
 # layer need it, and neither may import the other (metrics must stay free of
 # torch, sklearn and the competitor submodules that this file drags in).
 from benchmarks.estimands import canonical_estimand, format_estimand, parse_estimand
-from benchmarks.methods.base import CATEEstimator, FeatureBuilder
+from benchmarks.methods.base import (
+    CATEEstimator,
+    FeatureBuilder,
+    fit_and_measure_tuning,
+)
 
 # Add this at the very top of your script
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -185,8 +189,13 @@ class S_Learner(CATEEstimator):
         self.model = base_model
 
     def fit(self, X, A, Y, *, W=None, Z=None):
-        self.model.fit(self.fb.build(X, A=A, W=W, Z=Z), Y)
+        self._tuning_time = fit_and_measure_tuning(
+            self.model, self.fb.build(X, A=A, W=W, Z=Z), Y
+        )
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def predict(self, X, *, W=None, Z=None):
         n = X.shape[0]
@@ -232,14 +241,22 @@ class T_Learner(CATEEstimator):
         self.model1 = base_model_factory()
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._tuning_time = 0.0
         feat = self.fb.build(X, W=W, Z=Z)
         mask0 = A == 0
         mask1 = A == 1
         if mask0.any():
-            self.model0.fit(feat[mask0], Y[mask0])
+            self._tuning_time += fit_and_measure_tuning(
+                self.model0, feat[mask0], Y[mask0]
+            )
         if mask1.any():
-            self.model1.fit(feat[mask1], Y[mask1])
+            self._tuning_time += fit_and_measure_tuning(
+                self.model1, feat[mask1], Y[mask1]
+            )
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
@@ -284,6 +301,7 @@ class X_Learner(CATEEstimator):
         self.prop_model = LogisticRegression(max_iter=1000)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._tuning_time = 0.0
         feat = self.fb.build(X, W=W, Z=Z)
         mask0 = A == 0
         mask1 = A == 1
@@ -292,8 +310,8 @@ class X_Learner(CATEEstimator):
             raise ValueError("X_Learner requires samples from both treatment arms.")
 
         # --- Stage 1: Fit base models ---
-        self.model0.fit(feat[mask0], Y[mask0])
-        self.model1.fit(feat[mask1], Y[mask1])
+        self._tuning_time += fit_and_measure_tuning(self.model0, feat[mask0], Y[mask0])
+        self._tuning_time += fit_and_measure_tuning(self.model1, feat[mask1], Y[mask1])
 
         # --- Stage 2: Impute pseudo-effects ---
         # For controls, predict counterfactual under treatment
@@ -303,13 +321,16 @@ class X_Learner(CATEEstimator):
         D1 = Y[mask1] - self.model0.predict(feat[mask1])
 
         # --- Stage 3: Fit CATE models on imputed effects ---
-        self.tau0.fit(feat[mask0], D0)
-        self.tau1.fit(feat[mask1], D1)
+        self._tuning_time += fit_and_measure_tuning(self.tau0, feat[mask0], D0)
+        self._tuning_time += fit_and_measure_tuning(self.tau1, feat[mask1], D1)
 
         # --- Fit propensity score model for the weighting ---
         self.prop_model.fit(feat, A)
 
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)

@@ -17,6 +17,7 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import Ridge
 
+import benchmarks.methods as benchmark_methods
 from benchmarks.methods import build_method
 from benchmarks.methods.plearner import (
     BRIDGES,
@@ -201,6 +202,75 @@ def test_base_cv_is_reused_by_s_learner():
 
     assert isinstance(learner.model, GridSearchCV)
     assert learner.model.best_params_["model__alpha"] in {0.1, 1.0}
+    assert learner.tuning_time() > 0.0
+
+
+@pytest.mark.parametrize("cls", ["S_Learner", "T_Learner", "X_Learner"])
+def test_meta_learners_accumulate_prediction_cv_tuning_time(cls):
+    X, A, Y, W, Z, _ = _toy(n=120)
+    cfg = {
+        "name": cls,
+        "cls": cls,
+        "base": "linear",
+        "use_W": False,
+        "use_Z": False,
+        "base_cv": {
+            "folds": 2,
+            "grids": {"linear": {"alpha": [0.1, 1.0]}},
+        },
+    }
+
+    _, learner = build_method(cfg)
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    assert learner.tuning_time() > 0.0
+
+
+@pytest.mark.parametrize("cls", ["S_Learner", "T_Learner", "X_Learner"])
+def test_untuned_meta_learners_report_zero_tuning_time(cls):
+    X, A, Y, W, Z, _ = _toy(n=120)
+    cfg = {
+        "name": cls,
+        "cls": cls,
+        "base": "linear",
+        "use_W": False,
+        "use_Z": False,
+    }
+
+    _, learner = build_method(cfg)
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    assert learner.tuning_time() == 0.0
+
+
+@pytest.mark.parametrize(
+    "cls, expected_fits",
+    [("S_Learner", 1), ("T_Learner", 2), ("X_Learner", 4)],
+)
+def test_meta_learner_tuning_time_sums_every_searched_component(
+    cls, expected_fits, monkeypatch
+):
+    X, A, Y, W, Z, _ = _toy(n=120)
+
+    def fit_with_fixed_search_cost(estimator, features, target):
+        estimator.fit(features, target)
+        return 0.25
+
+    monkeypatch.setattr(
+        benchmark_methods, "fit_and_measure_tuning", fit_with_fixed_search_cost
+    )
+    _, learner = build_method(
+        {
+            "name": cls,
+            "cls": cls,
+            "base": "linear",
+            "use_W": False,
+            "use_Z": False,
+        }
+    )
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    assert learner.tuning_time() == 0.25 * expected_fits
 
 
 def test_base_cv_rejects_unknown_parameters_early():

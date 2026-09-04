@@ -51,7 +51,7 @@ from sklearn.base import clone
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 
-from benchmarks.methods.base import CATEEstimator
+from benchmarks.methods.base import CATEEstimator, fit_and_measure_tuning
 
 __all__ = [
     "Bridge",
@@ -745,15 +745,8 @@ class PLearner(CATEEstimator):
         models = self.final_models or {}
         self.final_models_ = {}
         for name, model in models.items():
-            started = time.perf_counter()
-            fitted = clone(model).fit(X, self.scores_)
-            elapsed = time.perf_counter() - started
-            # GridSearchCV times its final full-data refit separately. Everything
-            # else in its fit is selection work that disappears once the chosen
-            # base configuration is known.
-            refit_time = getattr(fitted, "refit_time_", None)
-            if refit_time is not None:
-                self._tuning_time_ += max(0.0, elapsed - float(refit_time))
+            fitted = clone(model)
+            self._tuning_time_ += fit_and_measure_tuning(fitted, X, self.scores_)
             self.final_models_[name] = fitted
         return self
 
