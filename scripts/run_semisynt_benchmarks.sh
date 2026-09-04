@@ -6,7 +6,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
 METHODS_CONFIG=${METHODS_CONFIG:-benchmarks/config_methods.yaml}
 MATRIX_ROOT=${MATRIX_ROOT:-data/semisynt_eval/semisynt_val_v1}
-CONTEXT_SIZES=(128 512)
+CONTEXT_SIZES=(128 512 1024 2048)
 
 run_case() {
   local case_name=$1

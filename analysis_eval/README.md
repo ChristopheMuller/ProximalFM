@@ -32,3 +32,22 @@ for CSV output and an optional `bibtex_key`; the LaTeX renderer uses
 `docs/latex/references.bib`. Add metadata for a new benchmark `cls` before
 generating the table—the command fails on missing entries rather than silently
 printing an incomplete row.
+
+## Semisynthetic learning curves
+
+```bash
+uv run python -m analysis_eval.learning_curves
+```
+
+This reads the completed eight-case matrix at
+`data/semisynt_eval/semisynt_val_v1`, validates the full linearity × confounding
+× proxy-reliability factorial, and writes
+`analysis_eval/results/semisynt_learning_curves.{pdf,png}`. Curves show median
+CATE nPEHE over episodes at each context size; faint bands are episode
+interquartile ranges. Use `--matrix-root`, `--out-dir`, `--methods`, and
+`--interval none` to override those defaults.
+
+[`design.py`](design.py) is the visual source of truth for method labels,
+colours, markers, line styles, emphasis, and legend order. Every evaluation
+figure should use that registry so a method retains the same identity across
+the paper. Unknown methods deliberately raise until a style is added.
