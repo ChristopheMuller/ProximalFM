@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from analysis_eval.design import method_style, ordered_methods
-from analysis_eval.learning_curves import make_learning_curve_figure
+from analysis_eval.learning_curves import build_parser, make_learning_curve_figure
 from analysis_eval.semisynt import (
     complete_learning_curve_methods,
     load_cate_results,
@@ -70,8 +70,25 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     methods = ordered_methods(set(summary["method"]))
     fig = make_learning_curve_figure(summary, methods=methods)
     assert len(fig.axes) == 8
+    assert fig.axes[0].get_ylim() == (0.0, 1.2)
+    assert not fig.axes[0].collections
     assert method_style("ProximalFM").color == "#D55E00"
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth
+
+
+def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
+    args = build_parser().parse_args([])
+    assert args.y_max == 1.2
+    assert args.confidence_interval is False
+
+    summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
+    fig = make_learning_curve_figure(
+        summary,
+        y_max=2.5,
+        confidence_interval=True,
+    )
+    assert fig.axes[0].get_ylim() == (0.0, 2.5)
+    assert fig.axes[0].collections
 
 
 def test_unknown_method_has_actionable_error():

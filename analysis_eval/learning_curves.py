@@ -33,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves"
+DEFAULT_Y_MAX = 1.2
 CONF_PROXY_ORDER = (
     ("low", "low"),
     ("low", "high"),
@@ -71,16 +72,26 @@ def make_learning_curve_figure(
     summary: pd.DataFrame,
     *,
     methods: Sequence[str] | None = None,
-    interval: str = "iqr",
+    y_max: float = DEFAULT_Y_MAX,
+    confidence_interval: bool = False,
+    interval: str | None = None,
 ):
     """Create the 2x4 factorial learning-curve figure.
 
     Rows distinguish linear/nonlinear mechanisms; columns cross confounding
     and proxy strength. Curves are medians over episodes and the optional faint
-    bands are interquartile ranges, not confidence intervals.
+    bands are interquartile ranges, not statistical confidence intervals.
+
+    ``interval`` is retained as a backwards-compatible alias for
+    ``confidence_interval``. Its ``"iqr"`` value enables the bands and its
+    ``"none"`` value disables them.
     """
-    if interval not in {"iqr", "none"}:
-        raise ValueError("interval must be 'iqr' or 'none'")
+    if interval is not None:
+        if interval not in {"iqr", "none"}:
+            raise ValueError("interval must be 'iqr' or 'none'")
+        confidence_interval = interval == "iqr"
+    if y_max <= 0:
+        raise ValueError("y_max must be positive")
     available = set(summary["method"])
     methods = ordered_methods(available) if methods is None else list(methods)
     for method in methods:
@@ -103,7 +114,7 @@ def make_learning_curve_figure(
                 curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
                 style = method_style(method)
                 x = curve["n_ctx"].to_numpy(dtype=float)
-                if interval == "iqr":
+                if confidence_interval:
                     ax.fill_between(
                         x,
                         curve["q25"].to_numpy(dtype=float),
@@ -130,6 +141,7 @@ def make_learning_curve_figure(
                 f"{confounding.capitalize()} confounding\n"
                 f"{proxy.capitalize()} proxy reliability"
             )
+            ax.set_ylim(0, y_max)
             if col == 0:
                 ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
             if row == 1:
@@ -176,10 +188,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional method subset; names must match results.csv exactly",
     )
     parser.add_argument(
+        "--y-max",
+        type=float,
+        default=DEFAULT_Y_MAX,
+        help=f"Y-axis maximum (default: {DEFAULT_Y_MAX})",
+    )
+    parser.add_argument(
+        "--confidence-interval",
+        action="store_true",
+        default=False,
+        help="Draw the episode interquartile bands",
+    )
+    parser.add_argument(
         "--interval",
         choices=("iqr", "none"),
-        default="iqr",
-        help="Draw episode interquartile bands or lines only",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     return parser
 
@@ -191,7 +215,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     selected = args.methods if args.methods is not None else complete
     summary = summarize_learning_curves(frame, selected)
     methods = ordered_methods(set(summary["method"]))
-    fig = make_learning_curve_figure(summary, methods=methods, interval=args.interval)
+    if args.interval is not None and args.confidence_interval:
+        raise ValueError("use only one of --confidence-interval and --interval")
+    fig = make_learning_curve_figure(
+        summary,
+        methods=methods,
+        y_max=args.y_max,
+        confidence_interval=args.confidence_interval,
+        interval=args.interval,
+    )
     paths = save_figure(fig, args.out_dir, args.name)
     print(
         f"Loaded {frame['case'].nunique()} cases, "

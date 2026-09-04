@@ -43,9 +43,9 @@ This reads the completed eight-case matrix at
 `data/semisynt_eval/semisynt_val_v1`, validates the full linearity × confounding
 × proxy-reliability factorial, and writes
 `analysis_eval/results/semisynt_learning_curves.{pdf,png}`. Curves show median
-CATE nPEHE over episodes at each context size; faint bands are episode
-interquartile ranges. Use `--matrix-root`, `--out-dir`, `--methods`, and
-`--interval none` to override those defaults.
+CATE nPEHE over episodes at each context size; optionally, faint bands show
+episode interquartile ranges. Use `--matrix-root`, `--out-dir`, `--methods`,
+`--y-max`, and `--confidence-interval` to override those defaults.
 
 [`design.py`](design.py) is the visual source of truth for method labels,
 colours, markers, line styles, emphasis, and legend order. Every evaluation
