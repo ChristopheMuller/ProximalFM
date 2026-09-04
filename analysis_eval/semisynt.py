@@ -173,6 +173,101 @@ def complete_learning_curve_methods(frame: pd.DataFrame) -> tuple[list[str], lis
     return complete, incomplete
 
 
+def summarize_speed_rank(
+    frame: pd.DataFrame,
+    methods: Iterable[str],
+    *,
+    context_size: int | None = None,
+) -> pd.DataFrame:
+    """Paired nPEHE ranks and mean episode latency at one context size.
+
+    Ranks are computed within each ``(case, episode)`` block and only then
+    summarized across the eight semisynthetic cells. The IQR therefore reflects
+    how stable a method's relative performance is across both mechanisms and
+    draws. Timing is averaged over the exact same complete blocks.
+
+    ``time`` is the measured end-to-end fit-and-predict latency.
+    ``time_post_tune`` is the corresponding latency after removing explicit
+    hyperparameter-selection work. It is optional so historical results remain
+    plottable; missing post-selection measurements stay missing.
+    """
+    required = {"time", "npehe", "case", "episode", "method", "n_ctx"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"speed/rank summary requires columns {sorted(missing)}")
+
+    methods = list(methods)
+    if not methods:
+        raise ValueError("speed/rank summary requires at least one method")
+    absent = set(methods) - set(frame["method"])
+    if absent:
+        raise ValueError(f"requested methods absent from results: {sorted(absent)}")
+
+    available_contexts = sorted(int(value) for value in frame["n_ctx"].unique())
+    if context_size is None:
+        context_size = available_contexts[-1]
+    if context_size not in available_contexts:
+        raise ValueError(
+            f"context size {context_size} is absent; available={available_contexts}"
+        )
+
+    work = frame[frame["n_ctx"].eq(context_size) & frame["method"].isin(methods)].copy()
+    all_cases = set(frame["case"].unique())
+    incomplete = {}
+    for method in methods:
+        observed_cases = set(work.loc[work["method"].eq(method), "case"])
+        if observed_cases != all_cases:
+            incomplete[method] = sorted(all_cases - observed_cases)
+    if incomplete:
+        raise ValueError(
+            "methods lack cases at the selected context size: "
+            + "; ".join(f"{method}: {cases}" for method, cases in incomplete.items())
+        )
+
+    block_columns = ["case", "episode"]
+    scores = work.pivot(index=block_columns, columns="method", values="npehe")
+    scores = scores.reindex(columns=methods).dropna(axis=0, how="any")
+    if scores.empty:
+        raise ValueError("no complete (case, episode) blocks remain for paired ranks")
+    ranks = scores.rank(axis=1, method="average", ascending=True)
+    complete_blocks = scores.index
+    timed = work.set_index(block_columns).loc[complete_blocks].reset_index()
+
+    rows = []
+    for method in methods:
+        method_ranks = ranks[method]
+        method_times = pd.to_numeric(
+            timed.loc[timed["method"].eq(method), "time"], errors="coerce"
+        )
+        method_times = method_times[np.isfinite(method_times) & method_times.gt(0)]
+        if method_times.empty:
+            raise ValueError(f"method {method!r} has no finite positive timings")
+
+        post_time = float("nan")
+        if "time_post_tune" in timed:
+            post = pd.to_numeric(
+                timed.loc[timed["method"].eq(method), "time_post_tune"],
+                errors="coerce",
+            )
+            post = post[np.isfinite(post) & post.gt(0)]
+            if not post.empty:
+                post_time = float(post.mean())
+
+        rows.append(
+            {
+                "method": method,
+                "n_ctx": context_size,
+                "rank_median": float(method_ranks.median()),
+                "rank_q25": float(method_ranks.quantile(0.25)),
+                "rank_q75": float(method_ranks.quantile(0.75)),
+                "time_mean": float(method_times.mean()),
+                "time_post_tune_mean": post_time,
+                "n_blocks": len(complete_blocks),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def summarize_error_decomposition(
     frame: pd.DataFrame,
     methods: Iterable[str],

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from typing import Callable, Optional
+import time
 import warnings
 
 # The estimand taxonomy has its own module: both this package and the metrics
@@ -480,6 +481,9 @@ class _PLearner_Estimator(CATEEstimator):
     def diagnostics(self) -> dict[str, float]:
         return self.learner.diagnostics()
 
+    def tuning_time(self) -> float:
+        return self.learner.tuning_time()
+
 
 class KPV_Wrapper(CATEEstimator):
     # Which prediction target the estimator returns. See KPVEstimator.predict:
@@ -638,14 +642,20 @@ class KPV_Wrapper(CATEEstimator):
 
         cfg = self._base_cfg
         self._tune_diag = {}
+        self._tuning_time = 0.0
         if self._tune_cfg.enabled and self._tune_cfg.search_space:
+            started = time.perf_counter()
             cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
+            self._tuning_time = time.perf_counter() - started
 
         # Fit the (possibly tuned) model once on the full context. Every output
         # variant later reuses this single fit — no refitting.
         self.model = self._KPVEstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def _tune(self, X, A, Y, W, Z) -> dict:
         """Search `tune.grid`; return the best field overrides.
@@ -826,14 +836,20 @@ class PMMR_Wrapper(CATEEstimator):
 
         cfg = self._base_cfg
         self._tune_diag = {}
+        self._tuning_time = 0.0
         if self._tune_cfg.enabled and self._tune_cfg.search_space:
+            started = time.perf_counter()
             cfg = replace(self._base_cfg, **self._tune(X, A, Y, W, Z))
+            self._tuning_time = time.perf_counter() - started
 
         # Fit the (possibly tuned) model once on the full context. Every output
         # variant later reuses this single fit — no refitting.
         self.model = self._PMMREstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def _tune(self, X, A, Y, W, Z) -> dict:
         """Search `tune.grid` x `tune.sweep`; return the best field overrides.
@@ -1082,8 +1098,11 @@ class NMMR_Wrapper(CATEEstimator):
 
         cfg = self._base_cfg
         self._tune_diag = {}
+        self._tuning_time = 0.0
         if self._tune_cfg.enabled and self._tune_cfg.search_space:
+            started = time.perf_counter()
             best = self._tune(X, A, Y, W, Z)
+            self._tuning_time = time.perf_counter() - started
             cfg = replace(self._base_cfg, **best)
 
         # Train the (possibly tuned) model once on the full context. Every
@@ -1091,6 +1110,9 @@ class NMMR_Wrapper(CATEEstimator):
         self.model = self._NMMREstimator(cfg)
         self.model.fit(X, A, Y, W=W, Z=Z)
         return self
+
+    def tuning_time(self) -> float:
+        return self._tuning_time
 
     def _tune(self, X, A, Y, W, Z) -> dict:
         """Search `tune.grid` x `tune.sweep`; return the best field overrides.

@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from inspect import signature
+import time
 from typing import Optional, Sequence
 
 import numpy as np
@@ -562,8 +563,11 @@ class KernelBridge(Bridge):
         )
 
         self.lam_h_, self.lam_q_ = self.lam_h, self.lam_q
+        self.tuning_time_ = 0.0
         if self.lam_grid is not None:
+            started = time.perf_counter()
             self.lam_h_, self.lam_q_ = self._select_lambdas(Phi_H, Phi_Q, A, Y, rng)
+            self.tuning_time_ = time.perf_counter() - started
 
         # One system over all the rows, whether or not a split was used to pick
         # the lambdas: selection is the only thing the held-out half is for.
@@ -733,14 +737,24 @@ class PLearner(CATEEstimator):
         self._clip_total_ = 0
         self._lam_h_choices_: list[float] = []
         self._lam_q_choices_: list[float] = []
+        self._tuning_time_ = 0.0
 
         self.scores_ = self._cross_fit_scores(X, A, Y, W, Z)
         self.ate_ = float(np.mean(self.scores_))
 
         models = self.final_models or {}
-        self.final_models_ = {
-            name: clone(m).fit(X, self.scores_) for name, m in models.items()
-        }
+        self.final_models_ = {}
+        for name, model in models.items():
+            started = time.perf_counter()
+            fitted = clone(model).fit(X, self.scores_)
+            elapsed = time.perf_counter() - started
+            # GridSearchCV times its final full-data refit separately. Everything
+            # else in its fit is selection work that disappears once the chosen
+            # base configuration is known.
+            refit_time = getattr(fitted, "refit_time_", None)
+            if refit_time is not None:
+                self._tuning_time_ += max(0.0, elapsed - float(refit_time))
+            self.final_models_[name] = fitted
         return self
 
     def _effective_bridge_params(self) -> dict:
@@ -783,6 +797,7 @@ class PLearner(CATEEstimator):
                 Z=Z[train_idx],
             )
             self.bridges_.append(bridge)
+            self._tuning_time_ += float(getattr(bridge, "tuning_time_", 0.0))
 
             h = bridge.predict_h(X[test_idx], W[test_idx])
             q = bridge.predict_q(X[test_idx], Z[test_idx])
@@ -792,6 +807,10 @@ class PLearner(CATEEstimator):
             self._record_fold_diagnostics(bridge, A[test_idx], q)
 
         return scores
+
+    def tuning_time(self) -> float:
+        """Search-only seconds across bridge and final-model selection."""
+        return self._tuning_time_
 
     def _record_fold_diagnostics(self, bridge: Bridge, A_test, q) -> None:
         """Accumulate this fold's contribution to :meth:`diagnostics`.

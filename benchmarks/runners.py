@@ -67,6 +67,7 @@ class EpisodeResult:
     b: int
     preds: Optional[dict[str, np.ndarray]]
     elapsed: float
+    post_tune_elapsed: float
     error: Optional[str]
     diagnostics: Optional[dict[str, float]] = None
 
@@ -104,9 +105,22 @@ def _run_episode(task: EpisodeTask) -> EpisodeResult:
             for k, v in variants.items()
         }
         diagnostics = {k: float(v) for k, v in method.diagnostics().items()} or None
-        return EpisodeResult(task.b, preds, time.perf_counter() - t0, None, diagnostics)
+        elapsed = time.perf_counter() - t0
+        tuning = float(method.tuning_time())
+        if not np.isfinite(tuning) or tuning < 0 or tuning > elapsed:
+            raise ValueError(
+                f"invalid tuning time {tuning:.6g}s for total time {elapsed:.6g}s"
+            )
+        return EpisodeResult(
+            task.b,
+            preds,
+            elapsed,
+            elapsed - tuning,
+            None,
+            diagnostics,
+        )
     except Exception as exc:
-        return EpisodeResult(task.b, None, 0.0, str(exc))
+        return EpisodeResult(task.b, None, 0.0, 0.0, str(exc))
 
 
 def _build_tasks(
@@ -141,7 +155,13 @@ def run_method(
     *,
     on_progress: Any = None,
     on_error: Any = None,
-) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, np.ndarray], int]:
+) -> tuple[
+    dict[str, np.ndarray],
+    dict[str, np.ndarray],
+    dict[str, np.ndarray],
+    dict[str, np.ndarray],
+    int,
+]:
     """Run one method over every episode and return its predictions and timings.
 
     Args:
@@ -155,10 +175,10 @@ def run_method(
         on_error: called with `(b, message)` for each failed episode.
 
     Returns:
-        `(preds, times, diagnostics, n_errors)`. `preds` and `times` are dicts keyed
-        by output name: `preds[name]` is `(n_batch, n_test)` with NaN wherever an
-        episode failed, `times[name]` is `(n_batch,)` seconds. All of a multi-output
-        method's variants share one fit, so they share the recorded time.
+        `(preds, times, post_tune_times, diagnostics, n_errors)`. Timing dicts are
+        keyed by output name. `times` is end-to-end latency; `post_tune_times`
+        removes explicit hyperparameter-selection work. All variants from one fit
+        share both times.
         `diagnostics` is keyed by whatever names `CATEEstimator.diagnostics()`
         chose to emit (the union across episodes — a key some episodes skip is
         NaN there) and is shared across output names for the same reason as
@@ -171,6 +191,9 @@ def run_method(
         for name in output_names
     }
     times = {name: np.zeros(n_batch, dtype=np.float32) for name in output_names}
+    post_tune_times = {
+        name: np.zeros(n_batch, dtype=np.float32) for name in output_names
+    }
 
     tasks = _build_tasks(method_cfg, compute, batches)
     n_errors = 0
@@ -181,6 +204,7 @@ def run_method(
             for name, arr in result.preds.items():
                 preds[name][result.b] = arr
                 times[name][result.b] = result.elapsed
+                post_tune_times[name][result.b] = result.post_tune_elapsed
             if result.diagnostics:
                 diag_records[result.b] = result.diagnostics
         else:
@@ -199,7 +223,7 @@ def run_method(
         for key in diag_keys
     }
 
-    return preds, times, diagnostics, n_errors
+    return preds, times, post_tune_times, diagnostics, n_errors
 
 
 def is_inline(compute: ComputeConfig) -> bool:

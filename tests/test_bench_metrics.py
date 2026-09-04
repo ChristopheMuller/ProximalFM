@@ -194,6 +194,27 @@ def test_legacy_tags_are_stored_in_the_new_spelling():
     assert set(df["estimand"]) == {"cate(x,w)"}
 
 
+def test_score_method_keeps_total_and_post_tuning_times():
+    total = np.array([3.0, 5.0])
+    post = np.array([1.0, 2.0])
+    df = score_method(
+        np.zeros((2, 5)),
+        np.ones((2, 5)),
+        total,
+        "m",
+        ITE,
+        post_tune_times=post,
+    )
+    np.testing.assert_array_equal(df["time"], total)
+    np.testing.assert_array_equal(df["time_post_tune"], post)
+
+
+def test_score_method_defaults_post_tuning_time_to_total():
+    total = np.array([3.0, 5.0])
+    df = score_method(np.zeros((2, 5)), np.ones((2, 5)), total, "m", ITE)
+    np.testing.assert_array_equal(df["time_post_tune"], total)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tasks: which rows a table shows, and who may be ranked
 # ─────────────────────────────────────────────────────────────────────────────

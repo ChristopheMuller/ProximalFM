@@ -272,3 +272,6 @@ class ProxyMarginalizer(CATEEstimator):
 
     def diagnostics(self) -> dict[str, float]:
         return self.estimator.diagnostics()
+
+    def tuning_time(self) -> float:
+        return self.estimator.tuning_time()

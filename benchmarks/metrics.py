@@ -453,6 +453,7 @@ BOOKKEEPING_COLUMNS = (
     "failed",
     "n_test",
     "time",
+    "time_post_tune",
 )
 
 
@@ -522,6 +523,7 @@ def score_method(
     *,
     estimand: str = "cate(x)",
     is_reference: bool = False,
+    post_tune_times: Optional[np.ndarray] = None,
     s2: Optional[np.ndarray] = None,
     target_var_threshold: float = TARGET_VAR_THRESHOLD,
 ) -> pd.DataFrame:
@@ -531,6 +533,10 @@ def score_method(
     in the frame as the tag every consumer of the frame now expects.
     """
     estimand = canonical_estimand(estimand)
+    if post_tune_times is None:
+        post_tune_times = times
+    if len(post_tune_times) != len(preds):
+        raise ValueError("post_tune_times must have one value per episode")
     rows = [
         {
             "method": method,
@@ -539,6 +545,7 @@ def score_method(
             "estimand": estimand,
             "is_reference": is_reference,
             "time": float(times[b]),
+            "time_post_tune": float(post_tune_times[b]),
             **score_episode(
                 np.asarray(preds[b], dtype=float),
                 np.asarray(target[b], dtype=float),

@@ -36,6 +36,7 @@ DEFAULT_METHODS = (
     "NMMR-V-fixed-Wcond",
     "CausalPFN",
     "ProximalFM",
+    "S-TabICL-WZ-kNN-16",
 )
 
 

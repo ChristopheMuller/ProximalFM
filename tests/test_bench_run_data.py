@@ -136,3 +136,41 @@ def test_context_sweep_scores_every_size_into_one_frame():
 
     assert set(results["n_ctx"]) == {4, 8}
     assert len(results[results["n_ctx"] == 4]) == len(results[results["n_ctx"] == 8])
+
+
+def test_context_sweep_propagates_post_tuning_times():
+    target = np.arange(12, dtype=np.float32).reshape(2, 6)
+    total = np.array([3.0, 5.0], dtype=np.float32)
+    post = np.array([1.0, 2.0], dtype=np.float32)
+    accumulated = {8: {"method": (target, total, post)}}
+
+    results = run.score_context_sweep(
+        accumulated, {"method": "cate(x)"}, {"cate": target, "ite": target}
+    )
+
+    cate = results[results["target"].eq("cate")].sort_values("episode")
+    np.testing.assert_array_equal(cate["time"], total)
+    np.testing.assert_array_equal(cate["time_post_tune"], post)
+
+
+@pytest.mark.parametrize(
+    "config, expected",
+    [
+        ({"cls": "S_Learner"}, False),
+        ({"cls": "NMMR", "tune": {"grid": {"lr": [0.1]}}}, True),
+        ({"cls": "PLearner", "base_cv": {"folds": 2}}, True),
+        (
+            {"cls": "PLearner", "bridge_params": {"lam_grid": [1e-3]}},
+            True,
+        ),
+        (
+            {
+                "cls": "ProxyMarginalizer",
+                "estimator": {"cls": "NMMR", "tune": {"sweep": {"n_epochs": [5]}}},
+            },
+            True,
+        ),
+    ],
+)
+def test_legacy_cache_tuning_detection(config, expected):
+    assert run.method_has_explicit_tuning(config) is expected

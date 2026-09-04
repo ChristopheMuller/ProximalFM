@@ -351,7 +351,9 @@ def reference_predictions(targets: dict) -> dict[str, np.ndarray]:
 
 
 def score_everything(
-    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
+    accumulated: dict[
+        str, tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]
+    ],
     estimands: dict[str, str],
     targets: dict[str, np.ndarray],
     s2: Optional[np.ndarray] = None,
@@ -380,8 +382,13 @@ def score_everything(
         rows = dict(accumulated)
         if references:
             zeros = np.zeros(len(target), dtype=np.float32)
-            rows.update({n: (p, zeros) for n, p in references.items()})
-        for name, (preds, times) in rows.items():
+            rows.update({n: (p, zeros, zeros) for n, p in references.items()})
+        for name, payload in rows.items():
+            if len(payload) == 2:
+                preds, times = payload
+                post_tune_times = times
+            else:
+                preds, times, post_tune_times = payload
             is_reference = bool(references and name in references)
             tag = estimands.get(name, REFERENCE_ESTIMANDS.get(name, "cate(x)"))
             if not is_reference and not task.admits(tag):
@@ -395,6 +402,7 @@ def score_everything(
                     task,
                     estimand=tag,
                     is_reference=is_reference,
+                    post_tune_times=post_tune_times,
                     s2=s2 if kind == "cate" else None,
                 )
             )
@@ -402,7 +410,13 @@ def score_everything(
 
 
 def score_context_sweep(
-    accumulated: dict[int, dict[str, tuple[np.ndarray, np.ndarray]]],
+    accumulated: dict[
+        int,
+        dict[
+            str,
+            tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray],
+        ],
+    ],
     estimands: dict[str, str],
     targets: dict[str, np.ndarray],
     s2: Optional[np.ndarray] = None,
@@ -460,7 +474,9 @@ def load_diagnostics_yaml(path: Path) -> dict[str, np.ndarray]:
 
 
 def print_partial_results(
-    accumulated: dict[str, tuple[np.ndarray, np.ndarray]],
+    accumulated: dict[
+        str, tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray]
+    ],
     estimands: dict[str, str],
     targets: dict[str, np.ndarray],
     *,
@@ -479,6 +495,28 @@ def print_partial_results(
         Padding(
             report.rich_table(title=f"Live {task.name.upper()} Results So Far"), (1, 4)
         ),
+    )
+
+
+def method_has_explicit_tuning(cfg: dict) -> bool:
+    """Whether an old cache lacks a reconstructable post-selection time.
+
+    New caches carry the measured value. This helper is only for loading legacy
+    caches: untuned methods can safely use total time for both columns, whereas
+    a tuned method must get NaN rather than a fabricated zero-overhead value.
+    """
+    tune = cfg.get("tune") or {}
+    generic = bool(tune.get("enabled", True)) and bool(
+        (tune.get("grid") or {}) or (tune.get("sweep") or {})
+    )
+    bespoke = bool(cfg.get("base_cv")) or bool(
+        (cfg.get("bridge_params") or {}).get("lam_grid")
+    )
+    nested = cfg.get("estimator")
+    return (
+        generic
+        or bespoke
+        or (isinstance(nested, dict) and method_has_explicit_tuning(nested))
     )
 
 
@@ -587,7 +625,7 @@ def main() -> None:
         console.print(Rule(f"[bold]Step 2  Methods ({len(method_cfgs)})[/]"))
         console.print()
 
-    accumulated: dict[int, dict[str, tuple[np.ndarray, np.ndarray]]] = {
+    accumulated: dict[int, dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]] = {
         n: {} for n in context_sizes
     }
     eval_cfg = cfg.get("eval", {})
@@ -662,10 +700,24 @@ def main() -> None:
                         times = loaded.get(
                             "times", np.zeros(len(preds), dtype=np.float32)
                         )
+                        if "times_post_tune" in loaded:
+                            post_tune_times = np.asarray(
+                                loaded["times_post_tune"], dtype=np.float32
+                            )
+                        elif method_has_explicit_tuning(mcfg):
+                            post_tune_times = np.full(
+                                len(preds), np.nan, dtype=np.float32
+                            )
+                        else:
+                            post_tune_times = np.asarray(times, dtype=np.float32)
                         console.print(
                             f"  [dim]↩  {out_name:<28} n_ctx={n_ctx} loaded from cache[/]"
                         )
-                        accumulated[n_ctx][out_name] = (preds, times)
+                        accumulated[n_ctx][out_name] = (
+                            preds,
+                            times,
+                            post_tune_times,
+                        )
                     continue
 
                 method_compute = resolve_method_compute(global_compute, mcfg)
@@ -676,7 +728,13 @@ def main() -> None:
                 )
 
                 t0 = time.perf_counter()
-                preds_map, times_map, diagnostics, n_errors = run_method(
+                (
+                    preds_map,
+                    times_map,
+                    post_tune_times_map,
+                    diagnostics,
+                    n_errors,
+                ) = run_method(
                     mcfg,
                     batches,
                     N_TEST,
@@ -693,14 +751,24 @@ def main() -> None:
                 elapsed = time.perf_counter() - t0
                 for out_name in output_names:
                     preds, times = preds_map[out_name], times_map[out_name]
-                    np.savez(pred_files[out_name], preds=preds, times=times)
+                    post_tune_times = post_tune_times_map[out_name]
+                    np.savez(
+                        pred_files[out_name],
+                        preds=preds,
+                        times=times,
+                        times_post_tune=post_tune_times,
+                    )
                     if diagnostics:
                         save_diagnostics_yaml(diag_files[out_name], diagnostics)
                     console.print(
                         f"  [green]✓[/] {out_name:<28} n_ctx={n_ctx} saved  "
                         f"[dim]({elapsed:.1f}s)[/]"
                     )
-                    accumulated[n_ctx][out_name] = (preds, times)
+                    accumulated[n_ctx][out_name] = (
+                        preds,
+                        times,
+                        post_tune_times,
+                    )
 
                 if n_ctx == largest_n_ctx:
                     print_partial_results(

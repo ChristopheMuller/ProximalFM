@@ -178,6 +178,7 @@ def test_prediction_cv_tunes_ridge_and_rf_from_one_plearner_fit():
     assert diagnostics["base_cv/ridge/mse"] >= 0.0
     assert diagnostics["base_cv/forest/max_depth"] in {2.0, 4.0}
     assert diagnostics["base_cv/forest/mse"] >= 0.0
+    assert wrapped.tuning_time() > 0.0
 
 
 def test_base_cv_is_reused_by_s_learner():
@@ -517,6 +518,7 @@ def test_tuning_selects_from_the_grid_and_records_both_curves():
     b = KernelBridge(rank=64, lam_grid=grid).fit(X, A, Y, W=W, Z=Z)
 
     assert b.lam_h_ in grid and b.lam_q_ in grid
+    assert b.tuning_time_ > 0.0
     for key in ("lam_h", "lam_q"):
         curve = b.lam_scores_[key]
         assert [lam for lam, _ in curve] == sorted(grid)
@@ -532,6 +534,7 @@ def test_tuning_off_by_default_and_bit_identical_to_the_fixed_lambdas():
     b = KernelBridge(rank=64, lam_h=3e-4, lam_q=7e-3).fit(X, A, Y, W=W, Z=Z)
 
     assert b.lam_h_ == 3e-4 and b.lam_q_ == 7e-3
+    assert b.tuning_time_ == 0.0
     assert not hasattr(b, "lam_scores_")
 
 

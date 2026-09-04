@@ -433,6 +433,17 @@ results/plots/<figure>.png                  run-scope figures (§6)
 show. Each row carries only that task's metrics — the `ate` rows have no `npehe`, because a
 level-only view has no shape.
 
+Two wall-clock columns accompany every row. `time` is the end-to-end episode
+latency, from estimator construction through explicit hyperparameter search,
+the final full-context fit, prediction, and diagnostics. `time_post_tune`
+subtracts only the measured search regions, leaving construction, final fit,
+prediction, and diagnostics; for an untuned method it therefore equals `time`.
+The difference between the columns is the tuning overhead. New prediction
+caches store both arrays. When an old cache is loaded, an untuned method can be
+backfilled exactly, but a tuned method receives `NaN` for `time_post_tune`
+because the historical total cannot be decomposed honestly; use `--force` to
+remeasure it.
+
 Every metric summarized as a median also carries `<label> p25` / `<label> p75` companions in
 `summary_*.csv` — the same convention as the trainer's `synt_point/*` keys, and for the same reason:
 the R²-style metrics are unbounded below, so a mean is not robust and a single median hides the

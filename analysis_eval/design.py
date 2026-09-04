@@ -68,6 +68,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "S-RF": MethodStyle("S-RF", COLORS["sky_blue"], "s"),
     "T-OLS": MethodStyle("T-OLS", COLORS["orange"], "o", "--"),
     "T-RF": MethodStyle("T-RF", COLORS["orange"], "s"),
+    "X-OLS": MethodStyle("X-OLS", COLORS["purple"], "o", "--"),
     "X-RF": MethodStyle("X-RF", COLORS["purple"], "D"),
     "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", "--"),
     "P-Kernel-RF": MethodStyle("P-Kernel-RF", COLORS["brown"], "s"),
@@ -90,6 +91,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         alpha=1.0,
     ),
     "S-TabICL-WZ-kNN-16": MethodStyle("S-TabICL-kNN-16", COLORS["grey"], "o", "--"),
+    "S-TabICL": MethodStyle("S-TabICL", COLORS["grey"], "o", ":"),
     "Oracle-CATE(X)": MethodStyle("Oracle CATE(X)", COLORS["black"], "", ":"),
     "Oracle-ATE": MethodStyle("Oracle ATE", COLORS["grey"], "", ":"),
     "Oracle-ITE": MethodStyle("Oracle ITE", COLORS["light_grey"], "", ":"),
@@ -153,3 +155,8 @@ def learning_curve_figsize() -> tuple[float, float]:
 def decomposition_figsize() -> tuple[float, float]:
     """Final canvas size for the eight-panel decomposition trajectories."""
     return FULL_PAGE_WIDTH_IN, 5.55
+
+
+def speed_rank_figsize() -> tuple[float, float]:
+    """Final canvas size for the single-panel speed--accuracy comparison."""
+    return TEXT_WIDTH_IN, 4.35

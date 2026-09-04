@@ -136,3 +136,14 @@ class CATEEstimator:
         so a key that only some episodes emit is padded with NaN elsewhere.
         """
         return {}
+
+    def tuning_time(self) -> float:
+        """Seconds spent selecting hyperparameters during the latest ``fit``.
+
+        The benchmark's total episode time includes construction, tuning, the
+        final full-context fit, and prediction. Estimators with an explicit
+        search override this method so the runner can additionally report the
+        counterfactual post-selection latency ``total - tuning``. Untuned
+        estimators correctly default to zero.
+        """
+        return 0.0

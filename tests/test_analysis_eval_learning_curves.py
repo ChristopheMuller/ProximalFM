@@ -12,11 +12,13 @@ from analysis_eval.error_decomposition import (
     make_error_decomposition_figure,
 )
 from analysis_eval.learning_curves import build_parser, make_learning_curve_figure
+from analysis_eval.speed_rank import make_speed_rank_figure
 from analysis_eval.semisynt import (
     complete_learning_curve_methods,
     load_cate_results,
     summarize_error_decomposition,
     summarize_learning_curves,
+    summarize_speed_rank,
 )
 
 
@@ -50,6 +52,12 @@ def _matrix(tmp_path: Path) -> Path:
                             "estimand": "cate(x)",
                             "is_reference": False,
                             "failed": False,
+                            "time": 0.01 * (method_idx + 1) * (case_idx + 1),
+                            "time_post_tune": (
+                                0.01 * (method_idx + 1) * (case_idx + 1)
+                                if method == "S-OLS"
+                                else 0.005 * (case_idx + 1)
+                            ),
                             "ate_bias_norm": 0.1 + episode / 100,
                             "shape_r2": 0.5 + n_ctx / 10000,
                         }
@@ -170,3 +178,25 @@ def test_error_decomposition_cli_accepts_fixed_limits():
     )
     assert args.xlim == [0.0, 0.5]
     assert args.ylim == [0.0, 1.25]
+
+
+def test_speed_rank_summary_pairs_all_eight_cells(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"], context_size=512)
+
+    assert set(summary["method"]) == {"S-OLS", "ProximalFM"}
+    assert set(summary["n_blocks"]) == {8 * 4}
+    assert (summary["rank_q25"] <= summary["rank_median"]).all()
+    assert (summary["rank_median"] <= summary["rank_q75"]).all()
+    prox = summary.set_index("method").loc["ProximalFM"]
+    assert prox["time_post_tune_mean"] < prox["time_mean"]
+
+
+def test_speed_rank_figure_is_single_panel_with_log_time(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"])
+    fig = make_speed_rank_figure(summary)
+
+    assert len(fig.axes) == 1
+    assert fig.axes[0].get_xscale() == "log"
+    assert fig.axes[0].yaxis_inverted()

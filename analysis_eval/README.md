@@ -75,3 +75,26 @@ is ProximalFM, CausalPFN, conditional-W NMMR, T-OLS, and X-RF; override it with
 `--methods`. Use `--xlim MIN MAX` and `--ylim MIN MAX` to fix the shared grid;
 trajectory segments crossing an edge stop at that edge, without drawing their
 out-of-grid nodes.
+
+## Semisynthetic speed versus rank
+
+```bash
+uv run python -m analysis_eval.speed_rank
+```
+
+This writes `analysis_eval/results/semisynt_speed_rank.{pdf,png}`. At the
+largest available context size (2048 in the production matrix), every method's
+CATE nPEHE is ranked within each `(factorial cell, episode)` block. The y-axis
+shows the median of those paired ranks with an interquartile whisker, while the
+x-axis shows mean wall-clock seconds per episode on a log scale. Thus the
+upper-left is better.
+
+A filled marker uses the complete measured runtime: estimator construction,
+hyperparameter search, final fit, prediction, and diagnostics. For methods with
+explicit tuning, a connected hollow marker uses `time_post_tune`, the measured
+total after subtracting search-only regions. It answers the deployment-like
+question “what if the selected configuration were already known?” without
+mixing that hypothetical cost into the end-to-end benchmark. Historical tuned
+caches cannot reconstruct this split and are shown only at their total time;
+run `FORCE=1 scripts/run_semisynt_benchmarks.sh` to populate the second timing.
+Use `--context-size` or `--methods` to override the defaults.
