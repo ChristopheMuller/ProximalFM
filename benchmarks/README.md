@@ -2,12 +2,13 @@
 
 Runs a fixed set of datasets through every CATE estimator (baselines, proximal methods,
 foundation-model competitors, ProximalFM itself) and reports how well each one recovers the
-treatment effect. One YAML drives the whole thing. ProximalFM has no separate pipeline: it is an
-entry under `methods:` like the rest — see §4.
+treatment effect. One YAML defines the methods and compute setup; the CLI selects the pre-built
+dataset and context sizes. ProximalFM has no separate pipeline: it is an entry under `methods:` like
+the rest — see §4.
 
 ```bash
-uv run benchmarks/run.py --config benchmarks/config_val.yaml
-uv run benchmarks/run.py --config benchmarks/config_val.yaml --context-sizes 128 512 2048
+uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
+  --val-dir data/synt_eval/<name>/val --context-sizes 128 512 2048
 uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 ```
 
@@ -125,7 +126,6 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`compute.py`](compute.py)** | The single owner of device and thread settings: `ComputeConfig`, the global/per-method resolution, and the session-wide `WorkerManager` that hands out process pools. See §3.1 — read it before adding a knob that touches threads, devices or process counts. |
 | **[`runners.py`](runners.py)** | How one method's episodes actually execute. `run_method` dispatches on `compute.execution`: fan out through the manager, or loop in-process with a device held. One code path for both, so there is no sequential copy to drift. |
 | **[`data.py`](data.py)** | Builds the standardized benchmark dict from the raw sparse `val/` batches (`batch_*.pt`). Standardization uses **context-only statistics** — preserving that no-test-leakage property is the point of the module. Emits `true_ITEs` always and `true_CATEs` when every batch has analytic `CATE` or the set has MC targets; `cate_K_eff` is `None` for the analytic case. Imports nothing from `proximalfm` on purpose (`sparse2dense` is vendored, kept in sync by a test) so the benchmark runs where proximalfm is not installed. |
-| **[`data_csv.py`](data_csv.py)** | The same dict from one or more real-world CSVs (Causal Chambers), given a column→variable-block mapping. Each file is an independently standardized episode, so reporting aggregates over files instead of concatenating rows. No CATE target exists here, so this path is ITE-only by construction. |
 | **[`methods/`](methods/)** | Every estimator, behind one `CATEEstimator` interface (`base.py`: `fit(X, A, Y, W=, Z=)` / `predict(X, W=, Z=)` / `predict_variants`). `__init__.py` is the registry — the thin wrappers, `build_method(cfg, compute)` dispatching on the config's `cls:` (the device and `n_jobs` an estimator gets come from that second argument and nowhere else), `method_estimand`, and `normalize_method_cfg`. The implementations are the sibling modules: `kpv.py`, `pmmr.py`, `nmmr.py`, `plearner.py`, `proxy_marginalizer.py` (+ shared `kernels.py`), and `proximalfm.py`. Was `methods.py` + `baselines/`; ProximalFM joined them when the `models:` block was removed. |
 | **[`estimands.py`](estimands.py)** | The estimand-tag algebra (`format_estimand`/`parse_estimand`/`canonical_estimand`). Its own module because both `methods/` and `metrics.py` need it and neither may import the other. |
 | **[`metrics.py`](metrics.py)** | Pure numpy/pandas scoring, in four layers: metric primitives (`mse`/`rmse`/`nrmse`/`r2`/`shape_r2`/`bias`/`norm_bias`), the `Metric` descriptor (aggregation, direction, colour), the `Task` registry (`TASKS` — the **single source of truth** for what each table scores, admits, ranks and shows), and `TaskReport` (`summary()`/`rich_table()`/`latex()`). No torch, no model — that isolation is why the point metrics are duplicated rather than shared with `train/_eval.py`. Adding a metric is one `Metric` in one `Task`; there is no second column spec anywhere. |
@@ -135,23 +135,16 @@ trainer's `CausalEvaluator`, pinned by a test — so the benchmark's cate-task n
 | **[`plot_style.py`](plot_style.py)** | Colour (family) and marker (variant) per method, the reference lines each metric is read against (`METRIC_ANCHORS`), and the theme/save chores. |
 | **[`tuning.py`](tuning.py)** | Method-agnostic hyperparameter search scaffolding. A method supplies `fit_score(hparams) -> float` (lower better); this owns the split, the enumeration and the selection. Two search blocks, because they cost differently: `tune.grid` is **sampled** (`n_trials` draws), `tune.sweep` is **enumerated** for every draw, so the evaluated count is `n_trials * \|sweep\|`. `sweep` is a *declaration* that the axis is nearly free once a candidate is part-built, and the method must validate which of its parameters may appear there — PMMR's `lam1` (one Cholesky off a prepared system) and NMMR's `n_epochs` (one score off a paused training run) are the ones that qualify. `search_nested` collects the saving structurally rather than by memoising, so nothing carries data identity across episodes. Used by KPV's, PMMR's and NMMR's `tune:` blocks. |
 | **[`causal_chambers/`](causal_chambers/)** | Real-data benchmark (Causal Chambers), notebook/Rmd driven, separate from the main run. `prepare_chamber_csv.py` turns a raw export into the canonical CSV. |
-| `config_val.yaml` | The main config: a fixed synthetic build and the full method list (ProximalFM checkpoints included). |
-| `config_chamber.yaml` | The multi-file Causal Chambers real-data path. |
+| `config_methods.yaml` | The shared method list, tuning settings, checkpoints, and compute setup. It deliberately contains no dataset path. |
 
 ---
 
 ## 3. Config
 
 ```yaml
-data:
-  source: load                                  # load | csv
-  val_dir: data/synt_eval/<name>/val            # a build's val/ directory
-  output_dir: data/synt_eval/<name>/bench       # where data.pt, preds/, results/ go
-
 run:
   seed: 999999999
   force_rerun: false
-  context_sizes: [128, 512, 2048]              # optional; CLI overrides
   compute:                                      # the run-wide default budget
     device: cpu                                 # cpu | mps | cuda
     n_workers: 6                                # episode fan-out width
@@ -173,6 +166,18 @@ methods:                                        # baselines; comment one out to 
     compute: { device: mps }                    # → execution: inline; see §3.1
 ```
 
+The config has no `data:` block. Select a pre-built set and context sizes at invocation time:
+
+```bash
+uv run benchmarks/run.py \
+  --config benchmarks/config_methods.yaml \
+  --val-dir data/synt_eval/<name>/val \
+  --context-sizes 128 512 2048
+```
+
+The default output is the `bench/` sibling of the supplied `val/`, containing `data.pt`, `preds/`,
+and `results/`. Pass `--output-dir <path>` to place it elsewhere.
+
 For a synthetic replicate set, build with **`--mc_cate K` (K > 1)**:
 
 ```bash
@@ -183,40 +188,19 @@ uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
 `prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
 `semisynt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
 
-**Keys the `data:` block takes per `source:`.**
-
-| `source:` | keys |
-|---|---|
-| `load` *(default)* | `val_dir` |
-| `csv` | exactly one of `csv_path`, `csv_paths`, or `csv_dir` (`csv_pattern` defaults to `*.csv`), plus `columns`, `prop_train`, `shuffle`, `normalize_treatment` |
-
 The benchmark scores **pre-built sets only**. There is no on-the-fly prior sampling: a set that
 exists only inside one run is one nobody else can score against, so the row split, the replicate
 count and the seed belong to a builder (`prior_eval.build`, `synt_eval/build_proximal_datasets.py`,
-`lit_eval.build`) whose output is on disk and has a `content_digest`. `source: generate` and its
-`n_context`/`n_query`/`n_batch`/`prior:` keys are gone; a config still asking for it is **refused
-with an error** rather than quietly falling back to a cache. `prop_train` survives only under `csv`,
-where the row count is a property of the file and a ratio is the only thing there is to give.
+`lit_eval.build`, or `semisynt_eval.build`) whose output is on disk and has a `content_digest`.
+Passing a `data:` block in the methods config is refused; use `--val-dir`.
 
-`run.context_sizes` (or the overriding CLI argument `--context-sizes N [N ...]`)
-runs every method on growing prefixes of the set's existing context. The query
+`--context-sizes N [N ...]` runs every method on growing prefixes of the set's existing context. The query
 suffix stays fixed: `n_ctx=512` fits on `context[:512]` and predicts the same
 query rows as the full-context run. Values are sorted, must be positive and
 unique, and any value larger than the dataset context is refused. With no list,
 the benchmark runs once at the full context size. Terminal tables and
 `summary*.csv` report only the largest requested size; `results.csv` retains
 every size in its `n_ctx` column.
-
-For multi-file CSV input, every file is one equally weighted episode and is standardized from its
-own context rows. Files must share their row count and mapped dimensions; use `csv_paths: [...]` for
-an explicit subset or `csv_dir` plus an optional `csv_pattern` for a directory. Set
-`eval: {episode_aggregation: mean}` to average the ordinary per-episode metrics literally over
-files; mathematically pooled metrics such as ATE RMSE retain their declared RMS aggregation.
-
-Feature blocks (`X`, `W`, `Z`, and optional `U`) accept shell-style column patterns as either a
-string or an item in a list. For example, `X: "X_*"` selects every `X_1`, …, `X_p` column in CSV
-header order. Patterns must match at least one column; scalar fields (`A`, `Y`, `Y0`, `Y1`) remain
-exact column names. The terminal data summary prints the resolved width of every feature block.
 
 **Common method keys.** `name` (display + output filename), `cls` (dispatch), `base`
 (`linear` | `rf` | `tabicl`), `use_W`/`use_Z` (whether proxies enter the design matrix — **default

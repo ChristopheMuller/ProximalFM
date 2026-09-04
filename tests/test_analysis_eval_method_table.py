@@ -102,7 +102,6 @@ def test_cli_writes_matching_tex_and_csv(tmp_path: Path):
     config_path = tmp_path / "benchmark.yaml"
     config_path.write_text(
         """\
-data: {}
 run: {}
 methods:
   - name: DoPFN

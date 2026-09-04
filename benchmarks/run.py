@@ -3,11 +3,11 @@ run.py — Single entry-point for the full benchmark pipeline.
 
 Usage
 ─────
-    python run.py                          # uses config_val.yaml
-    python run.py --config my_config.yaml
-    python run.py --context-sizes 128 512 2048
-    python run.py --force                  # rerun even if preds exist
-    python run.py --no-parallel            # single-process (debug)
+    python run.py --val-dir data/my_set/val
+    python run.py --config my_methods.yaml --val-dir data/my_set/val
+    python run.py --val-dir data/my_set/val --context-sizes 128 512 2048
+    python run.py --val-dir data/my_set/val --force
+    python run.py --val-dir data/my_set/val --no-parallel
 
 Compute
 ───────
@@ -70,7 +70,6 @@ from benchmarks.compute import (
     resolve_method_compute,
 )
 from benchmarks.data import load_benchmark_from_val_dir
-from benchmarks.data_csv import load_benchmark_from_csvs, resolve_csv_paths
 from benchmarks.methods import method_estimand, normalize_method_cfg
 from benchmarks.runners import method_output_names, run_method
 from benchmarks.metrics import TASKS, TaskReport, primary_task, score_method
@@ -90,9 +89,21 @@ console = Console()
 def load_config(path: str) -> dict:
     with open(path) as f:
         cfg = yaml.safe_load(f)
-    for key in ("data", "run"):
-        if key not in cfg:
-            raise KeyError(f"config_*.yaml is missing required section '{key}'.")
+    if not isinstance(cfg, dict):
+        raise TypeError(f"benchmark config {path} must contain a YAML mapping")
+    if "run" not in cfg:
+        raise KeyError("config_methods.yaml is missing required section 'run'.")
+    if "data" in cfg:
+        raise ValueError(
+            "benchmark configs no longer contain `data:` — pass the pre-built "
+            "dataset with --val-dir and optionally override its sibling bench/ "
+            "directory with --output-dir."
+        )
+    if "context_sizes" in cfg["run"]:
+        raise ValueError(
+            "run.context_sizes is no longer a config setting — pass "
+            "--context-sizes on the command line."
+        )
 
     # Refused rather than aliased: `models:` entries ran through a separate
     # pipeline with its own device handling and its own prediction loop, and
@@ -114,64 +125,28 @@ def load_config(path: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
-    """Return the standardized dataset dict named by the config.
+def default_output_dir(val_dir: Path) -> Path:
+    """Return the conventional sibling ``bench/`` for a pre-built ``val/``."""
+    return val_dir.parent / "bench"
 
-    Every benchmark run scores a *pre-built* set — one of the three builders
-    (`prior_eval`, `synt_eval`, `lit_eval`), or real-world CSV files. There
-    is no on-the-fly prior sampling: a set that only exists inside one run is
-    one nobody else can score against.
 
-    Loading resolves in this order:
-      1. ``data.val_dir`` set and no cached ``data.pt`` (or --force): build the
-         standardized dict from the raw val-format directory (``batch_*.pt``,
-         as written by ``proximalfm.prior._genload.write_batch_file``) and cache
-         it as ``data.pt`` in the run's output dir (plots.py reads it there).
-      2. ``source: csv`` and no cached ``data.pt`` (or --force): build the
-         standardized dict from one or more real-world CSVs. Each file becomes
-         one independently standardized episode, selected by ``csv_path``,
-         ``csv_paths``, or ``csv_dir``.
-      3. Otherwise fall back to an existing ``data.pt`` in the output dir.
+def get_data(val_dir: Path, output_dir: Path, force_regen: bool = False) -> dict:
+    """Return the standardized dataset dict loaded from ``val_dir``.
+
+    Every benchmark run scores a *pre-built* val-format set. There is no
+    on-the-fly prior sampling: a set that only exists inside one run is one
+    nobody else can score against.
+
+    With no cache (or under ``--force``), the val-format ``batch_*.pt`` files
+    are standardized and cached as ``data.pt`` in the output directory. Later
+    runs reuse that cache.
 
     A ``data.pt`` cached before the CATE target existed carries no
     ``true_CATEs``, so the run falls back to the ITE track and says so on the
     console. Delete it (or pass ``--force``) to rebuild with the CATE target.
     """
     data_path = output_dir / "data.pt"
-    data_cfg = cfg["data"]
-    source = data_cfg.get("source", "load")
-    val_dir = data_cfg.get("val_dir")
-
-    # Refused rather than ignored: a config still saying `generate` asks for
-    # datasets nobody else can score against, and falling through to "no data
-    # file found" would read as a missing path rather than a removed feature.
-    if source == "generate":
-        raise ValueError(
-            "data.source: generate has been removed — the benchmark scores "
-            "pre-built sets only. Build one first (prior_eval.build, "
-            "synt_eval/build_proximal_datasets.py or lit_eval.build) and point "
-            "data.val_dir at its val/ directory with data.source: load."
-        )
-
-    if source == "csv" and (force_regen or not data_path.exists()):
-        csv_paths = resolve_csv_paths(data_cfg)
-        console.print(
-            f"    Building benchmark data from [cyan]{len(csv_paths)} CSV file(s)[/]…"
-        )
-        data = load_benchmark_from_csvs(
-            csv_paths,
-            data_cfg["columns"],
-            prop_train=data_cfg.get("prop_train", 0.75),
-            shuffle=data_cfg.get("shuffle", True),
-            seed=cfg["run"].get("seed", 42),
-            normalize_treatment=data_cfg.get("normalize_treatment", True),
-        )
-        output_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(data, data_path)
-        console.print(f"    [green]✓[/] Saved (Normalized) → {data_path}")
-        return data
-
-    if val_dir and (force_regen or not data_path.exists()):
+    if force_regen or not data_path.exists():
         console.print(f"    Building benchmark data from val dir [cyan]{val_dir}[/]…")
         data = load_benchmark_from_val_dir(val_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -179,15 +154,8 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
         console.print(f"    [green]✓[/] Saved (Normalized) → {data_path}")
         return data
 
-    if data_path.exists():
-        console.print(f"    Loading existing data from [cyan]{data_path}[/]…")
-        return torch.load(data_path, weights_only=False)
-
-    raise FileNotFoundError(
-        f"Data file not found at {data_path}. "
-        "Point data.val_dir at a directory of batch_*.pt files, or set "
-        "data.source: csv with a CSV input and data.columns in config_*.yaml."
-    )
+    console.print(f"    Loading existing data from [cyan]{data_path}[/]…")
+    return torch.load(data_path, weights_only=False)
 
 
 def resolve_context_sizes(requested: Optional[list[int]], available: int) -> list[int]:
@@ -523,9 +491,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="CATE benchmark — load data, run methods, evaluate."
     )
-    default_config = Path(__file__).resolve().parent / "config_val.yaml"
+    default_config = Path(__file__).resolve().parent / "config_methods.yaml"
     parser.add_argument(
         "--config", default=str(default_config), help="Path to the YAML config file."
+    )
+    parser.add_argument(
+        "--val-dir",
+        type=Path,
+        required=True,
+        help="Pre-built val/ directory containing batch_*.pt files.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Benchmark output directory (default: a bench/ sibling of --val-dir).",
     )
     parser.add_argument(
         "--force",
@@ -539,21 +518,19 @@ def main() -> None:
     )
     parser.add_argument(
         "--context-sizes",
-        "--context_sizes",
-        "--n-ctx",
-        "--n_ctx",
         nargs="+",
         type=int,
         metavar="N_CTX",
         help=(
             "Context prefixes to benchmark, e.g. --context-sizes 128 512 2048. "
-            "Overrides run.context_sizes; defaults to the full dataset context."
+            "Defaults to the full dataset context."
         ),
     )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    output_dir = Path(cfg["data"]["output_dir"])
+    val_dir = args.val_dir
+    output_dir = args.output_dir or default_output_dir(val_dir)
     preds_dir = output_dir / "preds"
     results_dir = output_dir / "results"
 
@@ -570,21 +547,18 @@ def main() -> None:
 
     console.print(Rule("[bold blue]CATE Benchmark[/]"))
     console.print(f"  Config   : [cyan]{args.config}[/]")
+    console.print(f"  Val data : [cyan]{val_dir}[/]")
     console.print(f"  Output   : [cyan]{output_dir}[/]")
     console.print(f"  Compute  : [cyan]{global_compute.describe()}[/]")
     console.print()
 
     # ── Step 1: Data ─────────────────────────────────────────────────────────
     console.print(Rule("[bold]Step 1  Data[/]"))
-    data = get_data(cfg, output_dir, force_regen=force)
+    data = get_data(val_dir, output_dir, force_regen=force)
 
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
-    requested_context_sizes = (
-        args.context_sizes
-        if args.context_sizes is not None
-        else cfg["run"].get("context_sizes")
-    )
+    requested_context_sizes = args.context_sizes
     context_sizes = resolve_context_sizes(requested_context_sizes, int(data["N_TRAIN"]))
     largest_n_ctx = context_sizes[-1]
     context_sweep = requested_context_sizes is not None
@@ -594,17 +568,6 @@ def main() -> None:
         f"(available context={data['N_TRAIN']}, query={N_TEST})"
     )
     console.print(f"    [green]✓[/] Context sizes: {context_sizes}")
-    if cfg["data"].get("source", "load") == "csv":
-        widths = {
-            "X": int(data["d_X"][0]),
-            "W": int(data["d_W"][0]),
-            "Z": int(data["d_Z"][0]),
-            "U": int(data["U"].shape[-1]),
-        }
-        detail = ", ".join(f"{key}={value}" for key, value in widths.items())
-        console.print(
-            f"    [green]✓[/] Feature columns: {sum(widths.values())} total ({detail})"
-        )
     batches_by_context = {n: build_batches(data, n) for n in context_sizes}
     # Targets live on the fixed query suffix, so they are identical across the
     # sweep. Build them from any prefix.

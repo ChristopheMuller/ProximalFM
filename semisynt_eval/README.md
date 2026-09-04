@@ -60,11 +60,14 @@ data/semisynt_eval/semisynt_matrix_v1/
 
 Point a benchmark at one case, never at the matrix root:
 
-```yaml
-data:
-  source: load
-  val_dir: data/semisynt_eval/semisynt_matrix_v1/linear_conf_low_proxy_low/val
+```bash
+uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
+  --val-dir data/semisynt_eval/semisynt_matrix_v1/linear_conf_low_proxy_low/val \
+  --context-sizes 128 512
 ```
+
+[`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
+configuration over all eight cases. Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
 Each case config is a complete one-case format-v4 recipe and can be rebuilt
 with `--config`; override `--name` to keep the original output intact. Source

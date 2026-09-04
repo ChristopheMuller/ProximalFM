@@ -14,11 +14,8 @@ realistic_proximal_mechanisms.py):
 
   * BENCHMARK — works on any build, `--mc_cate` or not. `run.py`
     rebuilds its standardized dict from the raw files at load time (see
-    benchmarks/data.py). Point a benchmark at it with:
-
-        data:
-          source: load
-          val_dir: <out_root>/<name>/val
+    benchmarks/data.py). Point a benchmark at it with
+    ``--val-dir <out_root>/<name>/val``.
 
   * TRAINING-VALIDATION — needs `--mc_cate K` (`K > 1`); see below. Point the
     trainer at the build's *root* with `--synt_eval_dir <out_root>/<name>`.

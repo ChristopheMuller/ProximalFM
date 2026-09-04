@@ -316,19 +316,12 @@ number. See [`proximalfm/train/metrics.md`](proximalfm/train/metrics.md) §7.
 
 ### Step 3 — Benchmark against other methods
 
-[`benchmarks/config_val.yaml`](benchmarks/config_val.yaml) is a ready-made benchmark config pointing at this dataset. Its `data:` section is all it takes to consume a fixed build:
-
-```yaml
-data:
-  source: load                                  # never regenerates
-  val_dir: synt_eval/validation_data/val        # the batch_*.pt directory from Step 1
-  output_dir: synt_eval/validation_data/bench # where preds/, results/, data.pt cache go
-```
-
-Run it (after Step 1) with:
+[`benchmarks/config_methods.yaml`](benchmarks/config_methods.yaml) is the shared definition of the
+methods, tuning, and compute setup. Select the fixed build on the command line:
 
 ```bash
-uv run benchmarks/run.py --config benchmarks/config_val.yaml
+uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
+  --val-dir synt_eval/validation_data/val
 ```
 
 What happens:
@@ -337,7 +330,9 @@ What happens:
 2. **Methods** — every entry under `methods:` (S/T/X-learners, proximal baselines, tabular causal models, and ProximalFM itself via `cls: ProximalFM` + a `checkpoint:` — e.g. the `best_model.ckpt` selected in Step 2) is fit per episode in parallel; predictions are saved incrementally to `<output_dir>/preds/`, so finished methods are skipped on re-runs.
 3. **Report** — ATE and CATE summary tables are printed and written to `<output_dir>/results/`.
 
-Enable or disable baselines by (un)commenting entries in the `methods:` list of the config. For final held-out numbers, benchmark the *test* batch instead: copy the config and change `val_dir`/`output_dir` to the `--name test_data` build from Step 1.
+Enable or disable baselines by (un)commenting entries in the `methods:` list. For final held-out
+numbers, pass the *test* build's `val/` directory instead. Output defaults to the sibling `bench/`;
+use `--output-dir` to override it.
 
 </details>
 

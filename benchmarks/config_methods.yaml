@@ -1,0 +1,200 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# config_methods.yaml — Methods, tuning, and compute for benchmark runs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Execution ─────────────────────────────────────────────────────────────────
+# `compute` is the run-wide default budget. Any method or model entry may overlay
+# its own `compute:` block on it; benchmarks/compute.py is the single owner of
+# device and thread counts (nothing below it picks either for itself).
+#
+#   device        cpu | mps | cuda      falls back to cpu, with a warning, if absent
+#   n_workers     episode fan-out width (1 = run in this process)
+#   torch_threads per-process torch threads; only the torch-backed methods care
+#   blas_threads  OMP/MKL/OpenBLAS per process; part of a worker pool's identity
+#   n_jobs        intra-method sklearn/joblib fan-out — nests *inside* a worker,
+#                 so what lands on the machine is n_workers × n_jobs
+#   execution     pool | inline. Defaults to inline for a non-CPU device or a
+#                 single worker. A non-CPU device with pool fan-out is refused:
+#                 concurrent multi-process Metal/CUDA access stalls.
+run:
+  seed:      999999999
+  force_rerun: false
+  compute:
+    device:        cpu
+    n_workers:     6
+    torch_threads: 1
+    blas_threads:  1
+    n_jobs:        1
+
+# ── Methods ───────────────────────────────────────────────────────────────────
+methods:
+
+  # ── S-Learner baselines ──────────────────────────────────────────────────
+  - name: S-OLS
+    cls:   S_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+
+  - name: S-RF
+    cls:   S_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true }
+    compute: { torch_threads: 2 }
+
+  - name: S-RF-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: S_Learner
+      base: rf
+      use_W: true
+      use_Z: true
+    predict_batch_size: 4096
+    outputs:
+      - {name: S-RF-WZ-kNN-128,    integration: {method: knn, n_points: 128}}
+      - {name: S-RF-WZ-Kernel-128, integration: {method: kernel, n_points: 128, kernel_scale: 1.0}}
+
+  - name: S-TabICL-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: S_Learner
+      base: tabicl
+      use_W: true
+      use_Z: true
+      tabicl: { kv_cache: true , n_estimators: 1}
+    predict_batch_size: 4096
+    outputs:
+      - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+
+  # ── T-Learner baselines ──────────────────────────────────────────────────
+  - name: T-OLS
+    cls:   T_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+  
+  - name: T-RF
+    cls:   T_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+
+  # ── X-Learner baselines ──────────────────────────────────────────────────
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+
+  # ── Proximal baselines ───────────────────────────────────────────────────
+  - name: P2SLS
+    cls:          P2SLS
+    interactions: false
+
+  - name: P-Kernel
+    cls:      PLearner
+    bridge:   kernel
+    n_splits: 4
+    q_clip:   20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3]
+          min_samples_leaf: [1, 10]
+          max_features: [1.0]
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-RF,  base: rf }
+      - { name: P-Kernel-OLS, base: linear }
+      - { name: P-Kernel-ATE, kind: ate }
+  
+  - name: KPV
+    cls:         KernelPV
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      n_trials: 1
+      seed:     1234
+      grid:
+        kernel_scale: [1.0]
+    outputs:
+      - { name: KPV-X-Wind, strategy: independent }
+      - { name: KPV-X-Wcond, strategy: conditional }
+      - { name: KPV-ATE,    strategy: marginal }
+
+  - name: PMMR
+    cls:         PMMR
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 4
+      seed:     1234
+      grid:
+        kernel_scale:   [0.8, 1.2]
+        kernel_scale_z: [0.8, 1.2]
+      sweep:
+        lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
+    outputs:
+      - { name: PMMR-X-Wind, strategy: independent }
+      - { name: PMMR-X-Wcond, strategy: conditional }
+      - { name: PMMR-ATE,    strategy: marginal }
+
+  - name: NMMR-V-fixed
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-fixed-Wind,  strategy: independent }
+      - { name: NMMR-V-fixed-Wcond, strategy: conditional }
+
+  # ── Tabular Causal Models ─────────────────────────────────────────────────
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
+
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
+
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: false
+    use_Z: false
+
+  # ── ProximalFM ────────────────────────────────────────────────────────────
+
+  - name:       ProximalFM
+    cls:        ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble:   1
+    compute: { device: mps }

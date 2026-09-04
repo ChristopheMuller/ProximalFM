@@ -9,7 +9,7 @@ method therefore contributes only its CATE(X) variants.
 Example::
 
     uv run python -m analysis_eval.method_table \
-        --config benchmarks/config_val.yaml --print
+        --config benchmarks/config_methods.yaml --print
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from benchmarks.estimands import parse_estimand
 from benchmarks.run import load_config, method_output_estimands
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG = REPO_ROOT / "benchmarks" / "config_val.yaml"
+DEFAULT_CONFIG = REPO_ROOT / "benchmarks" / "config_methods.yaml"
 DEFAULT_METADATA = Path(__file__).with_name("methods.json")
 DEFAULT_OUT = Path(__file__).with_name("results") / "methods.tex"
 LABEL = "tab:benchmark_methods"
@@ -355,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--config",
         type=Path,
         default=DEFAULT_CONFIG,
-        help="Benchmark YAML to describe (default: benchmarks/config_val.yaml).",
+        help="Benchmark YAML to describe (default: benchmarks/config_methods.yaml).",
     )
     parser.add_argument(
         "--metadata",

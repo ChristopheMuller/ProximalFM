@@ -39,6 +39,7 @@ NMMR/
 *.png
 *.yaml
 !semisynt_eval/config.yaml
+!benchmarks/config_methods.yaml
 
 .wandb_api_key
 

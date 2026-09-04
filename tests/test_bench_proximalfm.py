@@ -253,11 +253,24 @@ def test_config_models_block_is_refused_with_the_translation(tmp_path):
     path.write_text(
         yaml.safe_dump(
             {
-                "data": {"output_dir": str(tmp_path)},
                 "run": {},
                 "models": [{"name": "PFM", "checkpoint": "runs/x"}],
             }
         )
     )
     with pytest.raises(ValueError, match="cls: ProximalFM"):
+        run.load_config(str(path))
+
+
+def test_config_data_block_is_refused(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"run": {}, "data": {"val_dir": "x/val"}}))
+    with pytest.raises(ValueError, match="--val-dir"):
+        run.load_config(str(path))
+
+
+def test_config_context_sizes_are_cli_only(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"run": {"context_sizes": [128]}}))
+    with pytest.raises(ValueError, match="--context-sizes"):
         run.load_config(str(path))

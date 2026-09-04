@@ -25,18 +25,11 @@ an analytic paired effect, `exp(X1) - 3 X2`, so two replicates are sufficient
 to activate the benchmark's CATE-target contract while producing zero Monte
 Carlo variance.
 
-Point a benchmark config at the generated validation directory:
-
-```yaml
-data:
-  source: load
-  val_dir: data/lit_eval/sverdrup_appB_v1/val
-```
-
-Then run the benchmark normally:
+Run the benchmark against the generated validation directory:
 
 ```bash
-uv run benchmarks/run.py --config benchmarks/config_val.yaml --force
+uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
+  --val-dir data/lit_eval/sverdrup_appB_v1/val --force
 ```
 
 The build also writes a resolved `config.yaml`, a human-readable

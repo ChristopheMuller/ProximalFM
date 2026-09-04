@@ -7,7 +7,7 @@ estimators or read prediction caches.
 
 ```bash
 uv run python -m analysis_eval.method_table \
-  --config benchmarks/config_val.yaml
+  --config benchmarks/config_methods.yaml
 ```
 
 The command writes `analysis_eval/results/methods.tex` and a machine-readable

@@ -41,22 +41,6 @@ head-standardized units:
 Context entries are not stored in these vectors: every sidecar vector is
 aligned with `query_index` and has length `n_q`.
 
-## Export to the benchmark
-
-The inspection values can be scored and plotted like benchmark methods:
-
-```bash
-uv run python -m inspect_eval.export_ladder_predictions
-uv run benchmarks/run.py --config benchmarks/config_inspect.yaml
-uv run benchmarks/plots.py --path data/inspect_eval/adjustment_small/bench
-```
-
-The exporter reads the standardized sidecar fields and writes
-`Q-{X-naive,W-adj,Z-adj,WZ-adj,true}_preds.npz` below `bench/preds/`.
-`config_inspect.yaml` contains corresponding `cls: Precomputed` entries. Such
-entries are cache-only: the benchmark loads them even under `--force` and gives
-a direct error naming the exporter if a file is missing.
-
 ## Estimation
 
 For a proxy adjustment set `C`, the target is

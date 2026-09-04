@@ -45,11 +45,12 @@ uv run python -m inspect_eval_linear.analyze_noise_sweep \
   --root data/inspect_eval_linear/proxy_sweep
 ```
 
-To add fitted methods to the same reliability plot, run the lightweight
-benchmark config and regenerate the analysis:
+To add the shared fitted methods to the same reliability plot, run the benchmark
+and regenerate the analysis:
 
 ```bash
-uv run benchmarks/run.py --config benchmarks/config_inspect_linear.yaml
+uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
+  --val-dir data/inspect_eval_linear/proxy_sweep/val
 uv run python -m inspect_eval_linear.analyze_noise_sweep \
   --root data/inspect_eval_linear/proxy_sweep
 ```
@@ -106,19 +107,4 @@ uv run python -m inspect_eval_linear.export_ladder_predictions \
 ```
 
 This creates the standard cache files under `bench/preds/` for `Q-X-naive`,
-`Q-W-adj`, `Q-Z-adj`, `Q-WZ-adj`, and `Q-true`. Point a benchmark config at the
-generated data and declare those methods as `Precomputed`:
-
-```yaml
-data:
-  source: load
-  val_dir: data/inspect_eval_linear/proxy_sweep/val
-  output_dir: data/inspect_eval_linear/proxy_sweep/bench
-
-methods:
-  - {name: Q-X-naive, cls: Precomputed, estimand: cate(x)}
-  - {name: Q-W-adj, cls: Precomputed, estimand: cate(x)}
-  - {name: Q-Z-adj, cls: Precomputed, estimand: cate(x)}
-  - {name: Q-WZ-adj, cls: Precomputed, estimand: cate(x)}
-  - {name: Q-true, cls: Precomputed, estimand: cate(x)}
-```
+`Q-W-adj`, `Q-Z-adj`, `Q-WZ-adj`, and `Q-true`.
