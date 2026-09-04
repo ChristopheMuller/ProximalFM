@@ -156,8 +156,18 @@ class BenchmarkRun:
     def primary(self) -> Task:
         return TASKS[primary_task(sorted(set(self.results["target"])))]
 
+    @property
+    def n_ctx(self) -> int:
+        """Context size shown by the standard figures (the largest run)."""
+        if "n_ctx" in self.results.columns:
+            return int(self.results["n_ctx"].max())
+        return int(self.data["N_TRAIN"])
+
     def frame(self, task: Task) -> pd.DataFrame:
-        return self.results[self.results["target"] == task.name]
+        rows = self.results[self.results["target"] == task.name]
+        if "n_ctx" in rows.columns:
+            rows = rows[rows["n_ctx"] == self.n_ctx]
+        return rows
 
     def competitor_frame(self, task: Task) -> pd.DataFrame:
         f = self.frame(task)
@@ -272,7 +282,9 @@ class BenchmarkRun:
         return kind, (None if kind is None else targets[kind])
 
     def preds(self, method: str) -> Optional[np.ndarray]:
-        path = self.dir / "preds" / f"{method}_preds.npz"
+        swept = self.dir / "preds" / f"{method}_nctx-{self.n_ctx}_preds.npz"
+        legacy = self.dir / "preds" / f"{method}_preds.npz"
+        path = swept if swept.exists() else legacy
         if not path.exists():
             return None
         return np.load(path)["preds"]
@@ -281,7 +293,11 @@ class BenchmarkRun:
         d = self.dir / "preds"
         if not d.is_dir():
             return []
-        return sorted(p.stem[: -len("_preds")] for p in d.glob("*_preds.npz"))
+        suffix = f"_nctx-{self.n_ctx}_preds"
+        swept = [p.stem[: -len(suffix)] for p in d.glob(f"*{suffix}.npz")]
+        legacy = [p.stem[: -len("_preds")] for p in d.glob("*_preds.npz")]
+        legacy = [name for name in legacy if "_nctx-" not in name]
+        return sorted(set(swept + legacy))
 
     # ── Episode covariates ───────────────────────────────────────────────────
 
@@ -306,7 +322,7 @@ class BenchmarkRun:
 
     def _derive_covariates(self) -> pd.DataFrame:
         d = self.data
-        n_train = int(d["N_TRAIN"])
+        n_train = self.n_ctx
         X, W, Z, U = (np.asarray(d[k], dtype=float) for k in ("X", "W", "Z", "U"))
         A = np.asarray(d["A"], dtype=float).reshape(len(X), -1)
         Y = np.asarray(d["Y"], dtype=float).reshape(len(X), -1)
@@ -364,7 +380,7 @@ class BenchmarkRun:
             rows.append(row)
 
         cov = pd.DataFrame(rows).set_index("episode")
-        s2 = self.results.groupby("episode")["s2_over_var"].median()
+        s2 = self.frame(self.primary).groupby("episode")["s2_over_var"].median()
         if s2.notna().any():
             cov["s2_over_var"] = s2
         return cov

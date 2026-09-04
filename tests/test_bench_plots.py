@@ -151,6 +151,26 @@ def test_tasks_and_references(run):
     assert not set(run.references(CATE)) & set(run.method_order(CATE))
 
 
+def test_context_sweep_figures_use_largest_context(tmp_path):
+    root = _write_run(tmp_path, n_episodes=4)
+    results_path = root / "results/results.csv"
+    largest = pd.read_csv(results_path)
+    largest["n_ctx"] = 16
+    smaller = largest.copy()
+    smaller["n_ctx"] = 4
+    smaller["npehe"] = 999.0
+    pd.concat([smaller, largest], ignore_index=True).to_csv(results_path, index=False)
+
+    expected = np.full((4, 16), 7.0)
+    np.savez(root / "preds/S-OLS_nctx-16_preds.npz", preds=expected)
+    loaded = BenchmarkRun.load(root)
+
+    assert loaded.n_ctx == 16
+    assert set(loaded.frame(CATE)["n_ctx"]) == {16}
+    np.testing.assert_array_equal(loaded.preds("S-OLS"), expected)
+    assert "S-OLS" in loaded.available_preds()
+
+
 def test_pivot_keeps_only_complete_episodes(run):
     """The failed episode is dropped for *every* method, not just the one that
     failed — otherwise the surviving methods are compared on different sets."""

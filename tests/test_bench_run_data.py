@@ -1,5 +1,6 @@
 """Tests for run.py's data step (get_data)."""
 
+import numpy as np
 import pytest
 import torch
 
@@ -178,3 +179,51 @@ def test_build_batches_trims_each_episode_to_its_own_dims():
             expected = data[key][b, :, :d].numpy()
             assert (batch[f"{key}_ctx"] == expected[:n_train]).all()
             assert (batch[f"{key}_q"] == expected[n_train:]).all()
+
+
+def test_build_batches_uses_context_prefix_without_moving_query_rows():
+    data = build_from_pool(make_pool(train_size=24))
+    full = run.build_batches(data)
+    prefix = run.build_batches(data, n_ctx=7)
+
+    for full_batch, prefix_batch in zip(full, prefix):
+        for key in ("U", "X", "W", "Z"):
+            np.testing.assert_array_equal(
+                prefix_batch[f"{key}_ctx"], full_batch[f"{key}_ctx"][:7]
+            )
+            np.testing.assert_array_equal(
+                prefix_batch[f"{key}_q"], full_batch[f"{key}_q"]
+            )
+        np.testing.assert_array_equal(prefix_batch["A_ctx"], full_batch["A_ctx"][:7])
+        np.testing.assert_array_equal(prefix_batch["Y_ctx"], full_batch["Y_ctx"][:7])
+        np.testing.assert_array_equal(
+            prefix_batch["true_ITE_std"], full_batch["true_ITE_std"]
+        )
+
+
+def test_context_sizes_are_sorted_and_bounded_by_dataset_context():
+    assert run.resolve_context_sizes(None, 24) == [24]
+    assert run.resolve_context_sizes([16, 4, 8], 24) == [4, 8, 16]
+
+    with pytest.raises(ValueError, match="exceed the dataset context size 24"):
+        run.resolve_context_sizes([8, 25], 24)
+    with pytest.raises(ValueError, match="positive"):
+        run.resolve_context_sizes([0, 8], 24)
+    with pytest.raises(ValueError, match="unique"):
+        run.resolve_context_sizes([8, 8], 24)
+
+
+def test_context_sweep_scores_every_size_into_one_frame():
+    target = np.arange(12, dtype=np.float32).reshape(2, 6)
+    times = np.zeros(2, dtype=np.float32)
+    accumulated = {
+        4: {"method": (target + 1, times)},
+        8: {"method": (target, times)},
+    }
+
+    results = run.score_context_sweep(
+        accumulated, {"method": "cate(x)"}, {"cate": target, "ite": target}
+    )
+
+    assert set(results["n_ctx"]) == {4, 8}
+    assert len(results[results["n_ctx"] == 4]) == len(results[results["n_ctx"] == 8])

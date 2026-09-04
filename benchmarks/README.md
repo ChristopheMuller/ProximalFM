@@ -7,6 +7,7 @@ entry under `methods:` like the rest — see §4.
 
 ```bash
 uv run benchmarks/run.py --config benchmarks/config_val.yaml
+uv run benchmarks/run.py --config benchmarks/config_val.yaml --context-sizes 128 512 2048
 uv run benchmarks/plots.py --path data/synt_eval/<name>/bench
 ```
 
@@ -150,6 +151,7 @@ data:
 run:
   seed: 999999999
   force_rerun: false
+  context_sizes: [128, 512, 2048]              # optional; CLI overrides
   compute:                                      # the run-wide default budget
     device: cpu                                 # cpu | mps | cuda
     n_workers: 6                                # episode fan-out width
@@ -195,6 +197,16 @@ count and the seed belong to a builder (`prior_eval.build`, `synt_eval/build_pro
 `n_context`/`n_query`/`n_batch`/`prior:` keys are gone; a config still asking for it is **refused
 with an error** rather than quietly falling back to a cache. `prop_train` survives only under `csv`,
 where the row count is a property of the file and a ratio is the only thing there is to give.
+
+`run.context_sizes` (or the overriding CLI argument `--context-sizes N [N ...]`)
+runs every method on growing prefixes of the set's existing context. The query
+suffix stays fixed: `n_ctx=512` fits on `context[:512]` and predicts the same
+query rows as the full-context run. Values are sorted, must be positive and
+unique, and any value larger than the dataset context is refused. With no list,
+the benchmark runs once at the full context size. Terminal tables and
+`summary*.csv` report only the largest requested size; `results.csv` retains
+every size in its `n_ctx` column.
+
 For multi-file CSV input, every file is one equally weighted episode and is standardized from its
 own context rows. Files must share their row count and mapped dimensions; use `csv_paths: [...]` for
 an explicit subset or `csv_dir` plus an optional `csv_pattern` for a directory. Set
@@ -421,8 +433,9 @@ Written under `output_dir`:
 
 ```
 data.pt                     the standardized dict (cached; see below)
-preds/<output>_preds.npz    per-method `preds` [B, n_test] + `times` [B]
-results/results.csv         long-form: one row per (method, episode, task)
+preds/<output>_preds.npz    single full-context run cache
+preds/<output>_nctx-<N>_preds.npz  context-sweep cache at N rows
+results/results.csv         one row per (n_ctx, method, episode, task)
 results/summary_cate.csv    the headline table
 results/summary_ite.csv     the ITE task (adds the proxy-conditioned methods)
 results/summary_ate.csv     level only (where `ate` methods live)
@@ -431,7 +444,7 @@ results/plots/<figure>_{cate,ite,ate}.png   task-scope figures (§6)
 results/plots/<figure>.png                  run-scope figures (§6)
 ```
 
-`results.csv` carries a row only for the tasks whose table can rank that method
+`results.csv` carries `n_ctx` on every row and a row only for the tasks whose table can rank that method
 (§1), so its `target` column names the **task** and the rows in it are exactly the rows the tables
 show. Each row carries only that task's metrics — the `ate` rows have no `npehe`, because a
 level-only view has no shape.
@@ -447,6 +460,10 @@ in `preds/` incrementally and finished methods are skipped on re-run. `--force` 
 `run.force_rerun`) recomputes. **When results look stale, suspect the cache first** — and note that a
 `data.pt` cached before the CATE target existed has no `true_CATEs`, so the run silently drops to the
 ITE task (it does print the banner); delete it or pass `--force`.
+
+The standard plotting scripts select the largest `n_ctx`, matching the terminal
+and summary tables. All context sizes remain available in `results/results.csv`
+for context-scaling analyses.
 
 A config entry with `cls: Precomputed` declares a prediction cache produced by
 another script. The cache must exist before the run; it is loaded even with

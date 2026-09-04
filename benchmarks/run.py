@@ -5,6 +5,7 @@ Usage
 ─────
     python run.py                          # uses config_val.yaml
     python run.py --config my_config.yaml
+    python run.py --context-sizes 128 512 2048
     python run.py --force                  # rerun even if preds exist
     python run.py --no-parallel            # single-process (debug)
 
@@ -189,7 +190,26 @@ def get_data(cfg: dict, output_dir: Path, force_regen: bool = False) -> dict:
     )
 
 
-def build_batches(data: dict) -> list[dict]:
+def resolve_context_sizes(requested: Optional[list[int]], available: int) -> list[int]:
+    """Validate and sort the context prefixes requested for this run."""
+    sizes = [available] if requested is None else list(requested)
+    if not sizes:
+        raise ValueError("context sizes must contain at least one value")
+    if any(isinstance(n, bool) or not isinstance(n, int) for n in sizes):
+        raise ValueError(f"context sizes must be integers, got {sizes!r}")
+    if any(n <= 0 for n in sizes):
+        raise ValueError(f"context sizes must be positive, got {sizes!r}")
+    too_large = [n for n in sizes if n > available]
+    if too_large:
+        raise ValueError(
+            f"context size(s) {too_large} exceed the dataset context size {available}"
+        )
+    if len(set(sizes)) != len(sizes):
+        raise ValueError(f"context sizes must be unique, got {sizes!r}")
+    return sorted(sizes)
+
+
+def build_batches(data: dict, n_ctx: Optional[int] = None) -> list[dict]:
     """Slice the full data tensor into a list of per-batch numpy dicts.
 
     ``X``/``W``/``Z`` are stored zero-padded to the pool's widest episode, so
@@ -199,6 +219,9 @@ def build_batches(data: dict) -> list[dict]:
     needs to be told a dimension count separately from the array it describes.
     """
     N_TRAIN = data["N_TRAIN"]
+    n_ctx = N_TRAIN if n_ctx is None else n_ctx
+    if n_ctx <= 0 or n_ctx > N_TRAIN:
+        raise ValueError(f"n_ctx must be in [1, {N_TRAIN}], got {n_ctx}")
     U_np = data["U"].numpy()
     X_np = data["X"].numpy()
     Z_np = data["Z"].numpy()
@@ -216,8 +239,8 @@ def build_batches(data: dict) -> list[dict]:
         X_b = X_np[b, :, : d_X[b]]
         W_b = W_np[b, :, : d_W[b]]
         Z_b = Z_np[b, :, : d_Z[b]]
-        A_ctx = A_np[b, :N_TRAIN]
-        Y_ctx = Y_np[b, :N_TRAIN]
+        A_ctx = A_np[b, :n_ctx]
+        Y_ctx = Y_np[b, :n_ctx]
 
         # Squeeze trailing dimension if prior yielded (B, T, 1)
         if A_ctx.ndim > 1:
@@ -228,10 +251,10 @@ def build_batches(data: dict) -> list[dict]:
         batches.append(
             {
                 "b": b,
-                "U_ctx": U_np[b, :N_TRAIN],
-                "X_ctx": X_b[:N_TRAIN],
-                "W_ctx": W_b[:N_TRAIN],
-                "Z_ctx": Z_b[:N_TRAIN],
+                "U_ctx": U_np[b, :n_ctx],
+                "X_ctx": X_b[:n_ctx],
+                "W_ctx": W_b[:n_ctx],
+                "Z_ctx": Z_b[:n_ctx],
                 "A_ctx": A_ctx,
                 "Y_ctx": Y_ctx,
                 "U_q": U_np[b, N_TRAIN:],
@@ -410,6 +433,25 @@ def score_everything(
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+def score_context_sweep(
+    accumulated: dict[int, dict[str, tuple[np.ndarray, np.ndarray]]],
+    estimands: dict[str, str],
+    targets: dict[str, np.ndarray],
+    s2: Optional[np.ndarray] = None,
+    references: Optional[dict[str, np.ndarray]] = None,
+) -> pd.DataFrame:
+    """Score every context prefix and attach its size to the long frame."""
+    frames = []
+    for n_ctx, predictions in accumulated.items():
+        frame = score_everything(
+            predictions, estimands, targets, s2=s2, references=references
+        )
+        if not frame.empty:
+            frame.insert(frame.columns.get_loc("episode") + 1, "n_ctx", n_ctx)
+            frames.append(frame)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def save_diagnostics_yaml(path: Path, diagnostics: dict[str, np.ndarray]) -> None:
     """Diagnostics as YAML, saved next to a method's predictions.
 
@@ -495,6 +537,19 @@ def main() -> None:
         action="store_true",
         help="Debug: force every method to run in this process (compute.n_workers=1).",
     )
+    parser.add_argument(
+        "--context-sizes",
+        "--context_sizes",
+        "--n-ctx",
+        "--n_ctx",
+        nargs="+",
+        type=int,
+        metavar="N_CTX",
+        help=(
+            "Context prefixes to benchmark, e.g. --context-sizes 128 512 2048. "
+            "Overrides run.context_sizes; defaults to the full dataset context."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -525,10 +580,20 @@ def main() -> None:
 
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
+    requested_context_sizes = (
+        args.context_sizes
+        if args.context_sizes is not None
+        else cfg["run"].get("context_sizes")
+    )
+    context_sizes = resolve_context_sizes(requested_context_sizes, int(data["N_TRAIN"]))
+    largest_n_ctx = context_sizes[-1]
+    context_sweep = requested_context_sizes is not None
 
     console.print(
-        f"    [green]✓[/] Loaded: {N_BATCH} episodes × (n_train={data['N_TRAIN']}, n_test={N_TEST})"
+        f"    [green]✓[/] Loaded: {N_BATCH} episodes × "
+        f"(available context={data['N_TRAIN']}, query={N_TEST})"
     )
+    console.print(f"    [green]✓[/] Context sizes: {context_sizes}")
     if cfg["data"].get("source", "load") == "csv":
         widths = {
             "X": int(data["d_X"][0]),
@@ -540,7 +605,10 @@ def main() -> None:
         console.print(
             f"    [green]✓[/] Feature columns: {sum(widths.values())} total ({detail})"
         )
-    batches = build_batches(data)
+    batches_by_context = {n: build_batches(data, n) for n in context_sizes}
+    # Targets live on the fixed query suffix, so they are identical across the
+    # sweep. Build them from any prefix.
+    batches = batches_by_context[largest_n_ctx]
     targets, cate_s2 = build_targets(data, batches)
     describe_targets(targets, cate_s2, data)
 
@@ -556,7 +624,9 @@ def main() -> None:
         console.print(Rule(f"[bold]Step 2  Methods ({len(method_cfgs)})[/]"))
         console.print()
 
-    accumulated: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    accumulated: dict[int, dict[str, tuple[np.ndarray, np.ndarray]]] = {
+        n: {} for n in context_sizes
+    }
     eval_cfg = cfg.get("eval", {})
     episode_aggregation = eval_cfg.get("episode_aggregation")
     if episode_aggregation not in (None, "mean"):
@@ -584,92 +654,111 @@ def main() -> None:
             name = mcfg["name"]
             output_names = method_output_names(mcfg)
             estimands.update(method_output_estimands(mcfg))
-            pred_files = {n: preds_dir / f"{n}_preds.npz" for n in output_names}
-            # One diagnostics file per output, named after its preds file: they
-            # describe the shared fit (like `times`), so a multi-output method's
-            # outputs get identical, duplicated content — the point is that a
-            # diagnostic is always found next to the predictions it explains.
-            diag_files = {n: preds_dir / f"{n}_preds_diag.yaml" for n in output_names}
 
-            # A Precomputed entry is a cache-backed diagnostic/reference rather
-            # than an estimator. It must already exist and is never overwritten
-            # by --force; the producer named in its config owns the cache.
-            precomputed = mcfg.get("cls") == "Precomputed"
-            missing = [f for f in pred_files.values() if not f.exists()]
-            if precomputed and missing:
-                producer = mcfg.get("producer", "the configured producer script")
-                names = ", ".join(str(path) for path in missing)
-                raise FileNotFoundError(
-                    f"Precomputed method {name!r} is missing {names}. Run {producer}."
-                )
+            def cache_path(out_name: str, n_ctx: int, suffix: str) -> Path:
+                if not context_sweep:
+                    return preds_dir / f"{out_name}_{suffix}"
+                return preds_dir / f"{out_name}_nctx-{n_ctx}_{suffix}"
 
-            # Skip only when every output of this config is already cached.
-            if precomputed or (not force and not missing):
-                for out_name, f in pred_files.items():
-                    loaded = np.load(f)
-                    preds = np.asarray(loaded["preds"], dtype=np.float32)
-                    expected = (N_BATCH, N_TEST)
-                    if preds.shape != expected:
-                        raise ValueError(
-                            f"prediction cache {f} has shape {preds.shape}, "
-                            f"expected {expected}"
+            for n_ctx in context_sizes:
+                batches = batches_by_context[n_ctx]
+                pred_files = {
+                    n: cache_path(n, n_ctx, "preds.npz") for n in output_names
+                }
+                # One diagnostics file per output, named after its preds file: they
+                # describe the shared fit (like `times`), so a multi-output method's
+                # outputs get identical, duplicated content — the point is that a
+                # diagnostic is always found next to the predictions it explains.
+                diag_files = {
+                    n: cache_path(n, n_ctx, "preds_diag.yaml") for n in output_names
+                }
+
+                # A Precomputed entry is a cache-backed diagnostic/reference rather
+                # than an estimator. It must already exist and is never overwritten
+                # by --force; the producer named in its config owns the cache.
+                precomputed = mcfg.get("cls") == "Precomputed"
+                missing = [f for f in pred_files.values() if not f.exists()]
+                if precomputed and missing:
+                    producer = mcfg.get("producer", "the configured producer script")
+                    names = ", ".join(str(path) for path in missing)
+                    raise FileNotFoundError(
+                        f"Precomputed method {name!r} is missing {names}. Run {producer}."
+                    )
+
+                # Skip only when every output of this config is already cached.
+                if precomputed or (not force and not missing):
+                    for out_name, f in pred_files.items():
+                        loaded = np.load(f)
+                        preds = np.asarray(loaded["preds"], dtype=np.float32)
+                        expected = (N_BATCH, N_TEST)
+                        if preds.shape != expected:
+                            raise ValueError(
+                                f"prediction cache {f} has shape {preds.shape}, "
+                                f"expected {expected}"
+                            )
+                        times = loaded.get(
+                            "times", np.zeros(len(preds), dtype=np.float32)
                         )
-                    times = loaded.get("times", np.zeros(len(preds), dtype=np.float32))
-                    console.print(f"  [dim]↩  {out_name:<28} loaded from cache[/]")
-                    accumulated[out_name] = (preds, times)
-                continue
+                        console.print(
+                            f"  [dim]↩  {out_name:<28} n_ctx={n_ctx} loaded from cache[/]"
+                        )
+                        accumulated[n_ctx][out_name] = (preds, times)
+                    continue
 
-            method_compute = resolve_method_compute(global_compute, mcfg)
-            task = progress.add_task(
-                f"  [cyan]{name:<28}[/] [dim]{method_compute.describe()}[/]",
-                total=len(batches),
-            )
-
-            t0 = time.perf_counter()
-            preds_map, times_map, diagnostics, n_errors = run_method(
-                mcfg,
-                batches,
-                N_TEST,
-                method_compute,
-                manager,
-                on_progress=lambda: progress.advance(task),
-            )
-            if n_errors:
-                console.print(
-                    f"    [yellow]⚠[/] {name}: {n_errors}/{len(batches)} "
-                    "batches failed (NaN filled)."
+                method_compute = resolve_method_compute(global_compute, mcfg)
+                task = progress.add_task(
+                    f"  [cyan]{name:<28}[/] [dim]n_ctx={n_ctx} · "
+                    f"{method_compute.describe()}[/]",
+                    total=len(batches),
                 )
 
-            elapsed = time.perf_counter() - t0
-            for out_name in output_names:
-                preds, times = preds_map[out_name], times_map[out_name]
-                np.savez(pred_files[out_name], preds=preds, times=times)
-                if diagnostics:
-                    save_diagnostics_yaml(diag_files[out_name], diagnostics)
-                console.print(
-                    f"  [green]✓[/] {out_name:<28} saved  [dim]({elapsed:.1f}s)[/]"
+                t0 = time.perf_counter()
+                preds_map, times_map, diagnostics, n_errors = run_method(
+                    mcfg,
+                    batches,
+                    N_TEST,
+                    method_compute,
+                    manager,
+                    on_progress=lambda: progress.advance(task),
                 )
-                accumulated[out_name] = (preds, times)
+                if n_errors:
+                    console.print(
+                        f"    [yellow]⚠[/] {name} at n_ctx={n_ctx}: "
+                        f"{n_errors}/{len(batches)} batches failed (NaN filled)."
+                    )
 
-            print_partial_results(
-                accumulated,
-                estimands,
-                targets,
-                episode_aggregation=episode_aggregation,
-            )
+                elapsed = time.perf_counter() - t0
+                for out_name in output_names:
+                    preds, times = preds_map[out_name], times_map[out_name]
+                    np.savez(pred_files[out_name], preds=preds, times=times)
+                    if diagnostics:
+                        save_diagnostics_yaml(diag_files[out_name], diagnostics)
+                    console.print(
+                        f"  [green]✓[/] {out_name:<28} n_ctx={n_ctx} saved  "
+                        f"[dim]({elapsed:.1f}s)[/]"
+                    )
+                    accumulated[n_ctx][out_name] = (preds, times)
+
+                if n_ctx == largest_n_ctx:
+                    print_partial_results(
+                        accumulated[n_ctx],
+                        estimands,
+                        targets,
+                        episode_aggregation=episode_aggregation,
+                    )
 
     # ── Step 3: Final evaluation ─────────────────────────────────────────────
     console.print(Rule("[bold]Step 3  Evaluation[/]"))
     console.print()
 
-    if not accumulated:
+    if not any(accumulated.values()):
         console.print("  [red]No method predictions found. Exiting.[/]")
         return
 
     references = (
         reference_predictions(targets) if eval_cfg.get("reference_rows", True) else None
     )
-    all_results = score_everything(
+    all_results = score_context_sweep(
         accumulated, estimands, targets, s2=cate_s2, references=references
     )
     if data.get("episode_files") is not None:
@@ -684,9 +773,10 @@ def main() -> None:
     # that read the query rows' proxies are allowed their advantage; `ate` is
     # the level-only view, and the only place a constant-prediction method says
     # anything.
+    printed_results = all_results[all_results["n_ctx"] == largest_n_ctx]
     for task in TASKS.values():
         report = TaskReport.from_results(
-            all_results, task, episode_aggregation=episode_aggregation
+            printed_results, task, episode_aggregation=episode_aggregation
         )
         if report.empty:
             continue
@@ -696,7 +786,7 @@ def main() -> None:
     # summary.csv keeps its name and its meaning "the headline table", so
     # anything downstream that globs for it still finds the primary task.
     TaskReport.from_results(
-        all_results,
+        printed_results,
         TASKS[primary_task(targets)],
         episode_aggregation=episode_aggregation,
     ).summary().to_csv(results_dir / "summary.csv")
