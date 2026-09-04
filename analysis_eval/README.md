@@ -45,7 +45,9 @@ This reads the completed eight-case matrix at
 `analysis_eval/results/semisynt_learning_curves.{pdf,png}`. Curves show median
 CATE nPEHE over episodes at each context size; optionally, faint bands show
 episode interquartile ranges. Use `--matrix-root`, `--out-dir`, `--methods`,
-`--y-max`, and `--confidence-interval` to override those defaults.
+`--y-max`, and `--confidence-interval {false,iqr,std,ste}` to override those
+defaults. The `std` and `ste` bands are centered on the median curve and use
+one standard deviation or one standard error, respectively.
 
 [`design.py`](design.py) is the visual source of truth for method labels,
 colours, markers, line styles, emphasis, and legend order. Every evaluation

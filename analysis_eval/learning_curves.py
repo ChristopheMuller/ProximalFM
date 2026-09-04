@@ -34,6 +34,7 @@ DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves"
 DEFAULT_Y_MAX = 1.2
+CONFIDENCE_INTERVAL_CHOICES = ("false", "iqr", "std", "ste")
 CONF_PROXY_ORDER = (
     ("low", "low"),
     ("low", "high"),
@@ -73,23 +74,33 @@ def make_learning_curve_figure(
     *,
     methods: Sequence[str] | None = None,
     y_max: float = DEFAULT_Y_MAX,
-    confidence_interval: bool = False,
+    confidence_interval: str | bool = False,
     interval: str | None = None,
 ):
     """Create the 2x4 factorial learning-curve figure.
 
     Rows distinguish linear/nonlinear mechanisms; columns cross confounding
-    and proxy strength. Curves are medians over episodes and the optional faint
-    bands are interquartile ranges, not statistical confidence intervals.
+    and proxy strength. Curves are medians over episodes. The optional bands
+    can show the interquartile range (``"iqr"``), standard deviation
+    (``"std"``), or standard error (``"ste"``) across episodes.
 
     ``interval`` is retained as a backwards-compatible alias for
-    ``confidence_interval``. Its ``"iqr"`` value enables the bands and its
-    ``"none"`` value disables them.
+    ``confidence_interval``. Its ``"iqr"`` value selects the IQR bands and its
+    ``"none"`` value selects ``"false"``.
     """
     if interval is not None:
         if interval not in {"iqr", "none"}:
             raise ValueError("interval must be 'iqr' or 'none'")
-        confidence_interval = interval == "iqr"
+        confidence_interval = "iqr" if interval == "iqr" else "false"
+    elif confidence_interval is True:
+        # Keep the old programmatic boolean API working as an IQR alias.
+        confidence_interval = "iqr"
+    elif confidence_interval is False:
+        confidence_interval = "false"
+    if confidence_interval not in CONFIDENCE_INTERVAL_CHOICES:
+        raise ValueError(
+            f"confidence_interval must be one of {CONFIDENCE_INTERVAL_CHOICES}"
+        )
     if y_max <= 0:
         raise ValueError("y_max must be positive")
     available = set(summary["method"])
@@ -114,11 +125,21 @@ def make_learning_curve_figure(
                 curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
                 style = method_style(method)
                 x = curve["n_ctx"].to_numpy(dtype=float)
-                if confidence_interval:
+                if confidence_interval == "iqr":
+                    lower = curve["q25"].to_numpy(dtype=float)
+                    upper = curve["q75"].to_numpy(dtype=float)
+                elif confidence_interval in {"std", "ste"}:
+                    spread = curve[confidence_interval].to_numpy(dtype=float)
+                    center = curve["median"].to_numpy(dtype=float)
+                    lower = center - spread
+                    upper = center + spread
+                else:
+                    lower = upper = None
+                if lower is not None:
                     ax.fill_between(
                         x,
-                        curve["q25"].to_numpy(dtype=float),
-                        curve["q75"].to_numpy(dtype=float),
+                        lower,
+                        upper,
                         color=style.color,
                         alpha=0.045,
                         linewidth=0,
@@ -195,9 +216,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--confidence-interval",
-        action="store_true",
+        type=str.lower,
+        choices=CONFIDENCE_INTERVAL_CHOICES,
         default=False,
-        help="Draw the episode interquartile bands",
+        help="Interval band: false, iqr, std, or ste (default: false)",
     )
     parser.add_argument(
         "--interval",
@@ -215,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     selected = args.methods if args.methods is not None else complete
     summary = summarize_learning_curves(frame, selected)
     methods = ordered_methods(set(summary["method"]))
-    if args.interval is not None and args.confidence_interval:
+    if args.interval is not None and args.confidence_interval is not False:
         raise ValueError("use only one of --confidence-interval and --interval")
     fig = make_learning_curve_figure(
         summary,

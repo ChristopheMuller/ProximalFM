@@ -80,12 +80,17 @@ def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     args = build_parser().parse_args([])
     assert args.y_max == 1.2
     assert args.confidence_interval is False
+    args = build_parser().parse_args(["--y-max", "2.5", "--confidence-interval", "ste"])
+    assert args.y_max == 2.5
+    assert {"std", "ste"}.issubset(summary.columns)
+    assert args.confidence_interval == "ste"
 
     summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
+    assert {"std", "ste"}.issubset(summary.columns)
     fig = make_learning_curve_figure(
         summary,
         y_max=2.5,
-        confidence_interval=True,
+        confidence_interval="ste",
     )
     assert fig.axes[0].get_ylim() == (0.0, 2.5)
     assert fig.axes[0].collections

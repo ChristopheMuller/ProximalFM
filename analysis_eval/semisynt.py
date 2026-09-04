@@ -138,18 +138,21 @@ def summarize_learning_curves(
             raise ValueError(f"requested methods absent from results: {sorted(absent)}")
         frame = frame[frame["method"].isin(methods)]
     group = ["case", "family", "confounding", "proxy", "method", "n_ctx"]
-    return (
+    summary = (
         frame.groupby(group, observed=True)["npehe"]
         .agg(
             median="median",
             q25=lambda values: values.quantile(0.25),
             q75=lambda values: values.quantile(0.75),
+            std="std",
             n="count",
         )
         .reset_index()
         .sort_values(group)
         .reset_index(drop=True)
     )
+    summary["ste"] = summary["std"] / summary["n"].pow(0.5)
+    return summary
 
 
 def complete_learning_curve_methods(frame: pd.DataFrame) -> tuple[list[str], list[str]]:
