@@ -171,3 +171,58 @@ def complete_learning_curve_methods(frame: pd.DataFrame) -> tuple[list[str], lis
         observed = set(group[["case", "n_ctx"]].itertuples(index=False, name=None))
         (complete if observed == expected else incomplete).append(method)
     return complete, incomplete
+
+
+def summarize_error_decomposition(
+    frame: pd.DataFrame,
+    methods: Iterable[str],
+    *,
+    aggregation: str = "median",
+) -> pd.DataFrame:
+    """Aggregate the two additive components of squared CATE nPEHE.
+
+    Episode-wise, ``npehe² = ate_bias_norm² + (1 - shape_r2)``. With ``mean``
+    the aggregated coordinates preserve this identity exactly. ``median`` is
+    the robust default for visualisation: its coordinates are the separate
+    component medians, so their sum defines a robust decomposed score but need
+    not equal median episode nPEHE².
+    """
+    if aggregation not in {"median", "mean"}:
+        raise ValueError("aggregation must be 'median' or 'mean'")
+    required = {"ate_bias_norm", "shape_r2", "npehe"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"decomposition requires columns {sorted(missing)}")
+    methods = list(methods)
+    absent = set(methods) - set(frame["method"])
+    if absent:
+        raise ValueError(f"requested methods absent from results: {sorted(absent)}")
+
+    work = frame[frame["method"].isin(methods)].copy()
+    work["level_error"] = work["ate_bias_norm"].pow(2)
+    work["shape_error"] = 1.0 - work["shape_r2"]
+    work["npehe_sq"] = work["npehe"].pow(2)
+    group = ["case", "family", "confounding", "proxy", "method", "n_ctx"]
+    summary = (
+        work.groupby(group, observed=True)
+        .agg(
+            level_error=("level_error", aggregation),
+            shape_error=("shape_error", aggregation),
+            npehe_sq=("npehe_sq", aggregation),
+            n=("episode", "count"),
+        )
+        .reset_index()
+        .sort_values(group)
+        .reset_index(drop=True)
+    )
+    summary["decomposed_npehe"] = np.sqrt(
+        np.maximum(summary["level_error"] + summary["shape_error"], 0.0)
+    )
+    summary["identity_gap"] = (
+        summary["level_error"] + summary["shape_error"] - summary["npehe_sq"]
+    )
+    if aggregation == "mean" and not np.allclose(
+        summary["identity_gap"], 0.0, rtol=1e-8, atol=1e-10
+    ):
+        raise ValueError("mean error decomposition does not preserve nPEHE identity")
+    return summary

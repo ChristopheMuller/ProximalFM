@@ -53,3 +53,25 @@ one standard deviation or one standard error, respectively.
 colours, markers, line styles, emphasis, and legend order. Every evaluation
 figure should use that registry so a method retains the same identity across
 the paper. Unknown methods deliberately raise until a style is added.
+
+## Semisynthetic error decomposition
+
+```bash
+uv run python -m analysis_eval.error_decomposition
+```
+
+This writes `analysis_eval/results/semisynt_error_decomposition.{pdf,png}`.
+The same eight factorial cells show trajectories in squared normalized ATE-bias
+(level error) versus `1 - Shape R²` (heterogeneity error), with arrows and
+increasing marker area indicating context sizes 128 → 2048. Dotted contours
+show the square root of the two displayed contributions.
+
+The default robust view separately takes the episode median of each component.
+Consequently its contour value is a *decomposed robust score*, not median
+nPEHE. `--aggregation mean` instead preserves the additive nPEHE² identity
+exactly, but is intentionally optional because a few unstable episode fits can
+make the mean view span several orders of magnitude. The default method subset
+is ProximalFM, CausalPFN, conditional-W NMMR, T-OLS, and X-RF; override it with
+`--methods`. Use `--xlim MIN MAX` and `--ylim MIN MAX` to fix the shared grid;
+trajectory segments crossing an edge stop at that edge, without drawing their
+out-of-grid nodes.

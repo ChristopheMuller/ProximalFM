@@ -15,6 +15,11 @@ from .plotting import plt
 TEXT_WIDTH_IN = 6.07
 FULL_PAGE_WIDTH_IN = 9.4
 
+# Context size is an ordered visual channel in trajectory plots. Areas rather
+# than radii grow moderately, leaving method-specific marker shapes readable.
+CONTEXT_MARKER_AREAS = (18.0, 27.0, 38.0, 52.0)
+ISO_NPEHE_LEVELS = (0.25, 0.5, 0.75, 1.0)
+
 # Okabe--Ito plus dark, print-safe extensions. Paired variants share a colour
 # and differ in marker/line pattern, preserving method-family meaning.
 COLORS = {
@@ -84,6 +89,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         zorder=5,
         alpha=1.0,
     ),
+    "S-TabICL-WZ-kNN-16": MethodStyle("S-TabICL-kNN-16", COLORS["grey"], "o", "--"),
     "Oracle-CATE(X)": MethodStyle("Oracle CATE(X)", COLORS["black"], "", ":"),
     "Oracle-ATE": MethodStyle("Oracle ATE", COLORS["grey"], "", ":"),
     "Oracle-ITE": MethodStyle("Oracle ITE", COLORS["light_grey"], "", ":"),
@@ -142,3 +148,8 @@ def apply_style() -> None:
 def learning_curve_figsize() -> tuple[float, float]:
     """Final canvas size for the eight-panel landscape figure."""
     return FULL_PAGE_WIDTH_IN, 5.25
+
+
+def decomposition_figsize() -> tuple[float, float]:
+    """Final canvas size for the eight-panel decomposition trajectories."""
+    return FULL_PAGE_WIDTH_IN, 5.55
