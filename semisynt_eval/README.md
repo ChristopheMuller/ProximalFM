@@ -1,122 +1,172 @@
-# Empirical-root proximal evaluation sets
+# Empirical-root proximal evaluation matrix
 
-This package builds semi-synthetic proximal datasets whose paired `(X, U)` rows
-come from arbitrary CSV files, while `W`, `Z`, `A`, and `Y` come from a known
-synthetic SCM. Every `*.csv` placed directly in `semisynt_eval/datasets/` is
-discoverable without adding Python code:
+`semisynt_eval` combines empirical `(X, U)` rows from CSV files with known
+synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The default format-v4 recipe
+builds a controlled eight-case factorial:
+
+| Family | Direct-U confounding | W/Z U-information |
+|---|---:|---:|
+| linear | 0.25 | 0.25 |
+| linear | 0.25 | 0.75 |
+| linear | 0.75 | 0.25 |
+| linear | 0.75 | 0.75 |
+| nonlinear | 0.25 | 0.25 |
+| nonlinear | 0.25 | 0.75 |
+| nonlinear | 0.75 | 0.25 |
+| nonlinear | 0.75 | 0.75 |
+
+[`config.yaml`](config.yaml) is the complete, version-controlled definition of
+the matrix. Python supplies validation, not hidden generative defaults.
+
+## Build and consume
+
+List available CSV sources and configured cases:
 
 ```bash
 uv run python -m semisynt_eval.build --list
 ```
 
-## Quick start
+Build every case:
 
 ```bash
-uv run python -m semisynt_eval.build \
-  --name all_csvs_all_mechanisms_v1 \
-  --replicates_per_csv 24 \
-  --n_features_x 7 \
-  --n_features_u 5 \
-  --mechanism all \
-  --n_max 1024 \
-  --n_q 256 \
-  --seed 20260903
+NAME=semisynt_matrix_v1 ./scripts/build_semisynt_eval.sh
 ```
 
-[`config.yaml`](config.yaml) is the version-controlled source of truth. It
-contains every build default and complete `linear` and `linear_quadratic`
-sub-configs. Python code validates this schema but supplies no hidden mechanism
-defaults. Pass `--config path/to/recipe.yaml` to build from another complete
-recipe; explicit CLI arguments override its `build:` section.
+The script uses plain `python` through `scripts/_env.sh`, so it works on the
+cluster where `uv run` is unavailable. Build-level settings are environment
+variable overridable, for example:
 
-The default `csv: all` discovers every `*.csv` directly in the configured
-`data_dir`, in deterministic filename order. Each source contributes exactly
-`replicates_per_csv` independently seeded episodes for each selected mechanism
-to one combined benchmark set. The default `mechanism: all` runs every
-registered mechanism; use `--mechanism linear` or `--csv heloc` to restrict
-either axis. Thus the total episode count is `number of CSVs × number of
-mechanisms × replicates_per_csv`.
+```bash
+NAME=semisynt_matrix_v1 N_CONTEXT=1024 N_QUERY=256 \
+  REPLICATES_PER_CSV=24 SEED=20260903 \
+  ./scripts/build_semisynt_eval.sh
+```
 
-Without explicit column lists, the loader converts every usable CSV column to
-one numeric column and selects exactly `--n_features_x` columns for X and
-`--n_features_u` columns for U, deterministically under `--split_seed`. The
-builder raises if the CSV does not have enough non-constant usable columns.
-Numeric missing values are median-imputed; categorical values use stable sorted
-category codes. This generic encoding is meant as a reproducible baseline. A
-scientifically chosen split should use `--x_columns`, `--u_columns`, and
-`--drop_columns`; the explicit lists must match the requested counts.
+Use `CONFIG=path/to/recipe.yaml` for another scientific matrix and `FORCE=1`
+to replace builder-owned files for the selected name.
 
-The output lands in `data/semisynt_eval/<name>/` and uses the standard sparse
-`val/` format:
+The result is one matrix root and eight independent benchmark sets:
+
+```text
+data/semisynt_eval/semisynt_matrix_v1/
+  manifest.json
+  config.yaml
+  linear_conf_low_proxy_low/
+    manifest.json
+    config.yaml
+    val/
+  ... seven more cases ...
+```
+
+Point a benchmark at one case, never at the matrix root:
 
 ```yaml
 data:
   source: load
-  val_dir: data/semisynt_eval/all_csvs_all_mechanisms_v1/val
+  val_dir: data/semisynt_eval/semisynt_matrix_v1/linear_conf_low_proxy_low/val
 ```
 
-Every output directory receives a fully resolved `config.yaml` containing the
-actual build values, both complete mechanism sub-configs, and every selected
-source CSV's SHA-256. That saved file can be passed back to `--config` directly.
-The builder checks both the recorded source set and every digest before
-regenerating, while `manifest.json` also records each source's resolved X/U
-assignment, every episode's source/replicate/seed, target kind, and content
-digest. When several mechanisms are selected, every episode also records its
-mechanism and the manifest includes all resolved mechanism configs.
+Each case config is a complete one-case format-v4 recipe and can be rebuilt
+with `--config`; override `--name` to keep the original output intact. Source
+SHA-256 values, resolved case settings, paired episode IDs, and content digests
+are recorded in the manifests. `--force` replaces only builder-owned files.
 
-## Causal contract
+Every `*.csv` directly in `semisynt_eval/datasets/` is discovered in stable
+filename order. Numeric values are median-imputed, categorical values use
+stable sorted codes, and all usable columns are standardized over the complete
+CSV. Without explicit `--x_columns` and `--u_columns`, a stable hash split
+selects the requested number of X and U columns. `replicates_per_csv` means
+independently seeded benchmark episodes, not Monte Carlo rows.
 
-The mechanism interfaces enforce
+The row split has one spelling: `n_context` context rows plus `n_query` query
+rows. The total episode size is derived as their sum; there is no `seq_len` or
+`prop_train` ratio to resolve.
+
+## Causal contract and target
+
+The interfaces structurally enforce
 
 ```text
-W, Z <- (X, U)
-A    <- (X, U, Z)
-Y(a) <- (X, U, W, a)
+W    <- U, optional X
+Z    <- U, optional X
+A    <- U, optional X, optional Z
+Y(a) <- U, optional X, optional W, a
+tau  <- optional X
 ```
 
-The bundled `linear` and `linear_quadratic` families use
-`Y(1) = Y(0) + tau(X)`, so `tau(X)` is the exact CATE and is written directly
-to each batch as `CATE`. `replicates_per_csv` means independent benchmark
-episodes; it is not Monte Carlo replication within a row. There is no claim
-that the builder can sample `U | X`.
+Z is therefore the treatment-inducing proxy and cannot enter Y; W is the
+outcome-inducing proxy and cannot enter A. All default arrows are enabled.
 
-By default, W and Z are normalized after adding their structural noise, the
-treatment score is normalized before its logistic link, and the noisy untreated
-outcome baseline is normalized before adding `tau(X)` to form `Y(1)`. Thus the
-normalization never changes the closed-form treatment effect. The
-`u_coefficient_multiplier` mechanism knob scales the direct U coefficients in
-both the treatment and outcome equations before those normalizations; `1.0`
-recovers the previous behavior, while the default linear recipe uses `4.0` for
-substantially stronger hidden-U confounding. The linear-quadratic recipe keeps
-its own independent setting.
+Both families use `Y(1) = Y(0) + tau(X)`. The linear family gives `tau` a
+linear random basis; the nonlinear family uses the same mixed basis as its
+nuisance equations. Outcome noise is shared across arms, so `Y1 - Y0` equals
+the analytic CATE exactly. The explicit `CATE` field activates CATE scoring in
+the benchmark without within-row Monte Carlo replication.
 
-A future mechanism with no analytic CATE declares
-`target_capability = "ite_only"`, returns no CATE, and is evaluated using its
-realized `Y1 - Y0`. If a future source provides a genuine conditional model for
-`U | X`, Monte Carlo CATE would be a separate capability rather than an
-overload of this one.
+## Families, normalization, and interactions
 
-## Extending mechanisms
+The linear family uses identity terms. The nonlinear family randomly chooses a
+term for every input/output coefficient from the configured mixture of:
 
-Each SCM family has its own module: `mechanisms/linear.py` contains the random
-linear equations and `mechanisms/linear_quadratic.py` contains the mixed-power
-family. In the latter, every coefficient is independently assigned either a
-linear or quadratic input term when an episode's mechanism is constructed.
-There are no hidden nonlinearities or cross terms.
+- identity
+- quadratic
+- signed `log1p(abs(x))`
+- clipped exponential
+- sine
 
-The repository `config.yaml` is the single generative configuration surface.
-Its `mechanisms:` mapping contains one complete sub-config per family, including
-the input blocks used by each equation (for example, whether W enters Y),
-coefficient distributions and scales, noise levels, normalization switches,
-treatment overlap, the direct-U coefficient multiplier, and quadratic allocation
-probabilities. Change defaults or add mechanism-level settings there rather than
-adding duplicate CLI flags.
+Every transformed term is centered and scaled before its random coefficient is
+applied. Exponential inputs are clipped at the configured bound first. This
+makes coefficient and component scales comparable rather than allowing the
+chosen function's raw range to determine strength.
 
-To add a family, implement the small interface in `mechanisms/base.py`, put the
-SCM in a new mechanism module, add its complete sub-config to `config.yaml`, and
-register it in `mechanisms/__init__.py`. The signatures make it impossible for
-W to enter treatment or Z to enter the outcome accidentally.
+`interactions_default` supplies the default for every equation. Each of `w`,
+`z`, `a`, `y`, and `tau` may override it with `interactions: true/false/null`,
+where `null` inherits the common value. Enabling interactions adds all pairwise
+products of normalized transformed parents. A term involving U is classified
+as latent even when its other factor is X, Z, or W. The resolved case configs
+always contain concrete booleans.
 
-The builder and generator are self-contained within `semisynt_eval`; their only
-project-level dependency is the canonical low-level `write_batch_file` format
-writer used by every benchmark dataset producer.
+## Strength and overlap controls
+
+For treatment and outcome, the random regression is separated into a direct-U
+component and an observed-parent component. Each is normalized, then combined
+as
+
+```text
+sqrt(u_variance_share) * latent
+  + sqrt(1 - u_variance_share) * observed.
+```
+
+The separate knobs are `a_u_variance_share` and `y_u_variance_share`. They
+describe structural component variance, not an observational partial R-squared;
+correlation between empirical X and U can still change measured confounding.
+
+For each proxy, reliability is calibrated against its normalized U signal:
+
+```text
+reliability = Var(U signal) / (Var(U signal) + Var(noise)).
+```
+
+`w_u_reliability` and `z_u_reliability` can be varied independently. Optional
+X contributions have their own `x_strength`, so adding X does not redefine the
+U-to-noise calibration. Final proxy normalization preserves these relative
+component scales.
+
+Treatment uses a normalized score, configurable logit scale (inverse
+temperature), random-intercept range, logit clipping, and a final
+`overlap_epsilon` clamp before Bernoulli sampling. Outcome noise and CATE scale
+remain separate knobs because they control different difficulty dimensions.
+
+## Editing the matrix
+
+The `common` block owns coefficients, the nonlinear palette, and complete
+equation defaults. Every entry under `cases` selects a family and the four
+calibrated strength values, with an optional `equations` override map. Add or
+edit cases there; do not encode the scientific matrix in shell loops or CLI
+flags. Case names become directory names and must not contain `/`.
+
+Cases are paired by `(source CSV, replicate)`: all cases receive the same
+episode seed and therefore identical empirical X/U rows. Cases of the same
+family and structure also reuse coefficient and base-noise draws, so changing a
+low/high strength rescales the same underlying mechanism rather than drawing a
+new one.

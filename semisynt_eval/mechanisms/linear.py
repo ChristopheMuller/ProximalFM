@@ -1,4 +1,4 @@
-"""Closed-form random linear proximal SCM."""
+"""Normalized random-basis proximal SCMs."""
 
 from __future__ import annotations
 
@@ -6,241 +6,157 @@ import math
 
 import torch
 
-from semisynt_eval._config import MechanismConfig
+from semisynt_eval._config import CaseConfig
 from semisynt_eval.mechanisms.base import (
     Mechanism,
-    RandomPolynomialRegression,
+    RandomBasisRegression,
+    combine_variance_share,
     normalize_columns,
 )
 
 Tensor = torch.Tensor
 
 
-def _selected_blocks(
-    *,
-    x: Tensor,
-    u: Tensor | None = None,
-    proxy: Tensor | None = None,
-    use_x: bool,
-    use_u: bool,
-    use_proxy: bool,
-) -> Tensor:
-    blocks = []
-    if use_x:
-        blocks.append(x)
-    if use_u:
-        if u is None:
-            raise ValueError("configured latent input was not supplied")
-        blocks.append(u)
-    if use_proxy:
-        if proxy is None:
-            raise ValueError("configured proxy input was not supplied")
-        blocks.append(proxy)
-    if not blocks:
-        raise ValueError("each mechanism equation needs at least one input block")
-    return torch.cat(blocks, dim=1)
+class BasisMechanism(Mechanism):
+    """Family-selected additive/bilinear SCM with calibrated components."""
 
-
-class LinearMechanism(Mechanism):
-    """Linear equations with random coefficients and episode normalization."""
+    family = "linear"
 
     def __init__(
         self,
         d_x: int,
         d_u: int,
-        config: MechanismConfig,
+        config: CaseConfig,
         generator: torch.Generator,
     ) -> None:
         if d_x < 1 or d_u < 1:
             raise ValueError("d_x and d_u must both be positive")
         self.config = config
         self.generator = generator
-        self.d_x = d_x
-        self.d_u = d_u
-        self.d_w = d_u
-        self.d_z = d_u
-        self._validate_config()
-
-        proxy_p, treatment_p, outcome_p, effect_p = self._power_probabilities()
-        proxy_inputs = int(config.proxies.use_x) * d_x + int(config.proxies.use_u) * d_u
-        treatment_inputs = (
-            int(config.treatment.use_x) * d_x
-            + int(config.treatment.use_u) * d_u
-            + int(config.treatment.use_z) * self.d_z
+        self.d_x, self.d_u = d_x, d_u
+        self.d_w = self.d_z = d_u
+        self.w_regression = self._regression(config.w, {"x": d_x, "u": d_u}, d_u)
+        self.z_regression = self._regression(config.z, {"x": d_x, "u": d_u}, d_u)
+        self.treatment_regression = self._regression(
+            config.a, {"x": d_x, "u": d_u, "z": self.d_z}, 1
         )
-        outcome_inputs = (
-            int(config.outcome.use_x) * d_x
-            + int(config.outcome.use_u) * d_u
-            + int(config.outcome.use_w) * self.d_w
-        )
-        self.w_regression = RandomPolynomialRegression.sample(
-            generator,
-            proxy_inputs,
-            self.d_w,
-            config.proxies.coefficients,
-            quadratic_probability=proxy_p,
-        )
-        self.z_regression = RandomPolynomialRegression.sample(
-            generator,
-            proxy_inputs,
-            self.d_z,
-            config.proxies.coefficients,
-            quadratic_probability=proxy_p,
-        )
-        self.treatment_regression = RandomPolynomialRegression.sample(
-            generator,
-            treatment_inputs,
-            1,
-            config.treatment.coefficients,
-            quadratic_probability=treatment_p,
-        )
-        self.outcome_regression = RandomPolynomialRegression.sample(
-            generator,
-            outcome_inputs,
-            1,
-            config.outcome.coefficients,
-            quadratic_probability=outcome_p,
-        )
-        self._scale_u_coefficients(
-            self.treatment_regression,
-            use_x=config.treatment.use_x,
-            use_u=config.treatment.use_u,
-        )
-        self._scale_u_coefficients(
-            self.outcome_regression,
-            use_x=config.outcome.use_x,
-            use_u=config.outcome.use_u,
+        self.outcome_regression = self._regression(
+            config.y, {"x": d_x, "u": d_u, "w": self.d_w}, 1
         )
         self.effect_regression = (
-            RandomPolynomialRegression.sample(
-                generator,
-                d_x,
-                1,
-                config.outcome.effect.coefficients,
-                quadratic_probability=effect_p,
-            )
-            if config.outcome.effect.use_x
-            else None
+            self._regression(config.tau, {"x": d_x}, 1) if config.tau.use_x else None
         )
-        treatment = config.treatment
         self.treatment_intercept = float(
             torch.empty(1).uniform_(
-                treatment.intercept_low,
-                treatment.intercept_high,
+                config.a.intercept_low,
+                config.a.intercept_high,
                 generator=generator,
             )
         )
 
-    def _power_probabilities(self) -> tuple[float, float, float, float]:
-        """The linear family assigns power one to every input term."""
-        return 0.0, 0.0, 0.0, 0.0
+    def _regression(self, equation, possible: dict[str, int], n_outputs: int):
+        active = [
+            (block, width)
+            for block, width in possible.items()
+            if getattr(equation, "use_" + block)
+        ]
+        return RandomBasisRegression(
+            block_names=[name for name, _ in active],
+            block_widths=[width for _, width in active],
+            n_outputs=n_outputs,
+            family=self.family,
+            interactions=equation.interactions,
+            coefficients=self.config.coefficients,
+            nonlinear=self.config.nonlinear,
+            generator=self.generator,
+        )
 
-    def _validate_config(self) -> None:
-        config = self.config
-        if not math.isfinite(float(config.u_coefficient_multiplier)):
-            raise ValueError("u_coefficient_multiplier must be finite")
-        if config.u_coefficient_multiplier < 0:
-            raise ValueError("u_coefficient_multiplier must be non-negative")
-        if not (config.proxies.use_x or config.proxies.use_u):
-            raise ValueError("proxy equations need X and/or U")
-        if not (
-            config.treatment.use_x or config.treatment.use_u or config.treatment.use_z
-        ):
-            raise ValueError("treatment equation needs X, U, and/or Z")
-        if not (config.outcome.use_x or config.outcome.use_u or config.outcome.use_w):
-            raise ValueError("outcome equation needs X, U, and/or W")
-        if config.proxies.noise_std < 0 or config.outcome.noise_std < 0:
-            raise ValueError("noise standard deviations must be non-negative")
-        if config.treatment.logit_scale < 0:
-            raise ValueError("treatment logit scale must be non-negative")
-        if config.treatment.logit_clip <= 0:
-            raise ValueError("treatment logit clip must be positive")
-        if config.treatment.intercept_low > config.treatment.intercept_high:
-            raise ValueError("treatment intercept bounds are reversed")
-        if not 0.0 <= config.treatment.overlap_epsilon < 0.5:
-            raise ValueError("overlap_epsilon must lie in [0, 0.5)")
+    @staticmethod
+    def _active(equation, **blocks: Tensor) -> dict[str, Tensor]:
+        return {
+            name: value
+            for name, value in blocks.items()
+            if getattr(equation, "use_" + name)
+        }
 
-    def _scale_u_coefficients(
+    def _proxy(
         self,
-        regression: RandomPolynomialRegression,
-        *,
-        use_x: bool,
-        use_u: bool,
-    ) -> None:
-        """Scale the direct U arrows while leaving X/proxy arrows unchanged."""
-        if not use_u:
-            return
-        start = int(use_x) * self.d_x
-        stop = start + self.d_u
-        regression.coefficients[start:stop] *= float(
-            self.config.u_coefficient_multiplier
+        regression: RandomBasisRegression,
+        equation,
+        reliability: float,
+        x: Tensor,
+        u: Tensor,
+    ) -> Tensor:
+        latent, observed = regression.contributions(**self._active(equation, x=x, u=u))
+        if latent is None:
+            signal = observed
+            noise_scale = 1.0
+        else:
+            signal = latent
+            if observed is not None:
+                signal = signal + float(equation.x_strength) * observed
+            noise_scale = math.sqrt((1.0 - reliability) / reliability)
+        value = signal + noise_scale * torch.randn(
+            x.shape[0], regression.n_outputs, generator=self.generator
         )
-
-    def _proxy_inputs(self, x: Tensor, u: Tensor) -> Tensor:
-        return _selected_blocks(
-            x=x,
-            u=u,
-            use_x=self.config.proxies.use_x,
-            use_u=self.config.proxies.use_u,
-            use_proxy=False,
-        )
+        return normalize_columns(value) if equation.normalize_output else value
 
     def proxies(self, x: Tensor, u: Tensor) -> tuple[Tensor, Tensor]:
-        inputs = self._proxy_inputs(x, u)
-        noise_std = float(self.config.proxies.noise_std)
-        w = self.w_regression(inputs) + noise_std * torch.randn(
-            x.shape[0], self.d_w, generator=self.generator
+        return (
+            self._proxy(
+                self.w_regression,
+                self.config.w,
+                self.config.w_u_reliability,
+                x,
+                u,
+            ),
+            self._proxy(
+                self.z_regression,
+                self.config.z,
+                self.config.z_u_reliability,
+                x,
+                u,
+            ),
         )
-        z = self.z_regression(inputs) + noise_std * torch.randn(
-            x.shape[0], self.d_z, generator=self.generator
-        )
-        if self.config.proxies.normalize_output:
-            w, z = normalize_columns(w), normalize_columns(z)
-        return w, z
 
     def treatment_probability(self, x: Tensor, u: Tensor, z: Tensor) -> Tensor:
-        config = self.config.treatment
-        inputs = _selected_blocks(
-            x=x,
-            u=u,
-            proxy=z,
-            use_x=config.use_x,
-            use_u=config.use_u,
-            use_proxy=config.use_z,
+        config = self.config.a
+        latent, observed = self.treatment_regression.contributions(
+            **self._active(config, x=x, u=u, z=z)
         )
-        score = self.treatment_regression(inputs)
+        score = combine_variance_share(latent, observed, self.config.a_u_variance_share)
         if config.normalize_score:
             score = normalize_columns(score)
-        logit = float(config.logit_scale) * score + self.treatment_intercept
-        clip = float(config.logit_clip)
-        return torch.sigmoid(logit.clamp(-clip, clip))
+        logits = float(config.logit_scale) * score + self.treatment_intercept
+        return torch.sigmoid(
+            logits.clamp(-float(config.logit_clip), float(config.logit_clip))
+        )
 
     def cate(self, x: Tensor) -> Tensor:
-        effect = self.config.outcome.effect
+        config = self.config.tau
         if self.effect_regression is None:
-            return torch.full(
-                (x.shape[0], 1),
-                float(effect.intercept),
-                dtype=x.dtype,
-                device=x.device,
-            )
-        return float(effect.intercept) + float(effect.scale) * self.effect_regression(x)
+            signal = torch.zeros(x.shape[0], 1, dtype=x.dtype, device=x.device)
+        else:
+            _, signal = self.effect_regression.contributions(x=x)
+        return float(config.intercept) + float(config.scale) * signal
 
     def potential_outcomes(
         self, x: Tensor, u: Tensor, w: Tensor
     ) -> tuple[Tensor, Tensor]:
-        config = self.config.outcome
-        inputs = _selected_blocks(
-            x=x,
-            u=u,
-            proxy=w,
-            use_x=config.use_x,
-            use_u=config.use_u,
-            use_proxy=config.use_w,
+        config = self.config.y
+        latent, observed = self.outcome_regression.contributions(
+            **self._active(config, x=x, u=u, w=w)
         )
-        baseline = self.outcome_regression(inputs) + float(
-            config.noise_std
-        ) * torch.randn(x.shape[0], 1, generator=self.generator)
+        baseline = combine_variance_share(
+            latent, observed, self.config.y_u_variance_share
+        )
+        baseline = baseline + float(config.noise_std) * torch.randn(
+            x.shape[0], 1, generator=self.generator
+        )
         if config.normalize_baseline:
             baseline = normalize_columns(baseline)
         return baseline, baseline + self.cate(x)
+
+
+class LinearMechanism(BasisMechanism):
+    family = "linear"

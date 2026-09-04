@@ -1,124 +1,132 @@
-# Version-controlled, authoritative recipe for semi-synthetic evaluation sets.
-# Every data-affecting value is explicit. A build copies the fully resolved
-# version of this file beside its generated val/ directory.
-format_version: 3
+# Authoritative format-v4 recipe. One invocation materializes every named case
+# below as an independent benchmark set under <out_root>/<name>/<case>/val.
+format_version: 4
 
 build:
   data_dir: semisynt_eval/datasets
   out_root: data/semisynt_eval
   csv: all
   name: null
-  mechanism: all
   x_columns: null
   u_columns: null
   drop_columns: null
-  n_features_x: 7
+  n_features_x: 5
   n_features_u: 5
-  split_seed: 0
+  split_seed: 1234
   row_sampling: auto
   replicates_per_csv: 4
-  seq_len: 1280
-  prop_train: 0.8
-  n_max: null
-  n_q: null
-  seed: 20260903
+  n_context: 2048
+  n_query: 256
+  seed: 1234
   datasets_per_file: null
 
-mechanisms:
-  linear:
-    u_coefficient_multiplier: 4.0
-    proxies:
+common:
+  interactions_default: false
+  coefficients:
+    distribution: normal
+    scale: 1.0
+    normalize_by_input_dim: true
+  nonlinear:
+    probabilities:
+      identity: 0.2
+      quadratic: 0.2
+      signed_log1p: 0.2
+      clipped_exp: 0.2
+      sine: 0.2
+    exp_clip: 3.0
+  equations:
+    w:
       use_x: true
       use_u: true
-      noise_std: 0.75
+      interactions: null
+      x_strength: 1.0
       normalize_output: true
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-    treatment:
+    z:
+      use_x: true
+      use_u: true
+      interactions: null
+      x_strength: 1.0
+      normalize_output: true
+    a:
       use_x: true
       use_u: true
       use_z: true
+      interactions: null
       normalize_score: true
       logit_scale: 1.0
       logit_clip: 8.0
       intercept_low: -0.5
       intercept_high: 0.5
       overlap_epsilon: 0.02
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-    outcome:
+    y:
       use_x: true
       use_u: true
       use_w: true
+      interactions: null
       noise_std: 0.5
       normalize_baseline: true
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-      effect:
-        use_x: true
-        intercept: 0.5
-        scale: 1.0
-        coefficients:
-          distribution: normal
-          scale: 1.0
-          normalize_by_input_dim: true
-    powers:
-      proxy_quadratic_probability: 0.0
-      treatment_quadratic_probability: 0.0
-      outcome_quadratic_probability: 0.0
-      effect_quadratic_probability: 0.0
+    tau:
+      use_x: true
+      interactions: null
+      intercept: 0.5
+      scale: 1.0
 
-  linear_quadratic:
-    u_coefficient_multiplier: 1.0
-    proxies:
-      use_x: true
-      use_u: true
-      noise_std: 0.75
-      normalize_output: true
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-    treatment:
-      use_x: true
-      use_u: true
-      use_z: true
-      normalize_score: true
-      logit_scale: 1.0
-      logit_clip: 8.0
-      intercept_low: -0.5
-      intercept_high: 0.5
-      overlap_epsilon: 0.02
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-    outcome:
-      use_x: true
-      use_u: true
-      use_w: true
-      noise_std: 0.5
-      normalize_baseline: true
-      coefficients:
-        distribution: normal
-        scale: 1.0
-        normalize_by_input_dim: true
-      effect:
-        use_x: true
-        intercept: 0.5
-        scale: 1.0
-        coefficients:
-          distribution: normal
-          scale: 1.0
-          normalize_by_input_dim: true
-    powers:
-      proxy_quadratic_probability: 0.5
-      treatment_quadratic_probability: 0.5
-      outcome_quadratic_probability: 0.5
-      effect_quadratic_probability: 0.5
+# Cases may override any equation field. Empty maps make it explicit that this
+# initial factorial changes only family, confounding, and proxy information.
+cases:
+  linear_conf_low_proxy_low:
+    family: linear
+    a_u_variance_share: 0.25
+    y_u_variance_share: 0.25
+    w_u_reliability: 0.25
+    z_u_reliability: 0.25
+    equations: {}
+  linear_conf_low_proxy_high:
+    family: linear
+    a_u_variance_share: 0.25
+    y_u_variance_share: 0.25
+    w_u_reliability: 0.75
+    z_u_reliability: 0.75
+    equations: {}
+  linear_conf_high_proxy_low:
+    family: linear
+    a_u_variance_share: 0.75
+    y_u_variance_share: 0.75
+    w_u_reliability: 0.25
+    z_u_reliability: 0.25
+    equations: {}
+  linear_conf_high_proxy_high:
+    family: linear
+    a_u_variance_share: 0.75
+    y_u_variance_share: 0.75
+    w_u_reliability: 0.75
+    z_u_reliability: 0.75
+    equations: {}
+  nonlinear_conf_low_proxy_low:
+    family: nonlinear
+    a_u_variance_share: 0.25
+    y_u_variance_share: 0.25
+    w_u_reliability: 0.25
+    z_u_reliability: 0.25
+    equations: {}
+  nonlinear_conf_low_proxy_high:
+    family: nonlinear
+    a_u_variance_share: 0.25
+    y_u_variance_share: 0.25
+    w_u_reliability: 0.75
+    z_u_reliability: 0.75
+    equations: {}
+  nonlinear_conf_high_proxy_low:
+    family: nonlinear
+    a_u_variance_share: 0.75
+    y_u_variance_share: 0.75
+    w_u_reliability: 0.25
+    z_u_reliability: 0.25
+    equations: {}
+  nonlinear_conf_high_proxy_high:
+    family: nonlinear
+    a_u_variance_share: 0.75
+    y_u_variance_share: 0.75
+    w_u_reliability: 0.75
+    z_u_reliability: 0.75
+    equations: {}

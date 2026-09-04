@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 import torch
 
-from semisynt_eval.mechanisms import MechanismConfig, build_mechanism
+from semisynt_eval.mechanisms import CaseConfig, build_mechanism
 from semisynt_eval.source import PreparedCSV
 
 Tensor = torch.Tensor
@@ -45,8 +45,8 @@ class CSVProximalDataset:
         self,
         source: PreparedCSV,
         *,
-        mechanism: str = "linear",
-        mechanism_config: MechanismConfig,
+        mechanism: str,
+        mechanism_config: CaseConfig,
         row_sampling: str = "auto",
     ) -> None:
         if row_sampling not in {"auto", "without_replacement", "bootstrap"}:
@@ -57,7 +57,7 @@ class CSVProximalDataset:
         self.name = f"real_csv:{source.path.stem}"
         self.mechanism_name = mechanism
         self.mechanism_config = mechanism_config
-        self.overlap_eps = float(self.mechanism_config.treatment.overlap_epsilon)
+        self.overlap_eps = float(self.mechanism_config.a.overlap_epsilon)
         self.row_sampling = row_sampling
         probe = build_mechanism(
             mechanism,
@@ -110,12 +110,12 @@ class CSVProximalDataset:
             return torch.randint(n_source, (n,), generator=rng)
         return torch.randperm(n_source, generator=rng)[:n]
 
-    def generate(self, *, seed: int, seq_len: int) -> Episode:
+    def generate(self, *, seed: int, n_rows: int) -> Episode:
         """Generate one observational dataset and its potential outcomes."""
-        if seq_len < 2:
-            raise ValueError("seq_len must be >= 2")
+        if n_rows < 2:
+            raise ValueError("n_rows must be >= 2")
         rng = torch.Generator().manual_seed(int(seed))
-        rows = self._sample_indices(seq_len, rng)
+        rows = self._sample_indices(n_rows, rng)
         x = self.source.X[rows]
         u = self.source.U[rows]
         mechanism = build_mechanism(
@@ -130,7 +130,7 @@ class CSVProximalDataset:
         propensity = mechanism.treatment_probability(x, u, z).clamp(
             self.overlap_eps, 1.0 - self.overlap_eps
         )
-        a = (torch.rand(seq_len, 1, generator=rng) < propensity).float()
+        a = (torch.rand(n_rows, 1, generator=rng) < propensity).float()
         y0, y1 = mechanism.potential_outcomes(x, u, w)
         y_obs = a * y1 + (1.0 - a) * y0
         cate = mechanism.cate(x)
@@ -152,7 +152,7 @@ class CSVProximalDataset:
             ("Y0", y0),
             ("Y1", y1),
         ):
-            if tensor.shape[0] != seq_len or not torch.isfinite(tensor).all():
+            if tensor.shape[0] != n_rows or not torch.isfinite(tensor).all():
                 raise ValueError(
                     f"{self.name}: invalid {name} block {tuple(tensor.shape)}"
                 )
