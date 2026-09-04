@@ -184,7 +184,6 @@ def make_learning_curve_figure(
         columnspacing=1.2,
         handlelength=2.6,
     )
-    fig.suptitle("Semisynthetic CATE accuracy as context grows")
     return fig
 
 
