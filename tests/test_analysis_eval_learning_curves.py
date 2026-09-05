@@ -180,23 +180,35 @@ def test_error_decomposition_cli_accepts_fixed_limits():
     assert args.ylim == [0.0, 1.25]
 
 
-def test_speed_rank_summary_pairs_all_eight_cells(tmp_path):
+def test_speed_rank_summary_separates_mechanism_families(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"], context_size=512)
 
     assert set(summary["method"]) == {"S-OLS", "ProximalFM"}
-    assert set(summary["n_blocks"]) == {8 * 4}
+    assert set(summary["family"]) == {"linear", "nonlinear"}
+    assert set(summary["n_blocks"]) == {4 * 4}
+    assert len(summary) == 2 * 2
     assert (summary["rank_q25"] <= summary["rank_median"]).all()
     assert (summary["rank_median"] <= summary["rank_q75"]).all()
-    prox = summary.set_index("method").loc["ProximalFM"]
-    assert prox["time_post_tune_mean"] < prox["time_mean"]
+    prox = summary[summary["method"].eq("ProximalFM")]
+    assert (prox["time_post_tune_mean"] < prox["time_mean"]).all()
+
+    pooled = summarize_speed_rank(
+        frame, ["S-OLS", "ProximalFM"], context_size=512, by_family=False
+    )
+    assert set(pooled["family"]) == {"pooled"}
+    assert set(pooled["n_blocks"]) == {8 * 4}
 
 
-def test_speed_rank_figure_is_single_panel_with_log_time(tmp_path):
+def test_speed_rank_figure_has_one_panel_per_mechanism(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"])
     fig = make_speed_rank_figure(summary)
 
-    assert len(fig.axes) == 1
-    assert fig.axes[0].get_xscale() == "log"
-    assert fig.axes[0].yaxis_inverted()
+    assert len(fig.axes) == 2
+    assert {ax.get_title() for ax in fig.axes} == {
+        "Linear mechanisms",
+        "Nonlinear mechanisms",
+    }
+    assert all(ax.get_xscale() == "log" for ax in fig.axes)
+    assert all(ax.yaxis_inverted() for ax in fig.axes)

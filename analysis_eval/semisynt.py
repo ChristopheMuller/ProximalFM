@@ -178,20 +178,22 @@ def summarize_speed_rank(
     methods: Iterable[str],
     *,
     context_size: int | None = None,
+    by_family: bool = True,
 ) -> pd.DataFrame:
     """Paired nPEHE ranks and mean episode latency at one context size.
 
     Ranks are computed within each ``(case, episode)`` block and only then
-    summarized across the eight semisynthetic cells. The IQR therefore reflects
-    how stable a method's relative performance is across both mechanisms and
-    draws. Timing is averaged over the exact same complete blocks.
+    summarized. By default, linear and nonlinear families are summarized
+    independently across their four confounding/proxy cells. Set
+    ``by_family=False`` to recover one pooled eight-cell summary. Timing is
+    averaged over the exact same complete blocks used for the ranks.
 
     ``time`` is the measured end-to-end fit-and-predict latency.
     ``time_post_tune`` is the corresponding latency after removing explicit
     hyperparameter-selection work. It is optional so historical results remain
     plottable; missing post-selection measurements stay missing.
     """
-    required = {"time", "npehe", "case", "episode", "method", "n_ctx"}
+    required = {"time", "npehe", "case", "episode", "method", "n_ctx", "family"}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"speed/rank summary requires columns {sorted(missing)}")
@@ -212,59 +214,70 @@ def summarize_speed_rank(
         )
 
     work = frame[frame["n_ctx"].eq(context_size) & frame["method"].isin(methods)].copy()
-    all_cases = set(frame["case"].unique())
-    incomplete = {}
-    for method in methods:
-        observed_cases = set(work.loc[work["method"].eq(method), "case"])
-        if observed_cases != all_cases:
-            incomplete[method] = sorted(all_cases - observed_cases)
-    if incomplete:
-        raise ValueError(
-            "methods lack cases at the selected context size: "
-            + "; ".join(f"{method}: {cases}" for method, cases in incomplete.items())
-        )
-
-    block_columns = ["case", "episode"]
-    scores = work.pivot(index=block_columns, columns="method", values="npehe")
-    scores = scores.reindex(columns=methods).dropna(axis=0, how="any")
-    if scores.empty:
-        raise ValueError("no complete (case, episode) blocks remain for paired ranks")
-    ranks = scores.rank(axis=1, method="average", ascending=True)
-    complete_blocks = scores.index
-    timed = work.set_index(block_columns).loc[complete_blocks].reset_index()
-
     rows = []
-    for method in methods:
-        method_ranks = ranks[method]
-        method_times = pd.to_numeric(
-            timed.loc[timed["method"].eq(method), "time"], errors="coerce"
-        )
-        method_times = method_times[np.isfinite(method_times) & method_times.gt(0)]
-        if method_times.empty:
-            raise ValueError(f"method {method!r} has no finite positive timings")
-
-        post_time = float("nan")
-        if "time_post_tune" in timed:
-            post = pd.to_numeric(
-                timed.loc[timed["method"].eq(method), "time_post_tune"],
-                errors="coerce",
+    groups = work.groupby("family", sort=False) if by_family else [("pooled", work)]
+    for family, family_frame in groups:
+        all_cases = set(family_frame["case"].unique())
+        incomplete = {}
+        for method in methods:
+            observed_cases = set(
+                family_frame.loc[family_frame["method"].eq(method), "case"]
             )
-            post = post[np.isfinite(post) & post.gt(0)]
-            if not post.empty:
-                post_time = float(post.mean())
+            if observed_cases != all_cases:
+                incomplete[method] = sorted(all_cases - observed_cases)
+        if incomplete:
+            raise ValueError(
+                f"methods lack {family} cases at the selected context size: "
+                + "; ".join(
+                    f"{method}: {cases}" for method, cases in incomplete.items()
+                )
+            )
 
-        rows.append(
-            {
-                "method": method,
-                "n_ctx": context_size,
-                "rank_median": float(method_ranks.median()),
-                "rank_q25": float(method_ranks.quantile(0.25)),
-                "rank_q75": float(method_ranks.quantile(0.75)),
-                "time_mean": float(method_times.mean()),
-                "time_post_tune_mean": post_time,
-                "n_blocks": len(complete_blocks),
-            }
+        block_columns = ["case", "episode"]
+        scores = family_frame.pivot(
+            index=block_columns, columns="method", values="npehe"
         )
+        scores = scores.reindex(columns=methods).dropna(axis=0, how="any")
+        if scores.empty:
+            raise ValueError(
+                f"no complete (case, episode) blocks remain for {family} ranks"
+            )
+        ranks = scores.rank(axis=1, method="average", ascending=True)
+        complete_blocks = scores.index
+        timed = family_frame.set_index(block_columns).loc[complete_blocks].reset_index()
+
+        for method in methods:
+            method_ranks = ranks[method]
+            method_times = pd.to_numeric(
+                timed.loc[timed["method"].eq(method), "time"], errors="coerce"
+            )
+            method_times = method_times[np.isfinite(method_times) & method_times.gt(0)]
+            if method_times.empty:
+                raise ValueError(f"method {method!r} has no finite positive timings")
+
+            post_time = float("nan")
+            if "time_post_tune" in timed:
+                post = pd.to_numeric(
+                    timed.loc[timed["method"].eq(method), "time_post_tune"],
+                    errors="coerce",
+                )
+                post = post[np.isfinite(post) & post.gt(0)]
+                if not post.empty:
+                    post_time = float(post.mean())
+
+            rows.append(
+                {
+                    "family": family,
+                    "method": method,
+                    "n_ctx": context_size,
+                    "rank_median": float(method_ranks.median()),
+                    "rank_q25": float(method_ranks.quantile(0.25)),
+                    "rank_q75": float(method_ranks.quantile(0.75)),
+                    "time_mean": float(method_times.mean()),
+                    "time_post_tune_mean": post_time,
+                    "n_blocks": len(complete_blocks),
+                }
+            )
     return pd.DataFrame(rows)
 
 

@@ -1,4 +1,4 @@
-"""Single-panel runtime versus paired nPEHE-rank figure.
+"""Linear/nonlinear runtime versus paired nPEHE-rank figure.
 
 Run from the repository root::
 
@@ -18,6 +18,7 @@ from matplotlib.lines import Line2D
 from .design import apply_style, method_style, ordered_methods, speed_rank_figsize
 from .plotting import place_point_labels, plt, save_figure
 from .semisynt import (
+    FAMILIES,
     complete_learning_curve_methods,
     load_cate_results,
     summarize_speed_rank,
@@ -30,8 +31,9 @@ OUTPUT_NAME = "semisynt_speed_rank"
 
 
 def make_speed_rank_figure(summary: pd.DataFrame):
-    """Draw mean latency against median paired rank with rank-IQR whiskers."""
+    """Draw one paired speed/rank panel per mechanism family."""
     required = {
+        "family",
         "method",
         "rank_median",
         "rank_q25",
@@ -47,77 +49,91 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         raise ValueError("speed/rank figure received an empty summary")
     if summary["n_ctx"].nunique() != 1:
         raise ValueError("speed/rank figure requires exactly one context size")
-
-    methods = ordered_methods(set(summary["method"]))
-    summary = summary.set_index("method").loc[methods].reset_index()
-    apply_style()
-    fig, ax = plt.subplots(figsize=speed_rank_figsize())
-    labels = []
-    for row in summary.itertuples():
-        style = method_style(row.method)
-        lower = row.rank_median - row.rank_q25
-        upper = row.rank_q75 - row.rank_median
-        ax.errorbar(
-            row.time_mean,
-            row.rank_median,
-            yerr=np.array([[lower], [upper]]),
-            color=style.color,
-            marker=style.marker,
-            markersize=max(style.markersize, 5.0),
-            markerfacecolor=style.color,
-            markeredgecolor="white",
-            markeredgewidth=0.55,
-            linestyle="none",
-            linewidth=1.15,
-            capsize=2.5,
-            zorder=style.zorder + 1,
-            alpha=style.alpha,
+    if set(summary["family"]) != set(FAMILIES):
+        raise ValueError(
+            f"speed/rank figure requires mechanism families {FAMILIES}, "
+            f"got {sorted(summary['family'].unique())}"
         )
 
-        post = row.time_post_tune_mean
-        if np.isfinite(post) and post < row.time_mean * (1.0 - 1e-3):
-            ax.plot(
-                [post, row.time_mean],
-                [row.rank_median, row.rank_median],
-                color=style.color,
-                linestyle=":",
-                linewidth=0.9,
-                alpha=0.7,
-                zorder=style.zorder,
-            )
-            ax.plot(
-                post,
+    methods = ordered_methods(set(summary["method"]))
+    apply_style()
+    fig, axes = plt.subplots(
+        1, 2, figsize=speed_rank_figsize(), sharex=True, sharey=True
+    )
+    panel_labels = []
+    for ax, family in zip(axes, FAMILIES):
+        panel = summary[summary["family"].eq(family)]
+        panel = panel.set_index("method").loc[methods].reset_index()
+        labels = []
+        for row in panel.itertuples():
+            style = method_style(row.method)
+            lower = row.rank_median - row.rank_q25
+            upper = row.rank_q75 - row.rank_median
+            ax.errorbar(
+                row.time_mean,
                 row.rank_median,
+                yerr=np.array([[lower], [upper]]),
                 color=style.color,
                 marker=style.marker,
                 markersize=max(style.markersize, 5.0),
-                markerfacecolor="white",
-                markeredgewidth=1.1,
+                markerfacecolor=style.color,
+                markeredgecolor="white",
+                markeredgewidth=0.55,
                 linestyle="none",
-                zorder=style.zorder + 2,
+                linewidth=1.15,
+                capsize=2.5,
+                zorder=style.zorder + 1,
+                alpha=style.alpha,
             )
 
-        labels.append(
-            ax.annotate(
-                style.label,
-                (row.time_mean, row.rank_median),
-                xytext=(5, 0),
-                textcoords="offset points",
-                color=style.color,
-                fontsize=7.1,
-                va="center",
-                clip_on=False,
-            )
-        )
+            post = row.time_post_tune_mean
+            if np.isfinite(post) and post < row.time_mean * (1.0 - 1e-3):
+                ax.plot(
+                    [post, row.time_mean],
+                    [row.rank_median, row.rank_median],
+                    color=style.color,
+                    linestyle=":",
+                    linewidth=0.9,
+                    alpha=0.7,
+                    zorder=style.zorder,
+                )
+                ax.plot(
+                    post,
+                    row.rank_median,
+                    color=style.color,
+                    marker=style.marker,
+                    markersize=max(style.markersize, 5.0),
+                    markerfacecolor="white",
+                    markeredgewidth=1.1,
+                    linestyle="none",
+                    zorder=style.zorder + 2,
+                )
 
-    n_methods = len(summary)
+            labels.append(
+                ax.annotate(
+                    style.label,
+                    (row.time_mean, row.rank_median),
+                    xytext=(5, 0),
+                    textcoords="offset points",
+                    color=style.color,
+                    fontsize=6.8,
+                    va="center",
+                    clip_on=False,
+                )
+            )
+
+        ax.set_xscale("log")
+        ax.set_title(f"{family.capitalize()} mechanisms")
+        ax.set_xlabel("Mean runtime (seconds per episode, log scale)")
+        panel_labels.append(labels)
+
     context_size = int(summary["n_ctx"].iloc[0])
-    ax.set_xscale("log")
-    ax.set_xlabel("Mean runtime per episode (seconds, log scale)")
-    ax.set_ylabel("CATE nPEHE rank (median and IQR)")
-    ax.set_ylim(n_methods + 0.75, 0.25)
-    ax.set_yticks(range(1, n_methods + 1))
-    ax.set_title(f"Speed–accuracy trade-off at context size {context_size:,}")
+    axes[0].set_ylim(len(methods) + 0.75, 0.25)
+    axes[0].set_yticks(range(1, len(methods) + 1))
+    fig.supylabel("CATE nPEHE rank (median and IQR)")
+    fig.suptitle(f"Speed–accuracy trade-off at context size {context_size:,}")
+    for ax, labels in zip(axes, panel_labels):
+        place_point_labels(fig, ax, labels)
 
     handles = [
         Line2D(
@@ -146,8 +162,12 @@ def make_speed_rank_figure(summary: pd.DataFrame):
                 label="Post-selection runtime",
             )
         )
-    ax.legend(handles=handles, loc="lower right")
-    place_point_labels(fig, ax, labels)
+    fig.legend(
+        handles=handles,
+        loc="outside lower center",
+        ncol=len(handles),
+        columnspacing=1.5,
+    )
     return fig
 
 
@@ -189,18 +209,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     fig = make_speed_rank_figure(summary)
     paths = save_figure(fig, args.out_dir, args.name)
 
+    block_counts = ", ".join(
+        f"{family}={int(group['n_blocks'].iloc[0])}"
+        for family, group in summary.groupby("family", sort=False)
+    )
     print(
-        f"Ranked {len(summary)} methods over {int(summary['n_blocks'].iloc[0])} "
-        f"paired blocks at n_ctx={int(summary['n_ctx'].iloc[0])}."
+        f"Ranked {summary['method'].nunique()} methods separately by mechanism "
+        f"({block_counts} paired blocks) at n_ctx={int(summary['n_ctx'].iloc[0])}."
     )
     if args.methods is None and incomplete:
         print(
             "Excluded methods without complete factorial/context coverage: "
             + ", ".join(sorted(incomplete))
         )
-    missing_post = summary.loc[
-        ~np.isfinite(summary["time_post_tune_mean"]), "method"
-    ].tolist()
+    missing_post = sorted(
+        set(
+            summary.loc[~np.isfinite(summary["time_post_tune_mean"]), "method"].tolist()
+        )
+    )
     if missing_post:
         print(
             "Post-selection timing unavailable for: "

@@ -81,6 +81,28 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "CausalPFN": MethodStyle(
         "CausalPFN", COLORS["blue"], "X", linewidth=1.75, zorder=3
     ),
+    "CausalFM": MethodStyle(
+        "CausalFM", COLORS["blue"], "X", linewidth=1.75, zorder=3, alpha=0.9
+    ),
+    "DoPFN": MethodStyle(
+        "DoPFN", COLORS["blue"], "X", linewidth=1.75, zorder=3, alpha=0.9
+    ),
+    "KPV-X-Wcond": MethodStyle(
+        "KPV-X-Wcond", COLORS["green"], "v", linewidth=1.75, zorder=3
+    ),
+    "KPV-X-Wind": MethodStyle(
+        "KPV-X-Wind", COLORS["green"], "^", linewidth=1.75, zorder=3
+    ),
+    "PMMR-X-Wcond": MethodStyle(
+        "PMMR-X-Wcond", COLORS["green"], "v", linewidth=1.75, zorder=3
+    ),
+    "PMMR-X-Wind": MethodStyle(
+        "PMMR-X-Wind", COLORS["green"], "^", linewidth=1.75, zorder=3
+    ),
+    "S-RF-WZ-Kernel-128": MethodStyle("S-RF-WZ-Kernel-128", COLORS["grey"], "s", "--"),
+    "S-RF-WZ-kNN-128": MethodStyle("S-RF-WZ-kNN-128", COLORS["grey"], "s", ":"),
+    "T-TabICL": MethodStyle("T-TabICL", COLORS["grey"], "o", "--"),
+    "X-TabICL": MethodStyle("X-TabICL", COLORS["grey"], "o", ":"),
     "ProximalFM": MethodStyle(
         "ProximalFM",
         COLORS["vermillion"],
@@ -158,5 +180,5 @@ def decomposition_figsize() -> tuple[float, float]:
 
 
 def speed_rank_figsize() -> tuple[float, float]:
-    """Final canvas size for the single-panel speed--accuracy comparison."""
-    return TEXT_WIDTH_IN, 4.35
+    """Final canvas size for the two-mechanism speed--accuracy comparison."""
+    return FULL_PAGE_WIDTH_IN, 6.0

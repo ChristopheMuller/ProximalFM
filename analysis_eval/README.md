@@ -83,11 +83,13 @@ uv run python -m analysis_eval.speed_rank
 ```
 
 This writes `analysis_eval/results/semisynt_speed_rank.{pdf,png}`. At the
-largest available context size (2048 in the production matrix), every method's
-CATE nPEHE is ranked within each `(factorial cell, episode)` block. The y-axis
-shows the median of those paired ranks with an interquartile whisker, while the
-x-axis shows mean wall-clock seconds per episode on a log scale. Thus the
-upper-left is better.
+largest available context size (2048 in the production matrix), separate
+linear- and nonlinear-mechanism panels rank every method within each
+`(factorial cell, episode)` block. Each panel therefore summarizes four
+confounding/proxy cells independently rather than inheriting ranks from a
+pooled eight-cell comparison. The y-axis shows median paired rank with an
+interquartile whisker; the x-axis shows mean wall-clock seconds per episode on
+a shared log scale. Thus the upper-left is better.
 
 A filled marker uses the complete measured runtime: estimator construction,
 hyperparameter search, final fit, prediction, and diagnostics. For methods with
