@@ -31,6 +31,7 @@ class Episode:
     d_X: int
     d_W: int
     d_Z: int
+    source_row_indices: Tensor
 
 
 class CSVProximalDataset:
@@ -47,12 +48,10 @@ class CSVProximalDataset:
         *,
         mechanism: str,
         mechanism_config: CaseConfig,
-        row_sampling: str = "auto",
+        row_sampling: str = "without_replacement",
     ) -> None:
-        if row_sampling not in {"auto", "without_replacement", "bootstrap"}:
-            raise ValueError(
-                "row_sampling must be auto, without_replacement, or bootstrap"
-            )
+        if row_sampling != "without_replacement":
+            raise ValueError("row_sampling must be without_replacement")
         self.source = source
         self.name = f"real_csv:{source.path.stem}"
         self.mechanism_name = mechanism
@@ -70,7 +69,11 @@ class CSVProximalDataset:
         self.options: dict[str, Any] = {
             "source_file": source.path.name,
             "source_sha256": source.digest,
-            "source_rows": int(source.values.shape[0]),
+            "source_rows": len(source.calibration_row_indices)
+            + len(source.evaluation_row_indices),
+            "calibration_rows": len(source.calibration_row_indices),
+            "evaluation_rows": len(source.evaluation_row_indices),
+            "partition_seed": source.partition_seed,
             "encoded_columns": list(source.columns),
             "x_columns": list(source.x_columns),
             "u_columns": list(source.u_columns),
@@ -97,17 +100,12 @@ class CSVProximalDataset:
         return self.d_U
 
     def _sample_indices(self, n: int, rng: torch.Generator) -> Tensor:
-        n_source = int(self.source.values.shape[0])
-        replace = self.row_sampling == "bootstrap" or (
-            self.row_sampling == "auto" and n > n_source
-        )
-        if not replace and n > n_source:
+        n_source = int(self.source.evaluation_values.shape[0])
+        if n > n_source:
             raise ValueError(
-                f"{self.source.path.name} has {n_source} rows but episode needs {n}; "
-                "use row_sampling=auto or bootstrap"
+                f"{self.source.path.name} has {n_source} evaluation rows but "
+                f"episode needs {n}; reduce n_calibration or the episode size"
             )
-        if replace:
-            return torch.randint(n_source, (n,), generator=rng)
         return torch.randperm(n_source, generator=rng)[:n]
 
     def generate(self, *, seed: int, n_rows: int) -> Episode:
@@ -116,8 +114,11 @@ class CSVProximalDataset:
             raise ValueError("n_rows must be >= 2")
         rng = torch.Generator().manual_seed(int(seed))
         rows = self._sample_indices(n_rows, rng)
-        x = self.source.X[rows]
-        u = self.source.U[rows]
+        x = self.source.X_eval[rows]
+        u = self.source.U_eval[rows]
+        source_rows = torch.tensor(
+            self.source.evaluation_row_indices, dtype=torch.long
+        )[rows]
         mechanism = build_mechanism(
             self.mechanism_name,
             self.d_X,
@@ -174,4 +175,5 @@ class CSVProximalDataset:
             d_X=self.d_X,
             d_W=self.d_W,
             d_Z=self.d_Z,
+            source_row_indices=source_rows,
         )

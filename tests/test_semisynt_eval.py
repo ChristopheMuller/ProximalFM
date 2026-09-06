@@ -6,6 +6,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import torch
 import yaml
@@ -40,6 +41,12 @@ def _csv(path: Path, delimiter: str = ",") -> None:
         ("d", 8, "y", 9),
         ("e", 16, "z", ""),
         ("f", 32, "x", 12),
+        ("g", 64, "y", 15),
+        ("h", 128, "z", 18),
+        ("i", 256, "x", 21),
+        ("j", 512, "y", 24),
+        ("k", 1024, "z", 27),
+        ("l", 2048, "x", 30),
     )
     path.write_text(
         delimiter.join(("id", "numeric", "category", "missing", "constant"))
@@ -122,6 +129,8 @@ def test_row_split_has_only_context_and_query_spelling():
     args = parse_args(["--list"])
     assert args.n_context == 2048
     assert args.n_query == 256
+    assert args.n_calibration == 1000
+    assert args.row_sampling == "without_replacement"
     for removed in ("seq_len", "prop_train", "n_max", "n_q"):
         assert not hasattr(args, removed)
     with pytest.raises(SystemExit):
@@ -285,12 +294,53 @@ def test_csv_discovery_encoding_and_split_are_deterministic(tmp_path):
     _csv(path, "\t")
     assert discover_csvs(tmp_path) == [path]
     assert resolve_csv("arbitrary", tmp_path) == path.resolve()
-    first = load_csv(path, split_seed=19, n_features_x=2, n_features_u=2)
-    second = load_csv(path, split_seed=19, n_features_x=2, n_features_u=2)
+    first = load_csv(
+        path, split_seed=19, n_features_x=2, n_features_u=2, n_calibration=4
+    )
+    second = load_csv(
+        path, split_seed=19, n_features_x=2, n_features_u=2, n_calibration=4
+    )
     assert first.columns == second.columns
     assert torch.equal(first.values, second.values)
-    assert first.values.shape == (6, 4)
+    assert first.calibration_values.shape == (4, 4)
+    assert first.evaluation_values.shape == (8, 4)
     assert torch.isfinite(first.values).all()
+    assert set(first.calibration_row_indices).isdisjoint(first.evaluation_row_indices)
+    assert sorted(
+        (*first.calibration_row_indices, *first.evaluation_row_indices)
+    ) == list(range(12))
+
+
+def test_preprocessing_is_fitted_on_calibration_rows_only(tmp_path):
+    path = tmp_path / "source.csv"
+    _csv(path)
+    first = load_csv(
+        path, split_seed=23, n_features_x=2, n_features_u=2, n_calibration=4
+    )
+    frame = pd.read_csv(path)
+    evaluation = list(first.evaluation_row_indices)
+    frame.loc[evaluation, "numeric"] = 1e12
+    frame.loc[evaluation, "missing"] = -1e12
+    frame.loc[evaluation, "category"] = "evaluation-only"
+    frame.to_csv(path, index=False)
+    second = load_csv(
+        path, split_seed=23, n_features_x=2, n_features_u=2, n_calibration=4
+    )
+
+    assert second.calibration_row_indices == first.calibration_row_indices
+    assert second.evaluation_row_indices == first.evaluation_row_indices
+    assert second.preprocessing == first.preprocessing
+    torch.testing.assert_close(second.calibration_values, first.calibration_values)
+    assert not torch.equal(second.evaluation_values, first.evaluation_values)
+    torch.testing.assert_close(
+        first.calibration_values.mean(0), torch.zeros(4), atol=2e-6, rtol=0
+    )
+    torch.testing.assert_close(
+        first.calibration_values.std(0, unbiased=False),
+        torch.ones(4),
+        atol=2e-6,
+        rtol=0,
+    )
 
 
 def _tiny_build_args(csv: Path, out_root: Path, name: str, config: Path | None = None):
@@ -305,9 +355,11 @@ def _tiny_build_args(csv: Path, out_root: Path, name: str, config: Path | None =
             "--name",
             name,
             "--n_context",
-            "8",
+            "4",
             "--n_query",
-            "3",
+            "2",
+            "--n_calibration",
+            "4",
             "--replicates_per_csv",
             "1",
             "--datasets_per_file",
@@ -333,12 +385,28 @@ def test_matrix_build_writes_eight_paired_benchmark_sets_and_replays(tmp_path):
     for case_root in case_roots:
         manifest = json.loads((case_root / "manifest.json").read_text())
         data = load_benchmark_from_val_dir(case_root / "val")
-        assert data["true_CATEs"].shape == (1, 3)
+        assert data["true_CATEs"].shape == (1, 2)
         assert manifest["episodes"][0]["pair_id"] == "source.csv:0"
         batch_path = next((case_root / "val").glob("batch_*.pt"))
         batches.append(torch.load(batch_path, weights_only=True))
     assert all(torch.equal(batches[0]["X"], batch["X"]) for batch in batches[1:])
     assert all(torch.equal(batches[0]["U"], batch["U"]) for batch in batches[1:])
+
+    source_partition = matrix["sources"][0]
+    calibration_rows = set(source_partition["calibration_row_indices"])
+    evaluation_rows = set(source_partition["evaluation_row_indices"])
+    assert calibration_rows.isdisjoint(evaluation_rows)
+    assert calibration_rows | evaluation_rows == set(range(12))
+    assert len(calibration_rows) == 4
+    assert all(
+        json.loads((case_root / "manifest.json").read_text())["episodes"][0][
+            "source_row_indices_sha256"
+        ]
+        == json.loads((case_roots[0] / "manifest.json").read_text())["episodes"][0][
+            "source_row_indices_sha256"
+        ]
+        for case_root in case_roots
+    )
 
     original = case_roots[0]
     replay = build(_tiny_build_args(csv, tmp_path, "replay", original / "config.yaml"))
@@ -354,11 +422,23 @@ def test_matrix_build_writes_eight_paired_benchmark_sets_and_replays(tmp_path):
 def test_generated_dataset_applies_final_overlap_clamp(tmp_path):
     csv = tmp_path / "source.csv"
     _csv(csv)
-    source = load_csv(csv, n_features_x=2, n_features_u=2)
+    source = load_csv(csv, n_features_x=2, n_features_u=2, n_calibration=4)
     case = _configs()["nonlinear_conf_high_proxy_low"]
     dataset = CSVProximalDataset(source, mechanism=case.family, mechanism_config=case)
-    episode = dataset.generate(seed=3, n_rows=100)
+    episode = dataset.generate(seed=3, n_rows=8)
     epsilon = case.a.overlap_epsilon
     assert torch.all(episode.A_probs >= epsilon)
     assert torch.all(episode.A_probs <= 1 - epsilon)
     torch.testing.assert_close(episode.Y1 - episode.Y0, episode.CATE)
+    assert set(episode.source_row_indices.tolist()).isdisjoint(
+        source.calibration_row_indices
+    )
+
+
+def test_build_rejects_source_too_small_for_fixed_partitions(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    args = _tiny_build_args(csv, tmp_path, "undersized")
+    args.n_calibration = 8
+    with pytest.raises(ValueError, match=r"require at least 14 source rows; found 12"):
+        build(args)

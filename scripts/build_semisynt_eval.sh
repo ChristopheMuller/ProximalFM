@@ -29,6 +29,7 @@ N_QUERY=${N_QUERY:-256}
 REPLICATES_PER_CSV=${REPLICATES_PER_CSV:-4}
 N_FEATURES_X=${N_FEATURES_X:-5}
 N_FEATURES_U=${N_FEATURES_U:-5}
+N_CALIBRATION=${N_CALIBRATION:-1000}
 SPLIT_SEED=${SPLIT_SEED:-1234}
 SEED=${SEED:-1234}
 
@@ -45,6 +46,7 @@ command=(
   --replicates_per_csv "${REPLICATES_PER_CSV}"
   --n_features_x "${N_FEATURES_X}"
   --n_features_u "${N_FEATURES_U}"
+  --n_calibration "${N_CALIBRATION}"
   --split_seed "${SPLIT_SEED}"
   --seed "${SEED}"
 )
@@ -62,6 +64,7 @@ echo "  csv                    = ${CSV}"
 echo "  n_context/n_query      = ${N_CONTEXT}/${N_QUERY}"
 echo "  replicates/source/case = ${REPLICATES_PER_CSV}"
 echo "  n_features_x/u         = ${N_FEATURES_X}/${N_FEATURES_U}"
+echo "  calibration rows       = ${N_CALIBRATION}"
 echo "  split_seed/seed        = ${SPLIT_SEED}/${SEED}"
 echo
 

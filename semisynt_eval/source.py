@@ -1,10 +1,10 @@
 """Generic, deterministic CSV ingestion for semi-synthetic evaluation sets.
 
-Every usable source column is converted to one finite floating-point column.
-Numeric columns are median-imputed; categorical columns use stable sorted
-category codes.  The resulting columns are standardized against the complete
-CSV, which is the fixed empirical population from which episodes are sampled.
-The benchmark independently standardizes each episode from its context prefix.
+Rows are partitioned before any data-dependent preprocessing.  A fixed
+calibration partition fits numeric imputation, clipping and standardization and
+categorical encodings; episodes are sampled only from the disjoint evaluation
+partition.  The benchmark independently standardizes each generated episode
+from its context prefix.
 
 The automatic X/U split is intentionally schema-driven rather than tied to any
 named dataset.  Explicit column lists are supported for scientifically chosen
@@ -28,24 +28,52 @@ DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "datasets"
 
 @dataclass(frozen=True)
 class PreparedCSV:
-    """Finite standardized rows and their deterministic X/U partition."""
+    """Calibration/evaluation pools and their deterministic X/U partition."""
 
     path: Path
     digest: str
-    values: Tensor
+    calibration_values: Tensor
+    evaluation_values: Tensor
     columns: tuple[str, ...]
     x_indices: tuple[int, ...]
     u_indices: tuple[int, ...]
     x_columns: tuple[str, ...]
     u_columns: tuple[str, ...]
+    calibration_row_indices: tuple[int, ...]
+    evaluation_row_indices: tuple[int, ...]
+    partition_seed: int
+    preprocessing: dict[str, dict]
+
+    @property
+    def X_cal(self) -> Tensor:
+        return self.calibration_values[:, self.x_indices]
+
+    @property
+    def U_cal(self) -> Tensor:
+        return self.calibration_values[:, self.u_indices]
+
+    @property
+    def X_eval(self) -> Tensor:
+        return self.evaluation_values[:, self.x_indices]
+
+    @property
+    def U_eval(self) -> Tensor:
+        return self.evaluation_values[:, self.u_indices]
+
+    @property
+    def values(self) -> Tensor:
+        """Evaluation values retained as a compatibility alias."""
+        return self.evaluation_values
 
     @property
     def X(self) -> Tensor:
-        return self.values[:, self.x_indices]
+        """Evaluation X retained as a compatibility alias."""
+        return self.X_eval
 
     @property
     def U(self) -> Tensor:
-        return self.values[:, self.u_indices]
+        """Evaluation U retained as a compatibility alias."""
+        return self.U_eval
 
 
 def discover_csvs(data_dir: str | Path = DEFAULT_DATA_DIR) -> list[Path]:
@@ -91,28 +119,107 @@ def _stable_order(columns: Iterable[str], split_seed: int) -> list[str]:
     return sorted(columns, key=key)
 
 
-def _encode_column(series: pd.Series) -> Optional[Tensor]:
-    """Encode one raw column to one float column, or drop it if constant."""
-    numeric = pd.to_numeric(series, errors="coerce")
-    non_missing = int(series.notna().sum())
-    numeric_share = float(numeric.notna().sum()) / max(non_missing, 1)
+def _partition_seed(split_seed: int, source_name: str) -> int:
+    token = f"{int(split_seed)}\0{source_name}\0row_partition".encode("utf-8")
+    return int.from_bytes(hashlib.sha256(token).digest()[:8], "little") & (2**63 - 1)
+
+
+def _partition_rows(
+    n_rows: int, n_calibration: int, split_seed: int, source_name: str
+) -> tuple[tuple[int, ...], tuple[int, ...], int]:
+    if n_calibration < 1:
+        raise ValueError("n_calibration must be >= 1")
+    if n_rows <= n_calibration:
+        raise ValueError(
+            f"{source_name}: has {n_rows} rows but n_calibration={n_calibration} "
+            "leaves no evaluation rows"
+        )
+    seed = _partition_seed(split_seed, source_name)
+    order = torch.randperm(n_rows, generator=torch.Generator().manual_seed(seed))
+    calibration = tuple(sorted(int(i) for i in order[:n_calibration]))
+    evaluation = tuple(sorted(int(i) for i in order[n_calibration:]))
+    return calibration, evaluation, seed
+
+
+def _standardize(
+    calibration: Tensor, evaluation: Tensor
+) -> tuple[Tensor, Tensor, float, float]:
+    mean = calibration.mean()
+    std = calibration.std(unbiased=False)
+    if not torch.isfinite(calibration).all() or not torch.isfinite(std) or std <= 1e-12:
+        raise ValueError("calibration column is non-finite or constant")
+    return (
+        ((calibration - mean) / std).float(),
+        ((evaluation - mean) / std).float(),
+        float(mean),
+        float(std),
+    )
+
+
+def _encode_column(
+    series: pd.Series,
+    calibration_rows: tuple[int, ...],
+    evaluation_rows: tuple[int, ...],
+) -> Optional[tuple[Tensor, Tensor, dict]]:
+    """Fit one column on calibration rows and transform both partitions."""
+    calibration_series = series.iloc[list(calibration_rows)]
+    numeric_cal = pd.to_numeric(calibration_series, errors="coerce")
+    non_missing = int(calibration_series.notna().sum())
+    numeric_share = float(numeric_cal.notna().sum()) / max(non_missing, 1)
     if pd.api.types.is_numeric_dtype(series) or numeric_share >= 0.95:
-        values = numeric.astype(float)
-        finite = values.replace([float("inf"), float("-inf")], pd.NA)
-        fill = finite.median()
+        numeric = pd.to_numeric(series, errors="coerce").astype(float)
+        finite = numeric.replace([float("inf"), float("-inf")], pd.NA)
+        cal_finite = finite.iloc[list(calibration_rows)]
+        fill = cal_finite.median()
         if pd.isna(fill):
             return None
-        array = torch.as_tensor(finite.fillna(fill).to_numpy(dtype="float64"))
+        filled = finite.fillna(fill)
+        cal_filled = filled.iloc[list(calibration_rows)]
+        clip_low = float(cal_filled.quantile(0.005))
+        clip_high = float(cal_filled.quantile(0.995))
+        clipped = filled.clip(lower=clip_low, upper=clip_high)
+        calibration = torch.as_tensor(
+            clipped.iloc[list(calibration_rows)].to_numpy(dtype="float64")
+        )
+        evaluation = torch.as_tensor(
+            clipped.iloc[list(evaluation_rows)].to_numpy(dtype="float64")
+        )
+        try:
+            calibration, evaluation, mean, std = _standardize(calibration, evaluation)
+        except ValueError:
+            return None
+        metadata = {
+            "kind": "numeric",
+            "imputation_median": float(fill),
+            "clip_low": clip_low,
+            "clip_high": clip_high,
+            "mean": mean,
+            "std": std,
+        }
     else:
         text = series.astype("string").fillna("<MISSING>")
-        categories = sorted(text.unique().tolist())
+        cal_text = text.iloc[list(calibration_rows)]
+        categories = sorted(cal_text.unique().tolist())
         mapping = {category: i for i, category in enumerate(categories)}
-        array = torch.tensor([mapping[value] for value in text], dtype=torch.float64)
-
-    std = array.std(unbiased=False)
-    if not torch.isfinite(array).all() or not torch.isfinite(std) or std <= 1e-12:
+        encoded = torch.tensor(
+            [mapping.get(value, -1) for value in text], dtype=torch.float64
+        )
+        calibration = encoded[list(calibration_rows)]
+        evaluation = encoded[list(evaluation_rows)]
+        try:
+            calibration, evaluation, mean, std = _standardize(calibration, evaluation)
+        except ValueError:
+            return None
+        metadata = {
+            "kind": "categorical",
+            "categories": categories,
+            "unknown_code": -1,
+            "mean": mean,
+            "std": std,
+        }
+    if not torch.isfinite(evaluation).all():
         return None
-    return ((array - array.mean()) / std).float()
+    return calibration, evaluation, metadata
 
 
 def _read_frame(path: Path) -> pd.DataFrame:
@@ -145,6 +252,7 @@ def load_csv(
     drop_columns: Optional[str | Sequence[str]] = None,
     n_features_x: int = 7,
     n_features_u: int = 5,
+    n_calibration: int = 1000,
     split_seed: int = 0,
 ) -> PreparedCSV:
     """Load any tabular CSV and deterministically split its features into X/U.
@@ -158,6 +266,9 @@ def load_csv(
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     frame = _read_frame(path)
     frame.columns = [str(c).strip() for c in frame.columns]
+    calibration_rows, evaluation_rows, partition_seed = _partition_rows(
+        len(frame), n_calibration, split_seed, path.name
+    )
 
     drops = set(_parse_columns(drop_columns) or [])
     missing_drops = drops - set(frame.columns)
@@ -166,10 +277,10 @@ def load_csv(
             f"{path.name}: unknown --drop_columns: {sorted(missing_drops)}"
         )
 
-    encoded: dict[str, Tensor] = {}
+    encoded: dict[str, tuple[Tensor, Tensor, dict]] = {}
     for column in frame.columns:
         if column not in drops:
-            values = _encode_column(frame[column])
+            values = _encode_column(frame[column], calibration_rows, evaluation_rows)
             if values is not None:
                 encoded[column] = values
     if n_features_x < 1 or n_features_u < 1:
@@ -213,15 +324,21 @@ def load_csv(
         u_names = selected[:n_features_u]
         x_names = selected[n_features_u:]
 
-    values = torch.stack([encoded[c] for c in selected], dim=1)
+    calibration_values = torch.stack([encoded[c][0] for c in selected], dim=1)
+    evaluation_values = torch.stack([encoded[c][1] for c in selected], dim=1)
     positions = {column: i for i, column in enumerate(selected)}
     return PreparedCSV(
         path=path,
         digest=digest,
-        values=values,
+        calibration_values=calibration_values,
+        evaluation_values=evaluation_values,
         columns=tuple(selected),
         x_indices=tuple(positions[c] for c in x_names),
         u_indices=tuple(positions[c] for c in u_names),
         x_columns=tuple(x_names),
         u_columns=tuple(u_names),
+        calibration_row_indices=calibration_rows,
+        evaluation_row_indices=evaluation_rows,
+        partition_seed=partition_seed,
+        preprocessing={column: encoded[column][2] for column in selected},
     )

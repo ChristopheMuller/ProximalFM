@@ -75,11 +75,21 @@ SHA-256 values, resolved case settings, paired episode IDs, and content digests
 are recorded in the manifests. `--force` replaces only builder-owned files.
 
 Every `*.csv` directly in `semisynt_eval/datasets/` is discovered in stable
-filename order. Numeric values are median-imputed, categorical values use
-stable sorted codes, and all usable columns are standardized over the complete
-CSV. Without explicit `--x_columns` and `--u_columns`, a stable hash split
-selects the requested number of X and U columns. `replicates_per_csv` means
-independently seeded benchmark episodes, not Monte Carlo rows.
+filename order. Before any data-dependent preprocessing, `n_calibration`
+(default 1,000) rows are selected deterministically for that source. Numeric
+imputation medians, 0.5th/99.5th-percentile clipping thresholds, categorical
+codes, and standardization constants are fitted on those rows only. The
+remaining rows form the evaluation pool. Without explicit `--x_columns` and
+`--u_columns`, a stable hash split selects the requested number of X and U
+columns from features that have positive calibration variance.
+
+Every context/query episode is sampled without replacement exclusively from
+the evaluation pool. Calibration rows are fixed per source and shared by all
+replicates and cases; they never appear in an episode. A source must therefore
+contain at least `n_calibration + n_context + n_query` usable rows. Partition
+seeds, source-row identities, preprocessing constants, and episode row hashes
+are recorded in the manifests. `replicates_per_csv` means independently seeded
+benchmark episodes, not Monte Carlo rows.
 
 The row split has one spelling: `n_context` context rows plus `n_query` query
 rows. The total episode size is derived as their sum; there is no `seq_len` or

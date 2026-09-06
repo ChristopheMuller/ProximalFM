@@ -32,6 +32,7 @@ BUILD_CONFIG_FIELDS = (
     "drop_columns",
     "n_features_x",
     "n_features_u",
+    "n_calibration",
     "split_seed",
     "row_sampling",
     "replicates_per_csv",
@@ -56,8 +57,18 @@ def _load_sources(args: argparse.Namespace) -> list[PreparedCSV]:
             drop_columns=args.drop_columns,
             n_features_x=args.n_features_x,
             n_features_u=args.n_features_u,
+            n_calibration=args.n_calibration,
             split_seed=args.split_seed,
         )
+        n_episode = args.n_context + args.n_query
+        if len(source.evaluation_row_indices) < n_episode:
+            raise ValueError(
+                f"{source.path.name}: {len(source.calibration_row_indices)} "
+                f"calibration rows plus an episode of {n_episode} rows require "
+                f"at least {len(source.calibration_row_indices) + n_episode} "
+                f"source rows; found "
+                f"{len(source.calibration_row_indices) + len(source.evaluation_row_indices)}"
+            )
         expected = args._expected_source_sha256.get(source.path.name)
         if expected not in (None, source.digest):
             raise ValueError(
@@ -103,7 +114,9 @@ def generate_episodes(
         for replicate in range(replicates_per_csv):
             pair_index = source_index * replicates_per_csv + replicate
             episode_seed = int(seed) + 1_000 * pair_index
-            episodes.append(dataset.generate(seed=episode_seed, n_rows=n_rows))
+            episode = dataset.generate(seed=episode_seed, n_rows=n_rows)
+            episodes.append(episode)
+            row_bytes = episode.source_row_indices.numpy().astype("<i8").tobytes()
             records.append(
                 {
                     "pair_id": f"{dataset.source.path.name}:{replicate}",
@@ -112,6 +125,7 @@ def generate_episodes(
                     "family": dataset.mechanism_name,
                     "replicate": replicate,
                     "seed": episode_seed,
+                    "source_row_indices_sha256": hashlib.sha256(row_bytes).hexdigest(),
                 }
             )
     return episodes, records
@@ -212,19 +226,41 @@ def _case_payload(case: CaseConfig) -> dict:
     return value
 
 
-def _source_payload(sources: Sequence[PreparedCSV]) -> list[dict]:
-    return [
-        {
+def _row_indices_sha256(indices: tuple[int, ...]) -> str:
+    values = torch.tensor(indices, dtype=torch.int64).numpy().astype("<i8")
+    return hashlib.sha256(values.tobytes()).hexdigest()
+
+
+def _source_payload(
+    sources: Sequence[PreparedCSV], *, include_row_indices: bool = False
+) -> list[dict]:
+    payload = []
+    for source in sources:
+        item = {
             "file": source.path.name,
             "path": str(source.path),
             "sha256": source.digest,
-            "rows": int(source.values.shape[0]),
+            "rows": len(source.calibration_row_indices)
+            + len(source.evaluation_row_indices),
+            "n_calibration": len(source.calibration_row_indices),
+            "n_evaluation": len(source.evaluation_row_indices),
+            "partition_seed": source.partition_seed,
+            "calibration_row_indices_sha256": _row_indices_sha256(
+                source.calibration_row_indices
+            ),
+            "evaluation_row_indices_sha256": _row_indices_sha256(
+                source.evaluation_row_indices
+            ),
             "encoded_columns": list(source.columns),
             "x_columns": list(source.x_columns),
             "u_columns": list(source.u_columns),
+            "preprocessing": source.preprocessing,
         }
-        for source in sources
-    ]
+        if include_row_indices:
+            item["calibration_row_indices"] = list(source.calibration_row_indices)
+            item["evaluation_row_indices"] = list(source.evaluation_row_indices)
+        payload.append(item)
+    return payload
 
 
 def _content_digest(
@@ -383,7 +419,7 @@ def build(args: argparse.Namespace) -> Path:
         "content_digest": hashlib.sha256(
             json.dumps(matrix_identity, sort_keys=True).encode()
         ).hexdigest()[:16],
-        "sources": _source_payload(sources),
+        "sources": _source_payload(sources, include_row_indices=True),
         "cases": generated,
         "cli_command": cli_command,
     }
@@ -422,10 +458,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drop_columns")
     parser.add_argument("--n_features_x", type=int)
     parser.add_argument("--n_features_u", type=int)
+    parser.add_argument("--n_calibration", type=int)
     parser.add_argument("--split_seed", type=int)
-    parser.add_argument(
-        "--row_sampling", choices=("auto", "without_replacement", "bootstrap")
-    )
+    parser.add_argument("--row_sampling", choices=("without_replacement",))
     parser.add_argument("--replicates_per_csv", type=int)
     parser.add_argument("--n_context", type=int)
     parser.add_argument("--n_query", type=int)
@@ -502,6 +537,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         parser.error("--replicates_per_csv must be >= 1")
     if args.n_context < 1 or args.n_query < 1:
         parser.error("--n_context and --n_query must both be >= 1")
+    if args.n_calibration < 1:
+        parser.error("--n_calibration must be >= 1")
     return args
 
 
