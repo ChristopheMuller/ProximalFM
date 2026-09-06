@@ -1,8 +1,10 @@
-"""Contracts for the format-v5 semi-synthetic mechanism matrix."""
+"""Contracts for the semi-synthetic mechanism matrix."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -11,7 +13,14 @@ import yaml
 
 import semisynt_eval.mechanisms.base as mechanism_base
 from semisynt_eval._config import NONLINEAR_TRANSFORMS, load_case_configs
-from semisynt_eval.build import DEFAULT_CONFIG_PATH, build, parse_args
+from semisynt_eval.build import (
+    DEFAULT_CONFIG_PATH,
+    _case_payload,
+    _content_digest,
+    _resolved_recipe,
+    build,
+    parse_args,
+)
 from semisynt_eval.source import discover_csvs, load_csv, resolve_csv
 
 
@@ -51,7 +60,6 @@ def test_default_recipe_resolves_complete_calibrated_latent_proxy_matrix():
     configs = _configs()
     assert len(configs) == 8
     assert {case.mechanism for case in configs.values()} == {"calibrated_latent_proxy"}
-    assert {case.mechanism_version for case in configs.values()} == {"1.0.0"}
     assert {
         (case.family, case.confounding, case.proxy) for case in configs.values()
     } == {
@@ -104,6 +112,46 @@ def test_yaml_values_are_resolved_without_hidden_python_defaults():
     assert configs["linear_conf_low_proxy_low"].latent.innovation_sd == 0.4
     assert configs["linear_conf_low_proxy_low"].alpha == 0.7
     assert configs["linear_conf_low_proxy_high"].reliability == 0.9
+
+
+def test_resolved_settings_are_serialized_in_generated_case_configs():
+    args = parse_args(["--list"])
+    case = args._case_configs["nonlinear_conf_high_proxy_low"]
+    payload = _case_payload(case)
+    recipe = _resolved_recipe(args, [])
+
+    assert payload["mechanism"] == "calibrated_latent_proxy"
+    assert payload["family"] == "nonlinear"
+    assert payload["alpha"] == 1.25
+    assert payload["gamma"] == 1.5
+    assert payload["reliability"] == 0.2
+    assert payload["latent"]["whitening_ridge"] == 0.05
+    assert payload["treatment"]["propensity_lower"] == 0.02
+    assert recipe["resolved_cases"][case.name] == payload
+
+
+def test_content_digest_includes_resolved_settings():
+    args = parse_args(["--list"])
+    case = args._case_configs["linear_conf_low_proxy_low"]
+    datasets = [SimpleNamespace(options={"source": "fixture"})]
+    baseline = _content_digest(args, case, datasets)
+
+    changed_ridge = replace(
+        case,
+        latent=replace(case.latent, whitening_ridge=case.latent.whitening_ridge + 0.01),
+    )
+    assert _content_digest(args, changed_ridge, datasets) != baseline
+
+
+def test_generated_recipe_rejects_stale_resolved_case_snapshot(tmp_path):
+    args = parse_args(["--list"])
+    recipe = _resolved_recipe(args, [])
+    recipe["resolved_cases"]["linear_conf_low_proxy_low"]["alpha"] = 99
+    path = tmp_path / "stale.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+
+    with pytest.raises(ValueError, match="resolved_cases does not match"):
+        parse_args(["--config", str(path), "--list"])
 
 
 def test_resolved_cases_do_not_expose_random_basis_fields():
@@ -232,31 +280,6 @@ def test_shared_mechanism_base_contains_no_random_basis_machinery():
         "normalize_columns",
     ):
         assert not hasattr(mechanism_base, name)
-
-
-def test_format_v3_is_rejected_with_migration_message(tmp_path):
-    recipe = _recipe()
-    recipe["format_version"] = 3
-    path = tmp_path / "legacy.yaml"
-    path.write_text(yaml.safe_dump(recipe))
-    with pytest.raises(ValueError, match="migrate.*common/cases"):
-        parse_args(["--config", str(path), "--list"])
-
-
-def test_format_v4_is_rejected_with_scientific_migration_message(tmp_path):
-    recipe = _recipe()
-    recipe["format_version"] = 4
-    path = tmp_path / "legacy_random_basis.yaml"
-    path.write_text(yaml.safe_dump(recipe))
-    with pytest.raises(
-        ValueError,
-        match=(
-            r"format_version 4.*legacy random-basis causal semantics.*"
-            r"native calibrated_latent_proxy schema.*"
-            r"changing only the format_version number"
-        ),
-    ):
-        parse_args(["--config", str(path), "--list"])
 
 
 def test_row_split_has_only_context_and_query_spelling():

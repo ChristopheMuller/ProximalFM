@@ -1,7 +1,5 @@
-# Authoritative format-v5 recipe. One invocation materializes every named case
+# Authoritative recipe. One invocation materializes every named case
 # below as an independent benchmark set under <out_root>/<name>/<case>/val.
-format_version: 5
-
 build:
   data_dir: semisynt_eval/datasets
   out_root: data/semisynt_eval
@@ -23,7 +21,6 @@ build:
 
 common:
   mechanism: calibrated_latent_proxy
-  mechanism_version: 1.0.0
   latent:
     innovation_sd: 0.5
     whitening_ridge: 0.05

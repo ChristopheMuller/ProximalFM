@@ -1,8 +1,8 @@
 """Retired random-basis SCM, quarantined pending deletion.
 
-This module preserves the pre-format-v5 implementation for comparison while
+This module preserves the retired implementation for comparison while
 the calibrated latent proxy mechanism is ported. It is not selectable by the
-format-v5 recipe. Nothing here belongs to the shared mechanism contract.
+current recipe. Nothing here belongs to the shared mechanism contract.
 """
 
 from __future__ import annotations

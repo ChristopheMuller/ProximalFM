@@ -1,4 +1,4 @@
-"""Build the format-v5 semi-synthetic mechanism matrix from empirical CSVs."""
+"""Build the semi-synthetic mechanism matrix from empirical CSVs."""
 
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv
 
-FORMAT_VERSION = 5
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
     "data_dir",
@@ -220,7 +219,9 @@ def save_validation(
 
 
 def _case_payload(case: CaseConfig) -> dict:
-    return asdict(case)
+    # Round-trip through JSON so tuples become plain lists and the same payload
+    # compares identically after JSON/YAML serialization and reload.
+    return json.loads(json.dumps(asdict(case), sort_keys=True))
 
 
 def _row_indices_sha256(indices: tuple[int, ...]) -> str:
@@ -266,7 +267,7 @@ def _content_digest(
     datasets: Sequence[CSVProximalDataset],
 ) -> str:
     payload = {
-        "format_version": FORMAT_VERSION,
+        "mechanism": case.mechanism,
         "case": _case_payload(case),
         "datasets": [dataset.options for dataset in datasets],
         "replicates_per_csv": args.replicates_per_csv,
@@ -287,10 +288,12 @@ def _build_values(args: argparse.Namespace) -> dict:
 
 def _resolved_recipe(args: argparse.Namespace, sources: Sequence[PreparedCSV]) -> dict:
     return {
-        "format_version": FORMAT_VERSION,
         "build": _build_values(args),
         "common": args._raw_common,
         "cases": args._raw_cases,
+        "resolved_cases": {
+            name: _case_payload(case) for name, case in args._case_configs.items()
+        },
         "sources": [
             {"file": source.path.name, "sha256": source.digest} for source in sources
         ],
@@ -367,10 +370,10 @@ def build(args: argparse.Namespace) -> Path:
             cli_command=cli_command,
         )
         manifest = {
-            "format_version": FORMAT_VERSION,
             "content_digest": digest,
             "matrix_name": args.name,
             "case": case.name,
+            "mechanism": case.mechanism,
             "case_config": _case_payload(case),
             "sources": _source_payload(sources),
             "target_kind": datasets[0].target_capability,
@@ -392,6 +395,7 @@ def build(args: argparse.Namespace) -> Path:
                 "case": case.name,
                 "mechanism": case.mechanism,
                 "family": case.family,
+                "case_config": _case_payload(case),
                 "content_digest": digest,
                 "val_dir": str((case_root / "val").resolve()),
                 "pair_ids": [record["pair_id"] for record in records],
@@ -403,14 +407,15 @@ def build(args: argparse.Namespace) -> Path:
             "case": item["case"],
             "mechanism": item["mechanism"],
             "family": item["family"],
+            "case_config": item["case_config"],
             "content_digest": item["content_digest"],
             "pair_ids": item["pair_ids"],
         }
         for item in generated
     ]
     matrix_payload = {
-        "format_version": FORMAT_VERSION,
         "name": args.name,
+        "mechanisms": sorted({item["mechanism"] for item in generated}),
         "content_digest": hashlib.sha256(
             json.dumps(matrix_identity, sort_keys=True).encode()
         ).hexdigest()[:16],
@@ -420,10 +425,12 @@ def build(args: argparse.Namespace) -> Path:
     }
     (root / "manifest.json").write_text(json.dumps(matrix_payload, indent=2) + "\n")
     root_recipe = {
-        "format_version": FORMAT_VERSION,
         "build": _build_values(args),
         "common": args._raw_common,
         "cases": args._raw_cases,
+        "resolved_cases": {
+            name: _case_payload(case) for name, case in args._case_configs.items()
+        },
         "sources": [
             {"file": source.path.name, "sha256": source.digest} for source in sources
         ],
@@ -467,31 +474,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _load_recipe(path: Path) -> dict:
     recipe = yaml.safe_load(path.read_text()) or {}
-    version = recipe.get("format_version")
-    if version == 3:
-        raise ValueError(
-            "format_version 3 used linear/linear_quadratic pooled builds; migrate "
-            "to format_version 4 with common/cases matrix blocks"
-        )
-    if version == 4:
-        raise ValueError(
-            "format_version 4 encodes the legacy random-basis causal semantics "
-            "and cannot be loaded by the format_version 5 Ayu pipeline. Migrate "
-            "the complete mechanism recipe to the native "
-            "calibrated_latent_proxy schema; changing only the format_version "
-            "number is not a valid migration."
-        )
-    allowed = {"format_version", "build", "common", "cases", "sources"}
-    missing, unknown = {"format_version", "build", "common", "cases"} - set(
-        recipe
-    ), set(recipe) - allowed
+    allowed = {
+        "build",
+        "common",
+        "cases",
+        "resolved_cases",
+        "sources",
+    }
+    missing, unknown = {"build", "common", "cases"} - set(recipe), set(recipe) - allowed
     if missing or unknown:
         raise ValueError(
             f"invalid config {path}: missing={sorted(missing)}, unknown={sorted(unknown)}"
-        )
-    if version != FORMAT_VERSION:
-        raise ValueError(
-            f"unsupported config format_version={version}; expected {FORMAT_VERSION}"
         )
     build_keys = set(recipe["build"])
     expected = set(BUILD_CONFIG_FIELDS)
@@ -521,6 +514,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     known, _ = pre.parse_known_args(argv)
     recipe = _load_recipe(known.config)
     cases = load_case_configs(recipe["common"], recipe["cases"])
+    resolved_cases = recipe.get("resolved_cases")
+    if resolved_cases is not None:
+        if not isinstance(resolved_cases, dict):
+            raise ValueError("config resolved_cases must be a mapping")
+        expected = {name: _case_payload(case) for name, case in cases.items()}
+        if resolved_cases != expected:
+            raise ValueError(
+                "config resolved_cases does not match common/cases; regenerate "
+                "the recipe instead of editing its resolved snapshot"
+            )
     parser = build_parser()
     parser.set_defaults(**recipe["build"])
     args = parser.parse_args(argv)

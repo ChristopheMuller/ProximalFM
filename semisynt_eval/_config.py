@@ -1,4 +1,4 @@
-"""Strict typed validation for format-v5 semi-synthetic recipes.
+"""Strict typed validation for semi-synthetic recipes.
 
 The recipe is the complete scientific specification of the calibrated latent
 proxy mechanism. Python validates and resolves it; it supplies no hidden
@@ -75,7 +75,6 @@ class ProxyLevel:
 @dataclass(frozen=True)
 class CommonConfig:
     mechanism: str
-    mechanism_version: str
     latent: LatentConfig
     basis: BasisConfig
     proxies: ProxyConfig
@@ -92,7 +91,6 @@ class CaseConfig:
 
     name: str
     mechanism: str
-    mechanism_version: str
     family: Family
     confounding: str
     proxy: str
@@ -153,7 +151,6 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
         value,
         {
             "mechanism",
-            "mechanism_version",
             "latent",
             "basis",
             "proxies",
@@ -167,10 +164,6 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
     mechanism = value["mechanism"]
     if mechanism != "calibrated_latent_proxy":
         raise ValueError("common.mechanism must be calibrated_latent_proxy")
-    mechanism_version = value["mechanism_version"]
-    if not isinstance(mechanism_version, str) or not mechanism_version.strip():
-        raise ValueError("common.mechanism_version must be a non-empty string")
-
     latent = dict(_mapping(value["latent"], "common.latent"))
     _exact_keys(
         latent,
@@ -316,7 +309,6 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
 
     return CommonConfig(
         mechanism=mechanism,
-        mechanism_version=mechanism_version,
         latent=latent_config,
         basis=basis_config,
         proxies=proxy_config,
@@ -361,7 +353,6 @@ def load_case_configs(
         resolved[name] = CaseConfig(
             name=name,
             mechanism=common.mechanism,
-            mechanism_version=common.mechanism_version,
             family=family,
             confounding=confounding,
             proxy=proxy,

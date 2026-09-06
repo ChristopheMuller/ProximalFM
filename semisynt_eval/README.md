@@ -1,7 +1,7 @@
 # Empirical-root proximal evaluation matrix
 
 `semisynt_eval` combines empirical `(X, U)` rows from CSV files with known
-synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The format-v5 schema defines a
+synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The schema defines a
 controlled eight-case `calibrated_latent_proxy` factorial:
 
 | Family | Confounding (`alpha`, `gamma`) | Proxy reliability |
@@ -76,11 +76,17 @@ uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
 [`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
 configuration over all eight cases. Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
-Each case config snapshots the complete format-v5 matrix recipe and can be
+Each case config snapshots the complete matrix recipe and can be
 rebuilt with `--config`; override `--name` to keep the original output intact.
 Source SHA-256 values, resolved case settings, paired episode IDs, and content
 digests are recorded in the manifests. `--force` replaces only builder-owned
 files.
+
+Generated configs include a canonical `resolved_cases` snapshot containing the
+mechanism name and every resolved numeric setting. Loading such a
+config verifies the snapshot against `common` and `cases` and rejects stale or
+hand-edited disagreements. The identical resolved payload is embedded in case
+and matrix manifests and contributes to every case content digest.
 
 Every `*.csv` directly in `semisynt_eval/datasets/` is discovered in stable
 filename order. Before any data-dependent preprocessing, `n_calibration`
@@ -103,7 +109,7 @@ Mechanisms follow an explicit fit-then-generate lifecycle. For each episode,
 `fit_mechanism(X_cal, U_cal, ...)` constructs the mechanism using only the
 calibration partition, and the returned object generates `W`, `Z`, `A`, and
 `Y` from sampled evaluation rows through `mechanism.generate(X_eval, U_eval)`.
-The format-v5 schema for that mechanism is present; its native implementation
+The schema for that mechanism is present; its native implementation
 is the next migration step.
 
 The row split has one spelling: `n_context` context rows plus `n_query` query
