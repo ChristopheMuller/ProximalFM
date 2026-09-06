@@ -175,7 +175,10 @@ def test_resolved_cases_do_not_expose_random_basis_fields():
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda r: r["common"].update(mechanism="ayu"), "common.mechanism"),
+        (
+            lambda r: r["common"].update(mechanism="unknown_mechanism"),
+            "common.mechanism",
+        ),
         (
             lambda r: r["common"]["latent"].update(innovation_sd=1.0),
             r"innovation_sd must lie in \[0, 1\)",

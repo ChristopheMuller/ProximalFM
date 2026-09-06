@@ -1,6 +1,7 @@
-"""Native calibrated latent-proxy mechanism based on Ayu's mathematics.
+"""Native calibrated latent-proxy mechanism based on the reference mathematics.
 
-Production code never imports the read-only ``semisynt_eval.ayu`` reference.
+Production code never imports the read-only ``semisynt_eval.reference_mechanism``
+package.
 For source latent rows and independent innovations, the fitted mechanism is
 
 ``U = sqrt(1 - innovation_sd**2) U_source + innovation_sd eta_U``
@@ -16,7 +17,8 @@ proximal outcome bridge.
 
 All calculations stay in float64. Conversion to canonical float32 storage
 belongs at the existing ``Episode`` boundary. This class remains unregistered
-until the explicit paired lifecycle in ``ToDoAyu.md`` step 6 is implemented.
+until the explicit paired lifecycle in ``ToDoCalibratedLatentProxy.md`` step 6
+is implemented.
 """
 
 from __future__ import annotations
@@ -40,8 +42,64 @@ def stable_seed(*parts: object) -> int:
     return int.from_bytes(hashlib.sha256(token).digest()[:8], "little")
 
 
-def _named_generator(*parts: object) -> torch.Generator:
-    return torch.Generator(device="cpu").manual_seed(stable_seed(*parts))
+@dataclass(frozen=True)
+class NamedRandomStreams:
+    """Deterministic random streams for one fitted mechanism identity.
+
+    Fit state is family-specific. Calibration and evaluation innovations omit
+    the family deliberately, so the linear and nonlinear mechanisms for one
+    source/replicate use the same underlying innovations. Every accessor
+    returns a fresh generator, making results independent of call order.
+    """
+
+    master_seed: int
+    source_id: str
+    replicate: int
+    family: Family
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.master_seed, int) or isinstance(self.master_seed, bool):
+            raise TypeError("master_seed must be an integer")
+        if not isinstance(self.source_id, str) or not self.source_id:
+            raise ValueError("source_id must be a non-empty string")
+        if not isinstance(self.replicate, int) or isinstance(self.replicate, bool):
+            raise TypeError("replicate must be an integer")
+        if self.replicate < 1:
+            raise ValueError("replicate must be one-based and positive")
+        if self.family not in ("linear", "nonlinear"):
+            raise ValueError(f"unknown family {self.family!r}")
+
+    @staticmethod
+    def _generator(*parts: object) -> torch.Generator:
+        return torch.Generator(device="cpu").manual_seed(stable_seed(*parts))
+
+    def fit_state(self) -> torch.Generator:
+        return self._generator(
+            self.master_seed,
+            self.source_id,
+            self.replicate,
+            self.family,
+            "fit",
+        )
+
+    def calibration_innovation(self) -> torch.Generator:
+        return self._generator(
+            self.master_seed,
+            self.source_id,
+            self.replicate,
+            "cal_innovation",
+        )
+
+    def evaluation(self, name: str) -> torch.Generator:
+        if name not in {"u", "w", "z", "y", "a"}:
+            raise ValueError(f"unknown evaluation innovation {name!r}")
+        return self._generator(
+            self.master_seed,
+            self.source_id,
+            self.replicate,
+            "evaluation",
+            name,
+        )
 
 
 def _matrix(value: Tensor, name: str) -> Tensor:
@@ -91,7 +149,7 @@ class EvaluationInnovations:
 
 
 class CalibratedLatentProxyMechanism(Mechanism):
-    """Calibration-fitted Ayu mechanism for one resolved factorial case.
+    """Calibration-fitted latent-proxy mechanism for one factorial case.
 
     The current registry contract provides a generator whose initial seed is
     the episode identity. Independent named streams are derived from it, so
@@ -107,6 +165,9 @@ class CalibratedLatentProxyMechanism(Mechanism):
     d_x: int
     d_u: int
     seed: int
+    source_id: str
+    replicate: int
+    streams: NamedRandomStreams
     basis: FittedBasis
     components: dict[str, FittedComponent]
     latent_center: Tensor
@@ -127,7 +188,35 @@ class CalibratedLatentProxyMechanism(Mechanism):
         config: Any,
         generator: torch.Generator,
     ) -> "CalibratedLatentProxyMechanism":
-        """Fit every data-dependent quantity from calibration rows only."""
+        """Compatibility adapter for the neutral mechanism registry contract.
+
+        The current interface carries only a generator, so its initial seed is
+        used as the master seed with a placeholder source identity. Step 6 will
+        call :meth:`fit_with_identity` with the real source and replicate.
+        """
+        if not isinstance(config, CaseConfig):
+            raise TypeError("config must be a resolved CaseConfig")
+        return cls.fit_with_identity(
+            x_cal,
+            u_cal,
+            config,
+            master_seed=int(generator.initial_seed()),
+            source_id="generator-adapter",
+            replicate=1,
+        )
+
+    @classmethod
+    def fit_with_identity(
+        cls,
+        x_cal: Tensor,
+        u_cal: Tensor,
+        config: CaseConfig,
+        *,
+        master_seed: int,
+        source_id: str,
+        replicate: int,
+    ) -> "CalibratedLatentProxyMechanism":
+        """Fit using explicit identity and independent named streams."""
         if not isinstance(config, CaseConfig):
             raise TypeError("config must be a resolved CaseConfig")
         if config.mechanism != "calibrated_latent_proxy":
@@ -147,10 +236,18 @@ class CalibratedLatentProxyMechanism(Mechanism):
         instance.family = config.family
         instance.d_x = x_cal.shape[1]
         instance.d_u = u_cal.shape[1]
-        instance.seed = int(generator.initial_seed())
+        instance.streams = NamedRandomStreams(
+            master_seed=master_seed,
+            source_id=source_id,
+            replicate=replicate,
+            family=config.family,
+        )
+        instance.seed = instance.streams.master_seed
+        instance.source_id = instance.streams.source_id
+        instance.replicate = instance.streams.replicate
 
-        fit_rng = _named_generator(instance.seed, instance.family, "fit")
-        cal_rng = _named_generator(instance.seed, "calibration_innovation")
+        fit_rng = instance.streams.fit_state()
+        cal_rng = instance.streams.calibration_innovation()
         latent_cal = instance._augment_latent(u_cal, cal_rng)
         raw_latent = instance.latent_transform(latent_cal)
         instance.latent_center = raw_latent.mean(dim=0)
@@ -335,19 +432,17 @@ class CalibratedLatentProxyMechanism(Mechanism):
     def unwrap_proxy(self, value: Tensor) -> Tensor:
         return value if self.family == "linear" else torch.sinh(value)
 
-    def innovations(
-        self, n_rows: int, *, identity: tuple[object, ...] = ()
-    ) -> EvaluationInnovations:
+    def innovations(self, n_rows: int) -> EvaluationInnovations:
         """Materialize named streams without consuming fitted state."""
         if n_rows < 1:
             raise ValueError("n_rows must be positive")
 
         def normal(name: str, width: int | None = None) -> Tensor:
             shape = (n_rows,) if width is None else (n_rows, width)
-            rng = _named_generator(self.seed, *identity, "evaluation", name)
+            rng = self.streams.evaluation(name)
             return torch.randn(shape, generator=rng, dtype=torch.float64)
 
-        a_rng = _named_generator(self.seed, *identity, "evaluation", "a")
+        a_rng = self.streams.evaluation("a")
         return EvaluationInnovations(
             u=normal("u", self.d_u),
             w=normal("w", self.d_u),
@@ -456,6 +551,8 @@ class CalibratedLatentProxyMechanism(Mechanism):
         }
         return {
             "seed": self.seed,
+            "source_id": self.source_id,
+            "replicate": self.replicate,
             "family": self.family,
             "d_X": self.d_x,
             "d_U": self.d_u,
