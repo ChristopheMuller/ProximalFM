@@ -1,29 +1,29 @@
 # Empirical-root proximal evaluation matrix
 
 `semisynt_eval` combines empirical `(X, U)` rows from CSV files with known
-synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The default format-v5 recipe
-builds a controlled eight-case factorial:
+synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The format-v5 schema defines a
+controlled eight-case `calibrated_latent_proxy` factorial:
 
-| Family | Direct-U confounding | W/Z U-information |
+| Family | Confounding (`alpha`, `gamma`) | Proxy reliability |
 |---|---:|---:|
-| linear | 0.25 | 0.25 |
-| linear | 0.25 | 0.75 |
-| linear | 0.75 | 0.25 |
-| linear | 0.75 | 0.75 |
-| nonlinear | 0.25 | 0.25 |
-| nonlinear | 0.25 | 0.75 |
-| nonlinear | 0.75 | 0.25 |
-| nonlinear | 0.75 | 0.75 |
+| linear | low (0.35, 0.5) | low (0.2) |
+| linear | low (0.35, 0.5) | high (0.8) |
+| linear | high (1.25, 1.5) | low (0.2) |
+| linear | high (1.25, 1.5) | high (0.8) |
+| nonlinear | low (0.35, 0.5) | low (0.2) |
+| nonlinear | low (0.35, 0.5) | high (0.8) |
+| nonlinear | high (1.25, 1.5) | low (0.2) |
+| nonlinear | high (1.25, 1.5) | high (0.8) |
 
 [`config.yaml`](config.yaml) is the complete, version-controlled definition of
 the matrix. Python supplies validation, not hidden generative defaults.
 
-Mechanism identity and function family are separate configuration axes. The
-transitional recipe identifies the existing implementation as
-`mechanism: random_basis`, while each case selects `family: linear` or
-`family: nonlinear`. The native replacement is named
-`calibrated_latent_proxy`; it is reserved by the typed schema but is not
-registered until its implementation lands.
+Mechanism identity and function family are separate configuration axes:
+`common.mechanism` is `calibrated_latent_proxy`, while each case selects
+`family: linear` or `family: nonlinear`. All numeric mechanism constants and
+the low/high level mappings live in the YAML. The typed schema is complete, but
+the builder intentionally refuses generation until the native mechanism
+implementation lands.
 
 ## Build and consume
 
@@ -102,10 +102,8 @@ Mechanisms follow an explicit fit-then-generate lifecycle. For each episode,
 `fit_mechanism(X_cal, U_cal, ...)` constructs the mechanism using only the
 calibration partition, and the returned object generates `W`, `Z`, `A`, and
 `Y` from sampled evaluation rows through `mechanism.generate(X_eval, U_eval)`.
-This is currently an interface boundary: the legacy random-basis families use
-the calibration tensors only to establish their dimensions and retain their
-existing episode-local normalizations. Ayu-style fitted basis, latent, and
-proxy-noise constants will be added behind this boundary separately.
+The format-v5 schema for that mechanism is present; its native implementation
+is the next migration step.
 
 The row split has one spelling: `n_context` context rows plus `n_query` query
 rows. The total episode size is derived as their sum; there is no `seq_len` or
@@ -113,86 +111,40 @@ rows. The total episode size is derived as their sum; there is no `seq_len` or
 
 ## Causal contract and target
 
-The interfaces structurally enforce
+The calibrated latent proxy mechanism has the fixed graph
 
 ```text
-W    <- U, optional X
-Z    <- U, optional X
-A    <- U, optional X, optional Z
-Y(a) <- U, optional X, optional W, a
-tau  <- optional X
+U <- U_source, latent innovation
+W <- U, X, measurement noise
+Z <- U, X, measurement noise
+A <- X, shared latent index
+Y(a) <- X, shared latent index, outcome noise, a
+tau <- X
 ```
 
-Z is therefore the treatment-inducing proxy and cannot enter Y; W is the
-outcome-inducing proxy and cannot enter A. All default arrows are enabled.
+W and Z are measurements: Z does not directly cause treatment, and W does not
+directly cause either potential outcome. Both treatment and outcome use one
+shared latent direction. Shared potential-outcome noise makes
+`Y1 - Y0 = tau(X)` exactly, so the explicit `CATE` field activates benchmark
+CATE scoring without row replication.
 
-Both families use `Y(1) = Y(0) + tau(X)`. The linear family gives `tau` a
-linear random basis; the nonlinear family uses the same mixed basis as its
-nuisance equations. Outcome noise is shared across arms, so `Y1 - Y0` equals
-the analytic CATE exactly. The explicit `CATE` field activates CATE scoring in
-the benchmark without within-row Monte Carlo replication.
+The `linear` family uses identity latent/proxy transforms and an identity X
+basis. The `nonlinear` family uses `asinh` latent/proxy transforms and a fitted
+X basis drawn from the YAML-declared identity, `asinh`, sine, and quadratic
+terms, with at most the configured number of interactions.
 
-## Families, normalization, and interactions
-
-The linear family uses identity terms. The nonlinear family randomly chooses a
-term for every input/output coefficient from the configured mixture of:
-
-- identity
-- quadratic
-- signed `log1p(abs(x))`
-- clipped exponential
-- sine
-
-Every transformed term is centered and scaled before its random coefficient is
-applied. Exponential inputs are clipped at the configured bound first. This
-makes coefficient and component scales comparable rather than allowing the
-chosen function's raw range to determine strength.
-
-`interactions_default` supplies the default for every equation. Each of `w`,
-`z`, `a`, `y`, and `tau` may override it with `interactions: true/false/null`,
-where `null` inherits the common value. Enabling interactions adds all pairwise
-products of normalized transformed parents. A term involving U is classified
-as latent even when its other factor is X, Z, or W. The resolved case configs
-always contain concrete booleans.
-
-## Strength and overlap controls
-
-For treatment and outcome, the random regression is separated into a direct-U
-component and an observed-parent component. Each is normalized, then combined
-as
-
-```text
-sqrt(u_variance_share) * latent
-  + sqrt(1 - u_variance_share) * observed.
-```
-
-The separate knobs are `a_u_variance_share` and `y_u_variance_share`. They
-describe structural component variance, not an observational partial R-squared;
-correlation between empirical X and U can still change measured confounding.
-
-For each proxy, reliability is calibrated against its normalized U signal:
-
-```text
-reliability = Var(U signal) / (Var(U signal) + Var(noise)).
-```
-
-`w_u_reliability` and `z_u_reliability` can be varied independently. Optional
-X contributions have their own `x_strength`, so adding X does not redefine the
-U-to-noise calibration. Final proxy normalization preserves these relative
-component scales.
-
-Treatment uses a normalized score, configurable logit scale (inverse
-temperature), random-intercept range, logit clipping, and a final
-`overlap_epsilon` clamp before Bernoulli sampling. Outcome noise and CATE scale
-remain separate knobs because they control different difficulty dimensions.
+Proxy reliability is the calibration signal fraction
+`Var(signal) / (Var(signal) + Var(noise))`. Treatment propensity is clipped to
+the configured lower/upper bounds. Outcome-noise SD and CATE location/scale are
+separate explicit settings.
 
 ## Editing the matrix
 
-The `common` block owns coefficients, the nonlinear palette, and complete
-equation defaults. Every entry under `cases` selects a family and the four
-calibrated strength values, with an optional `equations` override map. Add or
-edit cases there; do not encode the scientific matrix in shell loops or CLI
-flags. Case names become directory names and must not contain `/`.
+The `common` block owns every numeric mechanism constant and the named
+confounding/proxy levels. Each case contains exactly `family`, `confounding`,
+and `proxy`. Add or edit cases there; do not encode the scientific matrix in
+shell loops or CLI flags. Case names become directory names and must not
+contain `/`.
 
 Cases are paired by `(source CSV, replicate)`: all cases receive the same
 episode seed and therefore identical empirical X/U rows. Cases of the same

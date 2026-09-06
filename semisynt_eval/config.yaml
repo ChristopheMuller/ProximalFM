@@ -22,113 +22,78 @@ build:
   datasets_per_file: null
 
 common:
-  mechanism: random_basis
-  interactions_default: false
-  coefficients:
-    distribution: normal
+  mechanism: calibrated_latent_proxy
+  mechanism_version: 1.0.0
+  latent:
+    innovation_sd: 0.5
+    whitening_ridge: 0.05
+    direction_sd: 1.0
+  basis:
+    nonlinear_transforms: [identity, asinh, sine, quadratic]
+    max_interactions: 8
+    coefficient_distribution: normal
+    coefficient_scale: 1.0
+    normalize_by_basis_dim: true
+    min_scale: 1.0e-8
+  proxies:
+    x_scale: 0.5
+  treatment:
+    x_scale: 0.5
+    intercept_low: -0.25
+    intercept_high: 0.25
+    propensity_lower: 0.02
+    propensity_upper: 0.98
+  outcome:
+    noise_sd: 1.0
+  cate:
+    intercept: 0.5
     scale: 1.0
-    normalize_by_input_dim: true
-  nonlinear:
-    probabilities:
-      identity: 0.2
-      quadratic: 0.2
-      signed_log1p: 0.2
-      clipped_exp: 0.2
-      sine: 0.2
-    exp_clip: 3.0
-  equations:
-    w:
-      use_x: true
-      use_u: true
-      interactions: null
-      x_strength: 1.0
-      normalize_output: true
-    z:
-      use_x: true
-      use_u: true
-      interactions: null
-      x_strength: 1.0
-      normalize_output: true
-    a:
-      use_x: true
-      use_u: true
-      use_z: true
-      interactions: null
-      normalize_score: true
-      logit_scale: 1.0
-      logit_clip: 8.0
-      intercept_low: -0.5
-      intercept_high: 0.5
-      overlap_epsilon: 0.02
-    y:
-      use_x: true
-      use_u: true
-      use_w: true
-      interactions: null
-      noise_std: 0.5
-      normalize_baseline: true
-    tau:
-      use_x: true
-      interactions: null
-      intercept: 0.5
-      scale: 1.0
+  levels:
+    confounding:
+      low:
+        alpha: 0.35
+        gamma: 0.5
+      high:
+        alpha: 1.25
+        gamma: 1.5
+    proxy:
+      low:
+        reliability: 0.2
+      high:
+        reliability: 0.8
 
-# Cases may override any equation field. Empty maps make it explicit that this
-# initial factorial changes only family, confounding, and proxy information.
+# Cases select fitted function family and named strength levels. All numeric
+# values live in common so the labels carry no hidden Python defaults.
 cases:
   linear_conf_low_proxy_low:
     family: linear
-    a_u_variance_share: 0.25
-    y_u_variance_share: 0.25
-    w_u_reliability: 0.25
-    z_u_reliability: 0.25
-    equations: {}
+    confounding: low
+    proxy: low
   linear_conf_low_proxy_high:
     family: linear
-    a_u_variance_share: 0.25
-    y_u_variance_share: 0.25
-    w_u_reliability: 0.75
-    z_u_reliability: 0.75
-    equations: {}
+    confounding: low
+    proxy: high
   linear_conf_high_proxy_low:
     family: linear
-    a_u_variance_share: 0.75
-    y_u_variance_share: 0.75
-    w_u_reliability: 0.25
-    z_u_reliability: 0.25
-    equations: {}
+    confounding: high
+    proxy: low
   linear_conf_high_proxy_high:
     family: linear
-    a_u_variance_share: 0.75
-    y_u_variance_share: 0.75
-    w_u_reliability: 0.75
-    z_u_reliability: 0.75
-    equations: {}
+    confounding: high
+    proxy: high
   nonlinear_conf_low_proxy_low:
     family: nonlinear
-    a_u_variance_share: 0.25
-    y_u_variance_share: 0.25
-    w_u_reliability: 0.25
-    z_u_reliability: 0.25
-    equations: {}
+    confounding: low
+    proxy: low
   nonlinear_conf_low_proxy_high:
     family: nonlinear
-    a_u_variance_share: 0.25
-    y_u_variance_share: 0.25
-    w_u_reliability: 0.75
-    z_u_reliability: 0.75
-    equations: {}
+    confounding: low
+    proxy: high
   nonlinear_conf_high_proxy_low:
     family: nonlinear
-    a_u_variance_share: 0.75
-    y_u_variance_share: 0.75
-    w_u_reliability: 0.25
-    z_u_reliability: 0.25
-    equations: {}
+    confounding: high
+    proxy: low
   nonlinear_conf_high_proxy_high:
     family: nonlinear
-    a_u_variance_share: 0.75
-    y_u_variance_share: 0.75
-    w_u_reliability: 0.75
-    z_u_reliability: 0.75
-    equations: {}
+    confounding: high
+    proxy: high

@@ -15,7 +15,7 @@ import torch
 import yaml
 
 from proximalfm.prior._genload import write_batch_file
-from semisynt_eval._config import CaseConfig, TRANSFORMS, load_case_configs
+from semisynt_eval._config import CaseConfig, load_case_configs
 from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv
@@ -220,11 +220,7 @@ def save_validation(
 
 
 def _case_payload(case: CaseConfig) -> dict:
-    value = asdict(case)
-    value["nonlinear"]["probabilities"] = dict(
-        zip(TRANSFORMS, value["nonlinear"]["probabilities"])
-    )
-    return value
+    return asdict(case)
 
 
 def _row_indices_sha256(indices: tuple[int, ...]) -> str:
@@ -292,22 +288,17 @@ def _build_values(args: argparse.Namespace) -> dict:
 def _resolved_recipe(
     args: argparse.Namespace, case: CaseConfig, sources: Sequence[PreparedCSV]
 ) -> dict:
-    case_value = _case_payload(case)
-    common = {
-        "mechanism": case_value.pop("mechanism"),
-        "interactions_default": False,
-        "coefficients": case_value.pop("coefficients"),
-        "nonlinear": case_value.pop("nonlinear"),
-        "equations": {
-            name: case_value.pop(name) for name in ("w", "z", "a", "y", "tau")
-        },
-    }
-    case_value.pop("name")
     return {
         "format_version": FORMAT_VERSION,
         "build": _build_values(args),
-        "common": common,
-        "cases": {case.name: {**case_value, "equations": {}}},
+        "common": args._raw_common,
+        "cases": {
+            case.name: {
+                "family": case.family,
+                "confounding": case.confounding,
+                "proxy": case.proxy,
+            }
+        },
         "sources": [
             {"file": source.path.name, "sha256": source.digest} for source in sources
         ],
@@ -339,6 +330,14 @@ def _owned_outputs(root: Path, case_names: Sequence[str]) -> list[Path]:
 
 
 def build(args: argparse.Namespace) -> Path:
+    unavailable = {case.mechanism for case in args._case_configs.values()} - set(
+        available_mechanisms()
+    )
+    if unavailable:
+        raise NotImplementedError(
+            "configured mechanism is not implemented yet: "
+            f"{', '.join(sorted(unavailable))}"
+        )
     root = Path(args.out_root) / args.name
     existing = _owned_outputs(root, list(args._case_configs))
     if existing and not args.force:
@@ -530,14 +529,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     known, _ = pre.parse_known_args(argv)
     recipe = _load_recipe(known.config)
     cases = load_case_configs(recipe["common"], recipe["cases"])
-    unavailable = {case.mechanism for case in cases.values()} - set(
-        available_mechanisms()
-    )
-    if unavailable:
-        raise ValueError(
-            "recipe refers to an unregistered mechanism: "
-            f"{', '.join(sorted(unavailable))}"
-        )
     parser = build_parser()
     parser.set_defaults(**recipe["build"])
     args = parser.parse_args(argv)

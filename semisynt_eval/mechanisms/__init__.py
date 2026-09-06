@@ -8,8 +8,7 @@ import torch
 
 from semisynt_eval._config import CaseConfig
 from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
-from semisynt_eval.mechanisms.linear import LinearMechanism
-from semisynt_eval.mechanisms.nonlinear import NonlinearMechanism
+from semisynt_eval.mechanisms.random_basis import LinearMechanism, NonlinearMechanism
 
 _BUILDERS: dict[str, dict[str, Type[Mechanism]]] = {
     "random_basis": {

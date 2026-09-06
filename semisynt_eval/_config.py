@@ -1,111 +1,106 @@
 """Strict typed validation for format-v5 semi-synthetic recipes.
 
-All data-affecting defaults live in YAML. This module only validates and
-resolves the explicit ``common`` block with each named entry in ``cases``.
+The recipe is the complete scientific specification of the calibrated latent
+proxy mechanism. Python validates and resolves it; it supplies no hidden
+data-affecting defaults.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 from typing import Any, Literal, Mapping
 
-CoefficientDistribution = Literal["normal", "uniform"]
 Family = Literal["linear", "nonlinear"]
-MechanismName = Literal["random_basis", "calibrated_latent_proxy"]
-CALIBRATED_LATENT_PROXY = "calibrated_latent_proxy"
-TRANSFORMS = (
-    "identity",
-    "quadratic",
-    "signed_log1p",
-    "clipped_exp",
-    "sine",
-)
+NONLINEAR_TRANSFORMS = ("identity", "asinh", "sine", "quadratic")
 
 
 @dataclass(frozen=True)
-class CoefficientConfig:
-    distribution: CoefficientDistribution
-    scale: float
-    normalize_by_input_dim: bool
+class LatentConfig:
+    innovation_sd: float
+    whitening_ridge: float
+    direction_sd: float
 
 
 @dataclass(frozen=True)
-class NonlinearConfig:
-    probabilities: tuple[float, ...]
-    exp_clip: float
+class BasisConfig:
+    nonlinear_transforms: tuple[str, ...]
+    max_interactions: int
+    coefficient_distribution: str
+    coefficient_scale: float
+    normalize_by_basis_dim: bool
+    min_scale: float
 
 
 @dataclass(frozen=True)
-class ProxyEquationConfig:
-    use_x: bool
-    use_u: bool
-    interactions: bool
-    x_strength: float
-    normalize_output: bool
+class ProxyConfig:
+    x_scale: float
 
 
 @dataclass(frozen=True)
-class TreatmentEquationConfig:
-    use_x: bool
-    use_u: bool
-    use_z: bool
-    interactions: bool
-    normalize_score: bool
-    logit_scale: float
-    logit_clip: float
+class TreatmentConfig:
+    x_scale: float
     intercept_low: float
     intercept_high: float
-    overlap_epsilon: float
+    propensity_lower: float
+    propensity_upper: float
 
 
 @dataclass(frozen=True)
-class OutcomeEquationConfig:
-    use_x: bool
-    use_u: bool
-    use_w: bool
-    interactions: bool
-    noise_std: float
-    normalize_baseline: bool
+class OutcomeConfig:
+    noise_sd: float
 
 
 @dataclass(frozen=True)
-class EffectEquationConfig:
-    use_x: bool
-    interactions: bool
+class CateConfig:
     intercept: float
     scale: float
 
 
 @dataclass(frozen=True)
+class ConfoundingLevel:
+    alpha: float
+    gamma: float
+
+
+@dataclass(frozen=True)
+class ProxyLevel:
+    reliability: float
+
+
+@dataclass(frozen=True)
 class CommonConfig:
-    mechanism: MechanismName
-    interactions_default: bool
-    coefficients: CoefficientConfig
-    nonlinear: NonlinearConfig
-    w: ProxyEquationConfig
-    z: ProxyEquationConfig
-    a: TreatmentEquationConfig
-    y: OutcomeEquationConfig
-    tau: EffectEquationConfig
+    mechanism: str
+    mechanism_version: str
+    latent: LatentConfig
+    basis: BasisConfig
+    proxies: ProxyConfig
+    treatment: TreatmentConfig
+    outcome: OutcomeConfig
+    cate: CateConfig
+    confounding_levels: dict[str, ConfoundingLevel]
+    proxy_levels: dict[str, ProxyLevel]
 
 
 @dataclass(frozen=True)
 class CaseConfig:
+    """One resolved cell of the family x confounding x proxy matrix."""
+
     name: str
-    mechanism: MechanismName
+    mechanism: str
+    mechanism_version: str
     family: Family
-    a_u_variance_share: float
-    y_u_variance_share: float
-    w_u_reliability: float
-    z_u_reliability: float
-    coefficients: CoefficientConfig
-    nonlinear: NonlinearConfig
-    w: ProxyEquationConfig
-    z: ProxyEquationConfig
-    a: TreatmentEquationConfig
-    y: OutcomeEquationConfig
-    tau: EffectEquationConfig
+    confounding: str
+    proxy: str
+    alpha: float
+    gamma: float
+    reliability: float
+    latent: LatentConfig
+    basis: BasisConfig
+    proxies: ProxyConfig
+    treatment: TreatmentConfig
+    outcome: OutcomeConfig
+    cate: CateConfig
 
 
 def _exact_keys(value: Mapping[str, Any], expected: set[str], *, location: str) -> None:
@@ -120,18 +115,32 @@ def _exact_keys(value: Mapping[str, Any], expected: set[str], *, location: str) 
         raise ValueError(f"invalid {location}: {', '.join(details)}")
 
 
-def _finite_nonnegative(value: float, location: str) -> float:
-    value = float(value)
-    if not math.isfinite(value) or value < 0:
-        raise ValueError(f"{location} must be finite and non-negative")
+def _mapping(value: Any, location: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{location} must be a mapping")
     return value
 
 
-def _interaction(value: Any, default: bool, location: str) -> bool:
-    if value is None:
-        return default
-    if not isinstance(value, bool):
-        raise ValueError(f"{location} must be true, false, or null")
+def _finite(value: Any, location: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{location} must be numeric")
+    value = float(value)
+    if not math.isfinite(value):
+        raise ValueError(f"{location} must be finite")
+    return value
+
+
+def _positive(value: Any, location: str) -> float:
+    value = _finite(value, location)
+    if value <= 0:
+        raise ValueError(f"{location} must be positive")
+    return value
+
+
+def _nonnegative(value: Any, location: str) -> float:
+    value = _finite(value, location)
+    if value < 0:
+        raise ValueError(f"{location} must be non-negative")
     return value
 
 
@@ -140,206 +149,178 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
         value,
         {
             "mechanism",
-            "interactions_default",
-            "coefficients",
-            "nonlinear",
-            "equations",
+            "mechanism_version",
+            "latent",
+            "basis",
+            "proxies",
+            "treatment",
+            "outcome",
+            "cate",
+            "levels",
         },
         location="common",
     )
     mechanism = value["mechanism"]
-    if mechanism not in ("random_basis", CALIBRATED_LATENT_PROXY):
-        raise ValueError(
-            f"common.mechanism must be random_basis or {CALIBRATED_LATENT_PROXY}"
-        )
-    default = value["interactions_default"]
-    if not isinstance(default, bool):
-        raise ValueError("common.interactions_default must be boolean")
+    if mechanism != "calibrated_latent_proxy":
+        raise ValueError("common.mechanism must be calibrated_latent_proxy")
+    mechanism_version = value["mechanism_version"]
+    if not isinstance(mechanism_version, str) or not mechanism_version.strip():
+        raise ValueError("common.mechanism_version must be a non-empty string")
 
-    coefficients = dict(value["coefficients"])
+    latent = dict(_mapping(value["latent"], "common.latent"))
     _exact_keys(
-        coefficients,
-        {"distribution", "scale", "normalize_by_input_dim"},
-        location="common.coefficients",
+        latent,
+        {"innovation_sd", "whitening_ridge", "direction_sd"},
+        location="common.latent",
     )
-    if coefficients["distribution"] not in ("normal", "uniform"):
-        raise ValueError("common.coefficients.distribution must be normal or uniform")
-    coefficients["scale"] = _finite_nonnegative(
-        coefficients["scale"], "common.coefficients.scale"
+    innovation_sd = _nonnegative(latent["innovation_sd"], "common.latent.innovation_sd")
+    if innovation_sd >= 1:
+        raise ValueError("common.latent.innovation_sd must lie in [0, 1)")
+    latent_config = LatentConfig(
+        innovation_sd=innovation_sd,
+        whitening_ridge=_positive(
+            latent["whitening_ridge"], "common.latent.whitening_ridge"
+        ),
+        direction_sd=_positive(latent["direction_sd"], "common.latent.direction_sd"),
     )
-    coefficient_config = CoefficientConfig(**coefficients)
 
-    nonlinear = dict(value["nonlinear"])
-    _exact_keys(nonlinear, {"probabilities", "exp_clip"}, location="common.nonlinear")
-    probabilities = dict(nonlinear["probabilities"])
+    basis = dict(_mapping(value["basis"], "common.basis"))
     _exact_keys(
-        probabilities, set(TRANSFORMS), location="common.nonlinear.probabilities"
-    )
-    probs = tuple(float(probabilities[name]) for name in TRANSFORMS)
-    if any(not math.isfinite(p) or p < 0 for p in probs) or not math.isclose(
-        sum(probs), 1.0, abs_tol=1e-8
-    ):
-        raise ValueError(
-            "common.nonlinear.probabilities must be non-negative and sum to 1"
-        )
-    exp_clip = float(nonlinear["exp_clip"])
-    if not math.isfinite(exp_clip) or exp_clip <= 0:
-        raise ValueError("common.nonlinear.exp_clip must be finite and positive")
-    nonlinear_config = NonlinearConfig(probabilities=probs, exp_clip=exp_clip)
-
-    equations = dict(value["equations"])
-    _exact_keys(equations, {"w", "z", "a", "y", "tau"}, location="common.equations")
-
-    def proxy(name: str) -> ProxyEquationConfig:
-        item = dict(equations[name])
-        _exact_keys(
-            item,
-            {
-                "use_x",
-                "use_u",
-                "interactions",
-                "x_strength",
-                "normalize_output",
-            },
-            location=f"common.equations.{name}",
-        )
-        item["interactions"] = _interaction(
-            item["interactions"],
-            default,
-            f"common.equations.{name}.interactions",
-        )
-        item["x_strength"] = _finite_nonnegative(
-            item["x_strength"], f"common.equations.{name}.x_strength"
-        )
-        if not (item["use_x"] or item["use_u"]):
-            raise ValueError(f"common.equations.{name} needs X and/or U")
-        return ProxyEquationConfig(**item)
-
-    a = dict(equations["a"])
-    _exact_keys(
-        a,
+        basis,
         {
-            "use_x",
-            "use_u",
-            "use_z",
-            "interactions",
-            "normalize_score",
-            "logit_scale",
-            "logit_clip",
+            "nonlinear_transforms",
+            "max_interactions",
+            "coefficient_distribution",
+            "coefficient_scale",
+            "normalize_by_basis_dim",
+            "min_scale",
+        },
+        location="common.basis",
+    )
+    transforms = basis["nonlinear_transforms"]
+    if not isinstance(transforms, list) or tuple(transforms) != NONLINEAR_TRANSFORMS:
+        raise ValueError(
+            "common.basis.nonlinear_transforms must be exactly "
+            f"{list(NONLINEAR_TRANSFORMS)}"
+        )
+    max_interactions = basis["max_interactions"]
+    if isinstance(max_interactions, bool) or not isinstance(max_interactions, int):
+        raise ValueError("common.basis.max_interactions must be an integer")
+    if max_interactions < 0:
+        raise ValueError("common.basis.max_interactions must be non-negative")
+    if basis["coefficient_distribution"] != "normal":
+        raise ValueError("common.basis.coefficient_distribution must be normal")
+    if not isinstance(basis["normalize_by_basis_dim"], bool):
+        raise ValueError("common.basis.normalize_by_basis_dim must be boolean")
+    basis_config = BasisConfig(
+        nonlinear_transforms=tuple(transforms),
+        max_interactions=max_interactions,
+        coefficient_distribution="normal",
+        coefficient_scale=_positive(
+            basis["coefficient_scale"], "common.basis.coefficient_scale"
+        ),
+        normalize_by_basis_dim=basis["normalize_by_basis_dim"],
+        min_scale=_positive(basis["min_scale"], "common.basis.min_scale"),
+    )
+
+    proxies = dict(_mapping(value["proxies"], "common.proxies"))
+    _exact_keys(proxies, {"x_scale"}, location="common.proxies")
+    proxy_config = ProxyConfig(
+        x_scale=_nonnegative(proxies["x_scale"], "common.proxies.x_scale")
+    )
+
+    treatment = dict(_mapping(value["treatment"], "common.treatment"))
+    _exact_keys(
+        treatment,
+        {
+            "x_scale",
             "intercept_low",
             "intercept_high",
-            "overlap_epsilon",
+            "propensity_lower",
+            "propensity_upper",
         },
-        location="common.equations.a",
+        location="common.treatment",
     )
-    a["interactions"] = _interaction(
-        a["interactions"], default, "common.equations.a.interactions"
+    intercept_low = _finite(
+        treatment["intercept_low"], "common.treatment.intercept_low"
     )
-    if not (a["use_x"] or a["use_u"] or a["use_z"]):
-        raise ValueError("common.equations.a needs X, U, and/or Z")
-    a["logit_scale"] = _finite_nonnegative(
-        a["logit_scale"], "common.equations.a.logit_scale"
+    intercept_high = _finite(
+        treatment["intercept_high"], "common.treatment.intercept_high"
     )
-    if float(a["logit_clip"]) <= 0:
-        raise ValueError("common.equations.a.logit_clip must be positive")
-    if float(a["intercept_low"]) > float(a["intercept_high"]):
-        raise ValueError("common.equations.a intercept bounds are reversed")
-    if not 0 <= float(a["overlap_epsilon"]) < 0.5:
-        raise ValueError("common.equations.a.overlap_epsilon must lie in [0, 0.5)")
-    treatment = TreatmentEquationConfig(**a)
+    if intercept_low > intercept_high:
+        raise ValueError("common.treatment intercept bounds are reversed")
+    propensity_lower = _finite(
+        treatment["propensity_lower"], "common.treatment.propensity_lower"
+    )
+    propensity_upper = _finite(
+        treatment["propensity_upper"], "common.treatment.propensity_upper"
+    )
+    if not 0 <= propensity_lower < propensity_upper <= 1:
+        raise ValueError(
+            "common.treatment propensity bounds must satisfy " "0 <= lower < upper <= 1"
+        )
+    treatment_config = TreatmentConfig(
+        x_scale=_nonnegative(treatment["x_scale"], "common.treatment.x_scale"),
+        intercept_low=intercept_low,
+        intercept_high=intercept_high,
+        propensity_lower=propensity_lower,
+        propensity_upper=propensity_upper,
+    )
 
-    y = dict(equations["y"])
-    _exact_keys(
-        y,
-        {
-            "use_x",
-            "use_u",
-            "use_w",
-            "interactions",
-            "noise_std",
-            "normalize_baseline",
-        },
-        location="common.equations.y",
+    outcome = dict(_mapping(value["outcome"], "common.outcome"))
+    _exact_keys(outcome, {"noise_sd"}, location="common.outcome")
+    outcome_config = OutcomeConfig(
+        noise_sd=_nonnegative(outcome["noise_sd"], "common.outcome.noise_sd")
     )
-    y["interactions"] = _interaction(
-        y["interactions"], default, "common.equations.y.interactions"
-    )
-    if not (y["use_x"] or y["use_u"] or y["use_w"]):
-        raise ValueError("common.equations.y needs X, U, and/or W")
-    y["noise_std"] = _finite_nonnegative(y["noise_std"], "common.equations.y.noise_std")
-    outcome = OutcomeEquationConfig(**y)
 
-    tau = dict(equations["tau"])
-    _exact_keys(
-        tau,
-        {"use_x", "interactions", "intercept", "scale"},
-        location="common.equations.tau",
+    cate = dict(_mapping(value["cate"], "common.cate"))
+    _exact_keys(cate, {"intercept", "scale"}, location="common.cate")
+    cate_config = CateConfig(
+        intercept=_finite(cate["intercept"], "common.cate.intercept"),
+        scale=_positive(cate["scale"], "common.cate.scale"),
     )
-    tau["interactions"] = _interaction(
-        tau["interactions"], default, "common.equations.tau.interactions"
-    )
-    tau["scale"] = _finite_nonnegative(tau["scale"], "common.equations.tau.scale")
-    effect = EffectEquationConfig(**tau)
+
+    levels = dict(_mapping(value["levels"], "common.levels"))
+    _exact_keys(levels, {"confounding", "proxy"}, location="common.levels")
+    raw_confounding = _mapping(levels["confounding"], "common.levels.confounding")
+    raw_proxy = _mapping(levels["proxy"], "common.levels.proxy")
+    if not raw_confounding:
+        raise ValueError("common.levels.confounding must not be empty")
+    if not raw_proxy:
+        raise ValueError("common.levels.proxy must not be empty")
+
+    confounding_levels = {}
+    for name, raw in raw_confounding.items():
+        location = f"common.levels.confounding.{name}"
+        item = dict(_mapping(raw, location))
+        _exact_keys(item, {"alpha", "gamma"}, location=location)
+        confounding_levels[str(name)] = ConfoundingLevel(
+            alpha=_nonnegative(item["alpha"], f"{location}.alpha"),
+            gamma=_nonnegative(item["gamma"], f"{location}.gamma"),
+        )
+
+    proxy_levels = {}
+    for name, raw in raw_proxy.items():
+        location = f"common.levels.proxy.{name}"
+        item = dict(_mapping(raw, location))
+        _exact_keys(item, {"reliability"}, location=location)
+        reliability = _finite(item["reliability"], f"{location}.reliability")
+        if not 0 < reliability < 1:
+            raise ValueError(f"{location}.reliability must lie in (0, 1)")
+        proxy_levels[str(name)] = ProxyLevel(reliability=reliability)
 
     return CommonConfig(
         mechanism=mechanism,
-        interactions_default=default,
-        coefficients=coefficient_config,
-        nonlinear=nonlinear_config,
-        w=proxy("w"),
-        z=proxy("z"),
-        a=treatment,
-        y=outcome,
-        tau=effect,
+        mechanism_version=mechanism_version,
+        latent=latent_config,
+        basis=basis_config,
+        proxies=proxy_config,
+        treatment=treatment_config,
+        outcome=outcome_config,
+        cate=cate_config,
+        confounding_levels=confounding_levels,
+        proxy_levels=proxy_levels,
     )
-
-
-def _with_equation_overrides(
-    common: CommonConfig, overrides: Mapping[str, Any], *, location: str
-) -> CommonConfig:
-    unknown_equations = set(overrides) - {"w", "z", "a", "y", "tau"}
-    if unknown_equations:
-        raise ValueError(f"invalid {location}: unknown {sorted(unknown_equations)}")
-    result = common
-    allowed = {
-        "w": set(ProxyEquationConfig.__dataclass_fields__),
-        "z": set(ProxyEquationConfig.__dataclass_fields__),
-        "a": set(TreatmentEquationConfig.__dataclass_fields__),
-        "y": set(OutcomeEquationConfig.__dataclass_fields__),
-        "tau": set(EffectEquationConfig.__dataclass_fields__),
-    }
-    for name, raw in overrides.items():
-        patch = dict(raw)
-        unknown = set(patch) - allowed[name]
-        if unknown:
-            raise ValueError(f"invalid {location}.{name}: unknown {sorted(unknown)}")
-        if "interactions" in patch:
-            patch["interactions"] = _interaction(
-                patch["interactions"],
-                common.interactions_default,
-                f"{location}.{name}.interactions",
-            )
-        result = replace(result, **{name: replace(getattr(result, name), **patch)})
-    if not (result.w.use_x or result.w.use_u) or not (result.z.use_x or result.z.use_u):
-        raise ValueError(f"{location}: proxy equations need X and/or U")
-    if not (result.a.use_x or result.a.use_u or result.a.use_z):
-        raise ValueError(f"{location}.a needs X, U, and/or Z")
-    if not (result.y.use_x or result.y.use_u or result.y.use_w):
-        raise ValueError(f"{location}.y needs X, U, and/or W")
-    for name in ("w", "z"):
-        if getattr(result, name).x_strength < 0:
-            raise ValueError(f"{location}.{name}.x_strength must be non-negative")
-    if result.a.logit_scale < 0 or result.a.logit_clip <= 0:
-        raise ValueError(f"{location}.a logit scale/clip are invalid")
-    if result.a.intercept_low > result.a.intercept_high:
-        raise ValueError(f"{location}.a intercept bounds are reversed")
-    if not 0 <= result.a.overlap_epsilon < 0.5:
-        raise ValueError(f"{location}.a.overlap_epsilon must lie in [0, 0.5)")
-    if result.y.noise_std < 0:
-        raise ValueError(f"{location}.y.noise_std must be non-negative")
-    if result.tau.scale < 0:
-        raise ValueError(f"{location}.tau.scale must be non-negative")
-    return result
 
 
 def load_case_configs(
@@ -349,86 +330,44 @@ def load_case_configs(
     common = _parse_common(common_value)
     if not cases_value:
         raise ValueError("cases must contain at least one named case")
-    resolved: dict[str, CaseConfig] = {}
+    resolved = {}
     for name, raw in cases_value.items():
         if not isinstance(name, str) or not name or "/" in name or name in {".", ".."}:
             raise ValueError(f"invalid case name {name!r}")
-        case = dict(raw)
-        _exact_keys(
-            case,
-            {
-                "family",
-                "a_u_variance_share",
-                "y_u_variance_share",
-                "w_u_reliability",
-                "z_u_reliability",
-                "equations",
-            },
-            location=f"cases.{name}",
-        )
+        location = f"cases.{name}"
+        case = dict(_mapping(raw, location))
+        _exact_keys(case, {"family", "confounding", "proxy"}, location=location)
         family = case["family"]
         if family not in ("linear", "nonlinear"):
-            raise ValueError(f"cases.{name}.family must be linear or nonlinear")
-        merged = _with_equation_overrides(
-            common, case["equations"], location=f"cases.{name}.equations"
-        )
-        strengths = {
-            key: float(case[key])
-            for key in (
-                "a_u_variance_share",
-                "y_u_variance_share",
-                "w_u_reliability",
-                "z_u_reliability",
+            raise ValueError(f"{location}.family must be linear or nonlinear")
+        confounding = case["confounding"]
+        if confounding not in common.confounding_levels:
+            raise ValueError(
+                f"{location}.confounding must name one of "
+                f"{sorted(common.confounding_levels)}"
             )
-        }
-        for key, scalar in strengths.items():
-            if not math.isfinite(scalar) or not 0 <= scalar <= 1:
-                raise ValueError(f"cases.{name}.{key} must lie in [0, 1]")
-        _validate_case_strengths(name, merged, strengths)
+        proxy = case["proxy"]
+        if proxy not in common.proxy_levels:
+            raise ValueError(
+                f"{location}.proxy must name one of {sorted(common.proxy_levels)}"
+            )
+        confounding_level = common.confounding_levels[confounding]
+        proxy_level = common.proxy_levels[proxy]
         resolved[name] = CaseConfig(
             name=name,
-            mechanism=merged.mechanism,
+            mechanism=common.mechanism,
+            mechanism_version=common.mechanism_version,
             family=family,
-            coefficients=merged.coefficients,
-            nonlinear=merged.nonlinear,
-            w=merged.w,
-            z=merged.z,
-            a=merged.a,
-            y=merged.y,
-            tau=merged.tau,
-            **strengths,
+            confounding=confounding,
+            proxy=proxy,
+            alpha=confounding_level.alpha,
+            gamma=confounding_level.gamma,
+            reliability=proxy_level.reliability,
+            latent=common.latent,
+            basis=common.basis,
+            proxies=common.proxies,
+            treatment=common.treatment,
+            outcome=common.outcome,
+            cate=common.cate,
         )
     return resolved
-
-
-def _validate_case_strengths(
-    name: str, common: CommonConfig, strengths: Mapping[str, float]
-) -> None:
-    for equation, use_u, has_observed in (
-        ("a", common.a.use_u, common.a.use_x or common.a.use_z),
-        ("y", common.y.use_u, common.y.use_x or common.y.use_w),
-    ):
-        share = strengths[f"{equation}_u_variance_share"]
-        if not use_u and share != 0:
-            raise ValueError(
-                f"cases.{name}: {equation} U share must be 0 when U is disabled"
-            )
-        if use_u and not has_observed and share != 1:
-            raise ValueError(
-                f"cases.{name}: {equation} U share must be 1 when U is the only parent"
-            )
-        if use_u and has_observed and not 0 < share < 1:
-            raise ValueError(
-                f"cases.{name}: {equation} U share must be strictly between 0 and 1"
-            )
-    for equation in ("w", "z"):
-        use_u = getattr(common, equation).use_u
-        reliability = strengths[f"{equation}_u_reliability"]
-        if use_u and not 0 < reliability <= 1:
-            raise ValueError(
-                f"cases.{name}: {equation} reliability must lie in (0, 1] when U is enabled"
-            )
-        if not use_u and reliability != 0:
-            raise ValueError(
-                f"cases.{name}: {equation} reliability must be 0 when U is disabled"
-            )
