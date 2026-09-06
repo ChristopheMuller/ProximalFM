@@ -30,7 +30,16 @@ from typing import Any
 
 import torch
 
-from semisynt_eval._config import CaseConfig, Family
+from semisynt_eval._config import (
+    BasisConfig,
+    CaseConfig,
+    CateConfig,
+    Family,
+    LatentConfig,
+    OutcomeConfig,
+    ProxyConfig,
+    TreatmentConfig,
+)
 from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
 
 Tensor = torch.Tensor
@@ -148,6 +157,56 @@ class EvaluationInnovations:
     a: Tensor
 
 
+@dataclass(frozen=True)
+class FittedFamilyConfig:
+    """Case-invariant settings shared by one fitted function family."""
+
+    mechanism: str
+    family: Family
+    latent: LatentConfig
+    basis: BasisConfig
+    proxies: ProxyConfig
+    treatment: TreatmentConfig
+    outcome: OutcomeConfig
+    cate: CateConfig
+
+    @classmethod
+    def from_case(cls, case: CaseConfig) -> "FittedFamilyConfig":
+        return cls(
+            mechanism=case.mechanism,
+            family=case.family,
+            latent=case.latent,
+            basis=case.basis,
+            proxies=case.proxies,
+            treatment=case.treatment,
+            outcome=case.outcome,
+            cate=case.cate,
+        )
+
+    def validate_case(self, case: CaseConfig) -> None:
+        if FittedFamilyConfig.from_case(case) != self:
+            raise ValueError(
+                f"case {case.name!r} does not match the fitted family settings"
+            )
+        if not 0 < case.reliability < 1:
+            raise ValueError("proxy reliability must lie in (0, 1)")
+
+
+@dataclass(frozen=True)
+class PreparedEvaluation:
+    """Case-invariant evaluation state for one source/replicate/family."""
+
+    X: Tensor
+    U_source: Tensor
+    U: Tensor
+    V: Tensor
+    latent_index: Tensor
+    components: dict[str, Tensor]
+    CATE: Tensor
+    innovations: EvaluationInnovations
+    source_row_ids: Tensor
+
+
 class CalibratedLatentProxyMechanism(Mechanism):
     """Calibration-fitted latent-proxy mechanism for one factorial case.
 
@@ -160,7 +219,8 @@ class CalibratedLatentProxyMechanism(Mechanism):
     target_capability = "exact_cate"
     _COMPONENT_NAMES = ("a", "y", "tau", "w", "z")
 
-    config: CaseConfig
+    config: FittedFamilyConfig
+    default_case: CaseConfig
     family: Family
     d_x: int
     d_u: int
@@ -228,11 +288,12 @@ class CalibratedLatentProxyMechanism(Mechanism):
         u_cal = _matrix(u_cal, "u_cal")
         if x_cal.shape[0] != u_cal.shape[0]:
             raise ValueError("x_cal and u_cal must have matching rows")
-        if not 0 < config.reliability < 1:
-            raise ValueError("proxy reliability must lie in (0, 1)")
+        family_config = FittedFamilyConfig.from_case(config)
+        family_config.validate_case(config)
 
         instance = cls()
-        instance.config = config
+        instance.config = family_config
+        instance.default_case = config
         instance.family = config.family
         instance.d_x = x_cal.shape[1]
         instance.d_u = u_cal.shape[1]
@@ -482,14 +543,22 @@ class CalibratedLatentProxyMechanism(Mechanism):
             + treatment * self.cate(x)
         )
 
-    def generate(self, x: Tensor, u: Tensor) -> MechanismOutput:
-        """Apply fixed state to evaluation rows without fitting or mutation."""
+    def prepare_evaluation(
+        self,
+        x: Tensor,
+        u_source: Tensor,
+        source_row_ids: Tensor,
+    ) -> PreparedEvaluation:
+        """Compute all state shared across cases of this fitted family."""
         x = _matrix(x, "x")
-        u_source = _matrix(u, "u")
+        u_source = _matrix(u_source, "u_source")
         if x.shape[0] != u_source.shape[0]:
-            raise ValueError("x and u must have matching rows")
+            raise ValueError("x and u_source must have matching rows")
         if x.shape[1] != self.d_x or u_source.shape[1] != self.d_u:
             raise ValueError("evaluation widths do not match fitted widths")
+        source_row_ids = torch.as_tensor(source_row_ids, dtype=torch.long, device="cpu")
+        if source_row_ids.ndim != 1 or source_row_ids.shape[0] != x.shape[0]:
+            raise ValueError("source_row_ids must have shape (n_rows,)")
 
         noise = self.innovations(x.shape[0])
         innovation_sd = self.config.latent.innovation_sd
@@ -498,25 +567,44 @@ class CalibratedLatentProxyMechanism(Mechanism):
         )
         v = self.latent_coordinates(latent)
         latent_index = v @ self.latent_direction
-        multiplier = math.sqrt(
-            (1.0 - self.config.reliability) / self.config.reliability
+        components = {name: self.component(x, name) for name in self._COMPONENT_NAMES}
+        cate = self.config.cate.intercept + self.config.cate.scale * components["tau"]
+        return PreparedEvaluation(
+            X=x,
+            U_source=u_source,
+            U=latent,
+            V=v,
+            latent_index=latent_index,
+            components=components,
+            CATE=cate,
+            innovations=noise,
+            source_row_ids=source_row_ids,
         )
+
+    def generate_case(
+        self, prepared: PreparedEvaluation, case: CaseConfig
+    ) -> MechanismOutput:
+        """Apply case strengths to frozen fitted and prepared evaluation state."""
+        self.config.validate_case(case)
+        x = prepared.X
+        noise = prepared.innovations
+        multiplier = math.sqrt((1.0 - case.reliability) / case.reliability)
         w_raw = (
-            v @ self.rotation_w.T
-            + self.config.proxies.x_scale * self.component(x, "w")
+            prepared.V @ self.rotation_w.T
+            + self.config.proxies.x_scale * prepared.components["w"]
             + multiplier * self.proxy_signal_sd_w * noise.w
         )
         z_raw = (
-            v @ self.rotation_z.T
-            + self.config.proxies.x_scale * self.component(x, "z")
+            prepared.V @ self.rotation_z.T
+            + self.config.proxies.x_scale * prepared.components["z"]
             + multiplier * self.proxy_signal_sd_z * noise.z
         )
         w, z = self.wrap_proxy(w_raw), self.wrap_proxy(z_raw)
 
         logits = (
             self.treatment_intercept
-            + self.config.treatment.x_scale * self.component(x, "a").squeeze(1)
-            + self.config.alpha * latent_index
+            + self.config.treatment.x_scale * prepared.components["a"].squeeze(1)
+            + case.alpha * prepared.latent_index
         )
         propensity = torch.sigmoid(logits).clamp(
             self.config.treatment.propensity_lower,
@@ -524,13 +612,14 @@ class CalibratedLatentProxyMechanism(Mechanism):
         )
         a = (noise.a < propensity).to(torch.float64)[:, None]
         y0 = (
-            self.component(x, "y")
-            + self.config.gamma * latent_index[:, None]
+            prepared.components["y"]
+            + case.gamma * prepared.latent_index[:, None]
             + self.config.outcome.noise_sd * noise.y[:, None]
         )
-        cate = self.cate(x)
-        y1 = y0 + cate
+        y1 = y0 + prepared.CATE
         y_obs = torch.where(a.bool(), y1, y0)
+        bridge0 = self.bridge(x, w, torch.tensor(0), gamma=case.gamma)
+        bridge1 = self.bridge(x, w, torch.tensor(1), gamma=case.gamma)
         result = MechanismOutput(
             W=w,
             Z=z,
@@ -539,17 +628,27 @@ class CalibratedLatentProxyMechanism(Mechanism):
             Y_obs=y_obs,
             Y0=y0,
             Y1=y1,
-            CATE=cate,
+            CATE=prepared.CATE,
+            U=prepared.U,
+            U_source=prepared.U_source,
+            V=prepared.V,
+            bridge0=bridge0,
+            bridge1=bridge1,
         )
         expected_shapes = {
             "W": (x.shape[0], self.d_u),
             "Z": (x.shape[0], self.d_u),
+            "U": (x.shape[0], self.d_u),
+            "U_source": (x.shape[0], self.d_u),
+            "V": (x.shape[0], self.d_u),
             "A": (x.shape[0], 1),
             "A_probs": (x.shape[0], 1),
             "Y_obs": (x.shape[0], 1),
             "Y0": (x.shape[0], 1),
             "Y1": (x.shape[0], 1),
             "CATE": (x.shape[0], 1),
+            "bridge0": (x.shape[0], 1),
+            "bridge1": (x.shape[0], 1),
         }
         for name, expected_shape in expected_shapes.items():
             value = getattr(result, name)
@@ -562,6 +661,12 @@ class CalibratedLatentProxyMechanism(Mechanism):
             if not bool(torch.isfinite(value).all()):
                 raise ValueError(f"generated {name} contains non-finite values")
         return result
+
+    def generate(self, x: Tensor, u: Tensor) -> MechanismOutput:
+        """Compatibility adapter using the case supplied when fitting."""
+        row_ids = torch.arange(torch.as_tensor(x).shape[0], dtype=torch.long)
+        prepared = self.prepare_evaluation(x, u, row_ids)
+        return self.generate_case(prepared, self.default_case)
 
     def metadata(self) -> dict[str, object]:
         """Return JSON-serializable fitted state sufficient for an audit."""

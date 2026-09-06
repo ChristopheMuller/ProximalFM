@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import importlib
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +14,7 @@ import torch
 import yaml
 
 import semisynt_eval.mechanisms.base as mechanism_base
+from benchmarks.data import load_benchmark_from_val_dir
 from semisynt_eval._config import NONLINEAR_TRANSFORMS, load_case_configs
 from semisynt_eval.build import (
     DEFAULT_CONFIG_PATH,
@@ -380,14 +383,135 @@ def _tiny_build_args(csv: Path, out_root: Path, name: str):
     )
 
 
-def test_build_refuses_unimplemented_mechanism_without_writing(tmp_path):
+def _batch(root: Path, case: str) -> dict:
+    return torch.load(root / case / "val" / "batch_000000.pt", weights_only=True)
+
+
+def test_tiny_build_materializes_all_paired_cases(tmp_path):
     csv = tmp_path / "source.csv"
     _csv(csv)
     args = _tiny_build_args(csv, tmp_path, "matrix")
+    root = build(args)
 
-    with pytest.raises(
-        NotImplementedError,
-        match="not implemented yet: calibrated_latent_proxy",
-    ):
-        build(args)
-    assert not (tmp_path / "matrix").exists()
+    assert root == tmp_path / "matrix"
+    assert {path.name for path in root.iterdir() if path.is_dir()} == set(_configs())
+    manifests = {
+        case: json.loads((root / case / "manifest.json").read_text())
+        for case in _configs()
+    }
+    row_hashes = {
+        manifest["episodes"][0]["source_row_indices_sha256"]
+        for manifest in manifests.values()
+    }
+    assert len(row_hashes) == 1
+    assert {
+        (record["source_file"], record["replicate"], record["seed"])
+        for manifest in manifests.values()
+        for record in manifest["episodes"]
+    } == {("source.csv", 1, 7)}
+    benchmark = load_benchmark_from_val_dir(root / "linear_conf_low_proxy_low" / "val")
+    assert benchmark["true_CATEs"] is not None
+    assert benchmark["true_CATEs"].shape == (1, 2)
+
+
+def test_written_cases_preserve_factorial_pairing(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    root = build(_tiny_build_args(csv, tmp_path, "matrix"))
+
+    low = _batch(root, "linear_conf_low_proxy_low")
+    high_proxy = _batch(root, "linear_conf_low_proxy_high")
+    high_conf = _batch(root, "linear_conf_high_proxy_low")
+    for field in ("U", "X", "A", "A_probs", "Y_obs", "Y0", "Y1", "CATE"):
+        assert torch.equal(low[field], high_proxy[field])
+    assert not torch.equal(low["W"], high_proxy["W"])
+    assert not torch.equal(low["Z"], high_proxy["Z"])
+    for field in ("U", "X", "W", "Z", "CATE"):
+        assert torch.equal(low[field], high_conf[field])
+
+
+def test_single_case_build_matches_full_matrix(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    case = "nonlinear_conf_high_proxy_high"
+    full = build(_tiny_build_args(csv, tmp_path, "full"))
+    selected_args = _tiny_build_args(csv, tmp_path, "selected")
+    selected_args.case_names = [case]
+    selected_args._selected_case_configs = {case: selected_args._case_configs[case]}
+    selected = build(selected_args)
+
+    full_manifest = json.loads((full / case / "manifest.json").read_text())
+    selected_manifest = json.loads((selected / case / "manifest.json").read_text())
+    assert full_manifest["content_digest"] == selected_manifest["content_digest"]
+    full_batch, selected_batch = _batch(full, case), _batch(selected, case)
+    assert full_batch.keys() == selected_batch.keys()
+    for key in full_batch:
+        value = full_batch[key]
+        if isinstance(value, torch.Tensor):
+            assert torch.equal(value, selected_batch[key])
+        else:
+            assert value == selected_batch[key]
+    assert {path.name for path in selected.iterdir() if path.is_dir()} == {case}
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        ["--case", "missing"],
+        [
+            "--case",
+            "linear_conf_low_proxy_low",
+            "--case",
+            "linear_conf_low_proxy_low",
+        ],
+    ],
+)
+def test_case_selection_rejects_unknown_and_duplicate_names(selection):
+    with pytest.raises(SystemExit):
+        parse_args(["--list", *selection])
+
+
+def test_repeatable_case_selection_uses_canonical_recipe_order():
+    first = "nonlinear_conf_high_proxy_high"
+    second = "linear_conf_low_proxy_low"
+    args = parse_args(["--list", "--case", first, "--case", second])
+    assert list(args._selected_case_configs) == [second, first]
+
+
+def test_builder_fits_exactly_two_families_per_source_replicate(tmp_path, monkeypatch):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    build_module = importlib.import_module("semisynt_eval.build")
+    original = build_module.fit_mechanism_with_identity
+    calls = []
+
+    def recording_fit(*args, **kwargs):
+        calls.append(
+            (kwargs["source_id"], kwargs["replicate"], kwargs["config"].family)
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(build_module, "fit_mechanism_with_identity", recording_fit)
+    build(_tiny_build_args(csv, tmp_path, "matrix"))
+    assert calls == [("source.csv", 1, "linear"), ("source.csv", 1, "nonlinear")]
+
+
+def test_case_traversal_order_does_not_change_case_outputs(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    normal_args = _tiny_build_args(csv, tmp_path, "normal")
+    normal = build(normal_args)
+
+    reversed_args = _tiny_build_args(csv, tmp_path, "reversed")
+    reversed_args._case_configs = dict(reversed(reversed_args._case_configs.items()))
+    reversed_args._selected_case_configs = dict(reversed_args._case_configs)
+    reversed_root = build(reversed_args)
+
+    for case in _configs():
+        normal_batch, reversed_batch = _batch(normal, case), _batch(reversed_root, case)
+        for key, value in normal_batch.items():
+            other = reversed_batch[key]
+            if isinstance(value, torch.Tensor):
+                assert torch.equal(value, other)
+            else:
+                assert value == other

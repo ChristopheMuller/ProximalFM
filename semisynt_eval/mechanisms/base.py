@@ -23,6 +23,11 @@ class MechanismOutput:
     Y0: Tensor
     Y1: Tensor
     CATE: Optional[Tensor]
+    U: Optional[Tensor] = None
+    U_source: Optional[Tensor] = None
+    V: Optional[Tensor] = None
+    bridge0: Optional[Tensor] = None
+    bridge1: Optional[Tensor] = None
 
 
 class Mechanism(ABC):

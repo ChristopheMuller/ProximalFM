@@ -219,9 +219,11 @@ def test_proxy_reliability_rescales_only_named_measurement_noise():
         signal = coordinates @ rotation.T + low.config.proxies.x_scale * low.component(
             x_eval, name
         )
-        low_multiplier = ((1 - low.config.reliability) / low.config.reliability) ** 0.5
+        low_multiplier = (
+            (1 - low.default_case.reliability) / low.default_case.reliability
+        ) ** 0.5
         high_multiplier = (
-            (1 - high.config.reliability) / high.config.reliability
+            (1 - high.default_case.reliability) / high.default_case.reliability
         ) ** 0.5
         torch.testing.assert_close(
             (observed_low - signal) / low_multiplier, signal_sd * innovation
@@ -229,6 +231,40 @@ def test_proxy_reliability_rescales_only_named_measurement_noise():
         torch.testing.assert_close(
             (observed_high - signal) / high_multiplier, signal_sd * innovation
         )
+
+
+def test_prepared_state_is_reused_across_factorial_cases():
+    x_cal, u_cal, x_eval, u_eval = _data()
+    cases = {
+        (case.confounding, case.proxy): case
+        for case in (
+            _case("linear_conf_low_proxy_low"),
+            _case("linear_conf_low_proxy_high"),
+            _case("linear_conf_high_proxy_low"),
+        )
+    }
+    mechanism = _fit(cases[("low", "low")], x_cal, u_cal)
+    rows = torch.arange(len(x_eval))
+    prepared = mechanism.prepare_evaluation(x_eval, u_eval, rows)
+    outputs = {
+        levels: mechanism.generate_case(prepared, case)
+        for levels, case in cases.items()
+    }
+    low = outputs[("low", "low")]
+    high_proxy = outputs[("low", "high")]
+    high_conf = outputs[("high", "low")]
+
+    for output in outputs.values():
+        assert output.U is prepared.U
+        assert output.U_source is prepared.U_source
+        assert output.V is prepared.V
+        assert output.CATE is prepared.CATE
+    for field in ("U", "U_source", "V", "A", "A_probs", "Y0", "Y1", "Y_obs", "CATE"):
+        torch.testing.assert_close(getattr(low, field), getattr(high_proxy, field))
+    for field in ("U", "U_source", "V", "W", "Z", "CATE"):
+        torch.testing.assert_close(getattr(low, field), getattr(high_conf, field))
+    assert not torch.equal(low.W, high_proxy.W)
+    assert not torch.equal(low.Z, high_proxy.Z)
 
 
 @pytest.mark.parametrize("family", ("linear", "nonlinear"))

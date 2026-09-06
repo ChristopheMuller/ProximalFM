@@ -9,9 +9,10 @@ import torch
 
 from semisynt_eval.mechanisms import (
     CaseConfig,
-    fit_mechanism,
+    MechanismOutput,
     mechanism_target_capability,
 )
+from semisynt_eval.mechanisms.calibrated_latent_proxy import stable_seed
 from semisynt_eval.source import PreparedCSV
 
 Tensor = torch.Tensor
@@ -35,6 +36,19 @@ class Episode:
     d_X: int
     d_W: int
     d_Z: int
+    source_row_indices: Tensor
+    U_source: Tensor
+    V: Tensor
+    bridge0: Tensor
+    bridge1: Tensor
+
+
+@dataclass(frozen=True)
+class EvaluationRows:
+    """One ordered empirical row sample shared across all factorial cases."""
+
+    X: Tensor
+    U_source: Tensor
     source_row_indices: Tensor
 
 
@@ -97,50 +111,70 @@ class CSVProximalDataset:
     def d_Z(self) -> int:
         return self.d_U
 
-    def _sample_indices(self, n: int, rng: torch.Generator) -> Tensor:
-        n_source = int(self.source.evaluation_values.shape[0])
-        if n > n_source:
-            raise ValueError(
-                f"{self.source.path.name} has {n_source} evaluation rows but "
-                f"episode needs {n}; reduce n_calibration or the episode size"
-            )
-        return torch.randperm(n_source, generator=rng)[:n]
-
-    def generate(self, *, seed: int, n_rows: int) -> Episode:
-        """Generate one observational dataset and its potential outcomes."""
+    def sample_rows(
+        self, *, master_seed: int, replicate: int, n_rows: int
+    ) -> EvaluationRows:
+        """Select paired evaluation rows from an explicit named stream."""
         if n_rows < 2:
             raise ValueError("n_rows must be >= 2")
-        rng = torch.Generator().manual_seed(int(seed))
-        rows = self._sample_indices(n_rows, rng)
+        n_source = int(self.source.evaluation_values.shape[0])
+        if n_rows > n_source:
+            raise ValueError(
+                f"{self.source.path.name} has {n_source} evaluation rows but "
+                f"episode needs {n_rows}; reduce n_calibration or the episode size"
+            )
+        if replicate < 1:
+            raise ValueError("replicate must be one-based and positive")
+        row_seed = stable_seed(master_seed, self.source.path.name, replicate, "rows")
+        rng = torch.Generator().manual_seed(row_seed)
+        rows = torch.randperm(n_source, generator=rng)[:n_rows]
         x = self.source.X_eval[rows]
-        u = self.source.U_eval[rows]
+        u_source = self.source.U_eval[rows]
         source_rows = torch.tensor(
             self.source.evaluation_row_indices, dtype=torch.long
         )[rows]
-        mechanism = fit_mechanism(
-            self.mechanism_name,
-            self.source.X_cal,
-            self.source.U_cal,
-            rng,
-            config=self.mechanism_config,
+        return EvaluationRows(
+            X=x,
+            U_source=u_source,
+            source_row_indices=source_rows,
         )
-        generated = mechanism.generate(x, u)
+
+    def materialize_episode(
+        self, rows: EvaluationRows, generated: MechanismOutput
+    ) -> Episode:
+        """Convert native float64 output to the canonical float32 episode."""
+        x, u_source = rows.X, rows.U_source
+        n_rows = x.shape[0]
         w, z = generated.W, generated.Z
         propensity, a = generated.A_probs, generated.A
         y0, y1, y_obs = generated.Y0, generated.Y1, generated.Y_obs
         cate = generated.CATE
-        if mechanism.target_capability == "exact_cate" and cate is None:
+        if self.target_capability == "exact_cate" and cate is None:
             raise RuntimeError(
                 f"{self.mechanism_name} declares exact_cate but returned no CATE"
             )
-        if mechanism.target_capability == "ite_only" and cate is not None:
+        if self.target_capability == "ite_only" and cate is not None:
             raise RuntimeError(
                 f"{self.mechanism_name} declares ite_only but returned a CATE"
+            )
+        if any(
+            value is None
+            for value in (
+                generated.U,
+                generated.V,
+                generated.bridge0,
+                generated.bridge1,
+            )
+        ):
+            raise RuntimeError(
+                f"{self.mechanism_name} did not return paired latent diagnostics"
             )
 
         for name, tensor in (
             ("X", x),
-            ("U", u),
+            ("U_source", u_source),
+            ("U", generated.U),
+            ("V", generated.V),
             ("W", w),
             ("Z", z),
             ("A_probs", propensity),
@@ -155,7 +189,7 @@ class CSVProximalDataset:
             raise ValueError("proxy widths must be at least the latent width")
 
         return Episode(
-            U=u.float(),
+            U=generated.U.float(),
             X=x.float(),
             W=w.float(),
             Z=z.float(),
@@ -169,5 +203,9 @@ class CSVProximalDataset:
             d_X=self.d_X,
             d_W=self.d_W,
             d_Z=self.d_Z,
-            source_row_indices=source_rows,
+            source_row_indices=rows.source_row_indices,
+            U_source=u_source.float(),
+            V=generated.V.float(),
+            bridge0=generated.bridge0.float(),
+            bridge1=generated.bridge1.float(),
         )

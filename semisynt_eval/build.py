@@ -17,7 +17,13 @@ import yaml
 from proximalfm.prior._genload import write_batch_file
 from semisynt_eval._config import CaseConfig, load_case_configs
 from semisynt_eval.generator import CSVProximalDataset, Episode
-from semisynt_eval.mechanisms import available_mechanisms
+from semisynt_eval.mechanisms import (
+    available_mechanisms,
+    fit_mechanism_with_identity,
+)
+from semisynt_eval.mechanisms.calibrated_latent_proxy import (
+    CalibratedLatentProxyMechanism,
+)
 from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
@@ -100,35 +106,86 @@ def make_datasets(
     ]
 
 
-def generate_episodes(
-    datasets: Sequence[CSVProximalDataset],
+def generate_paired_episodes(
+    sources: Sequence[PreparedCSV],
+    all_cases: Sequence[CaseConfig],
+    selected_cases: Sequence[CaseConfig],
     *,
+    row_sampling: str,
     replicates_per_csv: int,
     n_rows: int,
     seed: int,
-) -> tuple[list[Episode], list[dict]]:
-    """Generate episodes with seeds paired by source and replicate across cases."""
-    episodes, records = [], []
-    for source_index, dataset in enumerate(datasets):
-        for replicate in range(replicates_per_csv):
-            pair_index = source_index * replicates_per_csv + replicate
-            episode_seed = int(seed) + 1_000 * pair_index
-            episode = dataset.generate(seed=episode_seed, n_rows=n_rows)
-            episodes.append(episode)
-            row_bytes = episode.source_row_indices.numpy().astype("<i8").tobytes()
-            records.append(
-                {
-                    "pair_id": f"{dataset.source.path.name}:{replicate}",
-                    "source_file": dataset.source.path.name,
-                    "case": dataset.mechanism_config.name,
-                    "mechanism": dataset.mechanism_name,
-                    "family": dataset.mechanism_config.family,
-                    "replicate": replicate,
-                    "seed": episode_seed,
-                    "source_row_indices_sha256": hashlib.sha256(row_bytes).hexdigest(),
-                }
+) -> dict[str, tuple[list[CSVProximalDataset], list[Episode], list[dict]]]:
+    """Generate every selected case from shared source/replicate state."""
+    datasets_by_case = {
+        case.name: make_datasets(sources, case, row_sampling=row_sampling)
+        for case in selected_cases
+    }
+    episodes_by_case = {case.name: [] for case in selected_cases}
+    records_by_case = {case.name: [] for case in selected_cases}
+    cases_by_family = {
+        family: [case for case in selected_cases if case.family == family]
+        for family in ("linear", "nonlinear")
+    }
+    fit_case_by_family = {
+        family: next(case for case in all_cases if case.family == family)
+        for family in ("linear", "nonlinear")
+    }
+
+    for source_index, source in enumerate(sources):
+        row_dataset = datasets_by_case[selected_cases[0].name][source_index]
+        for replicate in range(1, replicates_per_csv + 1):
+            rows = row_dataset.sample_rows(
+                master_seed=seed, replicate=replicate, n_rows=n_rows
             )
-    return episodes, records
+            row_bytes = rows.source_row_indices.numpy().astype("<i8").tobytes()
+            row_digest = hashlib.sha256(row_bytes).hexdigest()
+            for family in ("linear", "nonlinear"):
+                fit_case = fit_case_by_family[family]
+                fitted = fit_mechanism_with_identity(
+                    fit_case.mechanism,
+                    source.X_cal,
+                    source.U_cal,
+                    config=fit_case,
+                    master_seed=seed,
+                    source_id=source.path.name,
+                    replicate=replicate,
+                )
+                if not isinstance(fitted, CalibratedLatentProxyMechanism):
+                    raise TypeError(
+                        f"unexpected paired mechanism type {type(fitted).__name__}"
+                    )
+                family_cases = cases_by_family[family]
+                if not family_cases:
+                    continue
+                prepared = fitted.prepare_evaluation(
+                    rows.X, rows.U_source, rows.source_row_indices
+                )
+                for case in family_cases:
+                    generated = fitted.generate_case(prepared, case)
+                    dataset = datasets_by_case[case.name][source_index]
+                    episode = dataset.materialize_episode(rows, generated)
+                    episodes_by_case[case.name].append(episode)
+                    records_by_case[case.name].append(
+                        {
+                            "pair_id": f"{source.path.name}:{replicate}",
+                            "source_file": source.path.name,
+                            "case": case.name,
+                            "mechanism": case.mechanism,
+                            "family": case.family,
+                            "replicate": replicate,
+                            "seed": seed,
+                            "source_row_indices_sha256": row_digest,
+                        }
+                    )
+    return {
+        case.name: (
+            datasets_by_case[case.name],
+            episodes_by_case[case.name],
+            records_by_case[case.name],
+        )
+        for case in selected_cases
+    }
 
 
 def _stack(episodes: Sequence[Episode], field: str) -> torch.Tensor:
@@ -325,7 +382,8 @@ def _owned_outputs(root: Path, case_names: Sequence[str]) -> list[Path]:
 
 
 def build(args: argparse.Namespace) -> Path:
-    unavailable = {case.mechanism for case in args._case_configs.values()} - set(
+    selected_cases = list(args._selected_case_configs.values())
+    unavailable = {case.mechanism for case in selected_cases} - set(
         available_mechanisms()
     )
     if unavailable:
@@ -343,22 +401,22 @@ def build(args: argparse.Namespace) -> Path:
     sources = _load_sources(args)
     cli_command = shlex.join([Path(sys.argv[0]).name, *sys.argv[1:]])
     generated = []
-    pending = []
-    for case in args._case_configs.values():
-        datasets = make_datasets(sources, case, row_sampling=args.row_sampling)
-        episodes, records = generate_episodes(
-            datasets,
-            replicates_per_csv=args.replicates_per_csv,
-            n_rows=args.n_context + args.n_query,
-            seed=args.seed,
-        )
-        pending.append((case, datasets, episodes, records))
+    pending = generate_paired_episodes(
+        sources,
+        list(args._case_configs.values()),
+        selected_cases,
+        row_sampling=args.row_sampling,
+        replicates_per_csv=args.replicates_per_csv,
+        n_rows=args.n_context + args.n_query,
+        seed=args.seed,
+    )
     if existing and args.force:
         for path in existing:
             path.unlink()
 
     root.mkdir(parents=True, exist_ok=True)
-    for case, datasets, episodes, records in pending:
+    for case in selected_cases:
+        datasets, episodes, records = pending[case.name]
         case_root = root / case.name
         digest = _content_digest(args, case, datasets)
         n_files, dpf = save_validation(
@@ -468,6 +526,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n_query", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--datasets_per_file", type=int)
+    parser.add_argument(
+        "--case",
+        dest="case_names",
+        action="append",
+        help="case name to build; repeat for a subset (default: all cases)",
+    )
     parser.add_argument("--force", action="store_true")
     return parser
 
@@ -529,6 +593,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     args.data_dir, args.out_root = Path(args.data_dir), Path(args.out_root)
     args._case_configs = cases
+    if args.case_names:
+        duplicates = sorted(
+            {name for name in args.case_names if args.case_names.count(name) > 1}
+        )
+        unknown = sorted(set(args.case_names) - set(cases))
+        if duplicates or unknown:
+            parser.error(
+                f"invalid --case selection: duplicates={duplicates}, unknown={unknown}"
+            )
+        selected = set(args.case_names)
+        args._selected_case_configs = {
+            name: case for name, case in cases.items() if name in selected
+        }
+    else:
+        args._selected_case_configs = dict(cases)
     args._raw_common, args._raw_cases = recipe["common"], recipe["cases"]
     args._expected_source_sha256 = {
         source["file"]: source["sha256"] for source in recipe.get("sources", [])

@@ -8,12 +8,14 @@ import torch
 
 from semisynt_eval._config import CaseConfig
 from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
-from semisynt_eval.mechanisms.random_basis import LinearMechanism, NonlinearMechanism
+from semisynt_eval.mechanisms.calibrated_latent_proxy import (
+    CalibratedLatentProxyMechanism,
+)
 
 _BUILDERS: dict[str, dict[str, Type[Mechanism]]] = {
-    "random_basis": {
-        "linear": LinearMechanism,
-        "nonlinear": NonlinearMechanism,
+    "calibrated_latent_proxy": {
+        "linear": CalibratedLatentProxyMechanism,
+        "nonlinear": CalibratedLatentProxyMechanism,
     },
 }
 
@@ -61,11 +63,37 @@ def fit_mechanism(
     return builder.fit(x_cal, u_cal, config, generator)
 
 
+def fit_mechanism_with_identity(
+    name: str,
+    x_cal: torch.Tensor,
+    u_cal: torch.Tensor,
+    *,
+    config: CaseConfig,
+    master_seed: int,
+    source_id: str,
+    replicate: int,
+) -> Mechanism:
+    """Fit a mechanism from explicit paired-build identity."""
+    builder = _resolve_builder(name, config)
+    fit_with_identity = getattr(builder, "fit_with_identity", None)
+    if fit_with_identity is None:
+        raise TypeError(f"mechanism {name!r} does not support paired fitting")
+    return fit_with_identity(
+        x_cal,
+        u_cal,
+        config,
+        master_seed=master_seed,
+        source_id=source_id,
+        replicate=replicate,
+    )
+
+
 __all__ = [
     "CaseConfig",
     "Mechanism",
     "MechanismOutput",
     "available_mechanisms",
     "fit_mechanism",
+    "fit_mechanism_with_identity",
     "mechanism_target_capability",
 ]

@@ -21,9 +21,7 @@ the matrix. Python supplies validation, not hidden generative defaults.
 Mechanism identity and function family are separate configuration axes:
 `common.mechanism` is `calibrated_latent_proxy`, while each case selects
 `family: linear` or `family: nonlinear`. All numeric mechanism constants and
-the low/high level mappings live in the YAML. The typed schema is complete, but
-the builder intentionally refuses generation until the native mechanism
-implementation lands.
+the low/high level mappings live in the YAML.
 
 ## Build and consume
 
@@ -38,6 +36,10 @@ Build every case:
 ```bash
 NAME=semisynt_matrix_v1 ./scripts/build_semisynt_eval.sh
 ```
+
+Pass `--case NAME` one or more times to the Python entry point to build a
+subset. Omitting it builds all eight cases. Case selection does not change a
+case's content digest or generated tensors.
 
 The script uses plain `python` through `scripts/_env.sh`, so it works on the
 cluster where `uv run` is unavailable. Build-level settings are environment
@@ -105,12 +107,12 @@ seeds, source-row identities, preprocessing constants, and episode row hashes
 are recorded in the manifests. `replicates_per_csv` means independently seeded
 benchmark episodes, not Monte Carlo rows.
 
-Mechanisms follow an explicit fit-then-generate lifecycle. For each episode,
-`fit_mechanism(X_cal, U_cal, ...)` constructs the mechanism using only the
-calibration partition, and the returned object generates `W`, `Z`, `A`, and
-`Y` from sampled evaluation rows through `mechanism.generate(X_eval, U_eval)`.
-The schema for that mechanism is present; its native implementation
-is the next migration step.
+Mechanisms follow an explicit fit-prepare-generate lifecycle. For each
+`(source, replicate)`, evaluation rows are sampled once and exactly two
+mechanisms are fitted on the calibration partition: one per function family.
+Each mechanism prepares its augmented latent state, X functions, CATE, and
+named innovations once, then generates the four confounding/proxy cases from
+that shared state.
 
 The row split has one spelling: `n_context` context rows plus `n_query` query
 rows. The total episode size is derived as their sum; there is no `seq_len` or
@@ -153,8 +155,9 @@ and `proxy`. Add or edit cases there; do not encode the scientific matrix in
 shell loops or CLI flags. Case names become directory names and must not
 contain `/`.
 
-Cases are paired by `(source CSV, replicate)`: all cases receive the same
-episode seed and therefore identical empirical X/U rows. Cases of the same
-family and structure also reuse coefficient and base-noise draws, so changing a
-low/high strength rescales the same underlying mechanism rather than drawing a
-new one.
+Cases are paired by `(source CSV, replicate)`: all cases reuse identical
+ordered empirical rows. Cases in one family reuse the fitted mechanism,
+augmented latent state, X functions, CATE, and named innovations, so changing a
+low/high strength modifies only the quantities downstream of that setting.
+The `U` stored in `val/` is the innovation-augmented hidden latent; empirical
+`U_source` remains diagnostic-only and is never exposed to benchmark methods.
