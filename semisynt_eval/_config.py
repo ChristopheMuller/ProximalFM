@@ -7,11 +7,15 @@ data-affecting defaults.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
+from itertools import product
 import math
 from typing import Any, Literal, Mapping
 
 Family = Literal["linear", "nonlinear"]
+FAMILIES = ("linear", "nonlinear")
+LEVEL_NAMES = ("low", "high")
 NONLINEAR_TRANSFORMS = ("identity", "asinh", "sine", "quadratic")
 
 
@@ -284,10 +288,11 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
     _exact_keys(levels, {"confounding", "proxy"}, location="common.levels")
     raw_confounding = _mapping(levels["confounding"], "common.levels.confounding")
     raw_proxy = _mapping(levels["proxy"], "common.levels.proxy")
-    if not raw_confounding:
-        raise ValueError("common.levels.confounding must not be empty")
-    if not raw_proxy:
-        raise ValueError("common.levels.proxy must not be empty")
+    expected_levels = set(LEVEL_NAMES)
+    if set(raw_confounding) != expected_levels:
+        raise ValueError("common.levels.confounding must contain exactly low and high")
+    if set(raw_proxy) != expected_levels:
+        raise ValueError("common.levels.proxy must contain exactly low and high")
 
     confounding_levels = {}
     for name, raw in raw_confounding.items():
@@ -338,7 +343,7 @@ def load_case_configs(
         case = dict(_mapping(raw, location))
         _exact_keys(case, {"family", "confounding", "proxy"}, location=location)
         family = case["family"]
-        if family not in ("linear", "nonlinear"):
+        if family not in FAMILIES:
             raise ValueError(f"{location}.family must be linear or nonlinear")
         confounding = case["confounding"]
         if confounding not in common.confounding_levels:
@@ -369,5 +374,22 @@ def load_case_configs(
             treatment=common.treatment,
             outcome=common.outcome,
             cate=common.cate,
+        )
+
+    counts = Counter(
+        (case.family, case.confounding, case.proxy) for case in resolved.values()
+    )
+    expected = set(product(FAMILIES, LEVEL_NAMES, LEVEL_NAMES))
+    missing = sorted(expected - set(counts))
+    duplicates = sorted(cell for cell, count in counts.items() if count > 1)
+    if missing or duplicates:
+        details = []
+        if missing:
+            details.append(f"missing={missing}")
+        if duplicates:
+            details.append(f"duplicates={duplicates}")
+        raise ValueError(
+            "cases must contain each family x confounding x proxy cell exactly "
+            f"once: {', '.join(details)}"
         )
     return resolved

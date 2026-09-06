@@ -164,12 +164,51 @@ def test_resolved_cases_do_not_expose_random_basis_fields():
             lambda r: r["cases"]["linear_conf_low_proxy_low"].update(extra=1),
             "unknown",
         ),
+        (
+            lambda r: r["cases"]["linear_conf_low_proxy_low"].update(family="other"),
+            "family must be linear or nonlinear",
+        ),
     ],
 )
 def test_schema_rejects_unknown_or_invalid_values(edit, message):
     recipe = _recipe()
     edit(recipe)
     with pytest.raises(ValueError, match=message):
+        load_case_configs(recipe["common"], recipe["cases"])
+
+
+@pytest.mark.parametrize("level", ["confounding", "proxy"])
+def test_schema_requires_exact_low_high_level_definitions(level):
+    recipe = _recipe()
+    recipe["common"]["levels"][level]["medium"] = recipe["common"]["levels"][level].pop(
+        "high"
+    )
+
+    with pytest.raises(ValueError, match=f"levels.{level}.*exactly low and high"):
+        load_case_configs(recipe["common"], recipe["cases"])
+
+
+def test_schema_rejects_missing_factorial_cell():
+    recipe = _recipe()
+    recipe["cases"].pop("nonlinear_conf_high_proxy_high")
+
+    with pytest.raises(
+        ValueError,
+        match=r"each family x confounding x proxy cell exactly once: missing=.*nonlinear",
+    ):
+        load_case_configs(recipe["common"], recipe["cases"])
+
+
+def test_schema_rejects_duplicate_factorial_cell():
+    recipe = _recipe()
+    recipe["cases"]["duplicate_name"] = dict(
+        recipe["cases"]["linear_conf_low_proxy_low"]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"each family x confounding x proxy cell exactly once: duplicates=.*linear",
+    ):
         load_case_configs(recipe["common"], recipe["cases"])
 
 

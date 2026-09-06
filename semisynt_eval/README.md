@@ -76,10 +76,11 @@ uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
 [`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
 configuration over all eight cases. Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
-Each case config is a complete one-case format-v5 recipe and can be rebuilt
-with `--config`; override `--name` to keep the original output intact. Source
-SHA-256 values, resolved case settings, paired episode IDs, and content digests
-are recorded in the manifests. `--force` replaces only builder-owned files.
+Each case config snapshots the complete format-v5 matrix recipe and can be
+rebuilt with `--config`; override `--name` to keep the original output intact.
+Source SHA-256 values, resolved case settings, paired episode IDs, and content
+digests are recorded in the manifests. `--force` replaces only builder-owned
+files.
 
 Every `*.csv` directly in `semisynt_eval/datasets/` is discovered in stable
 filename order. Before any data-dependent preprocessing, `n_calibration`

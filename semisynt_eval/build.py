@@ -285,20 +285,12 @@ def _build_values(args: argparse.Namespace) -> dict:
     return values
 
 
-def _resolved_recipe(
-    args: argparse.Namespace, case: CaseConfig, sources: Sequence[PreparedCSV]
-) -> dict:
+def _resolved_recipe(args: argparse.Namespace, sources: Sequence[PreparedCSV]) -> dict:
     return {
         "format_version": FORMAT_VERSION,
         "build": _build_values(args),
         "common": args._raw_common,
-        "cases": {
-            case.name: {
-                "family": case.family,
-                "confounding": case.confounding,
-                "proxy": case.proxy,
-            }
-        },
+        "cases": args._raw_cases,
         "sources": [
             {"file": source.path.name, "sha256": source.digest} for source in sources
         ],
@@ -394,7 +386,7 @@ def build(args: argparse.Namespace) -> Path:
             "cli_command": cli_command,
         }
         (case_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        _write_yaml(case_root / "config.yaml", _resolved_recipe(args, case, sources))
+        _write_yaml(case_root / "config.yaml", _resolved_recipe(args, sources))
         generated.append(
             {
                 "case": case.name,
