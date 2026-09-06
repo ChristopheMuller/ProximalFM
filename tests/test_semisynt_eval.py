@@ -15,7 +15,7 @@ from benchmarks.data import load_benchmark_from_val_dir
 from semisynt_eval._config import TRANSFORMS, load_case_configs
 from semisynt_eval.build import DEFAULT_CONFIG_PATH, build, parse_args
 from semisynt_eval.generator import CSVProximalDataset
-from semisynt_eval.mechanisms import available_mechanisms, build_mechanism
+from semisynt_eval.mechanisms import available_mechanisms, fit_mechanism
 from semisynt_eval.mechanisms.base import (
     RandomBasisRegression,
     apply_transform,
@@ -31,6 +31,19 @@ def _recipe() -> dict:
 def _configs():
     recipe = _recipe()
     return load_case_configs(recipe["common"], recipe["cases"])
+
+
+def _fit_mechanism(family, case, d_x, d_u, seed):
+    calibration = torch.Generator().manual_seed(seed + 10_000)
+    x_cal = torch.randn(64, d_x, generator=calibration)
+    u_cal = torch.randn(64, d_u, generator=calibration)
+    return fit_mechanism(
+        family,
+        x_cal,
+        u_cal,
+        torch.Generator().manual_seed(seed),
+        config=case,
+    )
 
 
 def _csv(path: Path, delimiter: str = ",") -> None:
@@ -202,6 +215,26 @@ def test_linear_without_interactions_has_identity_main_terms_only():
     assert torch.equal(regression.transforms, torch.zeros_like(regression.transforms))
 
 
+def test_fitted_mechanism_rejects_invalid_calibration_rows():
+    case = _configs()["linear_conf_low_proxy_low"]
+    with pytest.raises(ValueError, match="matching non-empty rows"):
+        fit_mechanism(
+            "linear",
+            torch.zeros(3, 2),
+            torch.zeros(2, 2),
+            torch.Generator().manual_seed(1),
+            config=case,
+        )
+    with pytest.raises(ValueError, match="must be finite"):
+        fit_mechanism(
+            "linear",
+            torch.tensor([[0.0, float("nan")]]),
+            torch.zeros(1, 2),
+            torch.Generator().manual_seed(1),
+            config=case,
+        )
+
+
 @pytest.mark.parametrize("family", available_mechanisms())
 def test_calibrated_components_and_proxy_reliability(family):
     base = _configs()[f"{family}_conf_low_proxy_low"]
@@ -210,9 +243,7 @@ def test_calibrated_components_and_proxy_reliability(family):
         w=replace(base.w, use_x=False, normalize_output=False),
         w_u_reliability=0.25,
     )
-    mechanism = build_mechanism(
-        family, 3, 2, torch.Generator().manual_seed(17), config=case
-    )
+    mechanism = _fit_mechanism(family, case, 3, 2, 17)
     generator = torch.Generator().manual_seed(18)
     x = torch.randn(20000, 3, generator=generator)
     u = torch.randn(20000, 2, generator=generator)
@@ -249,9 +280,7 @@ def test_disabled_parent_blocks_do_not_enter_equations():
         a=replace(base.a, use_x=False),
         y=replace(base.y, use_x=False),
     )
-    mechanism = build_mechanism(
-        "linear", 3, 2, torch.Generator().manual_seed(8), config=case
-    )
+    mechanism = _fit_mechanism("linear", case, 3, 2, 8)
     generator = torch.Generator().manual_seed(9)
     x = torch.randn(1000, 3, generator=generator)
     changed_x = x + 100 * torch.randn(1000, 3, generator=generator)
@@ -272,9 +301,7 @@ def test_disabled_parent_blocks_do_not_enter_equations():
 @pytest.mark.parametrize("family", available_mechanisms())
 def test_exact_cate_shared_noise_and_propensity_bounds(family):
     case = _configs()[f"{family}_conf_low_proxy_low"]
-    mechanism = build_mechanism(
-        family, 4, 3, torch.Generator().manual_seed(25), config=case
-    )
+    mechanism = _fit_mechanism(family, case, 4, 3, 25)
     x = torch.randn(2048, 4, generator=torch.Generator().manual_seed(26))
     u = torch.randn(2048, 3, generator=torch.Generator().manual_seed(27))
     w, z = mechanism.proxies(x, u)

@@ -7,7 +7,11 @@ from typing import Any, Optional
 
 import torch
 
-from semisynt_eval.mechanisms import CaseConfig, build_mechanism
+from semisynt_eval.mechanisms import (
+    CaseConfig,
+    fit_mechanism,
+    mechanism_target_capability,
+)
 from semisynt_eval.source import PreparedCSV
 
 Tensor = torch.Tensor
@@ -56,16 +60,10 @@ class CSVProximalDataset:
         self.name = f"real_csv:{source.path.stem}"
         self.mechanism_name = mechanism
         self.mechanism_config = mechanism_config
-        self.overlap_eps = float(self.mechanism_config.a.overlap_epsilon)
         self.row_sampling = row_sampling
-        probe = build_mechanism(
-            mechanism,
-            self.d_X,
-            self.d_U,
-            torch.Generator().manual_seed(0),
-            config=self.mechanism_config,
+        self.target_capability = mechanism_target_capability(
+            mechanism, config=self.mechanism_config
         )
-        self.target_capability = probe.target_capability
         self.options: dict[str, Any] = {
             "source_file": source.path.name,
             "source_sha256": source.digest,
@@ -119,22 +117,18 @@ class CSVProximalDataset:
         source_rows = torch.tensor(
             self.source.evaluation_row_indices, dtype=torch.long
         )[rows]
-        mechanism = build_mechanism(
+        mechanism = fit_mechanism(
             self.mechanism_name,
-            self.d_X,
-            self.d_U,
+            self.source.X_cal,
+            self.source.U_cal,
             rng,
             config=self.mechanism_config,
         )
-
-        w, z = mechanism.proxies(x, u)
-        propensity = mechanism.treatment_probability(x, u, z).clamp(
-            self.overlap_eps, 1.0 - self.overlap_eps
-        )
-        a = (torch.rand(n_rows, 1, generator=rng) < propensity).float()
-        y0, y1 = mechanism.potential_outcomes(x, u, w)
-        y_obs = a * y1 + (1.0 - a) * y0
-        cate = mechanism.cate(x)
+        generated = mechanism.generate(x, u)
+        w, z = generated.W, generated.Z
+        propensity, a = generated.A_probs, generated.A
+        y0, y1, y_obs = generated.Y0, generated.Y1, generated.Y_obs
+        cate = generated.CATE
         if mechanism.target_capability == "exact_cate" and cate is None:
             raise RuntimeError(
                 f"{self.mechanism_name} declares exact_cate but returned no CATE"

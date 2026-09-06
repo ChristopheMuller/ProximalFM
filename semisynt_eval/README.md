@@ -91,6 +91,15 @@ seeds, source-row identities, preprocessing constants, and episode row hashes
 are recorded in the manifests. `replicates_per_csv` means independently seeded
 benchmark episodes, not Monte Carlo rows.
 
+Mechanisms follow an explicit fit-then-generate lifecycle. For each episode,
+`fit_mechanism(X_cal, U_cal, ...)` constructs the mechanism using only the
+calibration partition, and the returned object generates `W`, `Z`, `A`, and
+`Y` from sampled evaluation rows through `mechanism.generate(X_eval, U_eval)`.
+This is currently an interface boundary: the legacy random-basis families use
+the calibration tensors only to establish their dimensions and retain their
+existing episode-local normalizations. Ayu-style fitted basis, latent, and
+proxy-noise constants will be added behind this boundary separately.
+
 The row split has one spelling: `n_context` context rows plus `n_query` query
 rows. The total episode size is derived as their sum; there is no `seq_len` or
 `prop_train` ratio to resolve.

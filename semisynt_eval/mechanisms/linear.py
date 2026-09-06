@@ -22,6 +22,28 @@ class BasisMechanism(Mechanism):
 
     family = "linear"
 
+    @classmethod
+    def fit(
+        cls,
+        x_cal: Tensor,
+        u_cal: Tensor,
+        config: CaseConfig,
+        generator: torch.Generator,
+    ) -> "BasisMechanism":
+        """Construct the legacy mechanism behind the fitted lifecycle.
+
+        Calibration-derived normalizers will be added here in a later step.
+        For now, accepting the disjoint calibration tensors rewires callers
+        without changing the random-basis equations.
+        """
+        if x_cal.ndim != 2 or u_cal.ndim != 2:
+            raise ValueError("calibration X and U must both be matrices")
+        if x_cal.shape[0] != u_cal.shape[0] or x_cal.shape[0] < 1:
+            raise ValueError("calibration X and U must have matching non-empty rows")
+        if not torch.isfinite(x_cal).all() or not torch.isfinite(u_cal).all():
+            raise ValueError("calibration X and U must be finite")
+        return cls(x_cal.shape[1], u_cal.shape[1], config, generator)
+
     def __init__(
         self,
         d_x: int,

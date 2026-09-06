@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 import math
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import torch
@@ -13,10 +14,42 @@ from semisynt_eval._config import CoefficientConfig, NonlinearConfig, TRANSFORMS
 Tensor = torch.Tensor
 
 
+@dataclass(frozen=True)
+class MechanismOutput:
+    """Synthetic variables produced rowwise by one fitted mechanism."""
+
+    W: Tensor
+    Z: Tensor
+    A: Tensor
+    A_probs: Tensor
+    Y_obs: Tensor
+    Y0: Tensor
+    Y1: Tensor
+    CATE: Optional[Tensor]
+
+
 class Mechanism(ABC):
-    """Causal interface whose signatures enforce the proximal exclusions."""
+    """A mechanism fitted once on calibration rows, then applied to eval rows.
+
+    ``fit`` is the lifecycle boundary for all data-dependent mechanism state.
+    The current random-basis mechanisms use the calibration tensors only to
+    establish dimensions; their existing episode-local normalizations are kept
+    unchanged until mechanism calibration is implemented separately.
+    """
 
     target_capability = "exact_cate"
+
+    @classmethod
+    @abstractmethod
+    def fit(
+        cls,
+        x_cal: Tensor,
+        u_cal: Tensor,
+        config,
+        generator: torch.Generator,
+    ) -> "Mechanism":
+        """Fit mechanism state using calibration rows only."""
+        pass
 
     @abstractmethod
     def proxies(self, x: Tensor, u: Tensor) -> tuple[Tensor, Tensor]:
@@ -34,6 +67,27 @@ class Mechanism(ABC):
 
     def cate(self, x: Tensor) -> Optional[Tensor]:
         return None
+
+    def generate(self, x: Tensor, u: Tensor) -> MechanismOutput:
+        """Generate all synthetic variables through the fitted interface."""
+        w, z = self.proxies(x, u)
+        propensity = self.treatment_probability(x, u, z).clamp(
+            float(self.config.a.overlap_epsilon),
+            1.0 - float(self.config.a.overlap_epsilon),
+        )
+        a = (torch.rand(x.shape[0], 1, generator=self.generator) < propensity).float()
+        y0, y1 = self.potential_outcomes(x, u, w)
+        cate = self.cate(x)
+        return MechanismOutput(
+            W=w,
+            Z=z,
+            A=a,
+            A_probs=propensity,
+            Y_obs=a * y1 + (1.0 - a) * y0,
+            Y0=y0,
+            Y1=y1,
+            CATE=cate,
+        )
 
 
 def normalize_columns(value: Tensor, eps: float = 1e-6) -> Tensor:
