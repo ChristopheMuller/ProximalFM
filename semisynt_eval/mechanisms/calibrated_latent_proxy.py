@@ -355,7 +355,10 @@ class CalibratedLatentProxyMechanism(Mechanism):
                 raise ValueError(f"unknown basis transform {transform!r}")
             columns.append(result)
         columns.extend(x[:, left] * x[:, right] for left, right in pairs)
-        return torch.stack(columns, dim=1)
+        result = torch.stack(columns, dim=1)
+        if not bool(torch.isfinite(result).all()):
+            raise ValueError("X basis produced non-finite values")
+        return result
 
     @staticmethod
     def _fit_component(
@@ -528,7 +531,7 @@ class CalibratedLatentProxyMechanism(Mechanism):
         cate = self.cate(x)
         y1 = y0 + cate
         y_obs = torch.where(a.bool(), y1, y0)
-        return MechanismOutput(
+        result = MechanismOutput(
             W=w,
             Z=z,
             A=a,
@@ -538,6 +541,27 @@ class CalibratedLatentProxyMechanism(Mechanism):
             Y1=y1,
             CATE=cate,
         )
+        expected_shapes = {
+            "W": (x.shape[0], self.d_u),
+            "Z": (x.shape[0], self.d_u),
+            "A": (x.shape[0], 1),
+            "A_probs": (x.shape[0], 1),
+            "Y_obs": (x.shape[0], 1),
+            "Y0": (x.shape[0], 1),
+            "Y1": (x.shape[0], 1),
+            "CATE": (x.shape[0], 1),
+        }
+        for name, expected_shape in expected_shapes.items():
+            value = getattr(result, name)
+            if value is None or value.shape != expected_shape:
+                actual_shape = None if value is None else tuple(value.shape)
+                raise ValueError(
+                    f"invalid generated {name} shape {actual_shape}; "
+                    f"expected {expected_shape}"
+                )
+            if not bool(torch.isfinite(value).all()):
+                raise ValueError(f"generated {name} contains non-finite values")
+        return result
 
     def metadata(self) -> dict[str, object]:
         """Return JSON-serializable fitted state sufficient for an audit."""
