@@ -93,7 +93,7 @@ def make_datasets(
     return [
         CSVProximalDataset(
             source,
-            mechanism=case.family,
+            mechanism=case.mechanism,
             mechanism_config=case,
             row_sampling=row_sampling,
         )
@@ -122,7 +122,8 @@ def generate_episodes(
                     "pair_id": f"{dataset.source.path.name}:{replicate}",
                     "source_file": dataset.source.path.name,
                     "case": dataset.mechanism_config.name,
-                    "family": dataset.mechanism_name,
+                    "mechanism": dataset.mechanism_name,
+                    "family": dataset.mechanism_config.family,
                     "replicate": replicate,
                     "seed": episode_seed,
                     "source_row_indices_sha256": hashlib.sha256(row_bytes).hexdigest(),
@@ -293,6 +294,7 @@ def _resolved_recipe(
 ) -> dict:
     case_value = _case_payload(case)
     common = {
+        "mechanism": case_value.pop("mechanism"),
         "interactions_default": False,
         "coefficients": case_value.pop("coefficients"),
         "nonlinear": case_value.pop("nonlinear"),
@@ -397,6 +399,7 @@ def build(args: argparse.Namespace) -> Path:
         generated.append(
             {
                 "case": case.name,
+                "mechanism": case.mechanism,
                 "family": case.family,
                 "content_digest": digest,
                 "val_dir": str((case_root / "val").resolve()),
@@ -407,6 +410,7 @@ def build(args: argparse.Namespace) -> Path:
     matrix_identity = [
         {
             "case": item["case"],
+            "mechanism": item["mechanism"],
             "family": item["family"],
             "content_digest": item["content_digest"],
             "pair_ids": item["pair_ids"],
@@ -482,8 +486,9 @@ def _load_recipe(path: Path) -> dict:
         raise ValueError(
             "format_version 4 encodes the legacy random-basis causal semantics "
             "and cannot be loaded by the format_version 5 Ayu pipeline. Migrate "
-            "the complete mechanism recipe to the native Ayu schema; changing "
-            "only the format_version number is not a valid migration."
+            "the complete mechanism recipe to the native "
+            "calibrated_latent_proxy schema; changing only the format_version "
+            "number is not a valid migration."
         )
     allowed = {"format_version", "build", "common", "cases", "sources"}
     missing, unknown = {"format_version", "build", "common", "cases"} - set(
@@ -525,8 +530,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     known, _ = pre.parse_known_args(argv)
     recipe = _load_recipe(known.config)
     cases = load_case_configs(recipe["common"], recipe["cases"])
-    if {case.family for case in cases.values()} - set(available_mechanisms()):
-        raise ValueError("recipe refers to an unregistered mechanism family")
+    unavailable = {case.mechanism for case in cases.values()} - set(
+        available_mechanisms()
+    )
+    if unavailable:
+        raise ValueError(
+            "recipe refers to an unregistered mechanism: "
+            f"{', '.join(sorted(unavailable))}"
+        )
     parser = build_parser()
     parser.set_defaults(**recipe["build"])
     args = parser.parse_args(argv)
@@ -557,7 +568,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             print(f"  {path.stem:28s} {path.name}")
         print("Cases:")
         for name, case in args._case_configs.items():
-            print(f"  {name:38s} {case.family}")
+            print(f"  {name:38s} {case.mechanism}/{case.family}")
         return
     build(args)
 

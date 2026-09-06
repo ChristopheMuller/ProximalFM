@@ -12,6 +12,8 @@ from typing import Any, Literal, Mapping
 
 CoefficientDistribution = Literal["normal", "uniform"]
 Family = Literal["linear", "nonlinear"]
+MechanismName = Literal["random_basis", "calibrated_latent_proxy"]
+CALIBRATED_LATENT_PROXY = "calibrated_latent_proxy"
 TRANSFORMS = (
     "identity",
     "quadratic",
@@ -77,6 +79,7 @@ class EffectEquationConfig:
 
 @dataclass(frozen=True)
 class CommonConfig:
+    mechanism: MechanismName
     interactions_default: bool
     coefficients: CoefficientConfig
     nonlinear: NonlinearConfig
@@ -90,6 +93,7 @@ class CommonConfig:
 @dataclass(frozen=True)
 class CaseConfig:
     name: str
+    mechanism: MechanismName
     family: Family
     a_u_variance_share: float
     y_u_variance_share: float
@@ -134,9 +138,20 @@ def _interaction(value: Any, default: bool, location: str) -> bool:
 def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
     _exact_keys(
         value,
-        {"interactions_default", "coefficients", "nonlinear", "equations"},
+        {
+            "mechanism",
+            "interactions_default",
+            "coefficients",
+            "nonlinear",
+            "equations",
+        },
         location="common",
     )
+    mechanism = value["mechanism"]
+    if mechanism not in ("random_basis", CALIBRATED_LATENT_PROXY):
+        raise ValueError(
+            f"common.mechanism must be random_basis or {CALIBRATED_LATENT_PROXY}"
+        )
     default = value["interactions_default"]
     if not isinstance(default, bool):
         raise ValueError("common.interactions_default must be boolean")
@@ -267,6 +282,7 @@ def _parse_common(value: Mapping[str, Any]) -> CommonConfig:
     effect = EffectEquationConfig(**tau)
 
     return CommonConfig(
+        mechanism=mechanism,
         interactions_default=default,
         coefficients=coefficient_config,
         nonlinear=nonlinear_config,
@@ -371,6 +387,7 @@ def load_case_configs(
         _validate_case_strengths(name, merged, strengths)
         resolved[name] = CaseConfig(
             name=name,
+            mechanism=merged.mechanism,
             family=family,
             coefficients=merged.coefficients,
             nonlinear=merged.nonlinear,

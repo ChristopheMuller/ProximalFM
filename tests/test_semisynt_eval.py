@@ -12,7 +12,11 @@ import torch
 import yaml
 
 from benchmarks.data import load_benchmark_from_val_dir
-from semisynt_eval._config import TRANSFORMS, load_case_configs
+from semisynt_eval._config import (
+    CALIBRATED_LATENT_PROXY,
+    TRANSFORMS,
+    load_case_configs,
+)
 from semisynt_eval.build import DEFAULT_CONFIG_PATH, build, parse_args
 from semisynt_eval.generator import CSVProximalDataset
 from semisynt_eval.mechanisms import available_mechanisms, fit_mechanism
@@ -33,12 +37,12 @@ def _configs():
     return load_case_configs(recipe["common"], recipe["cases"])
 
 
-def _fit_mechanism(family, case, d_x, d_u, seed):
+def _fit_mechanism(case, d_x, d_u, seed):
     calibration = torch.Generator().manual_seed(seed + 10_000)
     x_cal = torch.randn(64, d_x, generator=calibration)
     u_cal = torch.randn(64, d_u, generator=calibration)
     return fit_mechanism(
-        family,
+        case.mechanism,
         x_cal,
         u_cal,
         torch.Generator().manual_seed(seed),
@@ -72,7 +76,8 @@ def _csv(path: Path, delimiter: str = ",") -> None:
 def test_default_recipe_is_the_complete_two_by_two_by_two_matrix():
     configs = _configs()
     assert len(configs) == 8
-    assert available_mechanisms() == ["linear", "nonlinear"]
+    assert available_mechanisms() == ["random_basis"]
+    assert {case.mechanism for case in configs.values()} == {"random_basis"}
     observed = {
         (
             case.family,
@@ -103,6 +108,10 @@ def test_default_recipe_is_the_complete_two_by_two_by_two_matrix():
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
+        (
+            lambda r: r["common"].update(mechanism="unknown"),
+            "common.mechanism",
+        ),
         (lambda r: r["common"]["coefficients"].update(extra=1), "unknown"),
         (
             lambda r: r["common"]["nonlinear"]["probabilities"].update(identity=0.3),
@@ -129,6 +138,31 @@ def test_schema_rejects_unknown_and_invalid_values(edit, message):
         load_case_configs(recipe["common"], recipe["cases"])
 
 
+def test_mechanism_identity_is_separate_from_function_family():
+    recipe = _recipe()
+    recipe["common"]["mechanism"] = CALIBRATED_LATENT_PROXY
+    configs = load_case_configs(recipe["common"], recipe["cases"])
+
+    assert {case.mechanism for case in configs.values()} == {CALIBRATED_LATENT_PROXY}
+    assert {case.family for case in configs.values()} == {"linear", "nonlinear"}
+
+
+def test_unimplemented_calibrated_latent_proxy_is_rejected_by_registry():
+    recipe = _recipe()
+    recipe["common"]["mechanism"] = CALIBRATED_LATENT_PROXY
+    configs = load_case_configs(recipe["common"], recipe["cases"])
+    case = configs["linear_conf_low_proxy_low"]
+
+    with pytest.raises(KeyError, match="unknown mechanism.*random_basis"):
+        fit_mechanism(
+            case.mechanism,
+            torch.zeros(4, 2),
+            torch.zeros(4, 2),
+            torch.Generator().manual_seed(1),
+            config=case,
+        )
+
+
 def test_format_v3_is_rejected_with_migration_message(tmp_path):
     recipe = _recipe()
     recipe["format_version"] = 3
@@ -147,7 +181,8 @@ def test_format_v4_is_rejected_with_scientific_migration_message(tmp_path):
         ValueError,
         match=(
             r"format_version 4.*legacy random-basis causal semantics.*"
-            r"native Ayu schema.*changing only the format_version number"
+            r"native calibrated_latent_proxy schema.*"
+            r"changing only the format_version number"
         ),
     ):
         parse_args(["--config", str(path), "--list"])
@@ -234,7 +269,7 @@ def test_fitted_mechanism_rejects_invalid_calibration_rows():
     case = _configs()["linear_conf_low_proxy_low"]
     with pytest.raises(ValueError, match="matching non-empty rows"):
         fit_mechanism(
-            "linear",
+            case.mechanism,
             torch.zeros(3, 2),
             torch.zeros(2, 2),
             torch.Generator().manual_seed(1),
@@ -242,7 +277,7 @@ def test_fitted_mechanism_rejects_invalid_calibration_rows():
         )
     with pytest.raises(ValueError, match="must be finite"):
         fit_mechanism(
-            "linear",
+            case.mechanism,
             torch.tensor([[0.0, float("nan")]]),
             torch.zeros(1, 2),
             torch.Generator().manual_seed(1),
@@ -250,7 +285,7 @@ def test_fitted_mechanism_rejects_invalid_calibration_rows():
         )
 
 
-@pytest.mark.parametrize("family", available_mechanisms())
+@pytest.mark.parametrize("family", ["linear", "nonlinear"])
 def test_calibrated_components_and_proxy_reliability(family):
     base = _configs()[f"{family}_conf_low_proxy_low"]
     case = replace(
@@ -258,7 +293,7 @@ def test_calibrated_components_and_proxy_reliability(family):
         w=replace(base.w, use_x=False, normalize_output=False),
         w_u_reliability=0.25,
     )
-    mechanism = _fit_mechanism(family, case, 3, 2, 17)
+    mechanism = _fit_mechanism(case, 3, 2, 17)
     generator = torch.Generator().manual_seed(18)
     x = torch.randn(20000, 3, generator=generator)
     u = torch.randn(20000, 2, generator=generator)
@@ -295,7 +330,7 @@ def test_disabled_parent_blocks_do_not_enter_equations():
         a=replace(base.a, use_x=False),
         y=replace(base.y, use_x=False),
     )
-    mechanism = _fit_mechanism("linear", case, 3, 2, 8)
+    mechanism = _fit_mechanism(case, 3, 2, 8)
     generator = torch.Generator().manual_seed(9)
     x = torch.randn(1000, 3, generator=generator)
     changed_x = x + 100 * torch.randn(1000, 3, generator=generator)
@@ -313,10 +348,10 @@ def test_disabled_parent_blocks_do_not_enter_equations():
     torch.testing.assert_close(original[0], changed[0])
 
 
-@pytest.mark.parametrize("family", available_mechanisms())
+@pytest.mark.parametrize("family", ["linear", "nonlinear"])
 def test_exact_cate_shared_noise_and_propensity_bounds(family):
     case = _configs()[f"{family}_conf_low_proxy_low"]
-    mechanism = _fit_mechanism(family, case, 4, 3, 25)
+    mechanism = _fit_mechanism(case, 4, 3, 25)
     x = torch.randn(2048, 4, generator=torch.Generator().manual_seed(26))
     u = torch.randn(2048, 3, generator=torch.Generator().manual_seed(27))
     w, z = mechanism.proxies(x, u)
@@ -422,6 +457,7 @@ def test_matrix_build_writes_eight_paired_benchmark_sets_and_replays(tmp_path):
     root = build(_tiny_build_args(csv, tmp_path, "matrix"))
     matrix = json.loads((root / "manifest.json").read_text())
     assert len(matrix["cases"]) == 8
+    assert {item["mechanism"] for item in matrix["cases"]} == {"random_basis"}
     case_roots = [root / item["case"] for item in matrix["cases"]]
     batches = []
     for case_root in case_roots:
@@ -466,7 +502,9 @@ def test_generated_dataset_applies_final_overlap_clamp(tmp_path):
     _csv(csv)
     source = load_csv(csv, n_features_x=2, n_features_u=2, n_calibration=4)
     case = _configs()["nonlinear_conf_high_proxy_low"]
-    dataset = CSVProximalDataset(source, mechanism=case.family, mechanism_config=case)
+    dataset = CSVProximalDataset(
+        source, mechanism=case.mechanism, mechanism_config=case
+    )
     episode = dataset.generate(seed=3, n_rows=8)
     epsilon = case.a.overlap_epsilon
     assert torch.all(episode.A_probs >= epsilon)

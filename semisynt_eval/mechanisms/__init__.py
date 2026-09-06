@@ -1,4 +1,4 @@
-"""Registry for empirical-root SCM families."""
+"""Registry for empirical-root SCM mechanisms and their function families."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
 from semisynt_eval.mechanisms.linear import LinearMechanism
 from semisynt_eval.mechanisms.nonlinear import NonlinearMechanism
 
-_BUILDERS: dict[str, Type[Mechanism]] = {
-    "linear": LinearMechanism,
-    "nonlinear": NonlinearMechanism,
+_BUILDERS: dict[str, dict[str, Type[Mechanism]]] = {
+    "random_basis": {
+        "linear": LinearMechanism,
+        "nonlinear": NonlinearMechanism,
+    },
 }
 
 
@@ -22,16 +24,24 @@ def available_mechanisms() -> list[str]:
 
 
 def _resolve_builder(name: str, config: CaseConfig) -> Type[Mechanism]:
-    if name != config.family:
+    if name != config.mechanism:
         raise ValueError(
-            f"case {config.name!r} selects family {config.family!r}, not {name!r}"
+            f"case {config.name!r} selects mechanism {config.mechanism!r}, "
+            f"not {name!r}"
         )
     try:
-        return _BUILDERS[name]
+        families = _BUILDERS[name]
     except KeyError:
         raise KeyError(
             f"unknown mechanism {name!r}; available: "
             f"{', '.join(available_mechanisms())}"
+        ) from None
+    try:
+        return families[config.family]
+    except KeyError:
+        raise KeyError(
+            f"mechanism {name!r} does not implement family {config.family!r}; "
+            f"available: {', '.join(sorted(families))}"
         ) from None
 
 

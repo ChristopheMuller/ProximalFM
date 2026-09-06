@@ -18,6 +18,13 @@ builds a controlled eight-case factorial:
 [`config.yaml`](config.yaml) is the complete, version-controlled definition of
 the matrix. Python supplies validation, not hidden generative defaults.
 
+Mechanism identity and function family are separate configuration axes. The
+transitional recipe identifies the existing implementation as
+`mechanism: random_basis`, while each case selects `family: linear` or
+`family: nonlinear`. The native replacement is named
+`calibrated_latent_proxy`; it is reserved by the typed schema but is not
+registered until its implementation lands.
+
 ## Build and consume
 
 List available CSV sources and configured cases:

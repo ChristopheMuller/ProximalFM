@@ -22,6 +22,7 @@ build:
   datasets_per_file: null
 
 common:
+  mechanism: random_basis
   interactions_default: false
   coefficients:
     distribution: normal
