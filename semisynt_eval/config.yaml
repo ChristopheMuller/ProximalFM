@@ -1,6 +1,6 @@
-# Authoritative format-v4 recipe. One invocation materializes every named case
+# Authoritative format-v5 recipe. One invocation materializes every named case
 # below as an independent benchmark set under <out_root>/<name>/<case>/val.
-format_version: 4
+format_version: 5
 
 build:
   data_dir: semisynt_eval/datasets

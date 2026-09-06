@@ -1,4 +1,4 @@
-"""Build the format-v4 semi-synthetic mechanism matrix from empirical CSVs."""
+"""Build the format-v5 semi-synthetic mechanism matrix from empirical CSVs."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from semisynt_eval.generator import CSVProximalDataset, Episode
 from semisynt_eval.mechanisms import available_mechanisms
 from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
     "data_dir",
@@ -477,6 +477,13 @@ def _load_recipe(path: Path) -> dict:
         raise ValueError(
             "format_version 3 used linear/linear_quadratic pooled builds; migrate "
             "to format_version 4 with common/cases matrix blocks"
+        )
+    if version == 4:
+        raise ValueError(
+            "format_version 4 encodes the legacy random-basis causal semantics "
+            "and cannot be loaded by the format_version 5 Ayu pipeline. Migrate "
+            "the complete mechanism recipe to the native Ayu schema; changing "
+            "only the format_version number is not a valid migration."
         )
     allowed = {"format_version", "build", "common", "cases", "sources"}
     missing, unknown = {"format_version", "build", "common", "cases"} - set(

@@ -1,4 +1,4 @@
-"""Strict typed validation for format-v4 semi-synthetic recipes.
+"""Strict typed validation for format-v5 semi-synthetic recipes.
 
 All data-affecting defaults live in YAML. This module only validates and
 resolves the explicit ``common`` block with each named entry in ``cases``.

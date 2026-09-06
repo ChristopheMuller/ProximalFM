@@ -1,4 +1,4 @@
-"""Contracts for the format-v4 semi-synthetic mechanism matrix."""
+"""Contracts for the format-v5 semi-synthetic mechanism matrix."""
 
 from __future__ import annotations
 
@@ -135,6 +135,21 @@ def test_format_v3_is_rejected_with_migration_message(tmp_path):
     path = tmp_path / "legacy.yaml"
     path.write_text(yaml.safe_dump(recipe))
     with pytest.raises(ValueError, match="migrate.*common/cases"):
+        parse_args(["--config", str(path), "--list"])
+
+
+def test_format_v4_is_rejected_with_scientific_migration_message(tmp_path):
+    recipe = _recipe()
+    recipe["format_version"] = 4
+    path = tmp_path / "legacy_random_basis.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"format_version 4.*legacy random-basis causal semantics.*"
+            r"native Ayu schema.*changing only the format_version number"
+        ),
+    ):
         parse_args(["--config", str(path), "--list"])
 
 

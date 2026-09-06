@@ -1,7 +1,7 @@
 # Empirical-root proximal evaluation matrix
 
 `semisynt_eval` combines empirical `(X, U)` rows from CSV files with known
-synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The default format-v4 recipe
+synthetic mechanisms for `W`, `Z`, `A`, and `Y`. The default format-v5 recipe
 builds a controlled eight-case factorial:
 
 | Family | Direct-U confounding | W/Z U-information |
@@ -69,7 +69,7 @@ uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
 [`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
 configuration over all eight cases. Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
-Each case config is a complete one-case format-v4 recipe and can be rebuilt
+Each case config is a complete one-case format-v5 recipe and can be rebuilt
 with `--config`; override `--name` to keep the original output intact. Source
 SHA-256 values, resolved case settings, paired episode IDs, and content digests
 are recorded in the manifests. `--force` replaces only builder-owned files.
