@@ -8,7 +8,7 @@ markers, or line styles inline. Unknown methods fail loudly until registered.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from .plotting import plt
 
@@ -20,8 +20,8 @@ FULL_PAGE_WIDTH_IN = 9.4
 CONTEXT_MARKER_AREAS = (18.0, 27.0, 38.0, 52.0)
 ISO_NPEHE_LEVELS = (0.25, 0.5, 0.75, 1.0)
 
-# Okabe--Ito plus dark, print-safe extensions. Paired variants share a colour
-# and differ in marker/line pattern, preserving method-family meaning.
+# Okabe--Ito plus dark, print-safe extensions. Colour identifies the estimator
+# family; marker and line style distinguish variants within that family.
 COLORS = {
     "black": "#000000",
     "grey": "#777777",
@@ -35,6 +35,15 @@ COLORS = {
     "brown": "#8C564B",
 }
 
+# Shared visual grammar. Dashed/circle denotes a simple or linear variant,
+# solid/polygon a nonlinear learned variant, and dotted a marginal/reference
+# output. Foundation models and principal proximal competitors are thicker.
+LINEWIDTH = 1.35
+EMPHASIZED_LINEWIDTH = 1.75
+PROPOSED_LINEWIDTH = 2.15
+MARKERSIZE = 3.6
+EMPHASIZED_MARKERSIZE = 4.2
+
 
 @dataclass(frozen=True)
 class MethodStyle:
@@ -44,8 +53,8 @@ class MethodStyle:
     color: str
     marker: str
     linestyle: str = "-"
-    linewidth: float = 1.35
-    markersize: float = 3.6
+    linewidth: float = LINEWIDTH
+    markersize: float = MARKERSIZE
     zorder: int = 2
     alpha: float = 0.9
 
@@ -61,63 +70,150 @@ class MethodStyle:
         }
 
 
-# Registry order is legend and rendering order. Foundation/proximal models are
-# emphasized last so their lines remain visible above classical baselines.
+# Registry order is legend and rendering order: conventional learners, proxy
+# marginalisation, proximal learners, foundation models, the proposed method,
+# then unranked references. Later, emphasized entries render over baselines.
 METHOD_STYLES: Mapping[str, MethodStyle] = {
+    # Conventional meta-learners: colour identifies S/T/X; marker identifies
+    # OLS/RF/TabICL.
     "S-OLS": MethodStyle("S-OLS", COLORS["sky_blue"], "o", "--"),
     "S-RF": MethodStyle("S-RF", COLORS["sky_blue"], "s"),
+    "S-TabICL": MethodStyle("S-TabICL", COLORS["sky_blue"], "D", ":"),
     "T-OLS": MethodStyle("T-OLS", COLORS["orange"], "o", "--"),
     "T-RF": MethodStyle("T-RF", COLORS["orange"], "s"),
+    "T-TabICL": MethodStyle("T-TabICL", COLORS["orange"], "D", ":"),
     "X-OLS": MethodStyle("X-OLS", COLORS["purple"], "o", "--"),
     "X-RF": MethodStyle("X-RF", COLORS["purple"], "D"),
+    "X-TabICL": MethodStyle("X-TabICL", COLORS["purple"], "s", ":"),
+    # Proxy-marginalisation variants are deliberately neutral.
+    "S-RF-WZ-Kernel-128": MethodStyle(
+        "S-RF + kernel marginalisation", COLORS["grey"], "s", "--"
+    ),
+    "S-RF-WZ-kNN-128": MethodStyle(
+        "S-RF + kNN marginalisation", COLORS["grey"], "s", ":"
+    ),
+    "S-TabICL-WZ-kNN-16": MethodStyle(
+        "S-TabICL + kNN marginalisation", COLORS["grey"], "D", "-."
+    ),
+    # Classical proximal learners. Each estimator family has its own colour;
+    # down/up markers encode conditional/independent-W variants.
     "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", "--"),
     "P-Kernel-RF": MethodStyle("P-Kernel-RF", COLORS["brown"], "s"),
     "P-Kernel-OLS": MethodStyle("P-Kernel-OLS", COLORS["brown"], "o", "--"),
     "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["brown"], "P", ":"),
-    "NMMR-V-fixed-Wind": MethodStyle(
-        "NMMR (independent W)", COLORS["green"], "^", "--"
-    ),
-    "NMMR-V-fixed-Wcond": MethodStyle("NMMR (conditional W)", COLORS["green"], "v"),
-    "CausalPFN": MethodStyle(
-        "CausalPFN", COLORS["blue"], "X", linewidth=1.75, zorder=3
-    ),
-    "CausalFM": MethodStyle(
-        "CausalFM", COLORS["blue"], "X", linewidth=1.75, zorder=3, alpha=0.9
-    ),
-    "DoPFN": MethodStyle(
-        "DoPFN", COLORS["blue"], "X", linewidth=1.75, zorder=3, alpha=0.9
-    ),
     "KPV-X-Wcond": MethodStyle(
-        "KPV-X-Wcond", COLORS["green"], "v", linewidth=1.75, zorder=3
+        "KPV (conditional W)",
+        COLORS["green"],
+        "v",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
     ),
     "KPV-X-Wind": MethodStyle(
-        "KPV-X-Wind", COLORS["green"], "^", linewidth=1.75, zorder=3
+        "KPV (independent W)",
+        COLORS["green"],
+        "^",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
     ),
+    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["green"], "P", ":"),
     "PMMR-X-Wcond": MethodStyle(
-        "PMMR-X-Wcond", COLORS["green"], "v", linewidth=1.75, zorder=3
+        "PMMR (conditional W)",
+        COLORS["brown"],
+        "v",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
     ),
     "PMMR-X-Wind": MethodStyle(
-        "PMMR-X-Wind", COLORS["green"], "^", linewidth=1.75, zorder=3
+        "PMMR (independent W)",
+        COLORS["brown"],
+        "^",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
     ),
-    "S-RF-WZ-Kernel-128": MethodStyle("S-RF-WZ-Kernel-128", COLORS["grey"], "s", "--"),
-    "S-RF-WZ-kNN-128": MethodStyle("S-RF-WZ-kNN-128", COLORS["grey"], "s", ":"),
-    "T-TabICL": MethodStyle("T-TabICL", COLORS["grey"], "o", "--"),
-    "X-TabICL": MethodStyle("X-TabICL", COLORS["grey"], "o", ":"),
+    "PMMR-ATE": MethodStyle("PMMR (ATE)", COLORS["brown"], "H", ":"),
+    "NMMR-V-fixed-Wcond": MethodStyle(
+        "NMMR (conditional W)",
+        COLORS["purple"],
+        "v",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
+    ),
+    "NMMR-V-fixed-Wind": MethodStyle(
+        "NMMR (independent W)",
+        COLORS["purple"],
+        "^",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
+    ),
+    # Competing foundation models share a colour but use distinct markers.
+    "CausalFM": MethodStyle(
+        "CausalFM",
+        COLORS["blue"],
+        "P",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=4,
+    ),
+    "DoPFN": MethodStyle(
+        "Do-PFN",
+        COLORS["blue"],
+        "D",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=4,
+    ),
+    "CausalPFN": MethodStyle(
+        "CausalPFN",
+        COLORS["blue"],
+        "X",
+        ":",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=4,
+    ),
     "ProximalFM": MethodStyle(
         "ProximalFM",
         COLORS["vermillion"],
         "*",
-        linewidth=2.15,
+        linewidth=PROPOSED_LINEWIDTH,
         markersize=5.8,
         zorder=5,
         alpha=1.0,
     ),
-    "S-TabICL-WZ-kNN-16": MethodStyle("S-TabICL-kNN-16", COLORS["grey"], "o", "--"),
-    "S-TabICL": MethodStyle("S-TabICL", COLORS["grey"], "o", ":"),
+    # References are visually quiet and always render last.
     "Oracle-CATE(X)": MethodStyle("Oracle CATE(X)", COLORS["black"], "", ":"),
     "Oracle-ATE": MethodStyle("Oracle ATE", COLORS["grey"], "", ":"),
     "Oracle-ITE": MethodStyle("Oracle ITE", COLORS["light_grey"], "", ":"),
 }
+
+
+# Representative CATE(X) methods for figures whose legends or panels cannot
+# accommodate the full registry. The selection spans conventional, proxy-
+# marginalised, proximal, and foundation-model approaches. It is fixed in
+# advance: plot selection must not depend on observed scores.
+RELEVANT_METHODS: tuple[str, ...] = (
+    "S-TabICL-WZ-kNN-16",
+    "T-OLS",
+    "S-OLS",
+    "X-RF",
+    "X-TabICL",
+    "P-Kernel-RF",
+    "P-Kernel-OLS",
+    "KPV-X-Wcond",
+    "PMMR-X-Wcond",
+    "CausalPFN",
+    "ProximalFM",
+)
 
 
 def method_style(method: str) -> MethodStyle:
@@ -131,13 +227,30 @@ def method_style(method: str) -> MethodStyle:
         ) from None
 
 
-def ordered_methods(methods: set[str] | list[str]) -> list[str]:
+def ordered_methods(methods: Iterable[str]) -> list[str]:
     """Return methods in registry order, validating complete style coverage."""
     methods = set(methods)
     unknown = methods - set(METHOD_STYLES)
     if unknown:
         method_style(sorted(unknown)[0])
     return [method for method in METHOD_STYLES if method in methods]
+
+
+def relevant_methods(methods: Iterable[str]) -> list[str]:
+    """Return available compact-figure methods in canonical order.
+
+    Extra available methods are intentionally ignored. An empty intersection
+    fails loudly because it usually means result names and the curated compact
+    set have drifted apart.
+    """
+    available = set(methods)
+    selected = [method for method in RELEVANT_METHODS if method in available]
+    if not selected:
+        raise ValueError(
+            "none of analysis_eval.design.RELEVANT_METHODS are available; "
+            "update the curated compact-figure method list"
+        )
+    return ordered_methods(selected)
 
 
 _RC = {

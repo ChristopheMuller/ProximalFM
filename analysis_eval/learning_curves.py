@@ -21,6 +21,7 @@ from .design import (
     learning_curve_figsize,
     method_style,
     ordered_methods,
+    relevant_methods,
 )
 from .plotting import plt, save_figure
 from .semisynt import (
@@ -104,7 +105,7 @@ def make_learning_curve_figure(
     if y_max <= 0:
         raise ValueError("y_max must be positive")
     available = set(summary["method"])
-    methods = ordered_methods(available) if methods is None else list(methods)
+    methods = relevant_methods(available) if methods is None else list(methods)
     for method in methods:
         method_style(method)
     contexts = _validate_summary(summary, methods)
@@ -205,7 +206,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--methods",
         nargs="+",
-        help="Optional method subset; names must match results.csv exactly",
+        help=(
+            "Method subset; defaults to design.RELEVANT_METHODS. "
+            "Names must match results.csv exactly"
+        ),
     )
     parser.add_argument(
         "--y-max",
@@ -233,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     frame = load_cate_results(args.matrix_root)
     complete, incomplete = complete_learning_curve_methods(frame)
-    selected = args.methods if args.methods is not None else complete
+    selected = args.methods if args.methods is not None else relevant_methods(complete)
     summary = summarize_learning_curves(frame, selected)
     methods = ordered_methods(set(summary["method"]))
     if args.interval is not None and args.confidence_interval is not False:

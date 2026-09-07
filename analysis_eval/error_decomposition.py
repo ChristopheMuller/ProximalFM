@@ -23,21 +23,18 @@ from .design import (
     decomposition_figsize,
     method_style,
     ordered_methods,
+    relevant_methods,
 )
 from .learning_curves import CONF_PROXY_ORDER, DEFAULT_MATRIX_ROOT
 from .plotting import plt, save_figure
-from .semisynt import load_cate_results, summarize_error_decomposition
+from .semisynt import (
+    complete_learning_curve_methods,
+    load_cate_results,
+    summarize_error_decomposition,
+)
 
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_error_decomposition"
-DEFAULT_METHODS = (
-    "T-OLS",
-    "X-RF",
-    "NMMR-V-fixed-Wcond",
-    "CausalPFN",
-    "ProximalFM",
-    "S-TabICL-WZ-kNN-16",
-)
 
 
 def _validate_summary(summary: pd.DataFrame, methods: Sequence[str]) -> list[int]:
@@ -66,7 +63,7 @@ def _validate_summary(summary: pd.DataFrame, methods: Sequence[str]) -> list[int
 
 
 def _axis_limits(summary: pd.DataFrame) -> tuple[float, float]:
-    """Shared limits with fixed fractional headroom and an origin anchor."""
+    """Panel limits with fixed fractional headroom and an origin anchor."""
     x_max = float(summary["level_error"].max())
     y_max = float(summary["shape_error"].max())
     if not np.isfinite(x_max) or not np.isfinite(y_max):
@@ -230,35 +227,39 @@ def _draw_trajectory(
 def make_error_decomposition_figure(
     summary: pd.DataFrame,
     *,
-    methods: Sequence[str] = DEFAULT_METHODS,
+    methods: Sequence[str] | None = None,
     aggregation: str = "median",
     xlim: Sequence[float] | None = None,
     ylim: Sequence[float] | None = None,
 ):
-    """Create eight shared-axis decomposition trajectory panels.
+    """Create eight decomposition trajectory panels with local scales.
 
-    ``xlim`` and ``ylim`` optionally fix the shared grid as ``(min, max)``.
-    Trajectory segments are clipped to those bounds, so a node outside the
-    grid makes its line stop at the corresponding boundary.
+    By default, each panel derives its own x and y limits from the selected
+    methods. ``xlim`` or ``ylim`` can independently impose a common bound for
+    that dimension. Trajectory segments are clipped to the resulting bounds,
+    so a node outside the grid makes its line stop at the boundary.
     """
-    methods = ordered_methods(set(methods))
+    available = set(summary["method"])
+    methods = relevant_methods(available) if methods is None else list(methods)
+    methods = ordered_methods(methods)
     contexts = _validate_summary(summary, methods)
-    data_x_max, data_y_max = _axis_limits(summary[summary["method"].isin(methods)])
-    x_limits = _validate_limits(xlim, "xlim") if xlim is not None else (0.0, data_x_max)
-    y_limits = _validate_limits(ylim, "ylim") if ylim is not None else (0.0, data_y_max)
+    fixed_xlim = _validate_limits(xlim, "xlim") if xlim is not None else None
+    fixed_ylim = _validate_limits(ylim, "ylim") if ylim is not None else None
     apply_style()
-    fig, axes = plt.subplots(
-        2, 4, figsize=decomposition_figsize(), sharex=True, sharey=True
-    )
+    fig, axes = plt.subplots(2, 4, figsize=decomposition_figsize())
     for row, family in enumerate(("linear", "nonlinear")):
         for col, (confounding, proxy) in enumerate(CONF_PROXY_ORDER):
             ax = axes[row, col]
-            _draw_iso_npehe(ax, x_limits[1], y_limits[1])
             cell = summary[
                 summary["family"].eq(family)
                 & summary["confounding"].eq(confounding)
                 & summary["proxy"].eq(proxy)
+                & summary["method"].isin(methods)
             ]
+            data_x_max, data_y_max = _axis_limits(cell)
+            x_limits = fixed_xlim or (0.0, data_x_max)
+            y_limits = fixed_ylim or (0.0, data_y_max)
+            _draw_iso_npehe(ax, x_limits[1], y_limits[1])
             for method in methods:
                 _draw_trajectory(
                     ax,
@@ -292,9 +293,9 @@ def make_error_decomposition_figure(
     fig.legend(
         handles=handles,
         loc="outside lower center",
-        ncol=len(handles),
-        columnspacing=1.35,
-        handlelength=2.5,
+        ncol=min(4, len(handles)),
+        columnspacing=0.9,
+        handlelength=2.1,
     )
     return fig
 
@@ -307,8 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--methods",
         nargs="+",
-        default=list(DEFAULT_METHODS),
-        help="Method subset; defaults to five representative competitors",
+        default=None,
+        help=(
+            "Method subset; defaults to design.RELEVANT_METHODS. "
+            "Names must match results.csv exactly"
+        ),
     )
     parser.add_argument(
         "--aggregation",
@@ -322,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar=("MIN", "MAX"),
         default=None,
-        help="Fixed level-error axis limits (default: data-dependent)",
+        help="Common level-error limits (default: data-dependent per panel)",
     )
     parser.add_argument(
         "--ylim",
@@ -330,7 +334,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         metavar=("MIN", "MAX"),
         default=None,
-        help="Fixed heterogeneity-error axis limits (default: data-dependent)",
+        help="Common heterogeneity-error limits (default: data-dependent per panel)",
     )
     return parser
 
@@ -338,25 +342,32 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     frame = load_cate_results(args.matrix_root)
+    complete, incomplete = complete_learning_curve_methods(frame)
+    selected = args.methods if args.methods is not None else relevant_methods(complete)
     summary = summarize_error_decomposition(
-        frame, args.methods, aggregation=args.aggregation
+        frame, selected, aggregation=args.aggregation
     )
     fig = make_error_decomposition_figure(
         summary,
-        methods=args.methods,
+        methods=selected,
         aggregation=args.aggregation,
         xlim=args.xlim,
         ylim=args.ylim,
     )
     paths = save_figure(fig, args.out_dir, args.name)
     print(
-        f"Rendered {len(args.methods)} methods over {frame['case'].nunique()} cases "
+        f"Rendered {len(selected)} methods over {frame['case'].nunique()} cases "
         f"and {frame['n_ctx'].nunique()} context sizes ({args.aggregation})."
     )
     if args.aggregation == "median":
         print(
             "Coordinates are separate component medians; contour values are the "
             "resulting robust decomposed score, not median nPEHE."
+        )
+    if args.methods is None and incomplete:
+        print(
+            "Excluded methods without complete factorial/context coverage: "
+            + ", ".join(sorted(incomplete))
         )
     for path in paths:
         print(path)

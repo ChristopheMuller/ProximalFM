@@ -44,10 +44,12 @@ This reads the completed eight-case matrix at
 × proxy-reliability factorial, and writes
 `analysis_eval/results/semisynt_learning_curves.{pdf,png}`. Curves show median
 CATE nPEHE over episodes at each context size; optionally, faint bands show
-episode interquartile ranges. Use `--matrix-root`, `--out-dir`, `--methods`,
-`--y-max`, and `--confidence-interval {false,iqr,std,ste}` to override those
-defaults. The `std` and `ste` bands are centered on the median curve and use
-one standard deviation or one standard error, respectively.
+episode interquartile ranges. By default it plots the compact, data-independent
+`design.RELEVANT_METHODS` subset; `--methods` provides a figure-specific
+override. Use `--matrix-root`, `--out-dir`, `--y-max`, and
+`--confidence-interval {false,iqr,std,ste}` to override the other defaults. The
+`std` and `ste` bands are centered on the median curve and use one standard
+deviation or one standard error, respectively.
 
 [`design.py`](design.py) is the visual source of truth for method labels,
 colours, markers, line styles, emphasis, and legend order. Every evaluation
@@ -71,10 +73,11 @@ Consequently its contour value is a *decomposed robust score*, not median
 nPEHE. `--aggregation mean` instead preserves the additive nPEHE² identity
 exactly, but is intentionally optional because a few unstable episode fits can
 make the mean view span several orders of magnitude. The default method subset
-is ProximalFM, CausalPFN, conditional-W NMMR, T-OLS, and X-RF; override it with
-`--methods`. Use `--xlim MIN MAX` and `--ylim MIN MAX` to fix the shared grid;
-trajectory segments crossing an edge stop at that edge, without drawing their
-out-of-grid nodes.
+is the fixed, data-independent set in `design.RELEVANT_METHODS`; override it
+with `--methods`. Each panel uses data-dependent x and y ranges so its
+trajectories remain legible; use `--xlim MIN MAX` or `--ylim MIN MAX` to impose
+a common range for either dimension. Trajectory segments crossing an edge stop
+at that edge, without drawing their out-of-grid nodes.
 
 ## Semisynthetic speed versus rank
 

@@ -6,7 +6,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analysis_eval.design import method_style, ordered_methods
+from analysis_eval.design import (
+    METHOD_STYLES,
+    RELEVANT_METHODS,
+    method_style,
+    ordered_methods,
+    relevant_methods,
+)
 from analysis_eval.error_decomposition import (
     build_parser as build_decomposition_parser,
     make_error_decomposition_figure,
@@ -92,6 +98,16 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth
 
 
+def test_learning_curve_default_uses_compact_method_set(tmp_path):
+    summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
+    excluded = summary[summary["method"].eq("S-OLS")].copy()
+    excluded["method"] = "S-RF"
+    summary = pd.concat([summary, excluded], ignore_index=True)
+    fig = make_learning_curve_figure(summary)
+    legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
+    assert legend_labels == ["S-OLS", "ProximalFM"]
+
+
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     args = build_parser().parse_args([])
     assert args.y_max == 1.2
@@ -120,6 +136,20 @@ def test_unknown_method_has_actionable_error():
         raise AssertionError("unknown methods must not receive order-dependent styles")
 
 
+def test_compact_method_selection_is_curated_not_performance_based():
+    available = ["unknown-extra", "ProximalFM", "T-OLS", "CausalPFN"]
+    assert relevant_methods(available) == ["T-OLS", "CausalPFN", "ProximalFM"]
+    assert set(RELEVANT_METHODS).issubset(METHOD_STYLES)
+
+
+def test_registered_methods_have_distinct_visual_identities():
+    identities = [
+        (style.color, style.marker, style.linestyle, style.linewidth, style.markersize)
+        for style in METHOD_STYLES.values()
+    ]
+    assert len(identities) == len(set(identities))
+
+
 def test_mean_error_decomposition_preserves_identity(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     summary = summarize_error_decomposition(
@@ -135,6 +165,38 @@ def test_error_decomposition_figure_has_eight_axes(tmp_path):
     )
     fig = make_error_decomposition_figure(summary, methods=["S-OLS", "ProximalFM"])
     assert len(fig.axes) == 8
+
+
+def test_error_decomposition_legend_wraps_long_method_lists(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_error_decomposition(
+        frame, ["S-OLS", "ProximalFM"], aggregation="median"
+    )
+    methods = ["S-OLS", "S-RF", "T-OLS", "T-RF", "ProximalFM"]
+    copies = [summary]
+    for method in methods[1:-1]:
+        copy = summary[summary["method"].eq("S-OLS")].copy()
+        copy["method"] = method
+        copies.append(copy)
+    expanded = pd.concat(copies, ignore_index=True)
+
+    fig = make_error_decomposition_figure(expanded, methods=methods)
+
+    assert fig.legends[0]._ncols == 4
+
+
+def test_error_decomposition_uses_panel_specific_limits(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_error_decomposition(
+        frame, ["S-OLS", "ProximalFM"], aggregation="median"
+    )
+    summary.loc[summary["family"].eq("nonlinear"), "level_error"] *= 10
+    summary.loc[summary["family"].eq("nonlinear"), "shape_error"] *= 2
+
+    fig = make_error_decomposition_figure(summary, methods=["S-OLS", "ProximalFM"])
+
+    assert fig.axes[0].get_xlim() != fig.axes[4].get_xlim()
+    assert fig.axes[0].get_ylim() != fig.axes[4].get_ylim()
 
 
 def test_error_decomposition_fixed_limits_clip_trajectory_data(tmp_path):
