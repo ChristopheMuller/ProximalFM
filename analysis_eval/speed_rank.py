@@ -1,4 +1,4 @@
-"""Linear/nonlinear runtime versus paired nPEHE-rank figure.
+"""Low/high-confounding runtime versus paired nPEHE-rank figure.
 
 Run from the repository root::
 
@@ -18,7 +18,7 @@ from matplotlib.lines import Line2D
 from .design import apply_style, method_style, ordered_methods, speed_rank_figsize
 from .plotting import place_point_labels, plt, save_figure
 from .semisynt import (
-    FAMILIES,
+    LEVELS,
     complete_learning_curve_methods,
     load_cate_results,
     summarize_speed_rank,
@@ -31,9 +31,9 @@ OUTPUT_NAME = "semisynt_speed_rank"
 
 
 def make_speed_rank_figure(summary: pd.DataFrame):
-    """Draw one paired speed/rank panel per mechanism family."""
+    """Draw one paired speed/rank panel per confounding level."""
     required = {
-        "family",
+        "confounding",
         "method",
         "rank_median",
         "rank_q25",
@@ -49,10 +49,10 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         raise ValueError("speed/rank figure received an empty summary")
     if summary["n_ctx"].nunique() != 1:
         raise ValueError("speed/rank figure requires exactly one context size")
-    if set(summary["family"]) != set(FAMILIES):
+    if set(summary["confounding"]) != set(LEVELS):
         raise ValueError(
-            f"speed/rank figure requires mechanism families {FAMILIES}, "
-            f"got {sorted(summary['family'].unique())}"
+            f"speed/rank figure requires confounding levels {LEVELS}, "
+            f"got {sorted(summary['confounding'].unique())}"
         )
 
     methods = ordered_methods(set(summary["method"]))
@@ -61,8 +61,8 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         1, 2, figsize=speed_rank_figsize(), sharex=True, sharey=True
     )
     panel_labels = []
-    for ax, family in zip(axes, FAMILIES):
-        panel = summary[summary["family"].eq(family)]
+    for ax, confounding in zip(axes, LEVELS):
+        panel = summary[summary["confounding"].eq(confounding)]
         panel = panel.set_index("method").loc[methods].reset_index()
         labels = []
         for row in panel.itertuples():
@@ -123,7 +123,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
             )
 
         ax.set_xscale("log")
-        ax.set_title(f"{family.capitalize()} mechanisms")
+        ax.set_title(f"{confounding.capitalize()} confounding")
         ax.set_xlabel("Mean runtime (seconds per episode, log scale)")
         panel_labels.append(labels)
 
@@ -131,7 +131,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
     axes[0].set_ylim(len(methods) + 0.75, 0.25)
     axes[0].set_yticks(range(1, len(methods) + 1))
     fig.supylabel("CATE nPEHE rank (median and IQR)")
-    fig.suptitle(f"Speed–accuracy trade-off at context size {context_size:,}")
+    # fig.suptitle(f"Speed–accuracy trade-off at context size {context_size:,}")
     for ax, labels in zip(axes, panel_labels):
         place_point_labels(fig, ax, labels)
 
@@ -210,11 +210,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     paths = save_figure(fig, args.out_dir, args.name)
 
     block_counts = ", ".join(
-        f"{family}={int(group['n_blocks'].iloc[0])}"
-        for family, group in summary.groupby("family", sort=False)
+        f"{confounding}={int(group['n_blocks'].iloc[0])}"
+        for confounding, group in summary.groupby("confounding", sort=False)
     )
     print(
-        f"Ranked {summary['method'].nunique()} methods separately by mechanism "
+        f"Ranked {summary['method'].nunique()} methods separately by confounding "
         f"({block_counts} paired blocks) at n_ctx={int(summary['n_ctx'].iloc[0])}."
     )
     if args.methods is None and incomplete:

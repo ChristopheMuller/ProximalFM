@@ -86,11 +86,11 @@ uv run python -m analysis_eval.speed_rank
 ```
 
 This writes `analysis_eval/results/semisynt_speed_rank.{pdf,png}`. At the
-largest available context size (2048 in the production matrix), separate
-linear- and nonlinear-mechanism panels rank every method within each
-`(factorial cell, episode)` block. Each panel therefore summarizes four
-confounding/proxy cells independently rather than inheriting ranks from a
-pooled eight-cell comparison. The y-axis shows median paired rank with an
+largest available context size (2048 in the production matrix), separate low-
+and high-confounding panels rank every method within each `(factorial cell,
+episode)` block. Each panel therefore summarizes four linearity/proxy cells
+independently rather than inheriting ranks from a pooled eight-cell comparison.
+The y-axis shows median paired rank with an
 interquartile whisker; the x-axis shows mean wall-clock seconds per episode on
 a shared log scale. Thus the upper-left is better.
 
