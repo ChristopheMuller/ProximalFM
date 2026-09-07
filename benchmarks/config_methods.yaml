@@ -35,19 +35,33 @@ methods:
     base:  linear
     use_W: false
     use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
 
   - name: S-RF
-    cls:   S_Learner
-    base:  rf
+    cls: S_Learner
+    base: rf
     use_W: false
     use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
   - name: S-TabICL
     cls:   S_Learner
     base:  tabicl
     use_W: false
     use_Z: false
-    tabicl: { kv_cache: true }
+    tabicl: { kv_cache: true, n_estimators: 1 }
     compute: { torch_threads: 2 }
 
   - name: S-RF-WZ-Marginalized
@@ -80,6 +94,11 @@ methods:
     base:  linear
     use_W: false
     use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
   
   - name: T-RF
     cls:   T_Learner
@@ -87,10 +106,30 @@ methods:
     use_W: false
     use_Z: false
 
-  # ── X-Learner baselines ──────────────────────────────────────────────────
+  - name: T-TabICL
+    cls:   T_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+
+  # # ── X-Learner baselines ──────────────────────────────────────────────────
   - name: X-RF
     cls:   X_Learner
     base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+
+  - name: X-OLS
+    cls:   X_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+    interactions: false
+
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
     use_W: false
     use_Z: false
     interactions: false
@@ -113,8 +152,8 @@ methods:
         linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
         rf:
           n_estimators: [100]
-          max_depth: [1, 3]
-          min_samples_leaf: [1, 10]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
           max_features: [1.0]
     compute: { n_workers: 1 }
     outputs:
@@ -127,10 +166,10 @@ methods:
     compute: { n_workers: 1 }
     tune:
       enabled:  true
-      n_trials: 1
+      n_trials: 3
       seed:     1234
       grid:
-        kernel_scale: [1.0]
+        kernel_scale: [0.8, 1.0, 1.2]
     outputs:
       - { name: KPV-X-Wind, strategy: independent }
       - { name: KPV-X-Wcond, strategy: conditional }
@@ -142,11 +181,11 @@ methods:
     tune:
       enabled:  true
       val_frac: 0.2
-      n_trials: 4
+      n_trials: 9
       seed:     1234
       grid:
-        kernel_scale:   [0.8, 1.2]
-        kernel_scale_z: [0.8, 1.2]
+        kernel_scale:   [0.8, 1, 1.2]
+        kernel_scale_z: [0.8, 1, 1.2]
       sweep:
         lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
     outputs:
