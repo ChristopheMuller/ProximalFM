@@ -28,10 +28,8 @@ PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_large_v1}
 SYNT_EVAL_DIR=${SYNT_EVAL_DIR:-data/synt_eval/synt_val_large_v1}
 SYNT_EVAL_INTERVAL=${SYNT_EVAL_INTERVAL:-100}
 PRIOR_EVAL_INTERVAL=${PRIOR_EVAL_INTERVAL:-200}
-# In-training validation uses stable subsets to keep 10k-row evaluation from
-# dominating wall time. Score all 500/480 episodes offline for final selection.
-PRIOR_MAX_EP=${PRIOR_MAX_EP:-128}
-SYNT_MAX_EP=${SYNT_MAX_EP:-120}
+PRIOR_MAX_EP=${PRIOR_MAX_EP:-250}
+SYNT_MAX_EP=${SYNT_MAX_EP:-240}
 
 MAX_STEPS=${MAX_STEPS:-5000}
 BATCH_SIZE=${BATCH_SIZE:-64}
@@ -100,7 +98,7 @@ python -m proximalfm.train \
     --hl_final_sigma_bins 2.0 \
     --checkpoint_path "${CKPT}" --only_load_model True \
     --transfer_rules "${TRANSFER}" \
-    --checkpoint_dir "${RUN}" --save_perm_every 1000 \
+    --checkpoint_dir "${RUN}" --save_perm_every 500 \
     --save_best True --best_metric synt_dist/crps --best_metric_mode min \
     --prior_eval_dir "${PRIOR_EVAL_DIR}" \
     --prior_eval_interval "${PRIOR_EVAL_INTERVAL}" --prior_eval_max_episodes "${PRIOR_MAX_EP}" \
