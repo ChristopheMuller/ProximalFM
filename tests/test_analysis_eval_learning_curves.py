@@ -87,6 +87,19 @@ def test_loader_and_summary_cover_factorial_grid(tmp_path):
     assert incomplete == []
 
 
+def test_single_case_loader_does_not_require_other_benchmark_results(tmp_path):
+    root = _matrix(tmp_path)
+    missing_case = CASES[0]
+    (root / missing_case / "bench" / "results" / "results.csv").unlink()
+
+    frame = load_cate_results(
+        root,
+        selected_case="nonlinear_conf_high_proxy_high",
+    )
+
+    assert set(frame["case"]) == {"nonlinear_conf_high_proxy_high"}
+
+
 def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
     methods = ordered_methods(set(summary["method"]))
@@ -96,6 +109,21 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     assert not fig.axes[0].collections
     assert method_style("ProximalFM").color == "#D55E00"
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth
+
+
+def test_figure_can_render_one_case_as_a_single_subplot(tmp_path):
+    summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
+    fig = make_learning_curve_figure(
+        summary,
+        methods=["S-OLS", "ProximalFM"],
+        case="linear_conf_low_proxy_low",
+    )
+
+    assert len(fig.axes) == 1
+    assert fig.legends[0]._ncols == 2
+    assert fig.axes[0].get_title() == "Low confounding\nLow proxy reliability"
+    assert fig.axes[0].get_xlabel() == "Context size"
+    assert fig.axes[0].get_ylabel() == "Linear\nCATE nPEHE"
 
 
 def test_learning_curve_default_uses_compact_method_set(tmp_path):
@@ -112,6 +140,11 @@ def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     args = build_parser().parse_args([])
     assert args.y_max == 1.2
     assert args.confidence_interval is False
+    assert args.case is None
+    assert (
+        build_parser().parse_args(["--config", "linear_conf_low_proxy_low"]).case
+        == "linear_conf_low_proxy_low"
+    )
     args = build_parser().parse_args(["--y-max", "2.5", "--confidence-interval", "ste"])
     assert args.y_max == 2.5
     assert args.confidence_interval == "ste"

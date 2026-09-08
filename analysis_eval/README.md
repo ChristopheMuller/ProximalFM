@@ -56,6 +56,21 @@ colours, markers, line styles, emphasis, and legend order. Every evaluation
 figure should use that registry so a method retains the same identity across
 the paper. Unknown methods deliberately raise until a style is added.
 
+To plot one matrix configuration as a single subplot, pass its case name (the
+`--config` spelling is also accepted):
+
+```bash
+uv run python -m analysis_eval.learning_curves \
+  --case linear_conf_low_proxy_low \
+  --name semisynt_learning_curve_linear_conf_low_proxy_low
+```
+
+The case names follow
+`<linear|nonlinear>_conf_<low|high>_proxy_<low|high>`. The Python API accepts
+the same selector through `make_learning_curve_figure(..., case=...)`. In
+single-case mode, only the selected case needs a completed benchmark result;
+the default full-grid mode still requires all eight cases.
+
 ## Semisynthetic error decomposition
 
 ```bash

@@ -35,6 +35,7 @@ DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves"
 DEFAULT_Y_MAX = 1.2
+SINGLE_CASE_FIGSIZE = (4.8, 4.8)
 CONFIDENCE_INTERVAL_CHOICES = ("false", "iqr", "std", "ste")
 CONF_PROXY_ORDER = (
     ("low", "low"),
@@ -44,19 +45,47 @@ CONF_PROXY_ORDER = (
 )
 
 
-def _validate_summary(summary: pd.DataFrame, methods: Sequence[str]) -> list[int]:
-    contexts = sorted(int(value) for value in summary["n_ctx"].unique())
+def _validate_summary(
+    summary: pd.DataFrame,
+    methods: Sequence[str],
+    *,
+    case: str | None = None,
+) -> list[int]:
+    """Validate the selected learning-curve cells and return context sizes."""
+    selected = summary if case is None else summary[summary["case"].eq(case)]
+    if selected.empty:
+        available = sorted(str(value) for value in summary["case"].unique())
+        raise ValueError(
+            f"unknown case {case!r}; available cases are: {', '.join(available)}"
+        )
+
+    contexts = sorted(int(value) for value in selected["n_ctx"].unique())
     if len(contexts) < 2:
         raise ValueError("learning curves require at least two context sizes")
+
+    if case is None:
+        cells = {
+            (family, confounding, proxy)
+            for family in ("linear", "nonlinear")
+            for confounding, proxy in CONF_PROXY_ORDER
+        }
+    else:
+        cells = set(
+            selected[["family", "confounding", "proxy"]]
+            .drop_duplicates()
+            .itertuples(index=False, name=None)
+        )
+        if len(cells) != 1:
+            raise ValueError(f"case {case!r} maps to multiple factorial cells")
+
     expected = {
         (family, confounding, proxy, method, n_ctx)
-        for family in ("linear", "nonlinear")
-        for confounding, proxy in CONF_PROXY_ORDER
+        for family, confounding, proxy in cells
         for method in methods
         for n_ctx in contexts
     }
     observed = set(
-        summary[["family", "confounding", "proxy", "method", "n_ctx"]].itertuples(
+        selected[["family", "confounding", "proxy", "method", "n_ctx"]].itertuples(
             index=False, name=None
         )
     )
@@ -74,16 +103,20 @@ def make_learning_curve_figure(
     summary: pd.DataFrame,
     *,
     methods: Sequence[str] | None = None,
+    case: str | None = None,
     y_max: float = DEFAULT_Y_MAX,
     confidence_interval: str | bool = False,
     interval: str | None = None,
 ):
-    """Create the 2x4 factorial learning-curve figure.
+    """Create the factorial learning-curve figure, or one selected case.
 
     Rows distinguish linear/nonlinear mechanisms; columns cross confounding
     and proxy strength. Curves are medians over episodes. The optional bands
     can show the interquartile range (``"iqr"``), standard deviation
     (``"std"``), or standard error (``"ste"``) across episodes.
+
+    When ``case`` is provided, it must be a matrix case name such as
+    ``"linear_conf_low_proxy_low"`` and only that cell is rendered.
 
     ``interval`` is retained as a backwards-compatible alias for
     ``confidence_interval``. Its ``"iqr"`` value selects the IQR bands and its
@@ -104,70 +137,88 @@ def make_learning_curve_figure(
         )
     if y_max <= 0:
         raise ValueError("y_max must be positive")
-    available = set(summary["method"])
+    plot_summary = summary if case is None else summary[summary["case"].eq(case)]
+    if case is not None and plot_summary.empty:
+        available = sorted(str(value) for value in summary["case"].unique())
+        raise ValueError(
+            f"unknown case {case!r}; available cases are: {', '.join(available)}"
+        )
+    available = set(plot_summary["method"])
     methods = relevant_methods(available) if methods is None else list(methods)
     for method in methods:
         method_style(method)
-    contexts = _validate_summary(summary, methods)
+    contexts = _validate_summary(summary, methods, case=case)
 
     apply_style()
-    fig, axes = plt.subplots(
-        2, 4, figsize=learning_curve_figsize(), sharex=True, sharey=True
-    )
-    for row, family in enumerate(("linear", "nonlinear")):
-        for col, (confounding, proxy) in enumerate(CONF_PROXY_ORDER):
-            ax = axes[row, col]
-            cell = summary[
-                summary["family"].eq(family)
-                & summary["confounding"].eq(confounding)
-                & summary["proxy"].eq(proxy)
-            ]
-            for method in methods:
-                curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
-                style = method_style(method)
-                x = curve["n_ctx"].to_numpy(dtype=float)
-                if confidence_interval == "iqr":
-                    lower = curve["q25"].to_numpy(dtype=float)
-                    upper = curve["q75"].to_numpy(dtype=float)
-                elif confidence_interval in {"std", "ste"}:
-                    spread = curve[confidence_interval].to_numpy(dtype=float)
-                    center = curve["median"].to_numpy(dtype=float)
-                    lower = center - spread
-                    upper = center + spread
-                else:
-                    lower = upper = None
-                if lower is not None:
-                    ax.fill_between(
-                        x,
-                        lower,
-                        upper,
-                        color=style.color,
-                        alpha=0.045,
-                        linewidth=0,
-                        zorder=1,
-                    )
-                ax.plot(x, curve["median"].to_numpy(dtype=float), **style.line_kwargs())
+    if case is None:
+        panel_specs = [
+            (row, col, family, confounding, proxy)
+            for row, family in enumerate(("linear", "nonlinear"))
+            for col, (confounding, proxy) in enumerate(CONF_PROXY_ORDER)
+        ]
+        fig, axes = plt.subplots(
+            2, 4, figsize=learning_curve_figsize(), sharex=True, sharey=True
+        )
+        axes = list(axes.flat)
+    else:
+        factors = plot_summary[["family", "confounding", "proxy"]].drop_duplicates()
+        family, confounding, proxy = next(factors.itertuples(index=False, name=None))
+        panel_specs = [(0, 0, family, confounding, proxy)]
+        fig, axes = plt.subplots(figsize=SINGLE_CASE_FIGSIZE)
+        axes = [axes]
 
-            ax.axhline(
-                1.0,
-                color=COLORS["grey"],
-                linestyle=":",
-                linewidth=0.8,
-                zorder=0,
-            )
-            ax.set_xscale("log", base=2)
-            ax.set_xticks(contexts)
-            ax.xaxis.set_major_formatter(ScalarFormatter())
-            ax.minorticks_off()
-            ax.set_title(
-                f"{confounding.capitalize()} confounding\n"
-                f"{proxy.capitalize()} proxy reliability"
-            )
-            ax.set_ylim(0, y_max)
-            if col == 0:
-                ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
-            if row == 1:
-                ax.set_xlabel("Context size")
+    for ax, (row, col, family, confounding, proxy) in zip(axes, panel_specs):
+        cell = plot_summary[
+            plot_summary["family"].eq(family)
+            & plot_summary["confounding"].eq(confounding)
+            & plot_summary["proxy"].eq(proxy)
+        ]
+        for method in methods:
+            curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
+            style = method_style(method)
+            x = curve["n_ctx"].to_numpy(dtype=float)
+            if confidence_interval == "iqr":
+                lower = curve["q25"].to_numpy(dtype=float)
+                upper = curve["q75"].to_numpy(dtype=float)
+            elif confidence_interval in {"std", "ste"}:
+                spread = curve[confidence_interval].to_numpy(dtype=float)
+                center = curve["median"].to_numpy(dtype=float)
+                lower = center - spread
+                upper = center + spread
+            else:
+                lower = upper = None
+            if lower is not None:
+                ax.fill_between(
+                    x,
+                    lower,
+                    upper,
+                    color=style.color,
+                    alpha=0.045,
+                    linewidth=0,
+                    zorder=1,
+                )
+            ax.plot(x, curve["median"].to_numpy(dtype=float), **style.line_kwargs())
+
+        ax.axhline(
+            1.0,
+            color=COLORS["grey"],
+            linestyle=":",
+            linewidth=0.8,
+            zorder=0,
+        )
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(contexts)
+        ax.xaxis.set_major_formatter(ScalarFormatter())
+        ax.minorticks_off()
+        ax.set_title(
+            f"{confounding.capitalize()} confounding\n"
+            f"{proxy.capitalize()} proxy reliability"
+        )
+        ax.set_ylim(0, y_max)
+        if case is not None or col == 0:
+            ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
+        if case is not None or row == 1:
+            ax.set_xlabel("Context size")
 
     handles = [
         Line2D(
@@ -178,10 +229,14 @@ def make_learning_curve_figure(
         )
         for method in methods
     ]
+    # The full matrix has a wide canvas, but a single panel often contains
+    # long method labels. Wrap that legend into two columns so it stays inside
+    # the saved figure instead of extending past the left and right edges.
+    legend_ncol = min(2, len(handles)) if case is not None else min(5, len(handles))
     fig.legend(
         handles=handles,
         loc="outside lower center",
-        ncol=min(5, len(handles)),
+        ncol=legend_ncol,
         columnspacing=1.2,
         handlelength=2.6,
     )
@@ -212,6 +267,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--case",
+        "--config",
+        dest="case",
+        metavar="NAME",
+        help=(
+            "Plot one matrix case as a single subplot, e.g. "
+            "linear_conf_low_proxy_low (alias: --config)"
+        ),
+    )
+    parser.add_argument(
         "--y-max",
         type=float,
         default=DEFAULT_Y_MAX,
@@ -235,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    frame = load_cate_results(args.matrix_root)
+    frame = load_cate_results(args.matrix_root, selected_case=args.case)
     complete, incomplete = complete_learning_curve_methods(frame)
     selected = args.methods if args.methods is not None else relevant_methods(complete)
     summary = summarize_learning_curves(frame, selected)
@@ -245,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     fig = make_learning_curve_figure(
         summary,
         methods=methods,
+        case=args.case,
         y_max=args.y_max,
         confidence_interval=args.confidence_interval,
         interval=args.interval,

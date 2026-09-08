@@ -53,12 +53,21 @@ def _case_factors(case: str) -> tuple[str, str, str]:
     return family, confounding, proxy
 
 
-def discover_cells(matrix_root: Path) -> list[MatrixCell]:
-    """Discover and validate the eight cases declared by the matrix manifest."""
+def discover_cells(
+    matrix_root: Path, *, selected_case: str | None = None
+) -> list[MatrixCell]:
+    """Discover the full matrix or one selected case from its manifest.
+
+    The default path validates the complete eight-case matrix. A selected case
+    only needs its own benchmark results, which allows partially completed
+    benchmark roots to be used for single-case plots.
+    """
     matrix_root = Path(matrix_root)
     manifest_path = matrix_root / "manifest.json"
     if not manifest_path.exists():
         raise FileNotFoundError(f"matrix manifest not found: {manifest_path}")
+    if selected_case is not None:
+        _case_factors(selected_case)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     cases = manifest.get("cases")
     if not isinstance(cases, list):
@@ -73,6 +82,8 @@ def discover_cells(matrix_root: Path) -> list[MatrixCell]:
         if factors in seen:
             raise ValueError(f"duplicate factorial cell {factors}")
         seen.add(factors)
+        if selected_case is not None and case != selected_case:
+            continue
         results_path = matrix_root / case / "bench" / "results" / "results.csv"
         if not results_path.exists():
             raise FileNotFoundError(
@@ -80,13 +91,16 @@ def discover_cells(matrix_root: Path) -> list[MatrixCell]:
             )
         cells.append(MatrixCell(case, family, confounding, proxy, results_path))
 
-    missing = set(CELL_ORDER) - seen
-    extra = seen - set(CELL_ORDER)
-    if missing or extra:
-        raise ValueError(
-            f"expected the complete 2x2x2 matrix; missing={sorted(missing)}, "
-            f"extra={sorted(extra)}"
-        )
+    if selected_case is None:
+        missing = set(CELL_ORDER) - seen
+        extra = seen - set(CELL_ORDER)
+        if missing or extra:
+            raise ValueError(
+                f"expected the complete 2x2x2 matrix; missing={sorted(missing)}, "
+                f"extra={sorted(extra)}"
+            )
+    elif not cells:
+        raise ValueError(f"case {selected_case!r} is not declared in {manifest_path}")
     order = {factors: i for i, factors in enumerate(CELL_ORDER)}
     return sorted(
         cells,
@@ -94,10 +108,12 @@ def discover_cells(matrix_root: Path) -> list[MatrixCell]:
     )
 
 
-def load_cate_results(matrix_root: Path) -> pd.DataFrame:
-    """Load successful competitor CATE(X) rows from every factorial cell."""
+def load_cate_results(
+    matrix_root: Path, *, selected_case: str | None = None
+) -> pd.DataFrame:
+    """Load successful competitor CATE(X) rows from all or one matrix cell."""
     frames = []
-    for cell in discover_cells(matrix_root):
+    for cell in discover_cells(matrix_root, selected_case=selected_case):
         frame = pd.read_csv(cell.results_path)
         missing = REQUIRED_COLUMNS - set(frame.columns)
         if missing:
