@@ -1,0 +1,9 @@
+# Transfer an already-trained ProximalFM checkpoint into a new post-tuning run.
+#
+# Unlike transfer_rules.yaml, this must not mark the CATE decoder as scratch:
+# whole_1/best_model.ckpt already contains the trained single-head posterior.
+# Shape mismatches remain randomly initialized by the loader, so use this only
+# when the post-tuning script keeps the source checkpoint's architecture.
+
+transfer_rules:
+  default: "finetune"
