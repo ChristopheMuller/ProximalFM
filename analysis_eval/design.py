@@ -33,16 +33,28 @@ COLORS = {
     "vermillion": "#D55E00",
     "purple": "#CC79A7",
     "brown": "#8C564B",
+    "red": "#D62728",
+    "wine": "#882255",
 }
 
-# Shared visual grammar. Dashed/circle denotes a simple or linear variant,
-# solid/polygon a nonlinear learned variant, and dotted a marginal/reference
-# output. Foundation models and principal proximal competitors are thicker.
+# Shared visual grammar. Colour identifies an estimator or base-regressor
+# family. Marker and line style identify variants within that family. The
+# combination (colour, marker, line style) is unique across the registry, so
+# every method remains identifiable in colour and in monochrome.
 LINEWIDTH = 1.35
 EMPHASIZED_LINEWIDTH = 1.75
 PROPOSED_LINEWIDTH = 2.15
 MARKERSIZE = 3.6
 EMPHASIZED_MARKERSIZE = 4.2
+
+META_COLORS = {
+    "OLS": COLORS["sky_blue"],
+    "RF": COLORS["orange"],
+    "TabICL": COLORS["purple"],
+}
+META_MARKERS = {"OLS": "o", "RF": "s", "TabICL": "D"}
+META_LINESTYLES = {"S": "--", "T": "-", "X": ":"}
+MARGINALIZED_LINESTYLE = "-."
 
 
 @dataclass(frozen=True)
@@ -69,41 +81,83 @@ class MethodStyle:
             "alpha": self.alpha,
         }
 
+    def identity(self) -> tuple[str, str, str]:
+        """Return the visual channels that distinguish methods in a legend."""
+        return self.color, self.marker, self.linestyle
+
 
 # Registry order is legend and rendering order: conventional learners, proxy
 # marginalisation, proximal learners, foundation models, the proposed method,
 # then unranked references. Later, emphasized entries render over baselines.
 METHOD_STYLES: Mapping[str, MethodStyle] = {
-    # Conventional meta-learners: colour identifies S/T/X; marker identifies
-    # OLS/RF/TabICL.
-    "S-OLS": MethodStyle("S-OLS", COLORS["sky_blue"], "o", "--"),
-    "S-RF": MethodStyle("S-RF", COLORS["sky_blue"], "s"),
-    "S-TabICL": MethodStyle("S-TabICL", COLORS["sky_blue"], "D", ":"),
-    "T-OLS": MethodStyle("T-OLS", COLORS["orange"], "o", "--"),
-    "T-RF": MethodStyle("T-RF", COLORS["orange"], "s"),
-    "T-TabICL": MethodStyle("T-TabICL", COLORS["orange"], "D", ":"),
-    "X-OLS": MethodStyle("X-OLS", COLORS["purple"], "o", "--"),
-    "X-RF": MethodStyle("X-RF", COLORS["purple"], "D"),
-    "X-TabICL": MethodStyle("X-TabICL", COLORS["purple"], "s", ":"),
-    # Proxy-marginalisation variants are deliberately neutral.
+    # Conventional meta-learners: colour and marker identify OLS/RF/TabICL;
+    # line style identifies the S/T/X learner.
+    "S-OLS": MethodStyle(
+        "S-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["S"]
+    ),
+    "S-RF": MethodStyle(
+        "S-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["S"]
+    ),
+    "S-TabICL": MethodStyle(
+        "S-TabICL",
+        META_COLORS["TabICL"],
+        META_MARKERS["TabICL"],
+        META_LINESTYLES["S"],
+    ),
+    "T-OLS": MethodStyle(
+        "T-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["T"]
+    ),
+    "T-RF": MethodStyle(
+        "T-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["T"]
+    ),
+    "T-TabICL": MethodStyle(
+        "T-TabICL",
+        META_COLORS["TabICL"],
+        META_MARKERS["TabICL"],
+        META_LINESTYLES["T"],
+    ),
+    "X-OLS": MethodStyle(
+        "X-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["X"]
+    ),
+    "X-RF": MethodStyle(
+        "X-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["X"]
+    ),
+    "X-TabICL": MethodStyle(
+        "X-TabICL",
+        META_COLORS["TabICL"],
+        META_MARKERS["TabICL"],
+        META_LINESTYLES["X"],
+    ),
+    # Proxy-marginalisation variants retain the parent estimator's colour.
+    # Their dash-dot line distinguishes marginalised outputs from the parent;
+    # the marker identifies the integration rule (diamond=kernel, hexagon=kNN).
     "S-RF-WZ-Kernel-128": MethodStyle(
-        "S-RF + kernel marginalisation", COLORS["grey"], "s", "--"
+        "S-RF + kernel marginalisation",
+        META_COLORS["RF"],
+        "d",
+        MARGINALIZED_LINESTYLE,
     ),
     "S-RF-WZ-kNN-128": MethodStyle(
-        "S-RF + kNN marginalisation", COLORS["grey"], "s", ":"
+        "S-RF + kNN marginalisation",
+        META_COLORS["RF"],
+        "h",
+        MARGINALIZED_LINESTYLE,
     ),
     "S-TabICL-WZ-kNN-16": MethodStyle(
-        "S-TabICL + kNN marginalisation", COLORS["grey"], "D", "-."
+        "S-TabICL + kNN marginalisation",
+        META_COLORS["TabICL"],
+        "h",
+        MARGINALIZED_LINESTYLE,
     ),
-    # Classical proximal learners. Each estimator family has its own colour;
-    # down/up markers encode conditional/independent-W variants.
+    # Classical proximal learners. P-learner outputs share a colour, distinct
+    # from PMMR; markers and line styles encode their output variants.
     "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", "--"),
-    "P-Kernel-RF": MethodStyle("P-Kernel-RF", COLORS["brown"], "s"),
-    "P-Kernel-OLS": MethodStyle("P-Kernel-OLS", COLORS["brown"], "o", "--"),
-    "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["brown"], "P", ":"),
+    "P-Kernel-RF": MethodStyle("P-Kernel-RF", COLORS["green"], "s"),
+    "P-Kernel-OLS": MethodStyle("P-Kernel-OLS", COLORS["green"], "o", "--"),
+    "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["green"], "P", ":"),
     "KPV-X-Wcond": MethodStyle(
         "KPV (conditional W)",
-        COLORS["green"],
+        COLORS["red"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
@@ -111,14 +165,14 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     "KPV-X-Wind": MethodStyle(
         "KPV (independent W)",
-        COLORS["green"],
+        COLORS["red"],
         "^",
         "--",
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
     ),
-    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["green"], "P", ":"),
+    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["red"], "P", ":"),
     "PMMR-X-Wcond": MethodStyle(
         "PMMR (conditional W)",
         COLORS["brown"],
@@ -139,7 +193,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "PMMR-ATE": MethodStyle("PMMR (ATE)", COLORS["brown"], "H", ":"),
     "NMMR-V-fixed-Wcond": MethodStyle(
         "NMMR (conditional W)",
-        COLORS["purple"],
+        COLORS["wine"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
@@ -147,7 +201,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     "NMMR-V-fixed-Wind": MethodStyle(
         "NMMR (independent W)",
-        COLORS["purple"],
+        COLORS["wine"],
         "^",
         "--",
         linewidth=EMPHASIZED_LINEWIDTH,
@@ -184,8 +238,8 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "CausalPFN-WZ-kNN-16": MethodStyle(
         "CausalPFN + kNN marginalisation",
         COLORS["blue"],
-        "D",
-        "--",
+        "h",
+        MARGINALIZED_LINESTYLE,
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=4,
@@ -206,21 +260,44 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
 }
 
 
+def _validate_method_styles(styles: Mapping[str, MethodStyle]) -> None:
+    """Reject ambiguous identities when the registry is edited."""
+    owners: dict[tuple[str, str, str], str] = {}
+    labels: dict[str, str] = {}
+    for method, style in styles.items():
+        if style.label in labels:
+            raise ValueError(
+                f"methods {labels[style.label]!r} and {method!r} share label "
+                f"{style.label!r}"
+            )
+        labels[style.label] = method
+
+        identity = style.identity()
+        if identity in owners:
+            raise ValueError(
+                f"methods {owners[identity]!r} and {method!r} share visual "
+                f"identity {identity!r}"
+            )
+        owners[identity] = method
+
+
+_validate_method_styles(METHOD_STYLES)
+
+
 # Representative CATE(X) methods for figures whose legends or panels cannot
 # accommodate the full registry. The selection spans conventional, proxy-
 # marginalised, proximal, and foundation-model approaches. It is fixed in
 # advance: plot selection must not depend on observed scores.
 RELEVANT_METHODS: tuple[str, ...] = (
-    "S-TabICL-WZ-kNN-16",
     "T-OLS",
-    "S-OLS",
-    "X-RF",
-    "X-TabICL",
+    "S-TabICL-WZ-kNN-16",
     "P-Kernel-RF",
     "P-Kernel-OLS",
+    "NMMR-V-fixed-Wcond",
     "KPV-X-Wcond",
     "PMMR-X-Wcond",
     "CausalPFN",
+    "CausalPFN-WZ-kNN-16",
     "ProximalFM",
 )
 
@@ -303,4 +380,4 @@ def decomposition_figsize() -> tuple[float, float]:
 
 def speed_rank_figsize() -> tuple[float, float]:
     """Final canvas size for the two-mechanism speed--accuracy comparison."""
-    return FULL_PAGE_WIDTH_IN, 6.0
+    return FULL_PAGE_WIDTH_IN, 4.25

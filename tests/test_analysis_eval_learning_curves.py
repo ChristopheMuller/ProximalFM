@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 
 from analysis_eval.design import (
+    COLORS,
+    MARGINALIZED_LINESTYLE,
     METHOD_STYLES,
     RELEVANT_METHODS,
     method_style,
@@ -111,6 +113,60 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth
 
 
+def test_method_styles_share_regressor_colours_and_learner_linestyles():
+    for regressor in ("OLS", "RF", "TabICL"):
+        styles = [method_style(f"{learner}-{regressor}") for learner in "STX"]
+        assert len({style.color for style in styles}) == 1
+
+    assert method_style("S-OLS").linestyle == "--"
+    assert method_style("S-RF").linestyle == "--"
+    assert method_style("S-TabICL").linestyle == "--"
+    assert method_style("T-OLS").linestyle == method_style("T-RF").linestyle
+    assert method_style("T-RF").linestyle == method_style("T-TabICL").linestyle
+    assert method_style("X-OLS").linestyle == method_style("X-RF").linestyle
+    assert method_style("X-RF").linestyle == method_style("X-TabICL").linestyle
+
+    plearner = {
+        method_style(name).color
+        for name in ("P-Kernel-RF", "P-Kernel-OLS", "P-Kernel-ATE")
+    }
+    pmmr = {
+        method_style(name).color for name in ("PMMR-X-Wind", "PMMR-X-Wcond", "PMMR-ATE")
+    }
+    assert len(plearner) == len(pmmr) == 1
+    assert plearner.isdisjoint(pmmr)
+
+    nmmr = {
+        method_style(name).color for name in ("NMMR-V-fixed-Wind", "NMMR-V-fixed-Wcond")
+    }
+    tabicl = {method_style(f"{learner}-TabICL").color for learner in "STX"}
+    assert len(nmmr) == len(tabicl) == 1
+    assert nmmr.isdisjoint(tabicl)
+
+
+def test_every_method_has_a_unique_visual_identity_and_label():
+    identities = [style.identity() for style in METHOD_STYLES.values()]
+    labels = [style.label for style in METHOD_STYLES.values()]
+
+    assert len(identities) == len(set(identities))
+    assert len(labels) == len(set(labels))
+
+
+def test_marginalized_methods_keep_parent_colour_but_use_distinct_format():
+    parent_pairs = (
+        ("S-RF", "S-RF-WZ-Kernel-128"),
+        ("S-RF", "S-RF-WZ-kNN-128"),
+        ("S-TabICL", "S-TabICL-WZ-kNN-16"),
+        ("CausalPFN", "CausalPFN-WZ-kNN-16"),
+    )
+    for parent_name, marginalized_name in parent_pairs:
+        parent = method_style(parent_name)
+        marginalized = method_style(marginalized_name)
+        assert marginalized.color == parent.color
+        assert marginalized.linestyle == MARGINALIZED_LINESTYLE
+        assert marginalized.identity() != parent.identity()
+
+
 def test_figure_can_render_one_case_as_a_single_subplot(tmp_path):
     summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
     fig = make_learning_curve_figure(
@@ -128,12 +184,12 @@ def test_figure_can_render_one_case_as_a_single_subplot(tmp_path):
 
 def test_learning_curve_default_uses_compact_method_set(tmp_path):
     summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
-    excluded = summary[summary["method"].eq("S-OLS")].copy()
-    excluded["method"] = "S-RF"
-    summary = pd.concat([summary, excluded], ignore_index=True)
+    relevant = summary[summary["method"].eq("S-OLS")].copy()
+    relevant["method"] = "T-OLS"
+    summary = pd.concat([summary, relevant], ignore_index=True)
     fig = make_learning_curve_figure(summary)
     legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
-    assert legend_labels == ["S-OLS", "ProximalFM"]
+    assert legend_labels == ["T-OLS", "ProximalFM"]
 
 
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
@@ -324,3 +380,16 @@ def test_speed_rank_figure_has_one_panel_per_confounding_level(tmp_path):
     }
     assert all(ax.get_xscale() == "log" for ax in fig.axes)
     assert all(ax.yaxis_inverted() for ax in fig.axes)
+    assert fig.get_size_inches()[1] == 4.25
+
+
+def test_speed_rank_only_highlights_and_labels_relevant_methods(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"])
+    fig = make_speed_rank_figure(summary)
+
+    for ax in fig.axes:
+        assert [text.get_text() for text in ax.texts] == ["ProximalFM"]
+        line_colors = {line.get_color() for line in ax.lines}
+        assert COLORS["light_grey"] in line_colors
+        assert method_style("ProximalFM").color in line_colors

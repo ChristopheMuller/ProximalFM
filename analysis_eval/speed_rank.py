@@ -15,7 +15,14 @@ import numpy as np
 import pandas as pd
 from matplotlib.lines import Line2D
 
-from .design import apply_style, method_style, ordered_methods, speed_rank_figsize
+from .design import (
+    COLORS,
+    RELEVANT_METHODS,
+    apply_style,
+    method_style,
+    ordered_methods,
+    speed_rank_figsize,
+)
 from .plotting import place_point_labels, plt, save_figure
 from .semisynt import (
     LEVELS,
@@ -28,6 +35,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_speed_rank"
+MUTED_METHOD_COLOR = COLORS["light_grey"]
+MUTED_METHOD_ALPHA = 0.55
 
 
 def make_speed_rank_figure(summary: pd.DataFrame):
@@ -67,23 +76,27 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         labels = []
         for row in panel.itertuples():
             style = method_style(row.method)
+            highlighted = row.method in RELEVANT_METHODS
+            color = style.color if highlighted else MUTED_METHOD_COLOR
+            alpha = style.alpha if highlighted else MUTED_METHOD_ALPHA
+            zorder = style.zorder if highlighted else 1
             lower = row.rank_median - row.rank_q25
             upper = row.rank_q75 - row.rank_median
             ax.errorbar(
                 row.time_mean,
                 row.rank_median,
                 yerr=np.array([[lower], [upper]]),
-                color=style.color,
+                color=color,
                 marker=style.marker,
                 markersize=max(style.markersize, 5.0),
-                markerfacecolor=style.color,
+                markerfacecolor=color,
                 markeredgecolor="white",
                 markeredgewidth=0.55,
                 linestyle="none",
-                linewidth=1.15,
+                linewidth=1.15 if highlighted else 0.8,
                 capsize=2.5,
-                zorder=style.zorder + 1,
-                alpha=style.alpha,
+                zorder=zorder + 1,
+                alpha=alpha,
             )
 
             post = row.time_post_tune_mean
@@ -91,36 +104,38 @@ def make_speed_rank_figure(summary: pd.DataFrame):
                 ax.plot(
                     [post, row.time_mean],
                     [row.rank_median, row.rank_median],
-                    color=style.color,
+                    color=color,
                     linestyle=":",
-                    linewidth=0.9,
-                    alpha=0.7,
-                    zorder=style.zorder,
+                    linewidth=0.9 if highlighted else 0.7,
+                    alpha=alpha,
+                    zorder=zorder,
                 )
                 ax.plot(
                     post,
                     row.rank_median,
-                    color=style.color,
+                    color=color,
                     marker=style.marker,
                     markersize=max(style.markersize, 5.0),
                     markerfacecolor="white",
                     markeredgewidth=1.1,
                     linestyle="none",
-                    zorder=style.zorder + 2,
+                    alpha=alpha,
+                    zorder=zorder + 2,
                 )
 
-            labels.append(
-                ax.annotate(
-                    style.label,
-                    (row.time_mean, row.rank_median),
-                    xytext=(5, 0),
-                    textcoords="offset points",
-                    color=style.color,
-                    fontsize=6.8,
-                    va="center",
-                    clip_on=False,
+            if highlighted:
+                labels.append(
+                    ax.annotate(
+                        style.label,
+                        (row.time_mean, row.rank_median),
+                        xytext=(5, 0),
+                        textcoords="offset points",
+                        color=style.color,
+                        fontsize=6.8,
+                        va="center",
+                        clip_on=False,
+                    )
                 )
-            )
 
         ax.set_xscale("log")
         ax.set_title(f"{confounding.capitalize()} confounding")

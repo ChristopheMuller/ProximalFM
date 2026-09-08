@@ -107,7 +107,10 @@ episode)` block. Each panel therefore summarizes four linearity/proxy cells
 independently rather than inheriting ranks from a pooled eight-cell comparison.
 The y-axis shows median paired rank with an
 interquartile whisker; the x-axis shows mean wall-clock seconds per episode on
-a shared log scale. Thus the upper-left is better.
+a shared log scale. Thus the upper-left is better. All complete methods remain
+in the ranking and are plotted, but only the fixed `design.RELEVANT_METHODS`
+subset is coloured and labelled; the remaining methods form a light-grey
+context layer.
 
 A filled marker uses the complete measured runtime: estimator construction,
 hyperparameter search, final fit, prediction, and diagnostics. For methods with
