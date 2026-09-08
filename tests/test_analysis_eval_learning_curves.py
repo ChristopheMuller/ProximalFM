@@ -200,6 +200,24 @@ def test_error_decomposition_figure_has_eight_axes(tmp_path):
     assert len(fig.axes) == 8
 
 
+def test_error_decomposition_can_render_one_case_as_a_single_subplot(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    summary = summarize_error_decomposition(
+        frame, ["S-OLS", "ProximalFM"], aggregation="median"
+    )
+    fig = make_error_decomposition_figure(
+        summary,
+        methods=["S-OLS", "ProximalFM"],
+        case="linear_conf_low_proxy_low",
+    )
+
+    assert len(fig.axes) == 1
+    assert fig.legends[0]._ncols == 2
+    assert fig.axes[0].get_title() == "Low confounding\nLow proxy reliability"
+    assert fig.axes[0].get_xlabel() == r"Level error: normalized ATE bias$^2$"
+    assert fig.axes[0].get_ylabel() == "Linear\nHeterogeneity error"
+
+
 def test_error_decomposition_legend_wraps_long_method_lists(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     summary = summarize_error_decomposition(
@@ -273,6 +291,13 @@ def test_error_decomposition_cli_accepts_fixed_limits():
     )
     assert args.xlim == [0.0, 0.5]
     assert args.ylim == [0.0, 1.25]
+    assert args.case is None
+    assert (
+        build_decomposition_parser()
+        .parse_args(["--config", "linear_conf_low_proxy_low"])
+        .case
+        == "linear_conf_low_proxy_low"
+    )
 
 
 def test_speed_rank_summary_separates_confounding_levels(tmp_path):

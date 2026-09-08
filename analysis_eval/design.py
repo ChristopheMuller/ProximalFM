@@ -181,6 +181,15 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=4,
     ),
+    "CausalPFN-WZ-kNN-16": MethodStyle(
+        "CausalPFN + kNN marginalisation",
+        COLORS["blue"],
+        "D",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=4,
+    ),
     "ProximalFM": MethodStyle(
         "ProximalFM",
         COLORS["vermillion"],

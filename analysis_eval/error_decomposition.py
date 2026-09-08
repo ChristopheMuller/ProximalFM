@@ -1,4 +1,4 @@
-"""Eight-cell level/heterogeneity error trajectories as context grows.
+"""Level/heterogeneity error trajectories as context grows.
 
 Run from the repository root::
 
@@ -25,7 +25,7 @@ from .design import (
     ordered_methods,
     relevant_methods,
 )
-from .learning_curves import CONF_PROXY_ORDER, DEFAULT_MATRIX_ROOT
+from .learning_curves import CONF_PROXY_ORDER, DEFAULT_MATRIX_ROOT, SINGLE_CASE_FIGSIZE
 from .plotting import plt, save_figure
 from .semisynt import (
     complete_learning_curve_methods,
@@ -37,19 +37,47 @@ DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_error_decomposition"
 
 
-def _validate_summary(summary: pd.DataFrame, methods: Sequence[str]) -> list[int]:
-    contexts = sorted(int(value) for value in summary["n_ctx"].unique())
+def _validate_summary(
+    summary: pd.DataFrame,
+    methods: Sequence[str],
+    *,
+    case: str | None = None,
+) -> list[int]:
+    """Validate the selected decomposition cells and return context sizes."""
+    selected = summary if case is None else summary[summary["case"].eq(case)]
+    if selected.empty:
+        available = sorted(str(value) for value in summary["case"].unique())
+        raise ValueError(
+            f"unknown case {case!r}; available cases are: {', '.join(available)}"
+        )
+
+    contexts = sorted(int(value) for value in selected["n_ctx"].unique())
     if len(contexts) < 2:
         raise ValueError("decomposition trajectories require two context sizes")
+
+    if case is None:
+        cells = {
+            (family, confounding, proxy)
+            for family in ("linear", "nonlinear")
+            for confounding, proxy in CONF_PROXY_ORDER
+        }
+    else:
+        cells = set(
+            selected[["family", "confounding", "proxy"]]
+            .drop_duplicates()
+            .itertuples(index=False, name=None)
+        )
+        if len(cells) != 1:
+            raise ValueError(f"case {case!r} maps to multiple factorial cells")
+
     expected = {
         (family, confounding, proxy, method, n_ctx)
-        for family in ("linear", "nonlinear")
-        for confounding, proxy in CONF_PROXY_ORDER
+        for family, confounding, proxy in cells
         for method in methods
         for n_ctx in contexts
     }
     observed = set(
-        summary[["family", "confounding", "proxy", "method", "n_ctx"]].itertuples(
+        selected[["family", "confounding", "proxy", "method", "n_ctx"]].itertuples(
             index=False, name=None
         )
     )
@@ -228,58 +256,81 @@ def make_error_decomposition_figure(
     summary: pd.DataFrame,
     *,
     methods: Sequence[str] | None = None,
+    case: str | None = None,
     aggregation: str = "median",
     xlim: Sequence[float] | None = None,
     ylim: Sequence[float] | None = None,
 ):
-    """Create eight decomposition trajectory panels with local scales.
+    """Create the factorial decomposition figure, or one selected case.
 
     By default, each panel derives its own x and y limits from the selected
     methods. ``xlim`` or ``ylim`` can independently impose a common bound for
     that dimension. Trajectory segments are clipped to the resulting bounds,
     so a node outside the grid makes its line stop at the boundary.
+
+    When ``case`` is provided, it must be a matrix case name such as
+    ``"linear_conf_low_proxy_low"`` and only that cell is rendered.
     """
-    available = set(summary["method"])
+    plot_summary = summary if case is None else summary[summary["case"].eq(case)]
+    if case is not None and plot_summary.empty:
+        available_cases = sorted(str(value) for value in summary["case"].unique())
+        raise ValueError(
+            f"unknown case {case!r}; available cases are: "
+            f"{', '.join(available_cases)}"
+        )
+    available = set(plot_summary["method"])
     methods = relevant_methods(available) if methods is None else list(methods)
     methods = ordered_methods(methods)
-    contexts = _validate_summary(summary, methods)
+    contexts = _validate_summary(summary, methods, case=case)
     fixed_xlim = _validate_limits(xlim, "xlim") if xlim is not None else None
     fixed_ylim = _validate_limits(ylim, "ylim") if ylim is not None else None
     apply_style()
-    fig, axes = plt.subplots(2, 4, figsize=decomposition_figsize())
-    for row, family in enumerate(("linear", "nonlinear")):
-        for col, (confounding, proxy) in enumerate(CONF_PROXY_ORDER):
-            ax = axes[row, col]
-            cell = summary[
-                summary["family"].eq(family)
-                & summary["confounding"].eq(confounding)
-                & summary["proxy"].eq(proxy)
-                & summary["method"].isin(methods)
-            ]
-            data_x_max, data_y_max = _axis_limits(cell)
-            x_limits = fixed_xlim or (0.0, data_x_max)
-            y_limits = fixed_ylim or (0.0, data_y_max)
-            _draw_iso_npehe(ax, x_limits[1], y_limits[1])
-            for method in methods:
-                _draw_trajectory(
-                    ax,
-                    cell[cell["method"].eq(method)],
-                    method,
-                    contexts,
-                    x_limits,
-                    y_limits,
-                )
-            ax.scatter(0, 0, marker="+", s=30, color=COLORS["black"], zorder=8)
-            ax.set_xlim(*x_limits)
-            ax.set_ylim(*y_limits)
-            ax.set_title(
-                f"{confounding.capitalize()} confounding\n"
-                f"{proxy.capitalize()} proxy reliability"
+    if case is None:
+        panel_specs = [
+            (row, col, family, confounding, proxy)
+            for row, family in enumerate(("linear", "nonlinear"))
+            for col, (confounding, proxy) in enumerate(CONF_PROXY_ORDER)
+        ]
+        fig, axes = plt.subplots(2, 4, figsize=decomposition_figsize())
+        axes = list(axes.flat)
+    else:
+        factors = plot_summary[["family", "confounding", "proxy"]].drop_duplicates()
+        family, confounding, proxy = next(factors.itertuples(index=False, name=None))
+        panel_specs = [(0, 0, family, confounding, proxy)]
+        fig, axis = plt.subplots(figsize=SINGLE_CASE_FIGSIZE)
+        axes = [axis]
+
+    for ax, (row, col, family, confounding, proxy) in zip(axes, panel_specs):
+        cell = plot_summary[
+            plot_summary["family"].eq(family)
+            & plot_summary["confounding"].eq(confounding)
+            & plot_summary["proxy"].eq(proxy)
+            & plot_summary["method"].isin(methods)
+        ]
+        data_x_max, data_y_max = _axis_limits(cell)
+        x_limits = fixed_xlim or (0.0, data_x_max)
+        y_limits = fixed_ylim or (0.0, data_y_max)
+        _draw_iso_npehe(ax, x_limits[1], y_limits[1])
+        for method in methods:
+            _draw_trajectory(
+                ax,
+                cell[cell["method"].eq(method)],
+                method,
+                contexts,
+                x_limits,
+                y_limits,
             )
-            if col == 0:
-                ax.set_ylabel(f"{family.capitalize()}\nHeterogeneity error")
-            if row == 1:
-                ax.set_xlabel(r"Level error: normalized ATE bias$^2$")
+        ax.scatter(0, 0, marker="+", s=30, color=COLORS["black"], zorder=8)
+        ax.set_xlim(*x_limits)
+        ax.set_ylim(*y_limits)
+        ax.set_title(
+            f"{confounding.capitalize()} confounding\n"
+            f"{proxy.capitalize()} proxy reliability"
+        )
+        if case is not None or col == 0:
+            ax.set_ylabel(f"{family.capitalize()}\nHeterogeneity error")
+        if case is not None or row == 1:
+            ax.set_xlabel(r"Level error: normalized ATE bias$^2$")
 
     handles = [
         Line2D(
@@ -290,10 +341,11 @@ def make_error_decomposition_figure(
         )
         for method in methods
     ]
+    legend_ncol = min(2, len(handles)) if case is not None else min(4, len(handles))
     fig.legend(
         handles=handles,
         loc="outside lower center",
-        ncol=min(4, len(handles)),
+        ncol=legend_ncol,
         columnspacing=0.9,
         handlelength=2.1,
     )
@@ -312,6 +364,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Method subset; defaults to design.RELEVANT_METHODS. "
             "Names must match results.csv exactly"
+        ),
+    )
+    parser.add_argument(
+        "--case",
+        "--config",
+        dest="case",
+        metavar="NAME",
+        help=(
+            "Plot one matrix case as a single subplot, e.g. "
+            "linear_conf_low_proxy_low (alias: --config)"
         ),
     )
     parser.add_argument(
@@ -341,7 +403,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    frame = load_cate_results(args.matrix_root)
+    frame = load_cate_results(args.matrix_root, selected_case=args.case)
     complete, incomplete = complete_learning_curve_methods(frame)
     selected = args.methods if args.methods is not None else relevant_methods(complete)
     summary = summarize_error_decomposition(
@@ -350,6 +412,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     fig = make_error_decomposition_figure(
         summary,
         methods=selected,
+        case=args.case,
         aggregation=args.aggregation,
         xlim=args.xlim,
         ylim=args.ylim,
