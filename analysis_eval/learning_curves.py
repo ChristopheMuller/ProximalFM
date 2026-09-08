@@ -45,6 +45,65 @@ CONF_PROXY_ORDER = (
 )
 
 
+def draw_learning_curve_panel(
+    ax,
+    cell: pd.DataFrame,
+    *,
+    methods: Sequence[str],
+    contexts: Sequence[int],
+    family: str,
+    confounding: str,
+    proxy: str,
+    y_max: float = DEFAULT_Y_MAX,
+    confidence_interval: str = "false",
+) -> None:
+    """Draw one learning-curve cell on an existing axis."""
+    for method in methods:
+        curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
+        style = method_style(method)
+        x = curve["n_ctx"].to_numpy(dtype=float)
+        if confidence_interval == "iqr":
+            lower = curve["q25"].to_numpy(dtype=float)
+            upper = curve["q75"].to_numpy(dtype=float)
+        elif confidence_interval in {"std", "ste"}:
+            spread = curve[confidence_interval].to_numpy(dtype=float)
+            center = curve["median"].to_numpy(dtype=float)
+            lower = center - spread
+            upper = center + spread
+        else:
+            lower = upper = None
+        if lower is not None:
+            ax.fill_between(
+                x,
+                lower,
+                upper,
+                color=style.color,
+                alpha=0.045,
+                linewidth=0,
+                zorder=1,
+            )
+        ax.plot(x, curve["median"].to_numpy(dtype=float), **style.line_kwargs())
+
+    ax.axhline(
+        1.0,
+        color=COLORS["grey"],
+        linestyle=":",
+        linewidth=0.8,
+        zorder=0,
+    )
+    ax.set_xscale("log", base=2)
+    ax.set_xticks(contexts)
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.minorticks_off()
+    ax.set_title(
+        f"{confounding.capitalize()} confounding\n"
+        f"{proxy.capitalize()} proxy reliability"
+    )
+    ax.set_ylim(0, y_max)
+    ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
+    ax.set_xlabel("Context size")
+
+
 def _validate_summary(
     summary: pd.DataFrame,
     methods: Sequence[str],
@@ -173,52 +232,21 @@ def make_learning_curve_figure(
             & plot_summary["confounding"].eq(confounding)
             & plot_summary["proxy"].eq(proxy)
         ]
-        for method in methods:
-            curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
-            style = method_style(method)
-            x = curve["n_ctx"].to_numpy(dtype=float)
-            if confidence_interval == "iqr":
-                lower = curve["q25"].to_numpy(dtype=float)
-                upper = curve["q75"].to_numpy(dtype=float)
-            elif confidence_interval in {"std", "ste"}:
-                spread = curve[confidence_interval].to_numpy(dtype=float)
-                center = curve["median"].to_numpy(dtype=float)
-                lower = center - spread
-                upper = center + spread
-            else:
-                lower = upper = None
-            if lower is not None:
-                ax.fill_between(
-                    x,
-                    lower,
-                    upper,
-                    color=style.color,
-                    alpha=0.045,
-                    linewidth=0,
-                    zorder=1,
-                )
-            ax.plot(x, curve["median"].to_numpy(dtype=float), **style.line_kwargs())
-
-        ax.axhline(
-            1.0,
-            color=COLORS["grey"],
-            linestyle=":",
-            linewidth=0.8,
-            zorder=0,
+        draw_learning_curve_panel(
+            ax,
+            cell,
+            methods=methods,
+            contexts=contexts,
+            family=family,
+            confounding=confounding,
+            proxy=proxy,
+            y_max=y_max,
+            confidence_interval=confidence_interval,
         )
-        ax.set_xscale("log", base=2)
-        ax.set_xticks(contexts)
-        ax.xaxis.set_major_formatter(ScalarFormatter())
-        ax.minorticks_off()
-        ax.set_title(
-            f"{confounding.capitalize()} confounding\n"
-            f"{proxy.capitalize()} proxy reliability"
-        )
-        ax.set_ylim(0, y_max)
-        if case is not None or col == 0:
-            ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
-        if case is not None or row == 1:
-            ax.set_xlabel("Context size")
+        if case is None and col != 0:
+            ax.set_ylabel("")
+        if case is None and row != 1:
+            ax.set_xlabel("")
 
     handles = [
         Line2D(

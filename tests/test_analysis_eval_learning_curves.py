@@ -20,6 +20,10 @@ from analysis_eval.error_decomposition import (
     make_error_decomposition_figure,
 )
 from analysis_eval.learning_curves import build_parser, make_learning_curve_figure
+from analysis_eval.learning_curves_error_decomposition import (
+    build_parser as build_combined_parser,
+    make_combined_figure,
+)
 from analysis_eval.speed_rank import make_speed_rank_figure
 from analysis_eval.semisynt import (
     complete_learning_curve_methods,
@@ -346,6 +350,39 @@ def test_error_decomposition_cli_accepts_fixed_limits():
         .case
         == "linear_conf_low_proxy_low"
     )
+
+
+def test_combined_figure_renders_selected_case_as_two_panels(tmp_path):
+    frame = load_cate_results(_matrix(tmp_path))
+    methods = ["S-OLS", "ProximalFM"]
+    learning = summarize_learning_curves(frame, methods)
+    decomposition = summarize_error_decomposition(frame, methods)
+
+    fig = make_combined_figure(
+        learning,
+        decomposition,
+        methods=methods,
+        case="nonlinear_conf_high_proxy_low",
+        y_max=2.0,
+    )
+
+    assert len(fig.axes) == 2
+    assert fig.axes[0].get_ylim() == (0.0, 2.0)
+    assert fig.axes[0].get_title(loc="left").startswith("(a)")
+    assert fig.axes[1].get_title(loc="left").startswith("(b)")
+    assert len(fig.legends) == 1
+    assert [text.get_text() for text in fig.legends[0].get_texts()] == [
+        "S-OLS",
+        "ProximalFM",
+    ]
+
+
+def test_combined_cli_requires_a_case():
+    args = build_combined_parser().parse_args(
+        ["--case", "nonlinear_conf_high_proxy_low"]
+    )
+    assert args.case == "nonlinear_conf_high_proxy_low"
+    assert args.y_max == 1.2
 
 
 def test_speed_rank_summary_separates_confounding_levels(tmp_path):

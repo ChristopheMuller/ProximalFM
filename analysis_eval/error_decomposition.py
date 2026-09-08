@@ -252,6 +252,43 @@ def _draw_trajectory(
         )
 
 
+def draw_error_decomposition_panel(
+    ax,
+    cell: pd.DataFrame,
+    *,
+    methods: Sequence[str],
+    contexts: list[int],
+    family: str,
+    confounding: str,
+    proxy: str,
+    xlim: Sequence[float] | None = None,
+    ylim: Sequence[float] | None = None,
+) -> None:
+    """Draw one error-decomposition cell on an existing axis."""
+    data_x_max, data_y_max = _axis_limits(cell)
+    x_limits = _validate_limits(xlim, "xlim") if xlim is not None else (0.0, data_x_max)
+    y_limits = _validate_limits(ylim, "ylim") if ylim is not None else (0.0, data_y_max)
+    _draw_iso_npehe(ax, x_limits[1], y_limits[1])
+    for method in methods:
+        _draw_trajectory(
+            ax,
+            cell[cell["method"].eq(method)],
+            method,
+            contexts,
+            x_limits,
+            y_limits,
+        )
+    ax.scatter(0, 0, marker="+", s=30, color=COLORS["black"], zorder=8)
+    ax.set_xlim(*x_limits)
+    ax.set_ylim(*y_limits)
+    ax.set_title(
+        f"{confounding.capitalize()} confounding\n"
+        f"{proxy.capitalize()} proxy reliability"
+    )
+    ax.set_ylabel(f"{family.capitalize()}\nHeterogeneity error")
+    ax.set_xlabel(r"Level error: normalized ATE bias$^2$")
+
+
 def make_error_decomposition_figure(
     summary: pd.DataFrame,
     *,
@@ -307,30 +344,21 @@ def make_error_decomposition_figure(
             & plot_summary["proxy"].eq(proxy)
             & plot_summary["method"].isin(methods)
         ]
-        data_x_max, data_y_max = _axis_limits(cell)
-        x_limits = fixed_xlim or (0.0, data_x_max)
-        y_limits = fixed_ylim or (0.0, data_y_max)
-        _draw_iso_npehe(ax, x_limits[1], y_limits[1])
-        for method in methods:
-            _draw_trajectory(
-                ax,
-                cell[cell["method"].eq(method)],
-                method,
-                contexts,
-                x_limits,
-                y_limits,
-            )
-        ax.scatter(0, 0, marker="+", s=30, color=COLORS["black"], zorder=8)
-        ax.set_xlim(*x_limits)
-        ax.set_ylim(*y_limits)
-        ax.set_title(
-            f"{confounding.capitalize()} confounding\n"
-            f"{proxy.capitalize()} proxy reliability"
+        draw_error_decomposition_panel(
+            ax,
+            cell,
+            methods=methods,
+            contexts=contexts,
+            family=family,
+            confounding=confounding,
+            proxy=proxy,
+            xlim=fixed_xlim,
+            ylim=fixed_ylim,
         )
-        if case is not None or col == 0:
-            ax.set_ylabel(f"{family.capitalize()}\nHeterogeneity error")
-        if case is not None or row == 1:
-            ax.set_xlabel(r"Level error: normalized ATE bias$^2$")
+        if case is None and col != 0:
+            ax.set_ylabel("")
+        if case is None and row != 1:
+            ax.set_xlabel("")
 
     handles = [
         Line2D(

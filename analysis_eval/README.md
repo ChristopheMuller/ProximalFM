@@ -94,6 +94,23 @@ trajectories remain legible; use `--xlim MIN MAX` or `--ylim MIN MAX` to impose
 a common range for either dimension. Trajectory segments crossing an edge stop
 at that edge, without drawing their out-of-grid nodes.
 
+## Combined learning curve and error decomposition
+
+To place one case's learning curve and error decomposition side by side with a
+shared legend, run:
+
+```bash
+uv run python -m analysis_eval.learning_curves_error_decomposition \
+  --case nonlinear_conf_high_proxy_low \
+  --matrix-root data/semisynt_eval/d4_10k \
+  --name semisynt_learning_curves_error_decomposition_d4_10k \
+  --y-max 2
+```
+
+This writes matching PDF and PNG files under `analysis_eval/results/`. The
+combined command accepts the learning curve's `--confidence-interval` option
+and the decomposition's `--aggregation`, `--xlim`, and `--ylim` options.
+
 ## Semisynthetic speed versus rank
 
 ```bash
