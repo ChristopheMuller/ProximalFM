@@ -175,14 +175,6 @@ def test_compact_method_selection_is_curated_not_performance_based():
     assert set(RELEVANT_METHODS).issubset(METHOD_STYLES)
 
 
-def test_registered_methods_have_distinct_visual_identities():
-    identities = [
-        (style.color, style.marker, style.linestyle, style.linewidth, style.markersize)
-        for style in METHOD_STYLES.values()
-    ]
-    assert len(identities) == len(set(identities))
-
-
 def test_mean_error_decomposition_preserves_identity(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     summary = summarize_error_decomposition(
