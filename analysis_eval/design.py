@@ -253,6 +253,16 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         zorder=5,
         alpha=1.0,
     ),
+    "ProximalFM-FT-3000": MethodStyle(
+        "ProximalFM-FT",
+        COLORS["vermillion"],
+        "*",
+        ":",
+        linewidth=PROPOSED_LINEWIDTH,
+        markersize=5.8,
+        zorder=5,
+        alpha=1.0,
+    ),
     # References are visually quiet and always render last.
     "Oracle-CATE(X)": MethodStyle("Oracle CATE(X)", COLORS["black"], "", ":"),
     "Oracle-ATE": MethodStyle("Oracle ATE", COLORS["grey"], "", ":"),
@@ -299,6 +309,7 @@ RELEVANT_METHODS: tuple[str, ...] = (
     "CausalPFN",
     "CausalPFN-WZ-kNN-16",
     "ProximalFM",
+    "ProximalFM-FT-3000",
 )
 
 
