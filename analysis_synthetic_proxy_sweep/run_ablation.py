@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Compare linear proximal 2SLS and backdoor OLS on the proxy-strength sweep.
+"""Compare proximal, backdoor, and in-context methods on the proxy-strength sweep.
 
 Usage: python run_ablation.py --data-dir data --output-dir results
-Requires NumPy and SciPy. Index paths are relative to --data-dir. Each observed
+Requires NumPy and SciPy. ``--proximalfm-checkpoint`` additionally requires the
+project's PyTorch dependencies. Index paths are relative to --data-dir. Each observed
 NPZ contains X,W,Z,A,Y,row_id,split (0=train,1=test); truth contains CATE,row_id
 and optionally U for --oracle. Fits use observed training rows only. Scores use
 held-out CATE(X), averaging effect contrasts over the empirical training proxy
@@ -29,6 +30,7 @@ import scipy
 from scipy import linalg
 
 METHODS = ("proximal_2sls", "backdoor_ols_x", "backdoor_ols_xwz")
+PROXIMALFM = "proximalfm"
 ORACLE = "oracle_ols_xu"
 ILL_CONDITIONED = 1e8
 RESULT_FIELDS = [
@@ -238,6 +240,93 @@ def fit_method(observed, method, oracle_u=None):
     return predictions, details
 
 
+def restrict_context(observed, n_context):
+    """Keep a training prefix as context and retain every held-out query row.
+
+    ProximalFM consumes one context-then-query sequence.  The sweep has a much
+    larger training split than the model was trained to use as a context, so a
+    deterministic prefix makes the context size explicit while preserving the
+    held-out scoring population.  Ordering context first is required because
+    the model infers the split from the length of ``y_train``.
+    """
+    n_context = int(n_context)
+    split = np.asarray(observed["split"]).reshape(-1)
+    train = np.flatnonzero(split == 0)
+    query = np.flatnonzero(split == 1)
+    if n_context < 1:
+        raise ValueError("ProximalFM context size must be positive")
+    if n_context > len(train):
+        raise ValueError(
+            f"ProximalFM context size {n_context} exceeds {len(train)} training rows"
+        )
+    if not len(query):
+        raise ValueError("ProximalFM requires at least one held-out query row")
+    indices = np.concatenate([train[:n_context], query])
+    return {key: np.asarray(value)[indices] for key, value in observed.items()}
+
+
+def fit_proximalfm(
+    observed,
+    *,
+    checkpoint,
+    device="cpu",
+    query_batch_size=512,
+    ensemble=1,
+):
+    """Score held-out rows with an in-context ProximalFM checkpoint.
+
+    Query rows do not attend to one another and the adapter standardizes from
+    the context alone.  They can therefore be predicted in chunks without
+    changing the result, keeping a large sweep's peak memory bounded.
+    """
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        # The construction notes also support running this file after `cd`ing
+        # into the analysis directory, where the repository package root is
+        # otherwise absent from Python's import path.
+        sys.path.insert(0, repo_root)
+    from benchmarks.methods.proximalfm import ProximalFM_Estimator
+
+    query_batch_size = int(query_batch_size)
+    if query_batch_size < 1:
+        raise ValueError("ProximalFM query batch size must be positive")
+    ensemble = int(ensemble)
+    if ensemble < 1:
+        raise ValueError("ProximalFM ensemble size must be positive")
+    split = np.asarray(observed["split"]).reshape(-1)
+    train, query = split == 0, split == 1
+    if min(int(train.sum()), int(query.sum())) == 0:
+        raise ValueError("ProximalFM requires context and held-out query rows")
+
+    estimator = ProximalFM_Estimator(str(checkpoint), device=device, ensemble=ensemble)
+    estimator.fit(
+        observed["X"][train],
+        observed["A"][train],
+        observed["Y"][train],
+        W=observed["W"][train],
+        Z=observed["Z"][train],
+    )
+    x, w, z = (observed[key][query] for key in ("X", "W", "Z"))
+    predictions = np.concatenate(
+        [
+            estimator.predict(
+                x[start : start + query_batch_size],
+                W=w[start : start + query_batch_size],
+                Z=z[start : start + query_batch_size],
+            )
+            for start in range(0, len(x), query_batch_size)
+        ]
+    )
+    if not np.isfinite(predictions).all():
+        raise ValueError("ProximalFM returned nonfinite CATE predictions")
+    return predictions, {
+        "status": "ok",
+        "n_train": int(train.sum()),
+        "n_test": int(query.sum()),
+        "prediction_max_abs": float(np.abs(predictions).max()),
+    }
+
+
 def score_cate(predictions, true_cate):
     true_cate = np.asarray(true_cate, float).reshape(-1)
     if predictions.shape != true_cate.shape or not np.isfinite(true_cate).all():
@@ -308,7 +397,11 @@ def run(args):
         rows = rows[: args.limit]
     if not rows:
         raise ValueError("No settings match the filters")
-    methods = list(METHODS) + ([ORACLE] if args.oracle else [])
+    methods = list(METHODS)
+    if args.proximalfm_checkpoint is not None:
+        methods.append(PROXIMALFM)
+    if args.oracle:
+        methods.append(ORACLE)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output = args.output_dir / "method_results.csv"
     temporary = output.with_suffix(".tmp.csv")
@@ -329,7 +422,19 @@ def run(args):
                 try:
                     if load_error is not None:
                         raise load_error
-                    predicted, fit = fit_method(observed, method, truth.get("U"))
+                    if method == PROXIMALFM:
+                        proximal_observed = restrict_context(
+                            observed, args.proximalfm_context_size
+                        )
+                        predicted, fit = fit_proximalfm(
+                            proximal_observed,
+                            checkpoint=args.proximalfm_checkpoint,
+                            device=args.proximalfm_device,
+                            query_batch_size=args.proximalfm_query_batch_size,
+                            ensemble=args.proximalfm_ensemble,
+                        )
+                    else:
+                        predicted, fit = fit_method(observed, method, truth.get("U"))
                     result.update(fit)
                     result.update(
                         score_cate(predicted, truth["CATE"][observed["split"] == 1])
@@ -340,6 +445,7 @@ def run(args):
                     KeyError,
                     IndexError,
                     np.linalg.LinAlgError,
+                    RuntimeError,
                 ) as error:
                     result.update(
                         status="error", error=f"{type(error).__name__}: {error}"
@@ -369,6 +475,18 @@ def run(args):
         "target": "Held-out CATE(X); nuisance proxies averaged over training rows",
         "normalization": "nPEHE = sqrt(mean((predicted_CATE - CATE)^2)) / std(test_CATE)",
         "conditioning_warning_threshold": ILL_CONDITIONED,
+        "proximalfm": (
+            None
+            if args.proximalfm_checkpoint is None
+            else {
+                "checkpoint": str(args.proximalfm_checkpoint),
+                "device": args.proximalfm_device,
+                "context_size": args.proximalfm_context_size,
+                "query_batch_size": args.proximalfm_query_batch_size,
+                "ensemble": args.proximalfm_ensemble,
+                "query_proxies": "masked by ProximalFM after context-only standardization",
+            }
+        ),
         "interpretation": "Exploratory curves from one paired realization per setting; no confidence intervals or claimed optimal range. First-stage partial R2 is descriptive, not a weak-IV significance test. Oracle results, when requested, use hidden U and are diagnostic.",
     }
     (args.output_dir / "run_metadata.json").write_text(
@@ -389,12 +507,46 @@ def main():
     parser.add_argument("--levels", nargs="+")
     parser.add_argument("--limit", type=int)
     parser.add_argument(
+        "--proximalfm-checkpoint",
+        type=Path,
+        help="Checkpoint file or directory to include ProximalFM in the comparison.",
+    )
+    parser.add_argument(
+        "--proximalfm-context-size",
+        type=int,
+        default=2048,
+        help="Training-prefix rows used as ProximalFM context (default: 2048).",
+    )
+    parser.add_argument(
+        "--proximalfm-query-batch-size",
+        type=int,
+        default=512,
+        help="Held-out queries per ProximalFM forward pass (default: 512).",
+    )
+    parser.add_argument(
+        "--proximalfm-device",
+        default="cpu",
+        help="ProximalFM torch device (default: cpu).",
+    )
+    parser.add_argument(
+        "--proximalfm-ensemble",
+        type=int,
+        default=1,
+        help="ProximalFM feature-permutation ensemble size (default: 1).",
+    )
+    parser.add_argument(
         "--oracle", action="store_true", help="Include oracle X,U OLS as a diagnostic"
     )
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
+    if args.proximalfm_context_size < 1:
+        parser.error("--proximalfm-context-size must be positive")
+    if args.proximalfm_query_batch_size < 1:
+        parser.error("--proximalfm-query-batch-size must be positive")
+    if args.proximalfm_ensemble < 1:
+        parser.error("--proximalfm-ensemble must be positive")
     return run(args)
 
 

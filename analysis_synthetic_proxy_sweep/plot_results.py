@@ -14,6 +14,7 @@ import numpy as np
 
 
 METHODS = {
+    "proximalfm": ("ProximalFM", "#D62728", "-"),
     "proximal_2sls": ("Proximal 2SLS", "#1966B3", "-"),
     "backdoor_ols_xwz": ("OLS: X, W, Z", "#D46B16", "-"),
     "backdoor_ols_x": ("OLS: X", "#737373", "--"),

@@ -32,9 +32,15 @@ the figure by running `plot_results.py`. To regenerate the full study:
 ```sh
 python generate_synthetic_sweep.py
 python run_ablation.py --oracle
+# Include an in-context checkpoint; 2,048 context rows are used from each
+# 40,000-row training split and all 10,000 held-out rows are scored in chunks.
+python run_ablation.py --proximalfm-checkpoint ../mc_run_7_NoiseAwareTuning/best_model.ckpt \\
+  --proximalfm-device mps
 python plot_results.py
 ```
 
 Outputs are saved beside the scripts. Comparisons use linear proximal 2SLS,
-OLS(X), OLS(X,W,Z) and oracle OLS(X,U), scored against test CATE after averaging
-treatment contrasts over training nuisance covariates.
+OLS(X), OLS(X,W,Z), optionally ProximalFM, and oracle OLS(X,U), scored against
+test CATE after averaging treatment contrasts over training nuisance covariates.
+ProximalFM sees the observational context `(X,W,Z,A,Y)` but its held-out proxy
+values are masked internally, so it estimates CATE(X), like its training task.
