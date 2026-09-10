@@ -18,7 +18,7 @@ set -euo pipefail
 
 export NAME=${NAME:-synt_val_large_v1}
 export N_DATASETS=${N_DATASETS:-480}
-export N_MAX=${N_MAX:-10000}
+export N_MAX=${N_MAX:-5000}
 export N_Q=${N_Q:-128}
 export K=${K:-10000}
 export SEED=${SEED:-20260908}
