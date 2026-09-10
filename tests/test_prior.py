@@ -32,6 +32,7 @@ from proximalfm.prior._genload import (
     cat_slice_nested_tensors,
 )
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
+from proximalfm.prior._linear_dataset import LinearSCMPrior
 
 
 import pytest
@@ -214,8 +215,8 @@ def test_prior_dataset():
     assert X.shape[0] == 2
 
 
-def test_linear_prior_type_uses_compatible_diagnostic_batch():
-    dataset = PriorDataset(
+def _linear_test_dataset(**overrides):
+    config = dict(
         batch_size=2,
         batch_size_per_gp=2,
         min_dim_U=2,
@@ -228,9 +229,53 @@ def test_linear_prior_type_uses_compatible_diagnostic_batch():
         max_dim_X=4,
         min_seq_len=20,
         max_seq_len=30,
+        n_query=8,
         prior_type="linear",
+        mc_cate=4,
+        n_jobs=1,
+        scm_sampled_hp={},
+    )
+    config.update(overrides)
+    return PriorDataset(**config)
+
+
+def test_linear_constructor_matches_modern_scm_configuration():
+    prior = LinearSCMPrior(
+        batch_size=3,
+        batch_size_per_gp=2,
+        min_dim_U=1,
+        max_dim_U=2,
+        min_dim_W=1,
+        max_dim_W=3,
+        min_dim_Z=1,
+        max_dim_Z=3,
+        min_dim_X=2,
+        max_dim_X=4,
+        min_seq_len=10,
+        max_seq_len=20,
+        n_query=6,
+        mc_cate=7,
+        mc_targets_on_context=True,
+        fixed_hp={"prior_mc_mem_budget": 0},
+        sampled_hp={},
+        n_jobs=1,
+        num_threads_per_generate=2,
         device="cpu",
     )
+    assert prior.prior_type == "linear"
+    assert prior.n_query == 6
+    assert prior.mc_cate == 7
+    assert prior.mc_targets_on_context is True
+    assert prior.n_jobs == 1
+    assert prior.num_threads_per_generate == 2
+    assert not hasattr(prior, "min_train_size")
+    with pytest.raises(TypeError, match="min_train_size"):
+        LinearSCMPrior(min_train_size=0.1)
+
+
+def test_linear_prior_uses_modern_fixed_query_mc_contract():
+    dataset = _linear_test_dataset()
+    assert isinstance(dataset.prior, LinearSCMPrior)
 
     batch = next(iter(dataset))
     assert len(batch) == 19
@@ -239,17 +284,17 @@ def test_linear_prior_type_uses_compatible_diagnostic_batch():
         X,
         _,
         _,
-        _,
+        A,
         _,
         Y_obs,
         Y0,
         Y1,
         MU0,
         MU1,
-        _,
-        _,
-        _,
-        _,
+        d_U,
+        d_X,
+        d_W,
+        d_Z,
         seq_lens,
         train_sizes,
         S2,
@@ -258,12 +303,151 @@ def test_linear_prior_type_uses_compatible_diagnostic_batch():
 
     assert X.shape[0] == 2
     assert Y_obs.shape == Y0.shape == Y1.shape == MU0.shape == MU1.shape
-    assert torch.equal(MU0, Y0)
-    assert torch.equal(MU1, Y1)
-    assert torch.count_nonzero(S2) == 0
-    assert torch.equal(K_eff, torch.ones(2, dtype=torch.long))
-    assert torch.all(train_sizes > 0)
-    assert torch.all(train_sizes < seq_lens)
+    assert torch.equal(seq_lens - train_sizes, torch.full_like(train_sizes, 8))
+    assert torch.equal(K_eff, torch.full_like(K_eff, 4))
+    assert torch.equal(Y_obs, torch.where(A == 1, Y1, Y0))
+    assert torch.isnan(MU0[:, : train_sizes.min()]).all()
+
+    for i in range(X.shape[0]):
+        q = slice(int(train_sizes[i]), int(seq_lens[i]))
+        assert torch.isfinite(MU0[i, q]).all()
+        assert torch.isfinite(MU1[i, q]).all()
+        assert torch.isfinite(S2[i, q]).all()
+        assert (S2[i, q] >= 0).all()
+        # The canonical treatment effect is a function of fixed X only, so the
+        # MC target and the observed world's potential-outcome contrast agree.
+        assert torch.allclose(MU1[i, q] - MU0[i, q], Y1[i, q] - Y0[i, q])
+
+    assert (d_U > 0).all() and (d_X > 0).all()
+    assert (d_W > 0).all() and (d_Z > 0).all()
+
+
+def test_linear_prior_supports_full_context_targets_and_nested_batches():
+    dataset = _linear_test_dataset(
+        batch_size=3,
+        batch_size_per_gp=1,
+        min_seq_len=10,
+        max_seq_len=15,
+        n_query=4,
+        seq_len_per_gp=True,
+        mc_targets_on_context=True,
+        mc_cate=3,
+    )
+    batch = next(iter(dataset))
+    U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1, *_rest = batch
+
+    assert all(t.is_nested for t in (U, X, W, Z, A, A_probs, Y_obs, Y0, Y1, MU0, MU1))
+    assert torch.equal(batch[15] - batch[16], torch.full_like(batch[15], 4))
+    for i in range(3):
+        assert torch.isfinite(MU0[i]).all()
+        assert torch.isfinite(MU1[i]).all()
+
+
+def test_linear_prior_k_one_has_zero_sampling_variance():
+    batch = next(iter(_linear_test_dataset(mc_cate=1)))
+    MU0, MU1, Y0, Y1, S2, K_eff = (
+        batch[9],
+        batch[10],
+        batch[7],
+        batch[8],
+        batch[17],
+        batch[18],
+    )
+    assert torch.equal(K_eff, torch.ones_like(K_eff))
+    for i, train_size in enumerate(batch[16].tolist()):
+        assert torch.equal(S2[i, train_size:], torch.zeros_like(S2[i, train_size:]))
+        assert torch.allclose(MU0[i, train_size:], Y0[i, train_size:])
+        assert torch.allclose(MU1[i, train_size:], Y1[i, train_size:])
+
+
+def test_linear_prior_reports_canonical_structure_and_diagnostics():
+    fixed_hp = {
+        **DEFAULT_FIXED_HP,
+        "collect_mechanism_diagnostics": True,
+        "prior_mc_mem_budget": 0,
+    }
+    dataset = _linear_test_dataset(
+        batch_size=1,
+        batch_size_per_gp=1,
+        min_dim_U=1,
+        max_dim_U=1,
+        min_dim_W=1,
+        max_dim_W=1,
+        min_dim_Z=1,
+        max_dim_Z=1,
+        min_dim_X=2,
+        max_dim_X=2,
+        scm_fixed_hp=fixed_hp,
+    )
+    batch = next(iter(dataset))
+    diag = dataset.last_diagnostics[0]
+
+    assert diag["K_eff"] == 4
+    assert diag["attempts"] >= 1
+    assert diag["structure"]["W"] == ["U"]
+    assert diag["structure"]["Z"] == ["U"]
+    assert "A" not in diag["structure"]["Y0"]
+    assert "W" not in diag["structure"]["Y0"]
+    assert "Z" not in diag["structure"]["Y0"]
+    assert set(diag["loadings"]) == {
+        "B_U",
+        "B_W",
+        "B_Z",
+        "B_AX",
+        "B_AU",
+        "B_YX",
+        "B_YU",
+        "B_TAU",
+    }
+    assert 0 < diag["propensity"]["min"] < diag["propensity"]["max"] < 1
+
+    for values, active in zip(
+        (batch[0], batch[1], batch[2], batch[3]),
+        (batch[11], batch[12], batch[13], batch[14]),
+    ):
+        for row, d in zip(values, active):
+            assert torch.all(
+                row[:, : int(d)].amax(dim=0) != row[:, : int(d)].amin(dim=0)
+            )
+
+
+def test_linear_save_load_round_trip_records_modern_format(tmp_path):
+    args = ArgsMock(
+        save_dir=str(tmp_path),
+        batch_size=2,
+        batch_size_per_gp=1,
+        min_dim_U=1,
+        max_dim_U=2,
+        min_dim_W=1,
+        max_dim_W=2,
+        min_dim_Z=1,
+        max_dim_Z=2,
+        min_dim_X=2,
+        max_dim_X=3,
+        min_seq_len=12,
+        max_seq_len=16,
+        log_seq_len=False,
+        seq_len_per_gp=False,
+        n_query=4,
+        replay_small=False,
+        prior_type="linear",
+        mc_cate=2,
+        mc_targets_on_context=False,
+        num_batches=1,
+        resume_from=0,
+        n_jobs=1,
+        num_threads_per_generate=1,
+        device="cpu",
+    )
+    SavePriorDataset(args).run()
+
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    assert metadata["prior_type"] == "linear"
+
+    batch = next(iter(LoadPriorDataset(tmp_path, batch_size=2, max_batches=1)))
+    assert len(batch) == 19
+    assert torch.equal(batch[15] - batch[16], torch.full_like(batch[15], 4))
+    assert torch.equal(batch[18], torch.full_like(batch[18], 2))
 
 
 def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):

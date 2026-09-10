@@ -1758,8 +1758,8 @@ class PriorDataset(IterableDataset):
          - 'mlp_scm': MLP-based non-linear mechanisms.
          - 'tree_scm': Tree-based mechanisms (e.g., Random Forest, XGBoost).
          - 'mix_scm': Probabilistic mix of the above models.
-         - 'linear': Linear-Gaussian diagnostic generator with its own
-           train-size ratio split.
+         - 'linear': Modern vector linear-Gaussian diagnostic generator using
+           the same fixed-query split and MC-CATE batch contract.
 
     mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets
@@ -1838,6 +1838,14 @@ class PriorDataset(IterableDataset):
                 max_seq_len=max_seq_len,
                 log_seq_len=log_seq_len,
                 seq_len_per_gp=seq_len_per_gp,
+                n_query=n_query,
+                mc_cate=mc_cate,
+                mc_targets_on_context=mc_targets_on_context,
+                prior_type=prior_type,
+                fixed_hp=scm_fixed_hp,
+                sampled_hp=scm_sampled_hp,
+                n_jobs=n_jobs,
+                num_threads_per_generate=num_threads_per_generate,
                 replay_small=replay_small,
                 device=device,
             )
@@ -1958,17 +1966,11 @@ class PriorDataset(IterableDataset):
         str
             A formatted string with dataset parameters.
         """
-        if self.prior_type == "linear":
-            split_info = (
-                f"  n_rows: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
-                "  train-size split: legacy ratio\n"
-            )
-        else:
-            split_info = (
-                f"  n_ctx: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
-                f"  context size varies across groups: {self.seq_len_per_gp}\n"
-                f"  n_query: {self.n_query} (seq_len = n_ctx + n_query)\n"
-            )
+        split_info = (
+            f"  n_ctx: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
+            f"  context size varies across groups: {self.seq_len_per_gp}\n"
+            f"  n_query: {self.n_query} (seq_len = n_ctx + n_query)\n"
+        )
         return (
             f"PriorDataset(\n"
             f"  prior_type: {self.prior_type}\n"

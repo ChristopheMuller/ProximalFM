@@ -1,187 +1,57 @@
+"""Modern linear-Gaussian diagnostic prior.
+
+This module deliberately uses the same orchestration and batch contract as the
+main MLP prior.  The only thing that differs is the SCM mechanism itself:
+``X`` is exogenous, ``U`` is a linear Gaussian cause of the proxies and
+outcomes, and the treatment is assigned through a probit link.
+
+"""
+
 from __future__ import annotations
 
 import math
-import os
-import sys
-from typing import Dict, Tuple, Union, Optional, Any
+from typing import Any, Dict, Optional, Tuple
 
-import numpy as np
 import torch
-import torch.nn.functional as F
-from scipy.stats import loguniform
 from torch import Tensor
-from torch.nested import nested_tensor
 from torch.utils.data import IterableDataset
 
+from ._dataset import DisablePrinting, SCMPrior, _mc_reduce, _scalar_params
+from ._hp_sampling import HpSamplerList
+from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
-class DisablePrinting:
-    """Context manager to temporarily suppress printed output."""
+# These are the scalar defaults used by inspect_eval_linear.  For vector
+# dimensions, each output loading column is normalised to the corresponding
+# scalar magnitude, so increasing a dimension changes representation capacity
+# without silently changing the intended mechanism scale.
+LINEAR_DEFAULTS = {
+    "beta_ux": 0.5,
+    "sigma_u": 1.0,
+    "proxy_loading": 1.0,
+    "proxy_noise_std": 0.2,
+    "alpha_0": 0.0,
+    "alpha_x": 0.25,
+    "alpha_u": 1.0,
+    "sigma_a": 1.0,
+    "beta_0": 0.0,
+    "beta_x": 0.5,
+    "beta_u": 1.0,
+    "sigma_y": 1.0,
+    "tau_0": 1.0,
+    "tau_x": 0.5,
+}
 
-    def __enter__(self):
-        self.original_stdout = sys.stdout
-        sys.stdout = open(os.devnull, "w")
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        sys.stdout.close()
-        sys.stdout = self.original_stdout
-
-
-class LinearPrior:
-    def __init__(
-        self,
-        batch_size: int = 256,
-        min_dim_U: int = 3,
-        max_dim_U: int = 10,
-        min_dim_W: int = 3,
-        max_dim_W: int = 10,
-        min_dim_Z: int = 3,
-        max_dim_Z: int = 10,
-        min_dim_X: int = 5,
-        max_dim_X: int = 20,
-        min_seq_len: Optional[int] = None,
-        max_seq_len: int = 1024,
-        log_seq_len: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
-        replay_small: bool = False,
-    ):
-        self.batch_size = batch_size
-
-        assert min_dim_U <= max_dim_U, "Invalid U dimension range"
-        assert min_dim_W <= max_dim_W, "Invalid W dimension range"
-        assert min_dim_Z <= max_dim_Z, "Invalid Z dimension range"
-        assert min_dim_X <= max_dim_X, "Invalid X dimension range"
-
-        self.min_dim_U = min_dim_U
-        self.max_dim_U = max_dim_U
-        self.min_dim_W = min_dim_W
-        self.max_dim_W = max_dim_W
-        self.min_dim_Z = min_dim_Z
-        self.max_dim_Z = max_dim_Z
-        self.min_dim_X = min_dim_X
-        self.max_dim_X = max_dim_X
-
-        self.min_seq_len = min_seq_len
-        self.max_seq_len = max_seq_len
-        self.log_seq_len = log_seq_len
-
-        self.validate_train_size_range(min_train_size, max_train_size)
-        self.min_train_size = min_train_size
-        self.max_train_size = max_train_size
-        self.replay_small = replay_small
-
-    @staticmethod
-    def validate_train_size_range(
-        min_train_size: Union[int, float], max_train_size: Union[int, float]
-    ) -> None:
-        if not isinstance(min_train_size, (int, float)) or not isinstance(
-            max_train_size, (int, float)
-        ):
-            raise TypeError("Training sizes must be int or float")
-
-        if isinstance(min_train_size, int) and isinstance(max_train_size, int):
-            assert 0 < min_train_size < max_train_size
-        elif isinstance(min_train_size, float) and isinstance(max_train_size, float):
-            assert 0 < min_train_size < max_train_size < 1
-        else:
-            raise ValueError("Both training sizes must be of the same type.")
-
-    @staticmethod
-    def sample_seq_len(
-        min_seq_len: Optional[int],
-        max_seq_len: int,
-        log: bool = False,
-        replay_small: bool = False,
-    ) -> int:
-        if min_seq_len is None:
-            return max_seq_len
-        if log:
-            seq_len = int(loguniform.rvs(min_seq_len, max_seq_len))
-        else:
-            seq_len = np.random.randint(min_seq_len, max_seq_len)
-
-        if replay_small:
-            p = np.random.random()
-            if p < 0.05:
-                return np.random.randint(200, 1000)
-            elif p < 0.3:
-                return int(loguniform.rvs(1000, 10000))
-        return seq_len
-
-    @staticmethod
-    def sample_train_size(
-        min_train_size: Union[int, float],
-        max_train_size: Union[int, float],
-        seq_len: int,
-    ) -> int:
-        if isinstance(min_train_size, int) and isinstance(max_train_size, int):
-            return np.random.randint(min_train_size, max_train_size)
-        else:
-            train_size = np.random.uniform(min_train_size, max_train_size)
-            return int(seq_len * train_size)
-
-    @staticmethod
-    def adjust_max_features(
-        seq_len: int, max_x: int, max_w: int, max_z: int
-    ) -> Tuple[int, int, int]:
-        total_features = max_x + max_w + max_z + 1
-        if seq_len <= 10240:
-            limit = 100
-        elif 10240 < seq_len <= 20000:
-            limit = 80
-        elif 20000 < seq_len <= 30000:
-            limit = 60
-        elif 30000 < seq_len <= 40000:
-            limit = 40
-        elif 40000 < seq_len <= 50000:
-            limit = 30
-        elif 50000 < seq_len <= 60000:
-            limit = 20
-        elif 60000 < seq_len <= 65000:
-            limit = 15
-        else:
-            limit = 10
-
-        if total_features <= limit:
-            return max_x, max_w, max_z
-
-        scale = limit / total_features
-        return (
-            max(1, int(max_x * scale)),
-            max(1, int(max_w * scale)),
-            max(1, int(max_z * scale)),
-        )
-
-    @staticmethod
-    def filter_constant_features_and_pad(
-        X: Tensor, d: Tensor, max_d: int
-    ) -> Tuple[Tensor, Tensor]:
-        def filter_unique_features(xi: Tensor, di: int) -> Tuple[Tensor, Tensor]:
-            if xi.ndim == 1:
-                xi = xi.unsqueeze(0)
-            actual_di = min(int(di), xi.shape[-1])
-            xi_active = xi[:, :actual_di]
-            num_features = xi.shape[-1]
-            unique_mask = [
-                len(torch.unique(xi_active[:, j])) > 1 for j in range(actual_di)
-            ]
-            di_new = sum(unique_mask)
-            xi_unique = xi_active[:, unique_mask]
-            xi_new = F.pad(
-                xi_unique, (0, num_features - di_new), mode="constant", value=0
-            )
-            return xi_new, torch.tensor(di_new, device=xi.device)
-
-        filtered_results = [filter_unique_features(xi, di) for xi, di in zip(X, d)]
-        X_new, d_new = [torch.stack(res) for res in zip(*filtered_results)]
-
-        if X_new.shape[-1] < max_d:
-            X_new = F.pad(X_new, (0, max_d - X_new.shape[-1]), mode="constant", value=0)
-        d_new = torch.tensor([min(int(di), max_d) for di in d_new], device=X_new.device)
-        return X_new, d_new
+_LINEAR_SAMPLED_HP = {"propensity_shift", "propensity_scale"}
 
 
-class LinearSCMPrior(LinearPrior):
+class LinearSCMPrior(SCMPrior):
+    """Generate the controlled vector linear-Gaussian SCM.
+
+    The constructor intentionally mirrors :class:`SCMPrior`.  Shared prior
+    options such as the fixed query split, MC target mode, memory cap, device,
+    and parallelism therefore have identical semantics for both prior types.
+    """
+
     def __init__(
         self,
         batch_size: int = 256,
@@ -199,332 +69,23 @@ class LinearSCMPrior(LinearPrior):
         max_seq_len: int = 1024,
         log_seq_len: bool = False,
         seq_len_per_gp: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
+        n_query: int = 128,
         replay_small: bool = False,
+        prior_type: str = "linear",
+        mc_cate: int = 200,
+        mc_targets_on_context: bool = False,
+        fixed_hp: Dict[str, Any] = DEFAULT_FIXED_HP,
+        sampled_hp: Dict[str, Any] = DEFAULT_SAMPLED_HP,
+        n_jobs: int = -1,
+        num_threads_per_generate: int = 1,
         device: str = "cpu",
-        **kwargs,
     ):
+        if prior_type != "linear":
+            raise ValueError(
+                "LinearSCMPrior only supports prior_type='linear', got "
+                f"{prior_type!r}"
+            )
         super().__init__(
-            batch_size=batch_size,
-            min_dim_U=min_dim_U,
-            max_dim_U=max_dim_U,
-            min_dim_W=min_dim_W,
-            max_dim_W=max_dim_W,
-            min_dim_Z=min_dim_Z,
-            max_dim_Z=max_dim_Z,
-            min_dim_X=min_dim_X,
-            max_dim_X=max_dim_X,
-            min_seq_len=min_seq_len,
-            max_seq_len=max_seq_len,
-            log_seq_len=log_seq_len,
-            min_train_size=min_train_size,
-            max_train_size=max_train_size,
-            replay_small=replay_small,
-        )
-        self.batch_size_per_gp = batch_size_per_gp
-        self.batch_size_per_subgp = batch_size_per_subgp or batch_size_per_gp
-        self.seq_len_per_gp = seq_len_per_gp
-        self.device = device
-
-    @torch.no_grad()
-    def generate_dataset(self, params: Dict[str, Any]) -> Tuple[Tensor, ...]:
-        seq_len = params["seq_len"]
-        dU, dX, dW, dZ = (
-            params["dim_U"],
-            params["dim_X"],
-            params["dim_W"],
-            params["dim_Z"],
-        )
-
-        def safe_normalize(tensor: Tensor) -> Tensor:
-            return (tensor - tensor.mean(dim=0, keepdim=True)) / (
-                tensor.std(dim=0, keepdim=True) + 1e-8
-            )
-
-        while True:
-            # Draw standard normal base tracking vectors
-            U = torch.randn(seq_len, dU, device=self.device)
-            U_ = safe_normalize(U)
-
-            # --- Fully Linear Generation ---
-            # Standard uniform structural coefficients bounded to avoid variance explosions
-            W_weights = torch.rand(dU, dW, device=self.device) - 0.5
-            W = U_ @ W_weights + torch.randn(seq_len, dW, device=self.device) * 0.2
-            W_ = safe_normalize(W)
-
-            Z_weights = torch.rand(dU, dZ, device=self.device) - 0.5
-            Z = U_ @ Z_weights + torch.randn(seq_len, dZ, device=self.device) * 0.2
-            Z_ = safe_normalize(Z)
-
-            X_weights = torch.rand(dU, dX, device=self.device) - 0.5
-            X = U_ @ X_weights + torch.randn(seq_len, dX, device=self.device) * 0.2
-            X_ = safe_normalize(X)
-
-            # --- Treatment Assignment (A) Logits ---
-            A_input = torch.cat([U_, X_], dim=-1)
-            A_weights = (
-                torch.rand(dU + dX, 1, device=self.device) * 0.8
-            ) - 0.4  # [-0.4, 0.4]
-            A_logits = (A_input @ A_weights).squeeze(-1)
-
-            # Standardization & Scaling link mapping to guarantee stable propensities
-            A_logits = (A_logits - A_logits.mean()) / (A_logits.std() + 1e-8)
-            A_logits = A_logits * params.get("propensity_scale", 1.0) + params.get(
-                "propensity_shift", 0.0
-            )
-            A_probs = torch.sigmoid(A_logits).clamp(1e-3, 1.0 - 1e-3)
-            A = torch.bernoulli(A_probs).long()
-
-            # --- Potential Outcomes (Y) ---
-            Y_input = torch.cat([U_, X_], dim=-1)
-            beta_0 = torch.rand(dU + dX, 1, device=self.device) - 0.5  # [-0.5, 0.5]
-            beta_cate = (
-                torch.rand(dU + dX, 1, device=self.device) * 0.6
-            ) - 0.3  # [-0.3, 0.3]
-
-            y0_raw = (Y_input @ beta_0).squeeze(-1) + torch.randn(
-                seq_len, device=self.device
-            ) * 0.1
-            cate_raw = (Y_input @ beta_cate).squeeze(-1) + torch.randn(
-                seq_len, device=self.device
-            ) * 0.05
-            y1_raw = y0_raw + cate_raw
-
-            # RealCause Realization tracking script matching
-            gamma_hetero = torch.rand(1, device=self.device)
-            alphas = torch.rand(seq_len, device=self.device)
-            ate_raw = (y1_raw - y0_raw).mean()
-
-            y1 = (alphas + (1 - alphas) * gamma_hetero) * y1_raw + (
-                1 - gamma_hetero
-            ) * (1 - alphas) * (y0_raw + ate_raw)
-            y0 = ((1 - alphas) + alphas * gamma_hetero) * y0_raw + (
-                1 - gamma_hetero
-            ) * alphas * (y1_raw - ate_raw)
-            y = torch.where(A == 1, y1, y0)
-
-            # --- Padding to Global Matrix Dimension Max Bounds ---
-            U_padded = F.pad(U, (0, params["max_dim_U"] - dU), value=0.0).unsqueeze(0)
-            X_padded = F.pad(X, (0, params["max_dim_X"] - dX), value=0.0).unsqueeze(0)
-            W_padded = F.pad(W, (0, params["max_dim_W"] - dW), value=0.0).unsqueeze(0)
-            Z_padded = F.pad(Z, (0, params["max_dim_Z"] - dZ), value=0.0).unsqueeze(0)
-
-            d_U_t = torch.tensor([dU], device=self.device, dtype=torch.long)
-            d_X_t = torch.tensor([dX], device=self.device, dtype=torch.long)
-            d_W_t = torch.tensor([dW], device=self.device, dtype=torch.long)
-            d_Z_t = torch.tensor([dZ], device=self.device, dtype=torch.long)
-
-            # Unique verification masks mapping filter pipeline execution
-            U_padded, d_U_t = self.filter_constant_features_and_pad(
-                U_padded, d_U_t, params["max_dim_U"]
-            )
-            X_padded, d_X_t = self.filter_constant_features_and_pad(
-                X_padded, d_X_t, params["max_dim_X"]
-            )
-            W_padded, d_W_t = self.filter_constant_features_and_pad(
-                W_padded, d_W_t, params["max_dim_W"]
-            )
-            Z_padded, d_Z_t = self.filter_constant_features_and_pad(
-                Z_padded, d_Z_t, params["max_dim_Z"]
-            )
-
-            if (d_X_t > 0).all() and (d_W_t > 0).all() and (d_Z_t > 0).all():
-                return (
-                    U_padded.squeeze(0),
-                    X_padded.squeeze(0),
-                    W_padded.squeeze(0),
-                    Z_padded.squeeze(0),
-                    A,
-                    A_probs,
-                    y,
-                    y0,
-                    y1,
-                    d_U_t.squeeze(0),
-                    d_X_t.squeeze(0),
-                    d_W_t.squeeze(0),
-                    d_Z_t.squeeze(0),
-                )
-
-    def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
-        batch_size = batch_size or self.batch_size
-        size_per_gp = min(self.batch_size_per_gp, batch_size)
-        num_gps = math.ceil(batch_size / size_per_gp)
-        size_per_subgp = min(self.batch_size_per_subgp, size_per_gp)
-
-        param_list = []
-        global_seq_len, global_train_size = None, None
-        if not self.seq_len_per_gp:
-            global_seq_len = self.sample_seq_len(
-                self.min_seq_len,
-                self.max_seq_len,
-                log=self.log_seq_len,
-                replay_small=self.replay_small,
-            )
-            global_train_size = self.sample_train_size(
-                self.min_train_size, self.max_train_size, global_seq_len
-            )
-
-        for gp_idx in range(num_gps):
-            actual_gp_size = min(size_per_gp, batch_size - gp_idx * size_per_gp)
-            if actual_gp_size <= 0:
-                break
-
-            if self.seq_len_per_gp:
-                gp_seq_len = self.sample_seq_len(
-                    self.min_seq_len,
-                    self.max_seq_len,
-                    log=self.log_seq_len,
-                    replay_small=self.replay_small,
-                )
-                gp_train_size = self.sample_train_size(
-                    self.min_train_size, self.max_train_size, gp_seq_len
-                )
-                gp_max_X, gp_max_W, gp_max_Z = self.adjust_max_features(
-                    gp_seq_len, self.max_dim_X, self.max_dim_W, self.max_dim_Z
-                )
-            else:
-                gp_seq_len, gp_train_size = global_seq_len, global_train_size
-                gp_max_X, gp_max_W, gp_max_Z = (
-                    self.max_dim_X,
-                    self.max_dim_W,
-                    self.max_dim_Z,
-                )
-
-            gp_max_W = max(gp_max_W, self.max_dim_U)
-            gp_max_Z = max(gp_max_Z, self.max_dim_U)
-            num_subgps_in_gp = math.ceil(actual_gp_size / size_per_subgp)
-
-            for subgp_idx in range(num_subgps_in_gp):
-                actual_subgp_size = min(
-                    size_per_subgp, actual_gp_size - subgp_idx * size_per_subgp
-                )
-                if actual_subgp_size <= 0:
-                    break
-
-                dim_U = np.random.randint(self.min_dim_U, self.max_dim_U + 1)
-                min_W_req = max(self.min_dim_W, dim_U)
-                dim_W = np.random.randint(min_W_req, max(gp_max_W, min_W_req) + 1)
-                min_Z_req = max(self.min_dim_Z, dim_U)
-                dim_Z = np.random.randint(min_Z_req, max(gp_max_Z, min_Z_req) + 1)
-                dim_X = np.random.randint(
-                    self.min_dim_X, max(self.min_dim_X, gp_max_X) + 1
-                )
-
-                for _ in range(actual_subgp_size):
-                    param_list.append(
-                        {
-                            "seq_len": gp_seq_len,
-                            "train_size": gp_train_size,
-                            "max_dim_U": self.max_dim_U,
-                            "max_dim_X": gp_max_X,
-                            "max_dim_W": gp_max_W,
-                            "max_dim_Z": gp_max_Z,
-                            "dim_U": dim_U,
-                            "dim_W": dim_W,
-                            "dim_Z": dim_Z,
-                            "dim_X": dim_X,
-                        }
-                    )
-
-        results = [self.generate_dataset(p) for p in param_list]
-        (U_l, X_l, W_l, Z_l, A_l, Ap_l, Y_l, Y0_l, Y1_l, dU_l, dX_l, dW_l, dZ_l) = zip(
-            *results
-        )
-
-        if self.seq_len_per_gp:
-            U, X, W, Z = (
-                nested_tensor(list(U_l), device=self.device),
-                nested_tensor(list(X_l), device=self.device),
-                nested_tensor(list(W_l), device=self.device),
-                nested_tensor(list(Z_l), device=self.device),
-            )
-            A, A_probs = nested_tensor(list(A_l), device=self.device), nested_tensor(
-                list(Ap_l), device=self.device
-            )
-            Y_obs, Y0, Y1 = (
-                nested_tensor(list(Y_l), device=self.device),
-                nested_tensor(list(Y0_l), device=self.device),
-                nested_tensor(list(Y1_l), device=self.device),
-            )
-        else:
-            U, X, W, Z = (
-                torch.stack(U_l),
-                torch.stack(X_l),
-                torch.stack(W_l),
-                torch.stack(Z_l),
-            )
-            A, A_probs = torch.stack(A_l), torch.stack(Ap_l)
-            Y_obs, Y0, Y1 = torch.stack(Y_l), torch.stack(Y0_l), torch.stack(Y1_l)
-
-        # The linear diagnostic has one realised potential-outcome draw rather
-        # than the modern prior's MC-CATE replicates. Mirror the standard batch
-        # contract so it can run through the trainer and disk writer, while
-        # making the diagnostic limitation explicit in the metadata.
-        MU0, MU1 = Y0, Y1
-        if self.seq_len_per_gp:
-            S2 = nested_tensor(
-                [torch.zeros_like(y0) for y0 in Y0_l], device=self.device
-            )
-        else:
-            S2 = torch.zeros_like(Y0)
-        K_eff = torch.ones(len(Y0_l), device=self.device, dtype=torch.long)
-
-        return (
-            U,
-            X,
-            W,
-            Z,
-            A,
-            A_probs,
-            Y_obs,
-            Y0,
-            Y1,
-            MU0,
-            MU1,
-            torch.stack(dU_l),
-            torch.stack(dX_l),
-            torch.stack(dW_l),
-            torch.stack(dZ_l),
-            torch.tensor(
-                [p["seq_len"] for p in param_list], device=self.device, dtype=torch.long
-            ),
-            torch.tensor(
-                [p["train_size"] for p in param_list],
-                device=self.device,
-                dtype=torch.long,
-            ),
-            S2,
-            K_eff,
-        )
-
-
-class LinearPriorDataset(IterableDataset):
-    def __init__(
-        self,
-        batch_size: int = 256,
-        batch_size_per_gp: int = 4,
-        batch_size_per_subgp: Optional[int] = None,
-        min_dim_U: int = 3,
-        max_dim_U: int = 10,
-        min_dim_W: int = 3,
-        max_dim_W: int = 10,
-        min_dim_Z: int = 3,
-        max_dim_Z: int = 10,
-        min_dim_X: int = 5,
-        max_dim_X: int = 20,
-        min_seq_len: Optional[int] = None,
-        max_seq_len: int = 1024,
-        log_seq_len: bool = False,
-        seq_len_per_gp: bool = False,
-        min_train_size: Union[int, float] = 0.1,
-        max_train_size: Union[int, float] = 0.9,
-        replay_small: bool = False,
-        device: str = "cpu",
-        **kwargs,
-    ):
-        super().__init__()
-        self.prior = LinearSCMPrior(
             batch_size=batch_size,
             batch_size_per_gp=batch_size_per_gp,
             batch_size_per_subgp=batch_size_per_subgp,
@@ -540,18 +101,319 @@ class LinearPriorDataset(IterableDataset):
             max_seq_len=max_seq_len,
             log_seq_len=log_seq_len,
             seq_len_per_gp=seq_len_per_gp,
-            min_train_size=min_train_size,
-            max_train_size=max_train_size,
+            n_query=n_query,
             replay_small=replay_small,
+            prior_type="linear",
+            mc_cate=mc_cate,
+            mc_targets_on_context=mc_targets_on_context,
+            fixed_hp=fixed_hp,
+            sampled_hp=sampled_hp,
+            n_jobs=n_jobs,
+            num_threads_per_generate=num_threads_per_generate,
             device=device,
         )
-        self.batch_size = batch_size
-        self.device = device
+
+    def hp_sampling(self) -> Dict[str, Any]:
+        """Sample only shared propensity controls for the linear diagnostic.
+
+        The default sampled config also contains MLP, tree, categorical, and
+        graph-subsampling controls.  They are intentionally ignored here so
+        the diagnostic remains continuous and canonical while retaining the
+        shared propensity behaviour.
+        """
+
+        sampled = {
+            key: value
+            for key, value in self.sampled_hp.items()
+            if key in _LINEAR_SAMPLED_HP
+        }
+        if not sampled:
+            return {}
+        return HpSamplerList(sampled, device=self.device).sample()
+
+    @staticmethod
+    def _loading(in_dim: int, out_dim: int, magnitude: float, device: str) -> Tensor:
+        """Draw a matrix whose non-zero output columns have fixed norm."""
+
+        if in_dim == 0 or out_dim == 0 or magnitude == 0:
+            return torch.zeros((in_dim, out_dim), device=device)
+        raw = torch.randn((in_dim, out_dim), device=device)
+        norms = raw.norm(dim=0, keepdim=True).clamp_min(torch.finfo(raw.dtype).eps)
+        return raw / norms * float(magnitude)
+
+    @staticmethod
+    def _normal_cdf(x: Tensor) -> Tensor:
+        return 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+    @staticmethod
+    def _param(params: Dict[str, Any], name: str) -> float:
+        return float(params.get(f"linear_{name}", LINEAR_DEFAULTS[name]))
+
+    @staticmethod
+    def _observed_indices(T_ctx: int, T_q: int, K: int, device: str) -> Tensor:
+        """Select the observed world, without consuming RNG when ``K == 1``."""
+
+        if K == 1:
+            query_idx = T_ctx + torch.arange(T_q, device=device)
+        else:
+            query_world = torch.randint(K, size=(T_q,), device=device)
+            query_idx = T_ctx + torch.arange(T_q, device=device) * K + query_world
+        if T_ctx == 0:
+            return query_idx
+        context_idx = torch.arange(T_ctx, device=device)
+        return torch.cat((context_idx, query_idx))
+
+    @staticmethod
+    def _per_row_estimate(params: Dict[str, Any]) -> int:
+        """Conservative live-element estimate for linear MC generation."""
+
+        d_u = int(params["dim_U"])
+        d_x = int(params["dim_X"])
+        d_w = int(params["dim_W"])
+        d_z = int(params["dim_Z"])
+        # X, U, W, Y0/Y1/CATE and a few transient coefficient/noise blocks.
+        return max(32, 4 * d_u + 4 * d_x + 3 * d_w + 2 * d_z + 16)
+
+    @staticmethod
+    def _diagnostics(
+        params: Dict[str, Any],
+        *,
+        attempts: int,
+        K: int,
+        A_probs: Tensor,
+        loadings: Dict[str, Tensor],
+    ) -> Dict[str, Any]:
+        return {
+            "params": _scalar_params(params),
+            "attempts": int(attempts),
+            "K_eff": int(K),
+            "propensity": {
+                "mean": float(A_probs.mean()),
+                "min": float(A_probs.min()),
+                "max": float(A_probs.max()),
+            },
+            "noise_scales": {
+                name: LinearSCMPrior._param(params, name)
+                for name in ("sigma_u", "proxy_noise_std", "sigma_a", "sigma_y")
+            },
+            "loadings": {
+                name: {
+                    "shape": tuple(int(v) for v in matrix.shape),
+                    "frobenius_norm": float(matrix.norm()),
+                }
+                for name, matrix in loadings.items()
+            },
+            "structure": {
+                "X": [],
+                "U": ["X"],
+                "W": ["U"],
+                "Z": ["U"],
+                "A": ["X", "U", "epsilon_A"],
+                "Y0": ["X", "U", "epsilon_Y"],
+                "Y1": ["Y0", "X"],
+            },
+        }
+
+    @torch.no_grad()
+    def generate_dataset(self, params: Dict[str, Any]) -> Tuple[Tensor, ...]:
+        """Generate one linear episode in the shared 18-field format."""
+
+        T = int(params["seq_len"])
+        K_requested = int(params.get("mc_cate", self.mc_cate))
+        if K_requested < 1:
+            raise ValueError("mc_cate must be >= 1")
+
+        T_ctx = (
+            0
+            if params.get("mc_targets_on_context", False)
+            else int(max(0, min(int(params.get("train_size", 0)), T - 1)))
+        )
+        T_q = T - T_ctx
+        K = self._cap_mc_samples(K_requested, T_ctx, T_q, params)
+        N = T_ctx + T_q * K
+        obs_idx = self._observed_indices(T_ctx, T_q, K, self.device)
+
+        d_u = int(params["dim_U"])
+        d_x = int(params["dim_X"])
+        d_w = int(params["dim_W"])
+        d_z = int(params["dim_Z"])
+
+        sigma_u = self._param(params, "sigma_u")
+        proxy_noise_std = self._param(params, "proxy_noise_std")
+        sigma_a = self._param(params, "sigma_a")
+        sigma_y = self._param(params, "sigma_y")
+        if sigma_u <= 0 or sigma_a <= 0 or sigma_y < 0 or proxy_noise_std < 0:
+            raise ValueError("linear Gaussian noise scales have invalid values")
+
+        max_attempts = max(1, int(params.get("completeness_max_attempts", 50)))
+        for attempt in range(1, max_attempts + 1):
+            # The covariates are drawn once per episode and expanded over query
+            # worlds. This is the fixed-X condition required by the MC-CATE.
+            X = torch.randn((T, d_x), device=self.device)
+            X_rep = torch.empty((N, d_x), device=self.device)
+            if T_ctx:
+                X_rep[:T_ctx] = X[:T_ctx]
+            X_rep[T_ctx:] = X[T_ctx:, None, :].expand(T_q, K, d_x).reshape(T_q * K, d_x)
+
+            B_U = self._loading(d_x, d_u, self._param(params, "beta_ux"), self.device)
+            B_W = self._loading(
+                d_u, d_w, self._param(params, "proxy_loading"), self.device
+            )
+            B_Z = self._loading(
+                d_u, d_z, self._param(params, "proxy_loading"), self.device
+            )
+            B_AX = self._loading(d_x, 1, self._param(params, "alpha_x"), self.device)
+            B_AU = self._loading(d_u, 1, self._param(params, "alpha_u"), self.device)
+            B_YX = self._loading(d_x, 1, self._param(params, "beta_x"), self.device)
+            B_YU = self._loading(d_u, 1, self._param(params, "beta_u"), self.device)
+            B_TAU = self._loading(d_x, 1, self._param(params, "tau_x"), self.device)
+
+            U_mc = X_rep @ B_U + sigma_u * torch.randn((N, d_u), device=self.device)
+            U_obs = U_mc[obs_idx]
+            W_obs = U_obs @ B_W + proxy_noise_std * torch.randn(
+                (T, d_w), device=self.device
+            )
+            Z_obs = U_obs @ B_Z + proxy_noise_std * torch.randn(
+                (T, d_z), device=self.device
+            )
+
+            score = (self._param(params, "alpha_0") + X @ B_AX + U_obs @ B_AU).squeeze(
+                -1
+            )
+            score = score * float(params.get("propensity_scale", 1.0)) + float(
+                params.get("propensity_shift", 0.0)
+            )
+            A_probs = self._normal_cdf(score / sigma_a).clamp(
+                min=float(params.get("propensity_epsilon", 1e-3)),
+                max=1.0 - float(params.get("propensity_epsilon", 1e-3)),
+            )
+            A = torch.bernoulli(A_probs).long()
+
+            y0_mc = (
+                self._param(params, "beta_0")
+                + X_rep @ B_YX
+                + U_mc @ B_YU
+                + sigma_y * torch.randn((N, 1), device=self.device)
+            ).squeeze(-1)
+            tau_mc = self._param(params, "tau_0") + X_rep @ B_TAU
+            tau_mc = tau_mc.squeeze(-1)
+            y1_mc = y0_mc + tau_mc
+            # The canonical SCM shares Y(0)'s noise between both arms, so its
+            # CATE is exactly tau(X). Use that structural expression for S2
+            # rather than subtracting two float32 tensors and manufacturing a
+            # tiny round-off variance.
+            cate_mc = tau_mc
+
+            pool_rows = d_x == 0
+            if T_ctx == 0:
+                MU0, MU1, S2 = _mc_reduce(y0_mc, y1_mc, cate_mc, T, K, pool_rows)
+            else:
+                nan_pad = torch.full(
+                    (T_ctx,), float("nan"), device=self.device, dtype=y0_mc.dtype
+                )
+                mu0_q, mu1_q, s2_q = _mc_reduce(
+                    y0_mc[T_ctx:],
+                    y1_mc[T_ctx:],
+                    cate_mc[T_ctx:],
+                    T_q,
+                    K,
+                    pool_rows,
+                )
+                MU0 = torch.cat((nan_pad, mu0_q))
+                MU1 = torch.cat((nan_pad, mu1_q))
+                S2 = torch.cat((nan_pad, s2_q))
+
+            Y0 = y0_mc[obs_idx]
+            Y1 = y1_mc[obs_idx]
+            Y_obs = torch.where(A == 1, Y1, Y0)
+
+            U = U_obs.unsqueeze(0)
+            X_b = X.unsqueeze(0)
+            W = W_obs.unsqueeze(0)
+            Z = Z_obs.unsqueeze(0)
+            d_U = torch.tensor([d_u], device=self.device, dtype=torch.long)
+            d_X = torch.tensor([d_x], device=self.device, dtype=torch.long)
+            d_W = torch.tensor([d_w], device=self.device, dtype=torch.long)
+            d_Z = torch.tensor([d_z], device=self.device, dtype=torch.long)
+
+            U, d_U = self.filter_constant_features_and_pad(U, d_U, params["max_dim_U"])
+            X_b, d_X = self.filter_constant_features_and_pad(
+                X_b, d_X, params["max_dim_X"]
+            )
+            W, d_W = self.filter_constant_features_and_pad(W, d_W, params["max_dim_W"])
+            Z, d_Z = self.filter_constant_features_and_pad(Z, d_Z, params["max_dim_Z"])
+
+            x_ok = bool((d_X > 0).all()) or d_x == 0
+            basic_ok = x_ok and bool((d_W > 0).all()) and bool((d_Z > 0).all())
+            if params.get("enforce_completeness_heuristic", True):
+                proximal_ok = bool(
+                    (d_U > 0).all() and (torch.minimum(d_W, d_Z) >= d_U).all()
+                )
+            else:
+                proximal_ok = True
+
+            if basic_ok and (proximal_ok or attempt == max_attempts):
+                loadings = {
+                    "B_U": B_U,
+                    "B_W": B_W,
+                    "B_Z": B_Z,
+                    "B_AX": B_AX,
+                    "B_AU": B_AU,
+                    "B_YX": B_YX,
+                    "B_YU": B_YU,
+                    "B_TAU": B_TAU,
+                }
+                diagnostics = None
+                if params.get("collect_mechanism_diagnostics", False):
+                    diagnostics = self._diagnostics(
+                        params,
+                        attempts=attempt,
+                        K=K,
+                        A_probs=A_probs,
+                        loadings=loadings,
+                    )
+                return (
+                    U.squeeze(0),
+                    X_b.squeeze(0),
+                    W.squeeze(0),
+                    Z.squeeze(0),
+                    A,
+                    A_probs,
+                    Y_obs,
+                    Y0,
+                    Y1,
+                    MU0,
+                    MU1,
+                    d_U.squeeze(0),
+                    d_X.squeeze(0),
+                    d_W.squeeze(0),
+                    d_Z.squeeze(0),
+                    S2,
+                    torch.tensor(K, device=self.device, dtype=torch.long),
+                    diagnostics,
+                )
+
+        raise RuntimeError("Unable to generate a valid linear diagnostic episode")
+
+
+# Private imports in downstream code used this name.  Keep it as an alias,
+# but do not preserve the old ratio-split implementation.
+LinearPrior = LinearSCMPrior
+
+
+class LinearPriorDataset(IterableDataset):
+    """Thin compatibility wrapper around :class:`LinearSCMPrior`."""
+
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.prior = LinearSCMPrior(**kwargs)
+        self.batch_size = self.prior.batch_size
+        self.device = self.prior.device
 
     def get_batch(self, batch_size: Optional[int] = None) -> Tuple[Tensor, ...]:
         return self.prior.get_batch(batch_size)
 
-    def __iter__(self) -> LinearPriorDataset:
+    def __iter__(self) -> "LinearPriorDataset":
         return self
 
     def __next__(self) -> Tuple[Tensor, ...]:
@@ -560,10 +422,14 @@ class LinearPriorDataset(IterableDataset):
 
     def __repr__(self) -> str:
         return (
-            f"LinearPriorDataset(\n"
+            "LinearPriorDataset(\n"
             f"  batch_size: {self.batch_size}\n"
             f"  features U: {self.prior.min_dim_U} - {self.prior.max_dim_U}\n"
+            f"  features W: {self.prior.min_dim_W} - {self.prior.max_dim_W}\n"
+            f"  features Z: {self.prior.min_dim_Z} - {self.prior.max_dim_Z}\n"
             f"  features X: {self.prior.min_dim_X} - {self.prior.max_dim_X}\n"
+            f"  n_query: {self.prior.n_query}\n"
+            f"  mc_cate: {self.prior.mc_cate}\n"
             f"  device: {self.device}\n"
-            f")"
+            ")"
         )
