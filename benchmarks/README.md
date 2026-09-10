@@ -280,9 +280,11 @@ $$
 
 The wrapped estimator fits once on the ordinary context and still owns the meaning of
 `tau_hat(x,w,z)` — for example an S-, T-, or X-learner with proxies in its design matrix. The
-wrapper's atoms are the context's aligned `(W_i, Z_i)` rows, never their Cartesian product. One
-median-scaled X-distance ordering feeds both integration rules: `knn` averages its nearest prefix
-uniformly; `kernel` applies stable Gaussian weights to that same prefix. Query-time W/Z are ignored,
+wrapper's atoms are the context's aligned `(W_i, Z_i)` rows, never their Cartesian product.
+`empirical` averages one seeded random sample of aligned context rows (without replacement), shared
+by every query, and is appropriate when the proxy law is known to be independent of X. Its optional
+`seed` defaults to zero. One median-scaled X-distance ordering feeds the conditional rules: `knn`
+averages its nearest prefix uniformly; `kernel` applies stable Gaussian weights. Query-time W/Z are ignored,
 so every output is tagged `cate(x)` and enters the headline table. This remains ordinary proxy
 adjustment: proximal completeness does **not** imply `Y(a) independent of A | X,W,Z`.
 

@@ -18,6 +18,8 @@ METHODS = {
     "proximal_2sls": ("P2SLS", "#1966B3", "-"),
     "backdoor_ols_xwz": ("OLS(X,W,Z)", "#D46B16", "-"),
     "backdoor_ols_x": ("OLS(X)", "#737373", "--"),
+    "backdoor_tabicl": ("TabICL backdoor", "#9467BD", "-."),
+    "backdoor_causalpfn": ("CausalPFN backdoor", "#E377C2", "-."),
     "oracle_ols_xu": ("Oracle OLS(X,U)", "#36835B", ":"),
 }
 
@@ -117,7 +119,7 @@ def plot_results(results_dir: Path):
         labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.945),
-        ncol=4,
+        ncol=min(len(handles), 6),
         frameon=False,
     )
     settings = len({(row["dimension"], row["level_id"]) for row in rows})

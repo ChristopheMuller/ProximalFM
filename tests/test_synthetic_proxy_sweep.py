@@ -9,11 +9,15 @@ from benchmarks.methods.proximalfm import ProximalFM_Estimator, _MODEL_CACHE
 from proximalfm._model import ProximalFM
 import analysis_synthetic_proxy_sweep_linear.run_ablation as sweep
 from analysis_synthetic_proxy_sweep_linear.run_ablation import (
+    BACKDOOR_METHODS,
+    CAUSALPFN_RUNTIME_SENTINEL,
     ORACLE,
     RESULT_FIELDS,
+    fit_backdoor_foundation_model,
     fit_method,
     fit_cache_signature,
     fit_proximalfm,
+    ensure_causalpfn_safe_runtime,
     prepare_fit_cache,
     restrict_aligned,
     restrict_context,
@@ -75,6 +79,97 @@ def test_oracle_covariates_use_the_same_context_and_query_rows():
 
     assert details["n_train"] == 11
     assert details["n_test"] == 5
+
+
+def test_backdoor_foundation_models_use_proxy_marginalizer(monkeypatch):
+    import benchmarks.methods as benchmark_methods
+
+    observed = make_observed()
+    built = []
+
+    class FakeEstimator:
+        def fit(self, X, A, Y, *, W=None, Z=None):
+            self.fit_args = (X, A, Y, W, Z)
+            return self
+
+        def predict(self, X, *, W=None, Z=None):
+            self.predict_X = X
+            return np.full(len(X), 0.25)
+
+    def fake_build(config, compute):
+        estimator = FakeEstimator()
+        built.append((config, compute, estimator))
+        return config["name"], estimator
+
+    monkeypatch.setattr(benchmark_methods, "build_method", fake_build)
+    restricted = restrict_context(observed, 9)
+
+    for method in BACKDOOR_METHODS.values():
+        predictions, details = fit_backdoor_foundation_model(
+            restricted,
+            method,
+            device="mps",
+            proxy_samples=7,
+            seed=13,
+            predict_batch_size=64,
+            tabicl_estimators=2,
+        )
+
+        config, compute, estimator = built[-1]
+        assert config["cls"] == "ProxyMarginalizer"
+        assert config["integration"] == {
+            "method": "empirical",
+            "n_points": 7,
+            "seed": 13,
+        }
+        assert config["predict_batch_size"] == 64
+        assert config["estimator"]["use_W"] is True
+        assert config["estimator"]["use_Z"] is True
+        if method == BACKDOOR_METHODS["tabicl"]:
+            assert config["estimator"]["cls"] == "S_Learner"
+            assert config["estimator"]["base"] == "tabicl"
+            assert config["estimator"]["tabicl"] == {
+                "kv_cache": True,
+                "n_estimators": 2,
+            }
+        else:
+            assert config["estimator"]["cls"] == "CausalPFN"
+        assert compute.device == "mps"
+        assert compute.execution == "inline"
+        assert len(estimator.fit_args[0]) == 9
+        assert len(estimator.predict_X) == 5
+        np.testing.assert_array_equal(predictions, np.full(5, 0.25))
+        assert details["n_train"] == 9
+        assert details["n_test"] == 5
+
+
+def test_causalpfn_relaunches_once_with_safe_thread_environment(monkeypatch):
+    relaunched = []
+    monkeypatch.delenv(CAUSALPFN_RUNTIME_SENTINEL, raising=False)
+    monkeypatch.setattr(
+        sweep.os,
+        "execvpe",
+        lambda executable, argv, environment: relaunched.append(
+            (executable, argv, environment)
+        ),
+    )
+
+    ensure_causalpfn_safe_runtime(["causalpfn"])
+
+    assert len(relaunched) == 1
+    environment = relaunched[0][2]
+    assert environment[CAUSALPFN_RUNTIME_SENTINEL] == "1"
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        assert environment[name] == "1"
+    monkeypatch.setenv(CAUSALPFN_RUNTIME_SENTINEL, "1")
+    ensure_causalpfn_safe_runtime(["causalpfn"])
+    ensure_causalpfn_safe_runtime(["tabicl"])
+    assert len(relaunched) == 1
 
 
 def test_previous_results_seed_and_then_load_the_fit_cache(tmp_path):
@@ -167,6 +262,7 @@ def test_second_run_computes_only_the_new_context_size(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sweep, "fit_method", fake_result)
     monkeypatch.setattr(sweep, "fit_proximalfm", fake_result)
+    monkeypatch.setattr(sweep, "fit_backdoor_foundation_model", fake_result)
     args = SimpleNamespace(
         data_dir=data_dir,
         output_dir=output_dir,
@@ -178,22 +274,28 @@ def test_second_run_computes_only_the_new_context_size(tmp_path, monkeypatch):
         proximalfm_device="mps",
         proximalfm_query_batch_size=512,
         proximalfm_ensemble=1,
+        backdoor_methods=["tabicl"],
+        backdoor_device="mps",
+        backdoor_proxy_samples=16,
+        backdoor_seed=0,
+        backdoor_predict_batch_size=4096,
+        tabicl_estimators=1,
         oracle=False,
         fail_fast=True,
         force=False,
     )
 
     assert sweep.run(args) == 0
-    assert len(calls) == 8
+    assert len(calls) == 10
     args.context_sizes = [8, 10, 11]
     assert sweep.run(args) == 0
 
-    assert len(calls) == 12
-    assert {context for _, context in calls[8:]} == {11}
+    assert len(calls) == 15
+    assert {context for _, context in calls[10:]} == {11}
     with (output_dir / "run_metadata.json").open() as stream:
         metadata = json.load(stream)
-    assert metadata["cache"]["hits"] == 8
-    assert metadata["cache"]["computed"] == 4
+    assert metadata["cache"]["hits"] == 10
+    assert metadata["cache"]["computed"] == 5
 
 
 def test_chunked_proximalfm_predictions_match_one_query_pass(tmp_path):

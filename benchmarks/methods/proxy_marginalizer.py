@@ -2,9 +2,10 @@
 
 The wrapped estimator owns causal-effect estimation.  This module only changes
 its prediction target: it evaluates ``tau_hat(x, w, z)`` on aligned context
-proxy atoms and integrates those predictions against a local empirical estimate
-of ``P(W, Z | X=x)``.  It is therefore useful for ordinary backdoor learners and
-any future single-output estimator with the same prediction interface.
+proxy atoms and integrates those predictions against either a local estimate of
+``P(W, Z | X=x)`` or a global empirical proxy law when independence from X is
+known. It is useful for ordinary proxy-adjustment learners and any future
+single-output estimator with the same prediction interface.
 """
 
 from __future__ import annotations
@@ -35,18 +36,19 @@ class IntegrationSpec:
     method: str
     n_points: int
     kernel_scale: float | None = None
+    seed: int | None = None
 
     @classmethod
     def from_dict(cls, value, *, where: str) -> "IntegrationSpec":
         if not isinstance(value, dict):
             raise ValueError(f"{where} must be a mapping.")
-        unknown = set(value) - {"method", "n_points", "kernel_scale"}
+        unknown = set(value) - {"method", "n_points", "kernel_scale", "seed"}
         if unknown:
             raise ValueError(f"{where} has unknown key(s) {sorted(unknown)}.")
 
         method = value.get("method")
-        if method not in {"knn", "kernel"}:
-            raise ValueError(f"{where}.method must be 'knn' or 'kernel'.")
+        if method not in {"empirical", "knn", "kernel"}:
+            raise ValueError(f"{where}.method must be 'empirical', 'knn', or 'kernel'.")
         try:
             raw_n_points = value["n_points"]
         except KeyError:
@@ -59,12 +61,29 @@ class IntegrationSpec:
         if n_points < 1:
             raise ValueError(f"{where}.n_points must be a positive integer.")
 
-        if method == "knn":
+        if method in {"empirical", "knn"}:
             if "kernel_scale" in value:
                 raise ValueError(
                     f"{where}.kernel_scale is only valid for method='kernel'."
                 )
-            return cls(method=method, n_points=n_points)
+            if method == "knn":
+                if "seed" in value:
+                    raise ValueError(
+                        f"{where}.seed is only valid for method='empirical'."
+                    )
+                return cls(method=method, n_points=n_points)
+            raw_seed = value.get("seed", 0)
+            if isinstance(raw_seed, bool) or not isinstance(
+                raw_seed, (int, np.integer)
+            ):
+                raise ValueError(f"{where}.seed must be a nonnegative integer.")
+            seed = int(raw_seed)
+            if seed < 0:
+                raise ValueError(f"{where}.seed must be a nonnegative integer.")
+            return cls(method=method, n_points=n_points, seed=seed)
+
+        if "seed" in value:
+            raise ValueError(f"{where}.seed is only valid for method='empirical'.")
 
         try:
             kernel_scale = float(value.get("kernel_scale", 1.0))
@@ -174,7 +193,11 @@ class ProxyMarginalizer(CATEEstimator):
         assert self._inv_width is not None
 
         max_points = min(
-            max(spec.n_points for spec in self._specs.values()),
+            max(
+                spec.n_points
+                for spec in self._specs.values()
+                if spec.method != "empirical"
+            ),
             len(self._X_context),
         )
         if X.shape[1] == 0:
@@ -189,6 +212,21 @@ class ProxyMarginalizer(CATEEstimator):
         indices = np.argsort(distances, axis=1, kind="stable")[:, :max_points]
         selected = np.take_along_axis(distances, indices, axis=1)
         return indices, selected
+
+    def _empirical_atoms(self, X: np.ndarray) -> np.ndarray:
+        """Return one seeded random empirical support shared by every query."""
+        assert self._X_context is not None
+        specs = [spec for spec in self._specs.values() if spec.method == "empirical"]
+        seeds = {spec.seed for spec in specs}
+        if len(seeds) != 1:
+            raise ValueError(
+                "Empirical outputs sharing one fit must use the same random seed."
+            )
+        max_points = min(max(spec.n_points for spec in specs), len(self._X_context))
+        indices = np.random.default_rng(specs[0].seed).choice(
+            len(self._X_context), size=max_points, replace=False
+        )
+        return np.broadcast_to(indices, (len(X), max_points))
 
     def _predict_atoms(self, X: np.ndarray, indices: np.ndarray) -> np.ndarray:
         assert self._W_context is not None
@@ -254,21 +292,40 @@ class ProxyMarginalizer(CATEEstimator):
         if len(X) == 0:
             return {name: np.empty(0, dtype=np.float64) for name in self._specs}
 
-        indices, distances = self._nearest_atoms(X)
-        predictions = self._predict_atoms(X, indices)
-
         results: dict[str | None, np.ndarray] = {}
-        for name, spec in self._specs.items():
-            n_points = min(spec.n_points, predictions.shape[1])
-            values = predictions[:, :n_points]
-            if spec.method == "knn":
-                results[name] = values.mean(axis=1)
-            else:
-                weights = self._kernel_weights(
-                    distances[:, :n_points], float(spec.kernel_scale)
-                )
-                results[name] = np.sum(values * weights, axis=1)
-        return results
+        empirical = {
+            name: spec
+            for name, spec in self._specs.items()
+            if spec.method == "empirical"
+        }
+        if empirical:
+            indices = self._empirical_atoms(X)
+            predictions = self._predict_atoms(X, indices)
+            for name, spec in empirical.items():
+                n_points = min(spec.n_points, predictions.shape[1])
+                results[name] = predictions[:, :n_points].mean(axis=1)
+
+        local = {
+            name: spec
+            for name, spec in self._specs.items()
+            if spec.method != "empirical"
+        }
+        if local:
+            indices, distances = self._nearest_atoms(X)
+            predictions = self._predict_atoms(X, indices)
+            for name, spec in local.items():
+                n_points = min(spec.n_points, predictions.shape[1])
+                values = predictions[:, :n_points]
+                if spec.method == "knn":
+                    results[name] = values.mean(axis=1)
+                else:
+                    weights = self._kernel_weights(
+                        distances[:, :n_points], float(spec.kernel_scale)
+                    )
+                    results[name] = np.sum(values * weights, axis=1)
+        # Grouped evaluation above avoids duplicate expanded predictions, but
+        # callers still receive variants in the configuration's declared order.
+        return {name: results[name] for name in self._specs}
 
     def diagnostics(self) -> dict[str, float]:
         return self.estimator.diagnostics()

@@ -127,6 +127,53 @@ def test_one_maximum_support_prediction_is_shared_and_pairs_stay_aligned():
     assert {tuple(row) for row in predicted_wz} <= context_wz
 
 
+def test_empirical_uses_one_seeded_random_aligned_sample_for_every_query():
+    X, W, Z, _, _ = episode()
+    wrapper, nested = fit_wrapper(
+        integration={"method": "empirical", "n_points": 3, "seed": 7}, batch_size=4
+    )
+    query = np.array([[-1.25], [0.75]])
+
+    actual = wrapper.predict(query)
+
+    indices = np.random.default_rng(7).choice(len(X), size=3, replace=False)
+    expected = 0.5 * query[:, 0] + np.mean(2.0 * W[indices, 0] + 3.0 * Z[indices, 0])
+    np.testing.assert_allclose(actual, expected)
+    predicted_wz = np.vstack(
+        [np.hstack([call[1], call[2]]) for call in nested.predict_calls]
+    ).reshape(len(query), 3, 2)
+    expected_atoms = np.hstack([W[indices], Z[indices]])
+    np.testing.assert_array_equal(
+        predicted_wz, np.broadcast_to(expected_atoms, predicted_wz.shape)
+    )
+
+
+def test_empirical_support_caps_at_context_size():
+    wrapper, nested = fit_wrapper(
+        n=4, integration={"method": "empirical", "n_points": 128}
+    )
+
+    prediction = wrapper.predict(np.array([[0.0], [1.0]]))
+
+    assert prediction.shape == (2,)
+    assert sum(len(call[0]) for call in nested.predict_calls) == 8
+
+
+def test_mixed_empirical_and_local_outputs_keep_declared_order():
+    outputs = [
+        {"name": "local", "integration": {"method": "knn", "n_points": 2}},
+        {
+            "name": "global",
+            "integration": {"method": "empirical", "n_points": 3, "seed": 4},
+        },
+    ]
+    wrapper, _ = fit_wrapper(outputs=outputs)
+
+    result = wrapper.predict_variants(np.array([[0.0]]))
+
+    assert list(result) == ["local", "global"]
+
+
 def test_fit_is_forwarded_unchanged_and_diagnostics_are_forwarded():
     X, W, Z, A, Y = episode()
     wrapper, nested = fit_wrapper(integration={"method": "knn", "n_points": 2})
@@ -204,6 +251,14 @@ def test_predict_before_fit_is_refused():
         ({"method": "knn", "n_points": 0}, "n_points"),
         ({"method": "knn", "n_points": 2.0}, "n_points"),
         ({"method": "knn", "n_points": 2, "kernel_scale": 1}, "kernel_scale"),
+        ({"method": "knn", "n_points": 2, "seed": 1}, "seed"),
+        ({"method": "kernel", "n_points": 2, "seed": 1}, "seed"),
+        ({"method": "empirical", "n_points": 2, "seed": -1}, "seed"),
+        ({"method": "empirical", "n_points": 2, "seed": 1.5}, "seed"),
+        (
+            {"method": "empirical", "n_points": 2, "kernel_scale": 1},
+            "kernel_scale",
+        ),
         ({"method": "kernel", "n_points": 2, "kernel_scale": 0}, "kernel_scale"),
         ({"method": "kernel", "n_points": 2, "extra": 1}, "unknown"),
     ],

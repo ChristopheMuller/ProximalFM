@@ -22,6 +22,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -35,8 +36,13 @@ from scipy import linalg
 METHODS = ("proximal_2sls", "backdoor_ols_x", "backdoor_ols_xwz")
 PROXIMALFM = "proximalfm"
 ORACLE = "oracle_ols_xu"
+BACKDOOR_METHODS = {
+    "tabicl": "backdoor_tabicl",
+    "causalpfn": "backdoor_causalpfn",
+}
 ILL_CONDITIONED = 1e8
 FIT_CACHE_VERSION = 1
+CAUSALPFN_RUNTIME_SENTINEL = "PROXIMALFM_CAUSALPFN_SAFE_RUNTIME"
 RESULT_FIELDS = [
     "dimension",
     "joint_r2_target",
@@ -129,6 +135,14 @@ def fit_cache_signature(args, index_path):
         "proximalfm_device": args.proximalfm_device,
         "proximalfm_query_batch_size": args.proximalfm_query_batch_size,
         "proximalfm_ensemble": args.proximalfm_ensemble,
+        "backdoor": {
+            "methods": sorted(getattr(args, "backdoor_methods", [])),
+            "device": getattr(args, "backdoor_device", None),
+            "proxy_samples": getattr(args, "backdoor_proxy_samples", None),
+            "seed": getattr(args, "backdoor_seed", None),
+            "predict_batch_size": getattr(args, "backdoor_predict_batch_size", None),
+            "tabicl_estimators": getattr(args, "tabicl_estimators", None),
+        },
     }
 
 
@@ -166,7 +180,19 @@ def previous_results_are_compatible(metadata, signature):
     """Allow the pre-cache result file to seed the first cache."""
     prior_signature = (metadata.get("cache") or {}).get("signature")
     if prior_signature is not None:
-        return prior_signature == signature
+        if prior_signature == signature:
+            return True
+        added = set(signature) - set(prior_signature)
+        old_methods = set(metadata.get("methods", []))
+        if (
+            added == {"backdoor"}
+            and not old_methods.intersection(BACKDOOR_METHODS.values())
+            and all(
+                signature.get(key) == value for key, value in prior_signature.items()
+            )
+        ):
+            return True
+        return False
     proximal = metadata.get("proximalfm") or {}
     checkpoint = signature["proximalfm_checkpoint"] or {}
     return (
@@ -488,6 +514,109 @@ def fit_proximalfm(
     }
 
 
+def fit_backdoor_foundation_model(
+    observed,
+    method,
+    *,
+    device="cpu",
+    proxy_samples=16,
+    seed=0,
+    predict_batch_size=4096,
+    tabicl_estimators=1,
+):
+    """Fit a proxy-adjusted foundation model and integrate out joint (W,Z).
+
+    The same seeded sample of aligned context proxy pairs is used for every
+    query. In this sweep W,Z are independent of X, so their unconditional
+    empirical law is the appropriate standardization distribution.
+    """
+    repo_root = str(Path(__file__).resolve().parents[1])
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from benchmarks.compute import ComputeConfig
+    from benchmarks.methods import build_method
+
+    if method not in BACKDOOR_METHODS.values():
+        raise ValueError(f"Unknown backdoor foundation model: {method}")
+    nested = {
+        "cls": "CausalPFN",
+        "use_W": True,
+        "use_Z": True,
+    }
+    if method == BACKDOOR_METHODS["tabicl"]:
+        nested = {
+            "cls": "S_Learner",
+            "base": "tabicl",
+            "use_W": True,
+            "use_Z": True,
+            "tabicl": {
+                "kv_cache": True,
+                "n_estimators": int(tabicl_estimators),
+            },
+        }
+    config = {
+        "name": method,
+        "cls": "ProxyMarginalizer",
+        "estimator": nested,
+        "integration": {
+            "method": "empirical",
+            "n_points": int(proxy_samples),
+            "seed": int(seed),
+        },
+        "predict_batch_size": int(predict_batch_size),
+    }
+    _, estimator = build_method(
+        config, ComputeConfig(device=device, execution="inline")
+    )
+    split = np.asarray(observed["split"]).reshape(-1)
+    train, query = split == 0, split == 1
+    if min(int(train.sum()), int(query.sum())) == 0:
+        raise ValueError("Backdoor methods require context and held-out query rows")
+    estimator.fit(
+        observed["X"][train],
+        observed["A"][train],
+        observed["Y"][train],
+        W=observed["W"][train],
+        Z=observed["Z"][train],
+    )
+    predictions = np.asarray(estimator.predict(observed["X"][query])).reshape(-1)
+    if len(predictions) != int(query.sum()) or not np.isfinite(predictions).all():
+        raise ValueError("Backdoor foundation model returned invalid CATE predictions")
+    return predictions, {
+        "status": "ok",
+        "n_train": int(train.sum()),
+        "n_test": int(query.sum()),
+        "prediction_max_abs": float(np.abs(predictions).max()),
+    }
+
+
+def ensure_causalpfn_safe_runtime(backdoor_methods):
+    """Restart once with a one-thread FAISS/OpenMP runtime when CausalPFN is used.
+
+    On macOS, CausalPFN's FAISS search can segfault after NumPy/PyTorch have
+    initialized their own threaded runtimes. These variables must exist at
+    process startup, so setting them in the already-running interpreter is too
+    late. TabICL does not need this path.
+    """
+    if (
+        "causalpfn" not in backdoor_methods
+        or os.environ.get(CAUSALPFN_RUNTIME_SENTINEL) == "1"
+    ):
+        return
+    environment = os.environ.copy()
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        environment[name] = "1"
+    environment["KMP_DUPLICATE_OK"] = "True"
+    environment["KMP_DUPLICATE_LIB_OK"] = "True"
+    environment[CAUSALPFN_RUNTIME_SENTINEL] = "1"
+    os.execvpe(sys.executable, [sys.executable, *sys.argv], environment)
+
+
 def score_cate(predictions, true_cate):
     true_cate = np.asarray(true_cate, float).reshape(-1)
     if predictions.shape != true_cate.shape or not np.isfinite(true_cate).all():
@@ -559,6 +688,9 @@ def run(args):
     if not rows:
         raise ValueError("No settings match the filters")
     methods = list(METHODS)
+    methods.extend(
+        BACKDOOR_METHODS[name] for name in getattr(args, "backdoor_methods", [])
+    )
     if args.proximalfm_checkpoint is not None:
         methods.append(PROXIMALFM)
     if args.oracle:
@@ -636,6 +768,16 @@ def run(args):
                                 query_batch_size=args.proximalfm_query_batch_size,
                                 ensemble=args.proximalfm_ensemble,
                             )
+                        elif method in BACKDOOR_METHODS.values():
+                            predicted, fit = fit_backdoor_foundation_model(
+                                context_observed,
+                                method,
+                                device=args.backdoor_device,
+                                proxy_samples=args.backdoor_proxy_samples,
+                                seed=args.backdoor_seed,
+                                predict_batch_size=args.backdoor_predict_batch_size,
+                                tabicl_estimators=args.tabicl_estimators,
+                            )
                         else:
                             predicted, fit = fit_method(
                                 context_observed, method, context_u
@@ -651,6 +793,7 @@ def run(args):
                         IndexError,
                         np.linalg.LinAlgError,
                         RuntimeError,
+                        ImportError,
                     ) as error:
                         result.update(
                             status="error", error=f"{type(error).__name__}: {error}"
@@ -705,6 +848,18 @@ def run(args):
                 "query_proxies": "masked by ProximalFM after context-only standardization",
             }
         ),
+        "backdoor_foundation_models": {
+            "methods": getattr(args, "backdoor_methods", []),
+            "device": getattr(args, "backdoor_device", None),
+            "proxy_integration": "seeded empirical sample of aligned context (W,Z) rows",
+            "proxy_samples": getattr(args, "backdoor_proxy_samples", None),
+            "seed": getattr(args, "backdoor_seed", None),
+            "predict_batch_size": getattr(args, "backdoor_predict_batch_size", None),
+            "tabicl_estimators": getattr(args, "tabicl_estimators", None),
+            "causalpfn_safe_runtime": "causalpfn"
+            not in getattr(args, "backdoor_methods", [])
+            or os.environ.get(CAUSALPFN_RUNTIME_SENTINEL) == "1",
+        },
         "interpretation": "Exploratory curves from one paired realization per setting; no confidence intervals or claimed optimal range. First-stage partial R2 is descriptive, not a weak-IV significance test. Oracle results, when requested, use hidden U and are diagnostic.",
     }
     (args.output_dir / "run_metadata.json").write_text(
@@ -764,6 +919,44 @@ def main():
         help="ProximalFM feature-permutation ensemble size (default: 1).",
     )
     parser.add_argument(
+        "--backdoor-methods",
+        nargs="*",
+        choices=sorted(BACKDOOR_METHODS),
+        default=["tabicl"],
+        help=(
+            "Proxy-adjusted foundation models to include; pass the flag with no "
+            "values to disable them (default: tabicl; CausalPFN is opt-in)."
+        ),
+    )
+    parser.add_argument(
+        "--backdoor-device",
+        help="Torch device for backdoor foundation models (default: ProximalFM device).",
+    )
+    parser.add_argument(
+        "--backdoor-proxy-samples",
+        type=int,
+        default=16,
+        help="Aligned context (W,Z) pairs used for empirical integration (default: 16).",
+    )
+    parser.add_argument(
+        "--backdoor-seed",
+        type=int,
+        default=0,
+        help="Seed selecting shared empirical (W,Z) pairs (default: 0).",
+    )
+    parser.add_argument(
+        "--backdoor-predict-batch-size",
+        type=int,
+        default=4096,
+        help="Expanded query rows per prediction chunk (default: 4096).",
+    )
+    parser.add_argument(
+        "--tabicl-estimators",
+        type=int,
+        default=1,
+        help="TabICL ensemble views (default: 1).",
+    )
+    parser.add_argument(
         "--oracle", action="store_true", help="Include oracle X,U OLS as a diagnostic"
     )
     parser.add_argument(
@@ -784,6 +977,17 @@ def main():
         parser.error("--proximalfm-query-batch-size must be positive")
     if args.proximalfm_ensemble < 1:
         parser.error("--proximalfm-ensemble must be positive")
+    if args.backdoor_device is None:
+        args.backdoor_device = args.proximalfm_device
+    if args.backdoor_proxy_samples < 1:
+        parser.error("--backdoor-proxy-samples must be positive")
+    if args.backdoor_seed < 0:
+        parser.error("--backdoor-seed must be nonnegative")
+    if args.backdoor_predict_batch_size < 1:
+        parser.error("--backdoor-predict-batch-size must be positive")
+    if args.tabicl_estimators < 1:
+        parser.error("--tabicl-estimators must be positive")
+    ensure_causalpfn_safe_runtime(args.backdoor_methods)
     return run(args)
 
 

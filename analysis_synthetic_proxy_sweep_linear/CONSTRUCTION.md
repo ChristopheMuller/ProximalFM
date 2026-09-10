@@ -36,12 +36,27 @@ uv run python plot_results.py
 ```
 
 Outputs are saved beside the scripts. Comparisons use linear proximal 2SLS,
-OLS(X), OLS(X,W,Z), ProximalFM, and optionally oracle OLS(X,U), scored against
-test CATE after averaging treatment contrasts over context nuisance covariates.
+OLS(X), OLS(X,W,Z), ProximalFM, proxy-adjusted TabICL (default), optionally
+proxy-adjusted CausalPFN, and optionally oracle OLS(X,U), scored against test
+CATE after averaging treatment contrasts over context nuisance covariates.
 Each figure row contains CATE RMSE curves for one context size; columns are proxy
 dimensions and curves are methods. Override the shared prefixes with
 `--context-sizes`; override the ProximalFM checkpoint with
 `--proximalfm-checkpoint`.
+TabICL and CausalPFN are fitted on `(X,W,Z)` as ordinary backdoor covariates.
+Their proxy-conditional CATE predictions are evaluated at one seeded random
+sample of aligned context `(W,Z)` rows and averaged, using the same proxy pairs
+for every query and preserving the joint proxy law. This unconditional empirical
+integration is appropriate here because the generator makes `(W,Z)` independent
+of `X`. It is a backdoor benchmark, not a proximal estimator: noisy proxies need
+not restore ignorability. The defaults use 16 proxy pairs and one TabICL view;
+configure them with `--backdoor-proxy-samples`, `--backdoor-seed`, and
+`--tabicl-estimators`. Select either implementation with
+`--backdoor-methods tabicl` or `--backdoor-methods causalpfn`; pass
+`--backdoor-methods tabicl causalpfn` for both, or pass `--backdoor-methods`
+with no values to disable both. CausalPFN is opt-in because it is substantially
+heavier and its FAISS dependency requires a one-thread OpenMP runtime on macOS;
+the runner automatically relaunches itself once with that safe environment.
 Successful dataset/method/context fits are persisted in `results/.fit_cache/`.
 Later runs reuse every overlapping context size and compute only missing cells;
 `method_results.csv` still contains exactly the sizes requested by the latest
