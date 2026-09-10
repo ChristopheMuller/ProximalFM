@@ -21,8 +21,8 @@ import numpy as np
 
 
 # Change these defaults here, or supply the corresponding command-line options.
-N_ROWS = 50_000
-N_LEVELS = 100
+N_ROWS = 5_000
+N_LEVELS = 30
 DIMENSIONS = (1, 3, 5)
 SEED = 20260908
 OUTPUT_DIRECTORY = Path(__file__).resolve().parent / "data"
