@@ -214,6 +214,58 @@ def test_prior_dataset():
     assert X.shape[0] == 2
 
 
+def test_linear_prior_type_uses_compatible_diagnostic_batch():
+    dataset = PriorDataset(
+        batch_size=2,
+        batch_size_per_gp=2,
+        min_dim_U=2,
+        max_dim_U=3,
+        min_dim_W=2,
+        max_dim_W=3,
+        min_dim_Z=2,
+        max_dim_Z=3,
+        min_dim_X=3,
+        max_dim_X=4,
+        min_seq_len=20,
+        max_seq_len=30,
+        prior_type="linear",
+        device="cpu",
+    )
+
+    batch = next(iter(dataset))
+    assert len(batch) == 19
+    (
+        _,
+        X,
+        _,
+        _,
+        _,
+        _,
+        Y_obs,
+        Y0,
+        Y1,
+        MU0,
+        MU1,
+        _,
+        _,
+        _,
+        _,
+        seq_lens,
+        train_sizes,
+        S2,
+        K_eff,
+    ) = batch
+
+    assert X.shape[0] == 2
+    assert Y_obs.shape == Y0.shape == Y1.shape == MU0.shape == MU1.shape
+    assert torch.equal(MU0, Y0)
+    assert torch.equal(MU1, Y1)
+    assert torch.count_nonzero(S2) == 0
+    assert torch.equal(K_eff, torch.ones(2, dtype=torch.long))
+    assert torch.all(train_sizes > 0)
+    assert torch.all(train_sizes < seq_lens)
+
+
 def test_save_and_load_prior_dataset_seq_len_per_gp(tmp_path):
     args = ArgsMock(
         save_dir=str(tmp_path),

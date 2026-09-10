@@ -1758,6 +1758,8 @@ class PriorDataset(IterableDataset):
          - 'mlp_scm': MLP-based non-linear mechanisms.
          - 'tree_scm': Tree-based mechanisms (e.g., Random Forest, XGBoost).
          - 'mix_scm': Probabilistic mix of the above models.
+         - 'linear': Linear-Gaussian diagnostic generator with its own
+           train-size ratio split.
 
     mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets
@@ -1817,33 +1819,56 @@ class PriorDataset(IterableDataset):
     ):
         super().__init__()
 
-        self.prior = SCMPrior(
-            batch_size=batch_size,
-            batch_size_per_gp=batch_size_per_gp,
-            batch_size_per_subgp=batch_size_per_subgp,
-            min_dim_U=min_dim_U,
-            max_dim_U=max_dim_U,
-            min_dim_W=min_dim_W,
-            max_dim_W=max_dim_W,
-            min_dim_Z=min_dim_Z,
-            max_dim_Z=max_dim_Z,
-            min_dim_X=min_dim_X,
-            max_dim_X=max_dim_X,
-            min_seq_len=min_seq_len,
-            max_seq_len=max_seq_len,
-            log_seq_len=log_seq_len,
-            seq_len_per_gp=seq_len_per_gp,
-            n_query=n_query,
-            replay_small=replay_small,
-            prior_type=prior_type,
-            mc_cate=mc_cate,
-            mc_targets_on_context=mc_targets_on_context,
-            fixed_hp=scm_fixed_hp,
-            sampled_hp=scm_sampled_hp,
-            n_jobs=n_jobs,
-            num_threads_per_generate=num_threads_per_generate,
-            device=device,
-        )
+        if prior_type == "linear":
+            from ._linear_dataset import LinearSCMPrior
+
+            self.prior = LinearSCMPrior(
+                batch_size=batch_size,
+                batch_size_per_gp=batch_size_per_gp,
+                batch_size_per_subgp=batch_size_per_subgp,
+                min_dim_U=min_dim_U,
+                max_dim_U=max_dim_U,
+                min_dim_W=min_dim_W,
+                max_dim_W=max_dim_W,
+                min_dim_Z=min_dim_Z,
+                max_dim_Z=max_dim_Z,
+                min_dim_X=min_dim_X,
+                max_dim_X=max_dim_X,
+                min_seq_len=min_seq_len,
+                max_seq_len=max_seq_len,
+                log_seq_len=log_seq_len,
+                seq_len_per_gp=seq_len_per_gp,
+                replay_small=replay_small,
+                device=device,
+            )
+        else:
+            self.prior = SCMPrior(
+                batch_size=batch_size,
+                batch_size_per_gp=batch_size_per_gp,
+                batch_size_per_subgp=batch_size_per_subgp,
+                min_dim_U=min_dim_U,
+                max_dim_U=max_dim_U,
+                min_dim_W=min_dim_W,
+                max_dim_W=max_dim_W,
+                min_dim_Z=min_dim_Z,
+                max_dim_Z=max_dim_Z,
+                min_dim_X=min_dim_X,
+                max_dim_X=max_dim_X,
+                min_seq_len=min_seq_len,
+                max_seq_len=max_seq_len,
+                log_seq_len=log_seq_len,
+                seq_len_per_gp=seq_len_per_gp,
+                n_query=n_query,
+                replay_small=replay_small,
+                prior_type=prior_type,
+                mc_cate=mc_cate,
+                mc_targets_on_context=mc_targets_on_context,
+                fixed_hp=scm_fixed_hp,
+                sampled_hp=scm_sampled_hp,
+                n_jobs=n_jobs,
+                num_threads_per_generate=num_threads_per_generate,
+                device=device,
+            )
 
         self.batch_size = batch_size
         self.batch_size_per_gp = batch_size_per_gp
@@ -1933,6 +1958,17 @@ class PriorDataset(IterableDataset):
         str
             A formatted string with dataset parameters.
         """
+        if self.prior_type == "linear":
+            split_info = (
+                f"  n_rows: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
+                "  train-size split: legacy ratio\n"
+            )
+        else:
+            split_info = (
+                f"  n_ctx: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
+                f"  context size varies across groups: {self.seq_len_per_gp}\n"
+                f"  n_query: {self.n_query} (seq_len = n_ctx + n_query)\n"
+            )
         return (
             f"PriorDataset(\n"
             f"  prior_type: {self.prior_type}\n"
@@ -1942,9 +1978,7 @@ class PriorDataset(IterableDataset):
             f"  features W: {self.min_dim_W} - {self.max_dim_W}\n"
             f"  features Z: {self.min_dim_Z} - {self.max_dim_Z}\n"
             f"  features X: {self.min_dim_X} - {self.max_dim_X}\n"
-            f"  n_ctx: {self.min_seq_len or 'None'} - {self.max_seq_len}\n"
-            f"  context size varies across groups: {self.seq_len_per_gp}\n"
-            f"  n_query: {self.n_query} (seq_len = n_ctx + n_query)\n"
+            f"{split_info}"
             f"  mc_cate: {self.mc_cate}\n"
             f"  mc_targets_on_context: {self.mc_targets_on_context}\n"
             f"  device: {self.device}\n"

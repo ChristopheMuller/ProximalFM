@@ -457,6 +457,19 @@ class LinearSCMPrior(LinearPrior):
             A, A_probs = torch.stack(A_l), torch.stack(Ap_l)
             Y_obs, Y0, Y1 = torch.stack(Y_l), torch.stack(Y0_l), torch.stack(Y1_l)
 
+        # The linear diagnostic has one realised potential-outcome draw rather
+        # than the modern prior's MC-CATE replicates. Mirror the standard batch
+        # contract so it can run through the trainer and disk writer, while
+        # making the diagnostic limitation explicit in the metadata.
+        MU0, MU1 = Y0, Y1
+        if self.seq_len_per_gp:
+            S2 = nested_tensor(
+                [torch.zeros_like(y0) for y0 in Y0_l], device=self.device
+            )
+        else:
+            S2 = torch.zeros_like(Y0)
+        K_eff = torch.ones(len(Y0_l), device=self.device, dtype=torch.long)
+
         return (
             U,
             X,
@@ -467,6 +480,8 @@ class LinearSCMPrior(LinearPrior):
             Y_obs,
             Y0,
             Y1,
+            MU0,
+            MU1,
             torch.stack(dU_l),
             torch.stack(dX_l),
             torch.stack(dW_l),
@@ -479,6 +494,8 @@ class LinearSCMPrior(LinearPrior):
                 device=self.device,
                 dtype=torch.long,
             ),
+            S2,
+            K_eff,
         )
 
 

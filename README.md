@@ -83,7 +83,7 @@ One draw per dataset (or per group of datasets sharing an SCM family); ranges fr
 
 | Parameter | Distribution / range | Controls |
 |---|---|---|
-| `prior_type` | `mlp_scm` | mechanism family: random MLPs |
+| `prior_type` | `mlp_scm` | mechanism family: random MLPs; `linear` enables the linear diagnostic |
 | `num_layers` | log-scaled trunc-normal, ≥ 2 (mean up to 6) | mechanism depth |
 | `hidden_dim` | log-scaled trunc-normal, ≥ 4 (mean up to 130) | mechanism width |
 | `mlp_activations` | random diverse set, mixable across layers | nonlinearity of mechanisms |
@@ -190,7 +190,7 @@ Rather than relying entirely on a static configuration, the orchestration enviro
 
 | Argument | Type | Description |
 |---|---|---|
-| `--prior_type` | `str` | Structural Causal Model strategy (`mlp_scm`, `tree_scm`, `mix_scm`). |
+| `--prior_type` | `str` | Structural Causal Model strategy (`mlp_scm`, `tree_scm`, `mix_scm`), or `linear` for the diagnostic generator. |
 | `--num_batches` | `int` | Number of synthetic episode files to generate/train. |
 | `--batch_size` | `int` | Meta-batch size (datasets per optimizer step). |
 | `--micro_batch_size` | `int` | Batch slice size used for gradient accumulation. |
