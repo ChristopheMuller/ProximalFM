@@ -30,17 +30,17 @@ Python 3.10+ with NumPy, SciPy and Matplotlib. The included scores reproduce
 the figure by running `plot_results.py`. To regenerate the full study:
 
 ```sh
-python generate_synthetic_sweep.py
-python run_ablation.py --oracle
-# Include an in-context checkpoint; 2,048 context rows are used from each
-# 40,000-row training split and all 10,000 held-out rows are scored in chunks.
-python run_ablation.py --proximalfm-checkpoint ../mc_run_7_NoiseAwareTuning/best_model.ckpt \\
-  --proximalfm-device mps
-python plot_results.py
+uv run python generate_synthetic_sweep.py --rows 8192 --levels 20
+uv run python run_ablation.py --context-sizes 128 512 2048 8192 --proximalfm-device mps
+uv run python plot_results.py
 ```
 
 Outputs are saved beside the scripts. Comparisons use linear proximal 2SLS,
-OLS(X), OLS(X,W,Z), optionally ProximalFM, and oracle OLS(X,U), scored against
-test CATE after averaging treatment contrasts over training nuisance covariates.
+OLS(X), OLS(X,W,Z), ProximalFM, and optionally oracle OLS(X,U), scored against
+test CATE after averaging treatment contrasts over context nuisance covariates.
+Each figure row contains CATE RMSE curves for one context size; columns are proxy
+dimensions and curves are methods. Override the shared prefixes with
+`--context-sizes`; override the ProximalFM checkpoint with
+`--proximalfm-checkpoint`.
 ProximalFM sees the observational context `(X,W,Z,A,Y)` but its held-out proxy
 values are masked internally, so it estimates CATE(X), like its training task.

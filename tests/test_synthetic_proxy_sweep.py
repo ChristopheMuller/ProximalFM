@@ -3,7 +3,13 @@ import torch
 
 from benchmarks.methods.proximalfm import ProximalFM_Estimator, _MODEL_CACHE
 from proximalfm._model import ProximalFM
-from synthetic_proxy_sweep.run_ablation import fit_proximalfm, restrict_context
+from analysis_synthetic_proxy_sweep_linear.run_ablation import (
+    ORACLE,
+    fit_method,
+    fit_proximalfm,
+    restrict_aligned,
+    restrict_context,
+)
 
 
 MODEL_KWARGS = dict(
@@ -22,7 +28,7 @@ MODEL_KWARGS = dict(
 
 def make_observed(seed=0):
     rng = np.random.default_rng(seed)
-    n_ctx, n_q = 8, 5
+    n_ctx, n_q = 12, 5
     n = n_ctx + n_q
     return {
         "row_id": np.arange(n),
@@ -39,8 +45,28 @@ def test_restrict_context_keeps_a_train_prefix_and_every_query_row():
     observed = make_observed()
     restricted = restrict_context(observed, 3)
 
-    np.testing.assert_array_equal(restricted["row_id"], [0, 1, 2, 8, 9, 10, 11, 12])
+    np.testing.assert_array_equal(restricted["row_id"], [0, 1, 2, 12, 13, 14, 15, 16])
     np.testing.assert_array_equal(restricted["split"], [0, 0, 0, 1, 1, 1, 1, 1])
+
+
+def test_linear_methods_fit_only_the_shared_context_prefix():
+    observed = make_observed()
+
+    for method in ("proximal_2sls", "backdoor_ols_x", "backdoor_ols_xwz"):
+        _, details = fit_method(restrict_context(observed, 11), method)
+        assert details["n_train"] == 11
+        assert details["n_test"] == 5
+
+
+def test_oracle_covariates_use_the_same_context_and_query_rows():
+    observed = make_observed()
+    restricted = restrict_context(observed, 11)
+    oracle_u = restrict_aligned(np.arange(17)[:, None], observed["split"], 11)
+
+    _, details = fit_method(restricted, ORACLE, oracle_u)
+
+    assert details["n_train"] == 11
+    assert details["n_test"] == 5
 
 
 def test_chunked_proximalfm_predictions_match_one_query_pass(tmp_path):
@@ -74,5 +100,5 @@ def test_chunked_proximalfm_predictions_match_one_query_pass(tmp_path):
     )
 
     np.testing.assert_allclose(chunked, unchunked, atol=1e-5)
-    assert details["n_train"] == 8
+    assert details["n_train"] == 12
     assert details["n_test"] == 5

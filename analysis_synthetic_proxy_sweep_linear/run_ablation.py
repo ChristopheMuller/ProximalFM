@@ -2,12 +2,13 @@
 """Compare proximal, backdoor, and in-context methods on the proxy-strength sweep.
 
 Usage: python run_ablation.py --data-dir data --output-dir results
-Requires NumPy and SciPy. ``--proximalfm-checkpoint`` additionally requires the
-project's PyTorch dependencies. Index paths are relative to --data-dir. Each observed
+Requires NumPy, SciPy, and the project's PyTorch dependencies for ProximalFM.
+Index paths are relative to --data-dir. Each observed
 NPZ contains X,W,Z,A,Y,row_id,split (0=train,1=test); truth contains CATE,row_id
 and optionally U for --oracle. Fits use observed training rows only. Scores use
-held-out CATE(X), averaging effect contrasts over the empirical training proxy
-distribution, which is appropriate for the generator's X-independent proxies.
+held-out CATE(X) at every requested context size, averaging effect contrasts over
+the corresponding context proxy distribution, which is appropriate for the
+generator's X-independent proxies.
 
 One paired realization per setting produces exploratory curves. The script
 reports numerical conditioning and first-stage diagnostics, with no confidence
@@ -38,6 +39,7 @@ RESULT_FIELDS = [
     "joint_r2_target",
     "level_id",
     "method",
+    "context_size",
     "status",
     "error",
     "n_train",
@@ -243,26 +245,32 @@ def fit_method(observed, method, oracle_u=None):
 def restrict_context(observed, n_context):
     """Keep a training prefix as context and retain every held-out query row.
 
-    ProximalFM consumes one context-then-query sequence.  The sweep has a much
-    larger training split than the model was trained to use as a context, so a
-    deterministic prefix makes the context size explicit while preserving the
-    held-out scoring population.  Ordering context first is required because
-    the model infers the split from the length of ``y_train``.
+    A deterministic prefix gives every method exactly the same observations at
+    a given context size while preserving the held-out scoring population.
+    Ordering context first is also required by ProximalFM, which infers the
+    split from the length of ``y_train``.
     """
     n_context = int(n_context)
     split = np.asarray(observed["split"]).reshape(-1)
     train = np.flatnonzero(split == 0)
     query = np.flatnonzero(split == 1)
     if n_context < 1:
-        raise ValueError("ProximalFM context size must be positive")
+        raise ValueError("Context size must be positive")
     if n_context > len(train):
-        raise ValueError(
-            f"ProximalFM context size {n_context} exceeds {len(train)} training rows"
-        )
+        raise ValueError(f"Context size {n_context} exceeds {len(train)} training rows")
     if not len(query):
-        raise ValueError("ProximalFM requires at least one held-out query row")
+        raise ValueError("At least one held-out query row is required")
     indices = np.concatenate([train[:n_context], query])
     return {key: np.asarray(value)[indices] for key, value in observed.items()}
+
+
+def restrict_aligned(values, split, n_context):
+    """Apply the same context-prefix/query selection to another row-aligned array."""
+    split = np.asarray(split).reshape(-1)
+    train = np.flatnonzero(split == 0)
+    query = np.flatnonzero(split == 1)
+    indices = np.concatenate([train[: int(n_context)], query])
+    return np.asarray(values)[indices]
 
 
 def fit_proximalfm(
@@ -416,45 +424,65 @@ def run(args):
                 load_error = None
             except (OSError, ValueError, KeyError, IndexError) as error:
                 load_error = error
-            for method in methods:
-                method_started = time.perf_counter()
-                result = {**common, "method": method, "status": "error", "error": ""}
+            for context_size in args.context_sizes:
                 try:
                     if load_error is not None:
                         raise load_error
-                    if method == PROXIMALFM:
-                        proximal_observed = restrict_context(
-                            observed, args.proximalfm_context_size
+                    context_observed = restrict_context(observed, context_size)
+                    context_u = (
+                        None
+                        if "U" not in truth
+                        else restrict_aligned(
+                            truth["U"], observed["split"], context_size
                         )
-                        predicted, fit = fit_proximalfm(
-                            proximal_observed,
-                            checkpoint=args.proximalfm_checkpoint,
-                            device=args.proximalfm_device,
-                            query_batch_size=args.proximalfm_query_batch_size,
-                            ensemble=args.proximalfm_ensemble,
+                    )
+                    context_error = None
+                except (OSError, ValueError, KeyError, IndexError) as error:
+                    context_error = error
+                for method in methods:
+                    method_started = time.perf_counter()
+                    result = {
+                        **common,
+                        "method": method,
+                        "context_size": context_size,
+                        "status": "error",
+                        "error": "",
+                    }
+                    try:
+                        if context_error is not None:
+                            raise context_error
+                        if method == PROXIMALFM:
+                            predicted, fit = fit_proximalfm(
+                                context_observed,
+                                checkpoint=args.proximalfm_checkpoint,
+                                device=args.proximalfm_device,
+                                query_batch_size=args.proximalfm_query_batch_size,
+                                ensemble=args.proximalfm_ensemble,
+                            )
+                        else:
+                            predicted, fit = fit_method(
+                                context_observed, method, context_u
+                            )
+                        result.update(fit)
+                        result.update(
+                            score_cate(predicted, truth["CATE"][observed["split"] == 1])
                         )
-                    else:
-                        predicted, fit = fit_method(observed, method, truth.get("U"))
-                    result.update(fit)
-                    result.update(
-                        score_cate(predicted, truth["CATE"][observed["split"] == 1])
-                    )
-                except (
-                    OSError,
-                    ValueError,
-                    KeyError,
-                    IndexError,
-                    np.linalg.LinAlgError,
-                    RuntimeError,
-                ) as error:
-                    result.update(
-                        status="error", error=f"{type(error).__name__}: {error}"
-                    )
-                    if args.fail_fast:
-                        raise
-                result["elapsed_seconds"] = time.perf_counter() - method_started
-                statuses[result["status"]] = statuses.get(result["status"], 0) + 1
-                writer.writerow(result)
+                    except (
+                        OSError,
+                        ValueError,
+                        KeyError,
+                        IndexError,
+                        np.linalg.LinAlgError,
+                        RuntimeError,
+                    ) as error:
+                        result.update(
+                            status="error", error=f"{type(error).__name__}: {error}"
+                        )
+                        if args.fail_fast:
+                            raise
+                    result["elapsed_seconds"] = time.perf_counter() - method_started
+                    statuses[result["status"]] = statuses.get(result["status"], 0) + 1
+                    writer.writerow(result)
             stream.flush()
             print(
                 f"[{number}/{len(rows)}] dimension={row['dimension']} level={row['level_id']}",
@@ -464,6 +492,7 @@ def run(args):
     metadata = {
         "settings": len(rows),
         "methods": methods,
+        "context_sizes": args.context_sizes,
         "result_status_counts": statuses,
         "index_sha256": sha256(index_path),
         "results_sha256": sha256(output),
@@ -472,7 +501,7 @@ def run(args):
         "numpy": np.__version__,
         "scipy": scipy.__version__,
         "elapsed_seconds": time.perf_counter() - started,
-        "target": "Held-out CATE(X); nuisance proxies averaged over training rows",
+        "target": "Held-out CATE(X); nuisance proxies averaged over context rows",
         "normalization": "nPEHE = sqrt(mean((predicted_CATE - CATE)^2)) / std(test_CATE)",
         "conditioning_warning_threshold": ILL_CONDITIONED,
         "proximalfm": (
@@ -481,7 +510,7 @@ def run(args):
             else {
                 "checkpoint": str(args.proximalfm_checkpoint),
                 "device": args.proximalfm_device,
-                "context_size": args.proximalfm_context_size,
+                "context_sizes": args.context_sizes,
                 "query_batch_size": args.proximalfm_query_batch_size,
                 "ensemble": args.proximalfm_ensemble,
                 "query_proxies": "masked by ProximalFM after context-only standardization",
@@ -509,13 +538,21 @@ def main():
     parser.add_argument(
         "--proximalfm-checkpoint",
         type=Path,
-        help="Checkpoint file or directory to include ProximalFM in the comparison.",
+        default=here.parent / "whole_1" / "best_model.ckpt",
+        help=(
+            "ProximalFM checkpoint file or directory "
+            "(default: ../whole_1/best_model.ckpt)."
+        ),
     )
     parser.add_argument(
-        "--proximalfm-context-size",
+        "--context-sizes",
         type=int,
-        default=2048,
-        help="Training-prefix rows used as ProximalFM context (default: 2048).",
+        nargs="+",
+        default=[128, 512, 1024, 2048],
+        help=(
+            "Training-prefix sizes used for every method "
+            "(default: 128 512 1024 2048)."
+        ),
     )
     parser.add_argument(
         "--proximalfm-query-batch-size",
@@ -541,8 +578,11 @@ def main():
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
-    if args.proximalfm_context_size < 1:
-        parser.error("--proximalfm-context-size must be positive")
+    if any(size < 1 for size in args.context_sizes):
+        parser.error("--context-sizes values must be positive")
+    if len(set(args.context_sizes)) != len(args.context_sizes):
+        parser.error("--context-sizes values must be unique")
+    args.context_sizes = sorted(args.context_sizes)
     if args.proximalfm_query_batch_size < 1:
         parser.error("--proximalfm-query-batch-size must be positive")
     if args.proximalfm_ensemble < 1:
