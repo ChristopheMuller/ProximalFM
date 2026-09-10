@@ -1,12 +1,20 @@
+import csv
+import json
+from types import SimpleNamespace
+
 import numpy as np
 import torch
 
 from benchmarks.methods.proximalfm import ProximalFM_Estimator, _MODEL_CACHE
 from proximalfm._model import ProximalFM
+import analysis_synthetic_proxy_sweep_linear.run_ablation as sweep
 from analysis_synthetic_proxy_sweep_linear.run_ablation import (
     ORACLE,
+    RESULT_FIELDS,
     fit_method,
+    fit_cache_signature,
     fit_proximalfm,
+    prepare_fit_cache,
     restrict_aligned,
     restrict_context,
 )
@@ -67,6 +75,125 @@ def test_oracle_covariates_use_the_same_context_and_query_rows():
 
     assert details["n_train"] == 11
     assert details["n_test"] == 5
+
+
+def test_previous_results_seed_and_then_load_the_fit_cache(tmp_path):
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "results"
+    data_dir.mkdir()
+    output_dir.mkdir()
+    index_path = data_dir / "index.csv"
+    index_path.write_text("dimension,level_id\n1,0\n")
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    args = SimpleNamespace(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        proximalfm_checkpoint=checkpoint,
+        proximalfm_device="mps",
+        proximalfm_query_batch_size=512,
+        proximalfm_ensemble=1,
+        force=False,
+    )
+    row = {field: "" for field in RESULT_FIELDS}
+    row.update(
+        dimension="1",
+        joint_r2_target="0.5",
+        level_id="0",
+        method="proximalfm",
+        context_size="128",
+        status="ok",
+        n_train="128",
+        n_test="5",
+        observed_path="observed.npz",
+        truth_path="truth.npz",
+    )
+    with (output_dir / "method_results.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
+        writer.writeheader()
+        writer.writerow(row)
+    signature = fit_cache_signature(args, index_path)
+    metadata = {
+        "index_sha256": signature["index_sha256"],
+        "numpy": signature["numpy"],
+        "scipy": signature["scipy"],
+        "proximalfm": {
+            "checkpoint": str(checkpoint),
+            "device": "mps",
+            "query_batch_size": 512,
+            "ensemble": 1,
+        },
+    }
+    (output_dir / "run_metadata.json").write_text(json.dumps(metadata))
+
+    seeded, cache_path, _ = prepare_fit_cache(args, index_path)
+    loaded, loaded_path, _ = prepare_fit_cache(args, index_path)
+
+    assert len(seeded) == len(loaded) == 1
+    assert loaded_path == cache_path
+    assert cache_path.is_file()
+
+
+def test_second_run_computes_only_the_new_context_size(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    output_dir = tmp_path / "results"
+    data_dir.mkdir()
+    observed = make_observed()
+    truth = {
+        "CATE": np.zeros(len(observed["split"])),
+        "row_id": observed["row_id"],
+    }
+    np.savez(data_dir / "observed.npz", **observed)
+    np.savez(data_dir / "truth.npz", **truth)
+    index_path = data_dir / "index.csv"
+    index_path.write_text(
+        "dimension,joint_r2_target,level_id,observed_path,truth_path,n_train\n"
+        "2,0.5,0,observed.npz,truth.npz,12\n"
+    )
+    checkpoint = tmp_path / "model.ckpt"
+    checkpoint.write_bytes(b"checkpoint")
+    calls = []
+
+    def fake_result(observed, method=None, *args, **kwargs):
+        split = observed["split"]
+        calls.append((method or "proximalfm", int((split == 0).sum())))
+        predictions = np.zeros(int((split == 1).sum()))
+        return predictions, {
+            "status": "ok",
+            "n_train": int((split == 0).sum()),
+            "n_test": int((split == 1).sum()),
+            "prediction_max_abs": 0.0,
+        }
+
+    monkeypatch.setattr(sweep, "fit_method", fake_result)
+    monkeypatch.setattr(sweep, "fit_proximalfm", fake_result)
+    args = SimpleNamespace(
+        data_dir=data_dir,
+        output_dir=output_dir,
+        dimensions=None,
+        levels=None,
+        limit=None,
+        context_sizes=[8, 10],
+        proximalfm_checkpoint=checkpoint,
+        proximalfm_device="mps",
+        proximalfm_query_batch_size=512,
+        proximalfm_ensemble=1,
+        oracle=False,
+        fail_fast=True,
+        force=False,
+    )
+
+    assert sweep.run(args) == 0
+    assert len(calls) == 8
+    args.context_sizes = [8, 10, 11]
+    assert sweep.run(args) == 0
+
+    assert len(calls) == 12
+    assert {context for _, context in calls[8:]} == {11}
+    with (output_dir / "run_metadata.json").open() as stream:
+        metadata = json.load(stream)
+    assert metadata["cache"]["hits"] == 8
+    assert metadata["cache"]["computed"] == 4
 
 
 def test_chunked_proximalfm_predictions_match_one_query_pass(tmp_path):

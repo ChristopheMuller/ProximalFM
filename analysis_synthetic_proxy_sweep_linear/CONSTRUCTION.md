@@ -42,5 +42,10 @@ Each figure row contains CATE RMSE curves for one context size; columns are prox
 dimensions and curves are methods. Override the shared prefixes with
 `--context-sizes`; override the ProximalFM checkpoint with
 `--proximalfm-checkpoint`.
+Successful dataset/method/context fits are persisted in `results/.fit_cache/`.
+Later runs reuse every overlapping context size and compute only missing cells;
+`method_results.csv` still contains exactly the sizes requested by the latest
+run. The cache is invalidated when the dataset, checkpoint, numerical library,
+or ProximalFM inference settings change. Pass `--force` to clear it explicitly.
 ProximalFM sees the observational context `(X,W,Z,A,Y)` but its held-out proxy
 values are masked internally, so it estimates CATE(X), like its training task.
