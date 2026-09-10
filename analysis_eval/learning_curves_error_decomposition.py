@@ -4,14 +4,24 @@ Run from the repository root::
 
     uv run python -m analysis_eval.learning_curves_error_decomposition \
       --case nonlinear_conf_high_proxy_low
+
+Standalone evaluation roots without factorial cases are also supported::
+
+    uv run python -m analysis_eval.learning_curves_error_decomposition \
+      --matrix-root data/synt_eval/synt_val_8192_v1 \
+      --name synt_data \
+      --y-max 2
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+import pandas as pd
 from matplotlib.lines import Line2D
 
 from .design import (
@@ -30,6 +40,7 @@ from .learning_curves import (
 )
 from .plotting import plt, save_figure
 from .semisynt import (
+    REQUIRED_COLUMNS,
     complete_learning_curve_methods,
     load_cate_results,
     summarize_error_decomposition,
@@ -40,8 +51,87 @@ DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves_error_decomposition"
 FIGSIZE = (FULL_PAGE_WIDTH_IN, 4.5)
 
+# A standalone evaluation set has no factorial case metadata. These labels
+# keep the existing panel drawing functions usable while making the figure's
+# interpretation explicit: the panel aggregates whatever mechanisms are in
+# the supplied set rather than claiming one confounding/proxy factorial cell.
+STANDALONE_FACTORS = ("synthetic", "mixed", "mixed")
 
-def _selected_cell(summary, case: str):
+
+def _standalone_results_path(matrix_root: Path) -> Path:
+    """Find benchmark results in a root that does not contain cases."""
+    matrix_root = Path(matrix_root)
+    candidates = (
+        matrix_root / "bench" / "results" / "results.csv",
+        matrix_root / "results" / "results.csv",
+        matrix_root / "results.csv",
+    )
+    for path in candidates:
+        if path.exists():
+            return path
+    expected = ", ".join(str(path) for path in candidates)
+    raise FileNotFoundError(
+        f"standalone benchmark results not found under {matrix_root}; "
+        f"expected one of: {expected}"
+    )
+
+
+def _load_standalone_results(matrix_root: Path) -> pd.DataFrame:
+    """Load CATE rows from a single benchmark root without case metadata."""
+    results_path = _standalone_results_path(matrix_root)
+    frame = pd.read_csv(results_path)
+    missing = REQUIRED_COLUMNS - set(frame.columns)
+    if missing:
+        raise ValueError(f"{results_path}: missing columns {sorted(missing)}")
+
+    frame = frame[
+        frame["target"].eq("cate")
+        & frame["estimand"].eq("cate(x)")
+        & ~frame["is_reference"].astype(bool)
+        & ~frame["failed"].astype(bool)
+    ].copy()
+    frame["npehe"] = pd.to_numeric(frame["npehe"], errors="coerce")
+    frame = frame[np.isfinite(frame["npehe"])]
+    if frame.empty:
+        raise ValueError(
+            f"{results_path}: no finite competitor CATE(X) scores in standalone set"
+        )
+
+    # The summary functions intentionally use the matrix schema. A standalone
+    # set gets one synthetic case and one mixed factorial cell so the same
+    # aggregation and plotting code can be reused without inventing per-row
+    # cases that are not present in the data.
+    frame["case"] = Path(matrix_root).name
+    frame["family"], frame["confounding"], frame["proxy"] = STANDALONE_FACTORS
+    return frame
+
+
+def _load_results(matrix_root: Path, *, selected_case: str | None) -> pd.DataFrame:
+    """Load either a factorial case matrix or a standalone benchmark root."""
+    matrix_root = Path(matrix_root)
+    manifest_path = matrix_root / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(manifest.get("cases"), list):
+            return load_cate_results(matrix_root, selected_case=selected_case)
+
+    if selected_case is not None:
+        raise ValueError(
+            "--case is only valid for a case matrix; omit it for a standalone "
+            "benchmark root"
+        )
+    return _load_standalone_results(matrix_root)
+
+
+def _selected_cell(summary, case: str | None):
+    if case is None:
+        cases = summary["case"].drop_duplicates().tolist()
+        if len(cases) != 1:
+            raise ValueError(
+                "a combined figure without --case requires a standalone root "
+                f"with exactly one case; found {len(cases)}"
+            )
+        case = cases[0]
     cell = summary[summary["case"].eq(case)]
     if cell.empty:
         available = sorted(str(value) for value in summary["case"].unique())
@@ -59,7 +149,7 @@ def make_combined_figure(
     decomposition_summary,
     *,
     methods: Sequence[str],
-    case: str,
+    case: str | None = None,
     y_max: float = DEFAULT_Y_MAX,
     confidence_interval: str = "false",
     xlim: Sequence[float] | None = None,
@@ -148,9 +238,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--case",
         "--config",
         dest="case",
-        required=True,
         metavar="NAME",
-        help="Matrix case to render in both panels",
+        help=(
+            "Matrix case to render in both panels; omit for a standalone "
+            "benchmark root without cases"
+        ),
     )
     parser.add_argument(
         "--methods",
@@ -177,7 +269,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    frame = load_cate_results(args.matrix_root, selected_case=args.case)
+    frame = _load_results(args.matrix_root, selected_case=args.case)
     complete, incomplete = complete_learning_curve_methods(frame)
     selected = args.methods if args.methods is not None else relevant_methods(complete)
     learning_summary = summarize_learning_curves(frame, selected)
@@ -196,8 +288,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ylim=args.ylim,
     )
     paths = save_figure(fig, args.out_dir, args.name)
+    rendered_case = args.case
+    if rendered_case is None and frame["case"].nunique() == 1:
+        rendered_case = str(frame["case"].iloc[0])
     print(
-        f"Rendered {len(methods)} methods for {args.case} over "
+        f"Rendered {len(methods)} methods for {rendered_case} over "
         f"{frame['n_ctx'].nunique()} context sizes ({args.aggregation})."
     )
     if args.methods is None and incomplete:

@@ -21,6 +21,7 @@ from analysis_eval.error_decomposition import (
 )
 from analysis_eval.learning_curves import build_parser, make_learning_curve_figure
 from analysis_eval.learning_curves_error_decomposition import (
+    _load_results,
     build_parser as build_combined_parser,
     make_combined_figure,
 )
@@ -377,7 +378,32 @@ def test_combined_figure_renders_selected_case_as_two_panels(tmp_path):
     ]
 
 
-def test_combined_cli_requires_a_case():
+def test_combined_loader_accepts_standalone_root_without_cases(tmp_path):
+    matrix = _matrix(tmp_path)
+    root = tmp_path / "standalone"
+    results_dir = root / "bench" / "results"
+    results_dir.mkdir(parents=True)
+    source = matrix / CASES[0] / "bench" / "results" / "results.csv"
+    (results_dir / "results.csv").write_text(source.read_text())
+    (root / "manifest.json").write_text(json.dumps({"name": "standalone"}))
+
+    frame = _load_results(root, selected_case=None)
+    assert frame["case"].unique().tolist() == ["standalone"]
+    assert set(frame["family"]) == {"synthetic"}
+    assert set(frame["confounding"]) == {"mixed"}
+    assert set(frame["proxy"]) == {"mixed"}
+
+    methods = ["S-OLS", "ProximalFM"]
+    fig = make_combined_figure(
+        summarize_learning_curves(frame, methods),
+        summarize_error_decomposition(frame, methods),
+        methods=methods,
+    )
+    assert len(fig.axes) == 2
+
+
+def test_combined_cli_accepts_optional_case():
+    assert build_combined_parser().parse_args([]).case is None
     args = build_combined_parser().parse_args(
         ["--case", "nonlinear_conf_high_proxy_low"]
     )
