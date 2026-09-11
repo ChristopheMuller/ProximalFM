@@ -35,7 +35,10 @@ METHOD_PROXIMALFM = "proximalfm"
 METHOD_P_RF = "p_kernel_rf"
 METHOD_TABICL = "s_tabicl_wz_mc64"
 METHODS = (METHOD_PROXIMALFM, METHOD_P_RF, METHOD_TABICL)
-CACHE_VERSION = 1
+# This is a semantic cache version, not a source-file hash. Performance-only
+# changes (parallel scheduling, thread limits, batch sizing) should not discard
+# completed fits; bump this explicitly when the fit or scoring semantics change.
+CACHE_VERSION = 2
 RESULT_FIELDS = [
     "dimension",
     "joint_r2_target",
@@ -144,7 +147,7 @@ def method_configs(
             },
         },
         METHOD_TABICL: {
-            "name": "S-TabICL-WZ-MC64",
+            "name": "S-TabICL-WZ-MC4",
             "cls": "ProxyMarginalizer",
             "estimator": {
                 "cls": "S_Learner",
@@ -153,7 +156,7 @@ def method_configs(
                 "use_Z": True,
                 "tabicl": {"kv_cache": True, "n_estimators": 1},
             },
-            "integration": {"method": "empirical", "n_points": 64, "seed": 0},
+            "integration": {"method": "empirical", "n_points": 4, "seed": 0},
             "predict_batch_size": tabicl_predict_batch_size,
         },
     }
@@ -164,21 +167,36 @@ def cache_signature(args, index_path: Path, configs: dict[str, dict]) -> dict:
     manifest = args.data_dir / "manifest.json"
     return {
         "version": CACHE_VERSION,
-        "runner_sha256": sha256(Path(__file__)),
-        "index_sha256": sha256(index_path),
-        "manifest_sha256": sha256(manifest) if manifest.is_file() else None,
-        "checksums_sha256": sha256(checksums) if checksums.is_file() else None,
-        "checkpoint": checkpoint_identity(args.checkpoint),
-        "method_configs": configs,
-        "device": args.device,
-        "query_batch_size": args.query_batch_size,
-        "versions": {
-            "python": platform.python_version(),
-            "numpy": np.__version__,
-            "scipy": scipy.__version__,
-            "sklearn": package_version("scikit-learn"),
-            "torch": package_version("torch"),
-            "tabicl": package_version("tabicl"),
+        "common": {
+            "index_sha256": sha256(index_path),
+            "manifest_sha256": sha256(manifest) if manifest.is_file() else None,
+            "checksums_sha256": sha256(checksums) if checksums.is_file() else None,
+            "versions": {
+                "python": platform.python_version(),
+                "numpy": np.__version__,
+                "scipy": scipy.__version__,
+                "sklearn": package_version("scikit-learn"),
+                "torch": package_version("torch"),
+                "tabicl": package_version("tabicl"),
+            },
+        },
+        "methods": {
+            METHOD_PROXIMALFM: {
+                "config": configs[METHOD_PROXIMALFM],
+                "checkpoint": checkpoint_identity(args.checkpoint),
+                "device": args.device,
+                "query_batch_size": args.query_batch_size,
+            },
+            # P-Kernel-RF is deliberately CPU-only and does not depend on the
+            # ProximalFM checkpoint or query batching setting.
+            METHOD_P_RF: {
+                "config": configs[METHOD_P_RF],
+                "device": "cpu",
+            },
+            METHOD_TABICL: {
+                "config": configs[METHOD_TABICL],
+                "device": args.device,
+            },
         },
     }
 
@@ -205,28 +223,93 @@ def read_cached_results(path: Path) -> dict[tuple, dict]:
         return {cache_key(row): row for row in reader if row.get("status") != "error"}
 
 
+def _write_cached_results(path: Path, results: dict[tuple, dict]) -> None:
+    """Atomically rewrite the cache after method-scoped invalidation."""
+    temporary = path.with_suffix(".tmp.csv")
+    with temporary.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
+        writer.writeheader()
+        for result in results.values():
+            writer.writerow(result)
+    temporary.replace(path)
+
+
+def _legacy_cache_methods(old: dict, current: dict) -> set[str]:
+    """Recover unchanged methods from the former run-wide cache schema.
+
+    Version 1 stored one signature for all methods. It is safe to salvage a
+    method when the data/package identity matches and that method's old config,
+    device, checkpoint, and batching settings still match. The old runner hash
+    is intentionally ignored: it represented implementation changes, including
+    harmless performance changes, rather than estimand changes.
+    """
+    if old.get("version") != 1:
+        return set()
+    old_common = {
+        key: old.get(key)
+        for key in ("index_sha256", "manifest_sha256", "checksums_sha256", "versions")
+    }
+    if old_common != current["common"]:
+        return set()
+
+    old_configs = old.get("method_configs") or {}
+    current_methods = current["methods"]
+    unchanged = set()
+    for method, current_signature in current_methods.items():
+        if old_configs.get(method) != current_signature["config"]:
+            continue
+        if method == METHOD_PROXIMALFM:
+            if old.get("checkpoint") != current_signature["checkpoint"]:
+                continue
+            if old.get("device") != current_signature["device"]:
+                continue
+            if old.get("query_batch_size") != current_signature["query_batch_size"]:
+                continue
+        elif old.get("device") != current_signature["device"]:
+            continue
+        unchanged.add(method)
+    return unchanged
+
+
 def prepare_cache(args, signature: dict) -> tuple[dict[tuple, dict], Path]:
     cache_dir = args.output_dir / ".fit_cache"
     cache_path = cache_dir / "method_results.csv"
     metadata_path = cache_dir / "metadata.json"
-    valid = False
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    retained: dict[tuple, dict] = {}
     if not args.force and cache_path.is_file() and metadata_path.is_file():
         try:
-            valid = json.loads(metadata_path.read_text()).get("signature") == signature
+            old_signature = json.loads(metadata_path.read_text()).get("signature")
         except (OSError, ValueError, TypeError):
-            pass
-    if valid:
-        return read_cached_results(cache_path), cache_path
+            old_signature = None
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    temporary = cache_path.with_suffix(".tmp.csv")
-    with temporary.open("w", newline="") as stream:
-        csv.DictWriter(stream, fieldnames=RESULT_FIELDS).writeheader()
-    temporary.replace(cache_path)
+        if old_signature == signature:
+            return read_cached_results(cache_path), cache_path
+
+        valid_methods: set[str] = set()
+        if isinstance(old_signature, dict):
+            if old_signature.get("version") == signature.get(
+                "version"
+            ) and old_signature.get("common") == signature.get("common"):
+                valid_methods = {
+                    method
+                    for method, current_method in signature["methods"].items()
+                    if old_signature.get("methods", {}).get(method) == current_method
+                }
+            else:
+                valid_methods = _legacy_cache_methods(old_signature, signature)
+        if valid_methods:
+            retained = {
+                key: result
+                for key, result in read_cached_results(cache_path).items()
+                if key[3] in valid_methods
+            }
+
+    _write_cached_results(cache_path, retained)
     temporary_metadata = metadata_path.with_suffix(".tmp.json")
     temporary_metadata.write_text(json.dumps({"signature": signature}, indent=2) + "\n")
     temporary_metadata.replace(metadata_path)
-    return {}, cache_path
+    return retained, cache_path
 
 
 def resolve_data_path(data_dir: Path, spelling: str) -> Path:

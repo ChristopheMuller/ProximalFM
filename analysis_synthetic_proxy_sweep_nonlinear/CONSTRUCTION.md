@@ -80,6 +80,7 @@ the generator reserves the final 20% for scoring. `--r2-min` and `--r2-max`
 can also narrow the generated strength grid.
 
 Generation records its complete recipe and output checksums. Successful fits are persisted
-under `results/.fit_cache/`; changing the data, transform, method configuration,
-checkpoint, numerical packages, device, or runner invalidates the cache.
-Use `--force` to recompute every requested fit.
+under `results/.fit_cache/`; the cache is scoped per method, so changing the data,
+transform, numerical packages, or a method's own configuration/checkpoint/device
+invalidates only the affected method's fits. Performance-only runner changes do not
+discard completed fits. Use `--force` to recompute every requested fit.
