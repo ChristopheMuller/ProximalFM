@@ -5,19 +5,28 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import nullcontext
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
+import multiprocessing
+import os
 from pathlib import Path
 import platform
 import re
 import sys
 import time
+from dataclasses import dataclass
 
 import numpy as np
 import scipy
 
-from benchmarks.compute import ComputeConfig, resolve_device
+from benchmarks.compute import (
+    ComputeConfig,
+    WorkerManager,
+    apply_compute,
+    resolve_device,
+)
 from benchmarks.methods import build_method
 
 
@@ -99,7 +108,9 @@ def package_version(name: str) -> str | None:
         return None
 
 
-def method_configs(checkpoint: Path) -> dict[str, dict]:
+def method_configs(
+    checkpoint: Path, *, tabicl_predict_batch_size: int = 16384
+) -> dict[str, dict]:
     return {
         METHOD_PROXIMALFM: {
             "name": "ProximalFM",
@@ -143,7 +154,7 @@ def method_configs(checkpoint: Path) -> dict[str, dict]:
                 "tabicl": {"kv_cache": True, "n_estimators": 1},
             },
             "integration": {"method": "empirical", "n_points": 64, "seed": 0},
-            "predict_batch_size": 4096,
+            "predict_batch_size": tabicl_predict_batch_size,
         },
     }
 
@@ -301,12 +312,14 @@ def fit_and_predict(
     *,
     device: str,
     query_batch_size: int,
+    compute: ComputeConfig | None = None,
 ) -> tuple[np.ndarray, dict]:
     split = np.asarray(observed["split"]).reshape(-1)
     context, query = split == 0, split == 1
-    compute = ComputeConfig(
-        device=device if method != METHOD_P_RF else "cpu", execution="inline"
-    )
+    if compute is None:
+        compute = ComputeConfig(
+            device=device if method != METHOD_P_RF else "cpu", execution="inline"
+        )
     _, estimator = build_method(config, compute)
     began = time.perf_counter()
     estimator.fit(
@@ -352,11 +365,106 @@ def fit_and_predict(
     }
 
 
+@dataclass(frozen=True)
+class FitTask:
+    """One cached fit, sent to a worker or run inline.
+
+    Paths cross the process boundary instead of arrays so that a setting is
+    loaded by the worker that will fit it. This keeps the parent small and
+    avoids pickling the same setting once per context and method.
+    """
+
+    data_dir: Path
+    row: dict
+    method: str
+    config: dict
+    context_size: int
+    compute: ComputeConfig
+    query_batch_size: int
+
+
+def _compute_for_method(method: str, args) -> ComputeConfig:
+    """Resolve the runner budget, keeping non-CPU devices process-local."""
+    device = "cpu" if method == METHOD_P_RF else args.device
+    if device != "cpu":
+        return ComputeConfig(device=device, execution="inline")
+
+    n_workers = args.workers
+    return ComputeConfig(
+        device="cpu",
+        n_workers=n_workers,
+        torch_threads=args.torch_threads,
+        blas_threads=args.blas_threads,
+        n_jobs=1,
+        execution="pool" if n_workers > 1 else "inline",
+    )
+
+
+def _blas_limits(threads: int):
+    """Limit already-loaded BLAS runtimes inside a spawned worker when possible."""
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        return nullcontext()
+    return threadpool_limits(limits=int(threads))
+
+
+def _run_fit_task(task: FitTask) -> tuple[tuple, dict]:
+    """Load, fit, score, and return one result row.
+
+    This is module-level so it can be submitted to the repository's spawn pool.
+    Errors are returned as result rows to preserve the sweep's existing behavior.
+    """
+    result = {
+        "dimension": task.row["dimension"],
+        "joint_r2_target": task.row["joint_r2_target"],
+        "level_id": task.row["level_id"],
+        "method": task.method,
+        "context_size": task.context_size,
+        "status": "error",
+        "error": "",
+        "observed_path": task.row["observed_path"],
+        "truth_path": task.row["truth_path"],
+    }
+    key = cache_key(result)
+    began = time.perf_counter()
+    try:
+        apply_compute(task.compute)
+        with _blas_limits(task.compute.blas_threads):
+            observed, truth = load_setting(task.data_dir, task.row)
+            query_truth = truth["CATE"][observed["split"] == 1]
+            restricted = restrict_context(observed, task.context_size)
+            prediction, details = fit_and_predict(
+                task.method,
+                task.config,
+                restricted,
+                device=task.compute.device,
+                query_batch_size=task.query_batch_size,
+                compute=task.compute,
+            )
+        result.update(details)
+        result.update(score_cate(prediction, query_truth))
+    except Exception as error:  # preserve the long sweep unless requested
+        result.update(status="error", error=f"{type(error).__name__}: {error}")
+    result["elapsed_seconds"] = time.perf_counter() - began
+    result["cached"] = "0"
+    return key, result
+
+
 def run(args) -> int:
     args.data_dir = Path(args.data_dir).expanduser().resolve()
     args.output_dir = Path(args.output_dir).expanduser().resolve()
     args.checkpoint = Path(args.checkpoint).expanduser().resolve()
     args.device = resolve_device(args.device, what="nonlinear sweep")
+    # Keep the small programmatic runner API used by the study tests and notebooks
+    # compatible with older SimpleNamespace callers that predate these CLI knobs.
+    if not hasattr(args, "workers"):
+        args.workers = 1
+    elif args.workers is None:
+        args.workers = max(1, min(8, (os.cpu_count() or 4) - 2))
+    args.torch_threads = getattr(args, "torch_threads", 1)
+    args.blas_threads = getattr(args, "blas_threads", 1)
+    args.tabicl_predict_batch_size = getattr(args, "tabicl_predict_batch_size", 16384)
     index_path = args.data_dir / "index.csv"
     with index_path.open(newline="") as stream:
         rows = list(csv.DictReader(stream))
@@ -378,7 +486,10 @@ def run(args) -> int:
     if not rows:
         raise ValueError("no settings match the requested filters")
 
-    configs = method_configs(args.checkpoint)
+    configs = method_configs(
+        args.checkpoint,
+        tabicl_predict_batch_size=args.tabicl_predict_batch_size,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     signature = cache_signature(args, index_path, configs)
     cached, cache_path = prepare_cache(args, signature)
@@ -387,68 +498,90 @@ def run(args) -> int:
     statuses: dict[str, int] = {}
     cache_hits = computed = 0
     started = time.perf_counter()
-    with temporary.open("w", newline="") as stream, cache_path.open(
-        "a", newline=""
-    ) as cache_stream:
-        writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
+    results_by_key: dict[tuple, dict] = {}
+    ordered_keys: list[tuple] = []
+    tasks_by_method: dict[str, list[FitTask]] = {method: [] for method in METHODS}
+
+    # Resolve cache hits in the parent, then submit only missing fits. Results are
+    # written in the original row/context/method order below, so parallel completion
+    # order never changes the final CSV.
+    for row in rows:
+        for context_size in args.context_sizes:
+            for method in METHODS:
+                base = {
+                    "dimension": row["dimension"],
+                    "joint_r2_target": row["joint_r2_target"],
+                    "level_id": row["level_id"],
+                    "method": method,
+                    "context_size": context_size,
+                    "status": "error",
+                    "error": "",
+                    "observed_path": row["observed_path"],
+                    "truth_path": row["truth_path"],
+                }
+                key = cache_key(base)
+                ordered_keys.append(key)
+                if key in cached:
+                    results_by_key[key] = {**cached[key], "cached": "1"}
+                    cache_hits += 1
+                    continue
+                compute = _compute_for_method(method, args)
+                tasks_by_method[method].append(
+                    FitTask(
+                        data_dir=args.data_dir,
+                        row=row,
+                        method=method,
+                        config=configs[method],
+                        context_size=context_size,
+                        compute=compute,
+                        query_batch_size=args.query_batch_size,
+                    )
+                )
+
+    total_work = len(ordered_keys)
+    pending = total_work - cache_hits
+    print(
+        f"Running {total_work} fits ({cache_hits} cached, {pending} pending); "
+        f"CPU workers={args.workers}, device={args.device}",
+        flush=True,
+    )
+    report_every = max(1, pending // 20) if pending else 1
+    completed = 0
+    with cache_path.open("a", newline="") as cache_stream, WorkerManager(
+        mp_context=multiprocessing.get_context("spawn")
+    ) as manager:
         cache_writer = csv.DictWriter(cache_stream, fieldnames=RESULT_FIELDS)
+        for method in METHODS:
+            tasks = tasks_by_method[method]
+            if not tasks:
+                continue
+            compute = tasks[0].compute
+            for key, result in manager.map(_run_fit_task, tasks, compute):
+                results_by_key[key] = result
+                computed += 1
+                completed += 1
+                if result["status"] != "error":
+                    cache_writer.writerow(result)
+                    cache_stream.flush()
+                if args.fail_fast and result["status"] == "error":
+                    raise RuntimeError(
+                        f"{result['method']} failed for {result['observed_path']} "
+                        f"at context_size={result['context_size']}: {result['error']}"
+                    )
+                if completed % report_every == 0 or completed == pending:
+                    print(
+                        f"[{completed}/{pending}] {method} complete; "
+                        f"cached={cache_hits}",
+                        flush=True,
+                    )
+
+    with temporary.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
         writer.writeheader()
-        for number, row in enumerate(rows, 1):
-            observed, truth = load_setting(args.data_dir, row)
-            query_truth = truth["CATE"][observed["split"] == 1]
-            for context_size in args.context_sizes:
-                restricted = restrict_context(observed, context_size)
-                for method in METHODS:
-                    result = {
-                        "dimension": row["dimension"],
-                        "joint_r2_target": row["joint_r2_target"],
-                        "level_id": row["level_id"],
-                        "method": method,
-                        "context_size": context_size,
-                        "status": "error",
-                        "error": "",
-                        "observed_path": row["observed_path"],
-                        "truth_path": row["truth_path"],
-                    }
-                    key = cache_key(result)
-                    if key in cached:
-                        result = {**cached[key], "cached": "1"}
-                        cache_hits += 1
-                    else:
-                        began = time.perf_counter()
-                        try:
-                            prediction, details = fit_and_predict(
-                                method,
-                                configs[method],
-                                restricted,
-                                device=args.device,
-                                query_batch_size=args.query_batch_size,
-                            )
-                            result.update(details)
-                            result.update(score_cate(prediction, query_truth))
-                        except (
-                            Exception
-                        ) as error:  # preserve the long sweep unless requested
-                            result.update(
-                                status="error",
-                                error=f"{type(error).__name__}: {error}",
-                            )
-                            if args.fail_fast:
-                                raise
-                        result["elapsed_seconds"] = time.perf_counter() - began
-                        result["cached"] = "0"
-                        computed += 1
-                        if result["status"] != "error":
-                            cache_writer.writerow(result)
-                            cache_stream.flush()
-                    statuses[result["status"]] = statuses.get(result["status"], 0) + 1
-                    writer.writerow(result)
-            stream.flush()
-            print(
-                f"[{number}/{len(rows)}] d={row['dimension']} level={row['level_id']} "
-                f"cached={cache_hits} computed={computed}",
-                flush=True,
-            )
+        for key in ordered_keys:
+            result = results_by_key[key]
+            statuses[result["status"]] = statuses.get(result["status"], 0) + 1
+            writer.writerow(result)
     temporary.replace(output)
     metadata = {
         "settings": len(rows),
@@ -499,7 +632,31 @@ def main() -> int:
         "--checkpoint", type=Path, default=HERE.parent / "whole_1" / "best_model.ckpt"
     )
     parser.add_argument("--device", choices=("cpu", "mps", "cuda"), default="cpu")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="CPU worker processes (default: min(8, CPU count - 2)); 1 disables pooling.",
+    )
+    parser.add_argument(
+        "--torch-threads",
+        type=int,
+        default=1,
+        help="Torch intra-process threads for pooled fits (default: 1).",
+    )
+    parser.add_argument(
+        "--blas-threads",
+        type=int,
+        default=1,
+        help="BLAS threads per worker (default: 1).",
+    )
     parser.add_argument("--query-batch-size", type=int, default=512)
+    parser.add_argument(
+        "--tabicl-predict-batch-size",
+        type=int,
+        default=16384,
+        help="Expanded query rows per TabICL prediction call (default: 16384).",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     args = parser.parse_args()
@@ -511,6 +668,14 @@ def main() -> int:
         parser.error("--context-sizes values must be unique")
     if args.query_batch_size < 1:
         parser.error("--query-batch-size must be positive")
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers must be positive")
+    if args.torch_threads < 1:
+        parser.error("--torch-threads must be positive")
+    if args.blas_threads < 1:
+        parser.error("--blas-threads must be positive")
+    if args.tabicl_predict_batch_size < 1:
+        parser.error("--tabicl-predict-batch-size must be positive")
     args.context_sizes = sorted(args.context_sizes)
     return run(args)
 
