@@ -3,87 +3,81 @@ x=0.018cm,
 y=-0.018cm,
 line cap=round,
 line join=round,
-plate outer/.style={draw=black!35, fill=black!2!white, line width=0.6pt, rounded corners=6pt},
-plate inner/.style={draw=teal!50!black!40, fill=teal!2!gray!2!white, line width=0.6pt, dashed, dash pattern=on 3pt off 2pt, rounded corners=5pt},
-plate tag outer/.style={draw=black!25, fill=white, font=\fontsize{7}{8}\selectfont\bfseries, text=black!75, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
-plate tag inner/.style={draw=teal!40, fill=white, font=\fontsize{7}{8}\selectfont\bfseries, text=teal!60!black, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
-observed/.style={draw=cyan!50!blue!80!black, fill=cyan!6!blue!3, line width=0.85pt},
-outcome/.style={draw=blue!85!black, fill=blue!5!white, line width=0.85pt},
-latent/.style={draw=red!75!black, fill=red!4!white, line width=0.85pt, dashed, dash pattern=on 2.5pt off 1.8pt},
-edge/.style={draw=black!75, line width=0.65pt, -{Latex[length=2.0mm,width=1.4mm]}},
-latent edge/.style={edge, draw=red!75!black, dashed, dash pattern=on 2.5pt off 1.8pt},
-pipeline edge/.style={draw=teal!80!black, line width=0.7pt, -{Latex[length=2.0mm,width=1.4mm]}},
-box context/.style={draw=teal!65!black, fill=teal!3!white, line width=0.75pt, rounded corners=5pt},
-box target/.style={draw=blue!75!black, fill=blue!3!white, line width=0.75pt, rounded corners=5pt},
+plate outer/.style={draw=black!35, fill=black!2!white, line width=0.6pt, rounded corners=5pt},
+plate inner/.style={draw=teal!50!black!40, fill=teal!2!gray!2!white, line width=0.6pt, dashed, dash pattern=on 3pt off 2pt, rounded corners=4pt},
+plate tag outer/.style={draw=black!25, fill=white, font=\fontsize{6.5}{7.5}\selectfont\bfseries, text=black!70, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
+plate tag inner/.style={draw=teal!40, fill=white, font=\fontsize{6.5}{7.5}\selectfont\bfseries, text=teal!65!black, rounded corners=2pt, inner xsep=4pt, inner ysep=2pt},
+observed/.style={draw=cyan!50!blue!80!black, fill=cyan!6!blue!3, line width=0.8pt},
+outcome/.style={draw=blue!85!black, fill=blue!5!white, line width=0.8pt},
+latent/.style={draw=black!70, fill=white, line width=0.8pt, dashed, dash pattern=on 2.5pt off 1.8pt},
+edge/.style={draw=black!75, line width=0.6pt, -{Latex[length=1.8mm,width=1.3mm]}},
+latent edge/.style={edge, draw=black!65, dashed, dash pattern=on 2.2pt off 1.6pt},
+pipeline edge context/.style={draw=teal!75!black, line width=0.7pt, -{Latex[length=1.8mm,width=1.3mm]}},
+pipeline edge target/.style={draw=blue!75!black, line width=0.7pt, -{Latex[length=1.8mm,width=1.3mm]}},
+box context/.style={draw=teal!65!black, fill=teal!3!white, line width=0.7pt, rounded corners=4pt},
+box target/.style={draw=blue!70!black, fill=blue!3!white, line width=0.7pt, rounded corners=4pt},
 box divider/.style={draw=black!12, line width=0.4pt},
-node label/.style={font=\large\itshape, inner sep=0pt, text=black!90},
+node label/.style={font=\normalsize\itshape, inner sep=0pt, text=black!90},
 small text/.style={font=\scriptsize, inner sep=0pt, text=black!85},
-tiny text/.style={font=\fontsize{7}{8.5}\selectfont, inner sep=0pt, text=black!65},
 output math/.style={font=\footnotesize, inner sep=0pt, text=black!90},
 every node/.style={text=black}
 ]
 
-\draw[plate outer] (18,18) rectangle (350,368);
-\draw[plate inner] (42,108) rectangle (326,340);
+\draw[plate outer] (18,12) rectangle (350,260);
+\draw[plate inner] (40,60) rectangle (328,230);
 
-\node[plate tag outer, anchor=south east] at (342,362) {units $i=1,\ldots,T$};
-\node[plate tag inner, anchor=south east] at (318,334) {replicates $k=1,\ldots,K$};
+\node[plate tag inner, anchor=south east] at (320,224) {replicates $k=1,\ldots,K$};
+\node[plate tag outer, anchor=south east] at (342,254) {units $i=1,\ldots,T$};
 
-% Edges from X
-\draw[edge] (184,84) -- (184,123); % X -> U
-\draw[edge] (171,81) -- (110,191); % X -> Z
-\draw[edge] (197,81) -- (258,191); % X -> W
-\draw[edge] (158,68) .. controls (58,105) and (54,220) .. (108,269); % X -> A
-\draw[edge] (210,68) .. controls (310,105) and (320,220) .. (266,260); % X -> Y
+\draw[edge] (184,54) -- (184,68);
+\draw[edge] (169,48) -- (109,120);
+\draw[edge] (199,48) -- (259,120);
+\draw[edge] (168,42) .. controls (54,68) and (54,144) .. (110,173);
+\draw[edge] (200,42) .. controls (314,68) and (314,144) .. (258,173);
 
-% Latent edges from U
-\draw[latent edge] (170,157) -- (115,192); % U -> Z
-\draw[latent edge] (198,157) -- (253,192); % U -> W
-\draw[latent edge] (176,160) .. controls (158,195) and (140,230) .. (130,257); % U -> A
-\draw[latent edge] (192,160) .. controls (212,195) and (230,230) .. (238,252); % U -> Y
+\draw[latent edge] (170,94) -- (112,122);
+\draw[latent edge] (198,94) -- (256,122);
+\draw[latent edge] (174,98) .. controls (156,124) and (138,150) .. (128,166);
+\draw[latent edge] (194,98) .. controls (212,124) and (230,150) .. (240,165);
 
-% Edges from proxies
-\draw[edge] (106,229) -- (121,258); % Z -> A
-\draw[edge] (262,229) -- (247,254); % W -> Y
+\draw[edge] (105,146) -- (118,167);
+\draw[edge] (263,146) -- (250,165);
 
-\draw[observed] (184,60) circle[radius=21];
-\node[node label] at (184,60) {$X$};
+\draw[observed] (184,36) circle[radius=18];
+\node[node label] at (184,36) {$X$};
 
-\draw[latent] (184,143) circle[radius=19];
-\node[node label] at (184,143) {$U$};
+\draw[latent] (184,84) circle[radius=16];
+\node[node label] at (184,84) {$U$};
 
-\draw[observed] (101,208) circle[radius=19];
-\node[node label] at (101,208) {$Z$};
+\draw[observed] (98,132) circle[radius=16];
+\node[node label] at (98,132) {$Z$};
 
-\draw[observed] (267,208) circle[radius=19];
-\node[node label] at (267,208) {$W$};
+\draw[observed] (270,132) circle[radius=16];
+\node[node label] at (270,132) {$W$};
 
-\draw[observed] (127,276) circle[radius=19];
-\node[node label] at (127,276) {$A$};
+\draw[observed] (124,182) circle[radius=16];
+\node[node label] at (124,182) {$A$};
 
-\draw[outcome] (241,276) ellipse[x radius=33,y radius=23];
-\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (241,269) {$Y(0)$};
-\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (241,284) {$Y(1)$};
-\draw[draw=blue!30, line width=0.4pt] (216,276.5) -- (266,276.5);
+\draw[outcome] (244,182) ellipse[x radius=30,y radius=18];
+\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (244,175.5) {$Y(0)$};
+\node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (244,188.5) {$Y(1)$};
+\draw[draw=blue!30, line width=0.4pt] (218,182) -- (270,182);
 
-\draw[box context] (410,48) rectangle (830,172);
-\node[font=\small\bfseries\color{teal!70!black}] at (620,66) {Observational Context};
-\draw[box divider] (430,79) -- (810,79);
-\node[output math, anchor=west] at (430,106) {Subsample: \quad $k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
-\node[output math, anchor=west] at (430,142) {Context: \quad $\mathcal{D}_T = \bigl\{(x_i,\, w_{i,k_i},\, z_{i,k_i},\, a_{i,k_i},\, y_{i,k_i})\bigr\}_{i=1}^T$};
+\draw[box context] (402,18) rectangle (826,114);
+\node[font=\small\bfseries\color{teal!70!black}] at (614,34) {Observational Context};
+\draw[box divider] (418,48) -- (810,48);
+\node[output math, anchor=west] at (420,70) {Subsample: \quad $k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
+\node[output math, anchor=west] at (420,96) {Context: \quad $\mathcal{D}_T = \bigl\{(x_i,\, w_{i,k_i},\, z_{i,k_i},\, a_{i,k_i},\, y_{i,k_i})\bigr\}_{i=1}^T$};
 
-% Pipeline: Replicates plate -> Observational Context (subsample)
-\draw[pipeline edge] (326,110) -- node[above, font=\fontsize{5.8}{6.8}\selectfont\bfseries, color=teal!70!black, inner sep=1.5pt] {subsample} (410,110);
+\draw[pipeline edge context] (328,70) -- node[above, font=\fontsize{6}{7}\selectfont\bfseries, color=teal!75!black, inner sep=1.5pt] {subsample} (402,70);
 
-\draw[box target] (410,212) rectangle (830,358);
-\node[font=\small\bfseries\color{blue!80!black}] at (620,230) {Training Targets};
-\draw[box divider] (430,243) -- (810,243);
-\node[output math, anchor=west] at (430,268) {MC mean: \quad $\widehat{\mu}_a(x_i) = \frac{1}{K}\sum_{k=1}^K y_{i,k}(a), \quad a \in \{0,1\}$};
-\node[output math, anchor=west] at (430,298) {CATE target: \quad $\widehat{Q}(x_i) = \widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)$};
-\node[output math, anchor=west] at (430,328) {MC noise: \quad $\widehat{\sigma}^2(x_i) = \operatorname{Var}_k\bigl(y_{i,k}(1) - y_{i,k}(0)\bigr)$};
+\draw[box target] (402,130) rectangle (826,254);
+\node[font=\small\bfseries\color{blue!80!black}] at (614,146) {Training Targets};
+\draw[box divider] (418,160) -- (810,160);
+\node[output math, anchor=west] at (420,182) {MC mean: \quad $\widehat{\mu}_a(x_i) = \frac{1}{K}\sum_{k=1}^K y_{i,k}(a), \quad a \in \{0,1\}$};
+\node[output math, anchor=west] at (420,208) {CATE target: \quad $\widehat{Q}(x_i) = \widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)$};
+\node[output math, anchor=west] at (420,234) {MC noise: \quad $\widehat{\sigma}^2(x_i) = \operatorname{Var}_k\bigl(y_{i,k}(1) - y_{i,k}(0)\bigr)$};
 
-% Pipeline: Potential outcomes Y -> Training Targets (integrate noise)
-\draw[pipeline edge] (274,276) .. controls (330,285) and (370,285) .. node[above, font=\fontsize{5.8}{6.8}\selectfont\bfseries, color=teal!70!black, inner sep=1.5pt, pos=0.55] {integrate noise} (410,285);
+\draw[pipeline edge target] (274,182) -- node[above, font=\fontsize{6}{7}\selectfont\bfseries, color=blue!75!black, inner sep=1.5pt] {MC average} (402,182);
 
 \end{tikzpicture}
-
