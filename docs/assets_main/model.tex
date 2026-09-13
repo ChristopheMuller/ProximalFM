@@ -36,7 +36,7 @@ every node/.style={text=black}
 % -----------------------------------------------------------------------------
 % Plate 1: Context embedding (variables as rows, units along horizontal axis)
 % -----------------------------------------------------------------------------
-\draw[plate] (18,30) rectangle (404,267);
+\draw[plate] (18,50) rectangle (404,267);
 \node[tiny text, anchor=south west] at (28,261) {\textbf{context embedding}};
 
 % ---- Feature rows: cells (+) role token ----------------------------------
@@ -149,46 +149,46 @@ every node/.style={text=black}
 \draw[edge] (308,322) -- (470,322);
 
 % -----------------------------------------------------------------------------
-% Transformer Encoder (Full vertical height: y=30 to y=370)
+% Transformer Encoder (Full vertical height: y=50 to y=370)
 % -----------------------------------------------------------------------------
-\draw[operation] (470,30) rectangle (620,370);
-\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,185) {Transformer};
-\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,210) {Encoder};
+\draw[operation] (470,50) rectangle (620,370);
+\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,198) {Transformer};
+\node[small text, font=\normalsize\bfseries\color{teal!50!black}] at (545,222) {Encoder};
 
 % -----------------------------------------------------------------------------
 % Plate 3: Single Distributional Prediction Head (Right Side)
 % -----------------------------------------------------------------------------
-\draw[plate] (676,30) rectangle (1008,370);
+\draw[plate] (676,50) rectangle (1008,370);
 \node[tiny text, anchor=south east] at (1000,362) {\textbf{prediction head}};
 
 % Transformer -> head arrow
 \draw[edge] (620,138) -- (695,138);
 
 % Single Histogram Box
-\draw[output] (695,45) rectangle (989,235);
-\node[small text] at (922,62) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
+\draw[output] (695,62) rectangle (989,235);
+\node[small text] at (922,80) {$q_\theta\bigl(\cdot \mid x^\star, \mathcal{D}_N\bigr)$};
 
 % X-axis line
 \draw[draw=black!50, line width=0.5pt] (705,220) -- (979,220);
 
 % Asymmetric / realistic histogram bars (bins b_1 to b_13)
-\draw[histbar] (708,212) rectangle (723,220);
-\draw[histbar] (727,198) rectangle (742,220);
-\draw[histbar] (746,171) rectangle (761,220);
-\draw[histbar] (765,128) rectangle (780,220);
-\draw[histbar] (784,88)  rectangle (799,220); % Primary mode
-\draw[histbar] (803,108) rectangle (818,220);
-\draw[histbar] (822,142) rectangle (837,220);
-\draw[histbar] (841,134) rectangle (856,220); % Secondary bump / asymmetry
-\draw[histbar] (860,158) rectangle (875,220);
-\draw[histbar] (879,181) rectangle (894,220);
-\draw[histbar] (898,198) rectangle (913,220);
-\draw[histbar] (917,208) rectangle (932,220);
-\draw[histbar] (936,214) rectangle (951,220);
+\draw[histbar] (708,213) rectangle (723,220);
+\draw[histbar] (727,202) rectangle (742,220);
+\draw[histbar] (746,180) rectangle (761,220);
+\draw[histbar] (765,145) rectangle (780,220);
+\draw[histbar] (784,112) rectangle (799,220); % Primary mode
+\draw[histbar] (803,128) rectangle (818,220);
+\draw[histbar] (822,156) rectangle (837,220);
+\draw[histbar] (841,149) rectangle (856,220); % Secondary bump / asymmetry
+\draw[histbar] (860,169) rectangle (875,220);
+\draw[histbar] (879,188) rectangle (894,220);
+\draw[histbar] (898,202) rectangle (913,220);
+\draw[histbar] (917,210) rectangle (932,220);
+\draw[histbar] (936,215) rectangle (951,220);
 
 % Mean line & label
-\node[tiny text, anchor=south] at (811,72) {$\hat{Q}_\theta(x^\star)$};
-\draw[meanline] (811,76) -- (811,220);
+\node[tiny text, anchor=south] at (811,96) {$\hat{Q}_\theta(x^\star)$};
+\draw[meanline] (811,100) -- (811,220);
 
 % Small uncertainty width indicator
 \draw[draw=blue!80!black, line width=0.4pt, <->] (748,206) -- (892,206);
