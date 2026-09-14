@@ -418,11 +418,13 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
     shares one cross-fit of the bridges, which is the whole expense. Each entry is
     either
 
-        { name: …, base: rf|linear|tabicl }   a final-stage CATE model, or
+        { name: …, kind: cate, base: rf|linear|tabicl }
+                                                a final-stage CATE model, or
         { name: …, kind: ate }                the proximal ATE, broadcast
 
     With no `outputs:`, the entry is a single CATE output named after the method
-    and using the top-level `base:` (default `rf`).
+    and using the top-level `base:` (default `rf`). `kind` may be omitted from a
+    CATE output for compatibility, but new configs should spell it explicitly.
     """
     from benchmarks.methods.plearner import PLearner
 
@@ -448,15 +450,19 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
     base_cv = cfg.get("base_cv") or None
     default_base = cfg.get("base", "rf")
 
-    outputs = cfg.get("outputs") or [{"name": cfg["name"], "base": default_base}]
+    configured_outputs = cfg.get("outputs")
+    if configured_outputs is not None and not isinstance(configured_outputs, list):
+        raise ValueError("PLearner.outputs must be a list of mappings.")
+    outputs = configured_outputs or [{"name": cfg["name"], "base": default_base}]
     final_models: dict[str, object] = {}
     ate_outputs: list[str] = []
-    for o in outputs:
+    for position, o in enumerate(outputs):
+        _validate_plearner_output(o, position=position)
         if o.get("kind", "cate") == "ate":
             ate_outputs.append(o["name"])
         else:
             final_models[o["name"]] = _make_base_model(
-                o.get("base", default_base),
+                o["base"],
                 tabicl_opts,
                 base_cv=base_cv,
                 n_jobs=compute.n_jobs,
@@ -472,6 +478,27 @@ def _make_plearner(cfg: dict, compute) -> CATEEstimator:
         q_clip=cfg.get("q_clip", None),
     )
     return _PLearner_Estimator(learner, ate_outputs)
+
+
+def _validate_plearner_output(output: dict, *, position: int | None = None) -> None:
+    """Validate one discriminated ``PLearner.outputs`` entry.
+
+    ``kind`` determines the estimand shape; ``base`` only determines how a
+    per-row CATE score is regressed on X. Keeping those fields orthogonal makes
+    it impossible to accidentally configure a meaningless ATE base model.
+    """
+    where = "PLearner.outputs" if position is None else f"PLearner.outputs[{position}]"
+    if not isinstance(output, dict):
+        raise ValueError(f"{where} must be a mapping.")
+    if not output.get("name"):
+        raise ValueError(f"{where}.name is required.")
+    kind = output.get("kind", "cate")
+    if kind not in {"cate", "ate"}:
+        raise ValueError(f"{where}.kind must be 'cate' or 'ate', got {kind!r}.")
+    if kind == "cate" and "base" not in output:
+        raise ValueError(f"{where} with kind: cate requires base.")
+    if kind == "ate" and "base" in output:
+        raise ValueError(f"{where} with kind: ate may not set base.")
 
 
 class _PLearner_Estimator(CATEEstimator):
@@ -1712,6 +1739,9 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
     method can match on ITE data. It is not a better estimate of tau(x); it is an
     estimate of something else.
     """
+    if cfg.get("cls") == "PLearner" and output_cfg is not None:
+        _validate_plearner_output(output_cfg)
+
     for source in (output_cfg, cfg):
         if source and source.get("estimand"):
             try:
@@ -1724,9 +1754,9 @@ def method_estimand(cfg: dict, output_cfg: Optional[dict] = None) -> str:
     # disqualifying: an oracle row is in the table as an upper bound.
     inputs = ["x"] + (["u"] if cfg.get("is_oracle", False) else [])
 
-    # PLearner spells its ATE output as `kind: ate` on the outputs entry — the
-    # same flag the factory reads to decide what to broadcast. Deriving the tag
-    # from it keeps the config from having to say the same thing twice and drift.
+    # PLearner's `kind: ate` selects the same scalar output the factory
+    # broadcasts. Deriving the tag from it keeps the config from having to say
+    # the same thing twice and drift.
     if (output_cfg or {}).get("kind") == "ate":
         return format_estimand("ate", inputs)
 

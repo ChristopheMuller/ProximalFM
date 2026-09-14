@@ -157,8 +157,8 @@ def test_prediction_cv_tunes_ridge_and_rf_from_one_plearner_fit():
             },
         },
         "outputs": [
-            {"name": "ridge", "base": "linear"},
-            {"name": "forest", "base": "rf"},
+            {"name": "ridge", "kind": "cate", "base": "linear"},
+            {"name": "forest", "kind": "cate", "base": "rf"},
         ],
     }
 
@@ -180,6 +180,32 @@ def test_prediction_cv_tunes_ridge_and_rf_from_one_plearner_fit():
     assert diagnostics["base_cv/forest/max_depth"] in {2.0, 4.0}
     assert diagnostics["base_cv/forest/mse"] >= 0.0
     assert wrapped.tuning_time() > 0.0
+
+
+def test_output_kind_defaults_to_cate_for_compatibility():
+    _, wrapped = build_method(
+        {
+            "name": "P",
+            "cls": "PLearner",
+            "outputs": [{"name": "P-RF", "base": "rf"}],
+        }
+    )
+
+    assert set(wrapped.learner.final_models) == {"P-RF"}
+    assert wrapped.ate_outputs == []
+
+
+@pytest.mark.parametrize(
+    "output, match",
+    [
+        ({"name": "bad", "kind": "cat", "base": "rf"}, "must be 'cate' or 'ate'"),
+        ({"name": "bad", "kind": "cate"}, "requires base"),
+        ({"name": "bad", "kind": "ate", "base": "rf"}, "may not set base"),
+    ],
+)
+def test_plearner_output_schema_is_strict(output, match):
+    with pytest.raises(ValueError, match=match):
+        build_method({"name": "P", "cls": "PLearner", "outputs": [output]})
 
 
 def test_base_cv_is_reused_by_s_learner():

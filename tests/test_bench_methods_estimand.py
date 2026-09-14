@@ -74,6 +74,23 @@ def test_methods_that_discard_proxies_at_predict_are_tau_x():
         assert method_estimand({"cls": cls, "use_W": True, "use_Z": True}) == "cate(x)"
 
 
+def test_plearner_output_kinds_select_the_matching_estimand():
+    cfg = {"name": "P", "cls": "PLearner"}
+    assert (
+        method_estimand(cfg, {"name": "P-RF", "kind": "cate", "base": "rf"})
+        == "cate(x)"
+    )
+    assert method_estimand(cfg, {"name": "P-ATE", "kind": "ate"}) == "ate(x)"
+
+
+def test_plearner_output_kind_is_validated_before_estimand_override():
+    with pytest.raises(ValueError, match="must be 'cate' or 'ate'"):
+        method_estimand(
+            {"name": "P", "cls": "PLearner"},
+            {"name": "bad", "kind": "not-a-kind", "base": "rf", "estimand": "cate(x)"},
+        )
+
+
 def test_is_oracle_puts_u_in_the_tag():
     """run._worker concatenates the true U onto X, so the prediction reads it."""
     cfg = {"cls": "S_Learner", "use_W": False, "use_Z": False, "is_oracle": True}
