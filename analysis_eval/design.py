@@ -309,7 +309,6 @@ RELEVANT_METHODS: tuple[str, ...] = (
     "CausalPFN",
     "CausalPFN-WZ-kNN-16",
     "ProximalFM",
-    "ProximalFM-FT-3000",
 )
 
 

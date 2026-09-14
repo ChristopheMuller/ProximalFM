@@ -282,7 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--matrix-root",
         type=Path,
         default=DEFAULT_MATRIX_ROOT,
-        help=f"Eight-case matrix root (default: {DEFAULT_MATRIX_ROOT})",
+        help=f"Matrix build root (default: {DEFAULT_MATRIX_ROOT})",
+    )
+    parser.add_argument(
+        "--dim",
+        type=int,
+        default=None,
+        help="Dimension in a per-dimension matrix (default: 5)",
     )
     parser.add_argument(
         "--out-dir",
@@ -333,7 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    frame = load_cate_results(args.matrix_root, selected_case=args.case)
+    frame = load_cate_results(
+        args.matrix_root, selected_case=args.case, dimension=args.dim
+    )
     complete, incomplete = complete_learning_curve_methods(frame)
     selected = args.methods if args.methods is not None else relevant_methods(complete)
     summary = summarize_learning_curves(frame, selected)

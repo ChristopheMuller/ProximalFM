@@ -16,7 +16,6 @@ Standalone evaluation roots without factorial cases are also supported::
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Sequence
 
@@ -42,6 +41,7 @@ from .plotting import plt, save_figure
 from .semisynt import (
     REQUIRED_COLUMNS,
     complete_learning_curve_methods,
+    is_matrix_root,
     load_cate_results,
     summarize_error_decomposition,
     summarize_learning_curves,
@@ -106,14 +106,15 @@ def _load_standalone_results(matrix_root: Path) -> pd.DataFrame:
     return frame
 
 
-def _load_results(matrix_root: Path, *, selected_case: str | None) -> pd.DataFrame:
+def _load_results(
+    matrix_root: Path, *, selected_case: str | None, dimension: int | None = None
+) -> pd.DataFrame:
     """Load either a factorial case matrix or a standalone benchmark root."""
     matrix_root = Path(matrix_root)
-    manifest_path = matrix_root / "manifest.json"
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if isinstance(manifest.get("cases"), list):
-            return load_cate_results(matrix_root, selected_case=selected_case)
+    if is_matrix_root(matrix_root):
+        return load_cate_results(
+            matrix_root, selected_case=selected_case, dimension=dimension
+        )
 
     if selected_case is not None:
         raise ValueError(
@@ -232,6 +233,12 @@ def make_combined_figure(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--matrix-root", type=Path, default=DEFAULT_MATRIX_ROOT)
+    parser.add_argument(
+        "--dim",
+        type=int,
+        default=None,
+        help="Dimension in a per-dimension matrix (default: 5)",
+    )
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     parser.add_argument("--name", default=OUTPUT_NAME)
     parser.add_argument(
@@ -269,7 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    frame = _load_results(args.matrix_root, selected_case=args.case)
+    frame = _load_results(args.matrix_root, selected_case=args.case, dimension=args.dim)
     complete, incomplete = complete_learning_curve_methods(frame)
     selected = args.methods if args.methods is not None else relevant_methods(complete)
     learning_summary = summarize_learning_curves(frame, selected)

@@ -83,6 +83,25 @@ def _matrix(tmp_path: Path) -> Path:
     return root
 
 
+def _dimension_matrix(tmp_path: Path) -> Path:
+    """Wrap a legacy fixture in the layout emitted by the current builder."""
+    legacy = _matrix(tmp_path)
+    root = tmp_path / "dimension-matrix"
+    root.mkdir()
+    dimension_root = root / "d-5"
+    legacy.rename(dimension_root)
+    (dimension_root / "manifest.json").unlink()
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "dimensions": [2, 5],
+                "cases": [{"dimension": 5, "case": case} for case in CASES],
+            }
+        )
+    )
+    return root
+
+
 def test_loader_and_summary_cover_factorial_grid(tmp_path):
     frame = load_cate_results(_matrix(tmp_path))
     assert frame["case"].nunique() == 8
@@ -106,6 +125,42 @@ def test_single_case_loader_does_not_require_other_benchmark_results(tmp_path):
     )
 
     assert set(frame["case"]) == {"nonlinear_conf_high_proxy_high"}
+
+
+def test_loader_resolves_the_default_dimension_from_a_build_root(tmp_path):
+    root = _dimension_matrix(tmp_path)
+
+    frame = load_cate_results(root)
+
+    assert frame["case"].nunique() == 8
+
+
+def test_loader_accepts_dimension_selection_and_a_direct_dimension_root(tmp_path):
+    root = _dimension_matrix(tmp_path)
+
+    explicit = load_cate_results(root, dimension=5)
+    direct = load_cate_results(root / "d-5")
+
+    pd.testing.assert_frame_equal(explicit, direct)
+
+
+def test_loader_rejects_an_unavailable_dimension_with_available_values(tmp_path):
+    root = _dimension_matrix(tmp_path)
+
+    try:
+        load_cate_results(root, dimension=3)
+    except ValueError as error:
+        assert "available dimensions: 5" in str(error)
+    else:
+        raise AssertionError("an unavailable matrix dimension must fail")
+
+
+def test_combined_loader_resolves_a_dimension_matrix(tmp_path):
+    root = _dimension_matrix(tmp_path)
+
+    frame = _load_results(root, selected_case=None, dimension=5)
+
+    assert frame["case"].nunique() == 8
 
 
 def test_figure_has_eight_axes_and_stable_styles(tmp_path):
@@ -206,6 +261,8 @@ def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     assert args.y_max == 1.2
     assert args.confidence_interval is False
     assert args.case is None
+    assert args.dim is None
+    assert build_parser().parse_args(["--dim", "5"]).dim == 5
     assert (
         build_parser().parse_args(["--config", "linear_conf_low_proxy_low"]).case
         == "linear_conf_low_proxy_low"

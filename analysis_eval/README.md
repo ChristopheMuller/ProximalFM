@@ -39,14 +39,14 @@ printing an incomplete row.
 uv run python -m analysis_eval.learning_curves
 ```
 
-This reads the completed eight-case matrix at
+This reads dimension 5 of the completed eight-case matrix at
 `data/semisynt_eval/semisynt_val_v1`, validates the full linearity × confounding
 × proxy-reliability factorial, and writes
 `analysis_eval/results/semisynt_learning_curves.{pdf,png}`. Curves show median
 CATE nPEHE over episodes at each context size; optionally, faint bands show
 episode interquartile ranges. By default it plots the compact, data-independent
 `design.RELEVANT_METHODS` subset; `--methods` provides a figure-specific
-override. Use `--matrix-root`, `--out-dir`, `--y-max`, and
+override. Use `--matrix-root`, `--dim`, `--out-dir`, `--y-max`, and
 `--confidence-interval {false,iqr,std,ste}` to override the other defaults. The
 `std` and `ste` bands are centered on the median curve and use one standard
 deviation or one standard error, respectively.
@@ -70,6 +70,20 @@ The case names follow
 the same selector through `make_learning_curve_figure(..., case=...)`. In
 single-case mode, only the selected case needs a completed benchmark result;
 the default full-grid mode still requires all eight cases.
+
+The semi-synthetic builder stores each dimension below `d-<dimension>` and
+keeps the matrix manifest at its parent. Pass that parent as `--matrix-root`;
+`--dim 5` is the default for this layout:
+
+```bash
+uv run python -m analysis_eval.learning_curves \
+  --matrix-root data/semisynt_eval/semisynt_val_v1 \
+  --dim 5
+```
+
+The error-decomposition, combined, and speed/rank commands use the same
+dimension selection. Direct `d-<dimension>` paths remain accepted for
+backward-compatible one-dimension invocations.
 
 ## Semisynthetic error decomposition
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -53,8 +54,97 @@ def _case_factors(case: str) -> tuple[str, str, str]:
     return family, confounding, proxy
 
 
+def _read_cases(manifest_path: Path) -> list[dict]:
+    """Read the case records from one matrix manifest."""
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    cases = manifest.get("cases")
+    if not isinstance(cases, list):
+        raise ValueError(f"{manifest_path}: 'cases' must be a list")
+    if not all(isinstance(item, dict) for item in cases):
+        raise ValueError(f"{manifest_path}: every item in 'cases' must be an object")
+    return cases
+
+
+def _dimension_from_root(path: Path) -> int | None:
+    """Return the dimension encoded by a ``d-N`` directory name, if any."""
+    match = re.fullmatch(r"d-(\d+)", path.name)
+    return int(match.group(1)) if match else None
+
+
+def _matrix_cases(
+    matrix_root: Path, *, dimension: int | None
+) -> tuple[Path, list[dict], int | None]:
+    """Resolve legacy and per-dimension matrix layouts to one cell root."""
+    matrix_root = Path(matrix_root)
+    manifest_path = matrix_root / "manifest.json"
+
+    # A dimension subdirectory deliberately has no manifest of its own.  Let
+    # callers keep using it directly, while reading its declaration from the
+    # build-root manifest.
+    if not manifest_path.exists():
+        root_dimension = _dimension_from_root(matrix_root)
+        parent_manifest = matrix_root.parent / "manifest.json"
+        if root_dimension is not None and parent_manifest.exists():
+            if dimension is not None and dimension != root_dimension:
+                raise ValueError(
+                    f"--dim {dimension} conflicts with dimension root {matrix_root}"
+                )
+            return _matrix_cases(matrix_root.parent, dimension=root_dimension)
+        raise FileNotFoundError(f"matrix manifest not found: {manifest_path}")
+
+    cases = _read_cases(manifest_path)
+    has_dimension = ["dimension" in item for item in cases]
+    if any(has_dimension) and not all(has_dimension):
+        raise ValueError(
+            f"{manifest_path}: matrix cases inconsistently declare dimensions"
+        )
+    if not any(has_dimension):
+        if dimension is not None:
+            raise ValueError(
+                f"{manifest_path}: --dim is only valid for a per-dimension matrix"
+            )
+        return matrix_root, cases, None
+
+    values = [item["dimension"] for item in cases]
+    if not values or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in values
+    ):
+        raise ValueError(f"{manifest_path}: case dimensions must be positive integers")
+    dimensions = set(values)
+    selected_dimension = 5 if dimension is None else dimension
+    if selected_dimension not in dimensions:
+        available = ", ".join(str(value) for value in sorted(dimensions))
+        raise ValueError(
+            f"dimension {selected_dimension} is not in {manifest_path}; "
+            f"available dimensions: {available}"
+        )
+    cell_root = matrix_root / f"d-{selected_dimension}"
+    if not cell_root.is_dir():
+        raise FileNotFoundError(
+            f"dimension directory missing for dimension {selected_dimension}: {cell_root}"
+        )
+    return (
+        cell_root,
+        [item for item in cases if item["dimension"] == selected_dimension],
+        selected_dimension,
+    )
+
+
+def is_matrix_root(matrix_root: Path) -> bool:
+    """Whether ``matrix_root`` names a legacy or per-dimension case matrix."""
+    try:
+        _matrix_cases(matrix_root, dimension=None)
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
 def discover_cells(
-    matrix_root: Path, *, selected_case: str | None = None
+    matrix_root: Path,
+    *,
+    selected_case: str | None = None,
+    dimension: int | None = None,
 ) -> list[MatrixCell]:
     """Discover the full matrix or one selected case from its manifest.
 
@@ -62,21 +152,16 @@ def discover_cells(
     only needs its own benchmark results, which allows partially completed
     benchmark roots to be used for single-case plots.
     """
-    matrix_root = Path(matrix_root)
-    manifest_path = matrix_root / "manifest.json"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"matrix manifest not found: {manifest_path}")
+    matrix_root, cases, _ = _matrix_cases(matrix_root, dimension=dimension)
     if selected_case is not None:
         _case_factors(selected_case)
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    cases = manifest.get("cases")
-    if not isinstance(cases, list):
-        raise ValueError(f"{manifest_path}: 'cases' must be a list")
 
     cells = []
     seen = set()
     for item in cases:
         case = item.get("case")
+        if not isinstance(case, str):
+            raise ValueError("matrix case names must be strings")
         family, confounding, proxy = _case_factors(case)
         factors = (family, confounding, proxy)
         if factors in seen:
@@ -100,7 +185,9 @@ def discover_cells(
                 f"extra={sorted(extra)}"
             )
     elif not cells:
-        raise ValueError(f"case {selected_case!r} is not declared in {manifest_path}")
+        raise ValueError(
+            f"case {selected_case!r} is not declared in the matrix manifest"
+        )
     order = {factors: i for i, factors in enumerate(CELL_ORDER)}
     return sorted(
         cells,
@@ -109,11 +196,16 @@ def discover_cells(
 
 
 def load_cate_results(
-    matrix_root: Path, *, selected_case: str | None = None
+    matrix_root: Path,
+    *,
+    selected_case: str | None = None,
+    dimension: int | None = None,
 ) -> pd.DataFrame:
     """Load successful competitor CATE(X) rows from all or one matrix cell."""
     frames = []
-    for cell in discover_cells(matrix_root, selected_case=selected_case):
+    for cell in discover_cells(
+        matrix_root, selected_case=selected_case, dimension=dimension
+    ):
         frame = pd.read_csv(cell.results_path)
         missing = REQUIRED_COLUMNS - set(frame.columns)
         if missing:
