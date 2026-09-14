@@ -381,7 +381,7 @@ def apply_style() -> None:
 
 def learning_curve_figsize() -> tuple[float, float]:
     """Final canvas size for the eight-panel landscape figure."""
-    return FULL_PAGE_WIDTH_IN, 5.25
+    return FULL_PAGE_WIDTH_IN, 4.55
 
 
 def decomposition_figsize() -> tuple[float, float]:

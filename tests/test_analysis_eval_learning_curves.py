@@ -8,6 +8,7 @@ import pandas as pd
 
 from analysis_eval.design import (
     COLORS,
+    FULL_PAGE_WIDTH_IN,
     MARGINALIZED_LINESTYLE,
     METHOD_STYLES,
     RELEVANT_METHODS,
@@ -113,6 +114,9 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     fig = make_learning_curve_figure(summary, methods=methods)
     assert len(fig.axes) == 8
     assert fig.axes[0].get_ylim() == (0.0, 1.2)
+    assert fig.axes[0].get_title() == "Low confounding\nLow proxy reliability"
+    assert all(not ax.get_title() for ax in fig.axes[4:])
+    assert fig.get_size_inches().tolist() == [FULL_PAGE_WIDTH_IN, 4.55]
     assert not fig.axes[0].collections
     assert method_style("ProximalFM").color == "#D55E00"
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth

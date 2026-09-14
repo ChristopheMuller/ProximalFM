@@ -56,6 +56,7 @@ def draw_learning_curve_panel(
     proxy: str,
     y_max: float = DEFAULT_Y_MAX,
     confidence_interval: str = "false",
+    show_title: bool = True,
 ) -> None:
     """Draw one learning-curve cell on an existing axis."""
     for method in methods:
@@ -95,10 +96,11 @@ def draw_learning_curve_panel(
     ax.set_xticks(contexts)
     ax.xaxis.set_major_formatter(ScalarFormatter())
     ax.minorticks_off()
-    ax.set_title(
-        f"{confounding.capitalize()} confounding\n"
-        f"{proxy.capitalize()} proxy reliability"
-    )
+    if show_title:
+        ax.set_title(
+            f"{confounding.capitalize()} confounding\n"
+            f"{proxy.capitalize()} proxy reliability"
+        )
     ax.set_ylim(0, y_max)
     ax.set_ylabel(f"{family.capitalize()}\nCATE nPEHE")
     ax.set_xlabel("Context size")
@@ -242,6 +244,9 @@ def make_learning_curve_figure(
             proxy=proxy,
             y_max=y_max,
             confidence_interval=confidence_interval,
+            # Each column has the same confounding/proxy combination in both
+            # rows, so repeating these titles below adds height but no context.
+            show_title=case is not None or row == 0,
         )
         if case is None and col != 0:
             ax.set_ylabel("")
