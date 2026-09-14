@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
@@ -321,8 +321,14 @@ def load_csv(
         selected = list(dict.fromkeys([*x_names, *u_names]))
     else:
         selected = _stable_order(encoded, split_seed)[:n_required]
-        u_names = selected[:n_features_u]
-        x_names = selected[n_features_u:]
+        ordered = _stable_order(encoded, split_seed)
+        u_names = ordered[::2][:n_features_u]
+        x_names = ordered[1::2][:n_features_x]
+        if len(u_names) != n_features_u or len(x_names) != n_features_x:
+            raise ValueError(
+                f"{path.name}: insufficient columns for stable alternating X/U selection"
+            )
+        selected = [*u_names, *x_names]
 
     calibration_values = torch.stack([encoded[c][0] for c in selected], dim=1)
     evaluation_values = torch.stack([encoded[c][1] for c in selected], dim=1)
@@ -341,4 +347,25 @@ def load_csv(
         evaluation_row_indices=evaluation_rows,
         partition_seed=partition_seed,
         preprocessing={column: encoded[column][2] for column in selected},
+    )
+
+
+def dimension_view(source: PreparedCSV, dimension: int) -> PreparedCSV:
+    """Take role-specific prefixes without repeating source preprocessing."""
+    if not 1 <= dimension <= min(len(source.x_columns), len(source.u_columns)):
+        raise ValueError("dimension exceeds prepared source feature capacity")
+    x_names = source.x_columns[:dimension]
+    u_names = source.u_columns[:dimension]
+    names = (*u_names, *x_names)
+    positions = [source.columns.index(name) for name in names]
+    return replace(
+        source,
+        calibration_values=source.calibration_values[:, positions],
+        evaluation_values=source.evaluation_values[:, positions],
+        columns=names,
+        u_indices=tuple(range(dimension)),
+        x_indices=tuple(range(dimension, 2 * dimension)),
+        x_columns=x_names,
+        u_columns=u_names,
+        preprocessing={name: source.preprocessing[name] for name in names},
     )

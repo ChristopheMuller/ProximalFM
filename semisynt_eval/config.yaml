@@ -8,8 +8,7 @@ build:
   x_columns: null
   u_columns: null
   drop_columns: null
-  n_features_x: 5
-  n_features_u: 5
+  dimensions: [5]
   n_calibration: 1000
   split_seed: 1234
   row_sampling: without_replacement

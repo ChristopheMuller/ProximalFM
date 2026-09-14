@@ -46,7 +46,7 @@ cluster where `uv run` is unavailable. Build-level settings are environment
 variable overridable, for example:
 
 ```bash
-NAME=semisynt_matrix_v1 N_CONTEXT=1024 N_QUERY=256 \
+NAME=semisynt_matrix_v1 DIMENSIONS="3 5 10" N_CONTEXT=1024 N_QUERY=256 \
   REPLICATES_PER_CSV=24 SEED=20260903 \
   ./scripts/build_semisynt_eval.sh
 ```
@@ -54,31 +54,33 @@ NAME=semisynt_matrix_v1 N_CONTEXT=1024 N_QUERY=256 \
 Use `CONFIG=path/to/recipe.yaml` for another scientific matrix and `FORCE=1`
 to replace builder-owned files for the selected name.
 
-The result is one matrix root and eight independent benchmark sets:
+The result is one matrix root and eight benchmark sets per dimension:
 
 ```text
 data/semisynt_eval/semisynt_matrix_v1/
   manifest.json
   config.yaml
-  linear_conf_low_proxy_low/
-    manifest.json
-    config.yaml
-    val/
-  ... seven more cases ...
+  d-5/
+    linear_conf_low_proxy_low/
+      manifest.json
+      config.yaml
+      val/
+    ... seven more cases ...
 ```
 
 Point a benchmark at one case, never at the matrix root:
 
 ```bash
 uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
-  --val-dir data/semisynt_eval/semisynt_matrix_v1/linear_conf_low_proxy_low/val \
+  --val-dir data/semisynt_eval/semisynt_matrix_v1/d-5/linear_conf_low_proxy_low/val \
   --context-sizes 128 512
 ```
 
 [`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
-configuration over all eight cases. Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
+configuration over all dimension/regime cells recorded in the matrix manifest.
+Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
-Each case config snapshots the complete matrix recipe and can be
+Each cell config snapshots its dimension and the scientific recipe and can be
 rebuilt with `--config`; override `--name` to keep the original output intact.
 Source SHA-256 values, resolved case settings, paired episode IDs, and content
 digests are recorded in the manifests. `--force` replaces only builder-owned
@@ -96,8 +98,8 @@ filename order. Before any data-dependent preprocessing, `n_calibration`
 imputation medians, 0.5th/99.5th-percentile clipping thresholds, categorical
 codes, and standardization constants are fitted on those rows only. The
 remaining rows form the evaluation pool. Without explicit `--x_columns` and
-`--u_columns`, a stable hash split selects the requested number of X and U
-columns from features that have positive calibration variance.
+`--u_columns`, stable hash ordering selects nested X and U column prefixes from
+features that have positive calibration variance.
 
 Every context/query episode is sampled without replacement exclusively from
 the evaluation pool. Calibration rows are fixed per source and shared by all
@@ -108,9 +110,9 @@ are recorded in the manifests. `replicates_per_csv` means independently seeded
 benchmark episodes, not Monte Carlo rows.
 
 Mechanisms follow an explicit fit-prepare-generate lifecycle. For each
-`(source, replicate)`, evaluation rows are sampled once and exactly two
-mechanisms are fitted on the calibration partition: one per function family.
-Each mechanism prepares its augmented latent state, X functions, CATE, and
+`(source, replicate, dimension)`, evaluation rows are sampled from the same
+dimension-independent stream, and two mechanisms are fitted on the calibration
+partition: one per function family. Each mechanism prepares its augmented latent state, X functions, CATE, and
 named innovations once, then generates the four confounding/proxy cases from
 that shared state.
 
@@ -161,3 +163,35 @@ augmented latent state, X functions, CATE, and named innovations, so changing a
 low/high strength modifies only the quantities downstream of that setting.
 The `U` stored in `val/` is the innovation-augmented hidden latent; empirical
 `U_source` remains diagnostic-only and is never exposed to benchmark methods.
+
+## Dimensions and nested source features
+
+`build.dimensions: [5]` sets the default grid. Override it with
+`--dimensions 3 5 10` or `DIMENSIONS="3 5 10"` in the build script. Dimensions
+must be distinct positive integers; they are processed in ascending order.
+Every setting has `d_X = d_U = d_W = d_Z = d`.
+
+The stable hash ordering of usable source columns is split by alternation:
+positions 0, 2, 4, ... supply U_source; positions 1, 3, 5, ... supply X.
+Dimension d takes the first d columns of each role. Consequently, building a
+small dimension alone chooses the same features as building it alongside larger
+ones. Explicit `x_columns` and `u_columns` override these lists: each must contain
+exactly max(dimensions) usable, distinct columns, with no overlap. Smaller
+settings use their ordered prefixes.
+
+Sources are preprocessed once and must support 2 * max(dimensions) usable columns
+and the full row budget. Insufficient sources fail before existing outputs are
+replaced. Calibration and episode rows are shared across dimensions. Mechanisms
+are refitted and variables generated separately at each dimension; generated
+proxies, treatments, outcomes, and CATE are not slices of a larger problem.
+
+Every cell has its own manifest, dimension, source columns, row hashes, digest,
+and replayable recipe. A cell recipe records just its dimension (and explicit
+column prefixes when supplied); its tensors and cell digest reproduce when built
+alone. The matrix manifest enumerates all generated cells.
+
+Old builder recipes must replace `n_features_x`/`n_features_u` with `dimensions`.
+Old CLI flags are removed. Use a new build name when migrating: roots containing
+the legacy case-only layout are rejected even with `--force`. Previously saved
+sets remain readable by benchmark consumers. Force replacement removes only
+builder-owned outputs across dimension directories and preserves benchmark files.

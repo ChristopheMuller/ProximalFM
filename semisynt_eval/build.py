@@ -24,7 +24,7 @@ from semisynt_eval.mechanisms import (
 from semisynt_eval.mechanisms.calibrated_latent_proxy import (
     CalibratedLatentProxyMechanism,
 )
-from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv
+from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv, dimension_view
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
@@ -35,8 +35,7 @@ BUILD_CONFIG_FIELDS = (
     "x_columns",
     "u_columns",
     "drop_columns",
-    "n_features_x",
-    "n_features_u",
+    "dimensions",
     "n_calibration",
     "split_seed",
     "row_sampling",
@@ -60,8 +59,8 @@ def _load_sources(args: argparse.Namespace) -> list[PreparedCSV]:
             x_columns=args.x_columns,
             u_columns=args.u_columns,
             drop_columns=args.drop_columns,
-            n_features_x=args.n_features_x,
-            n_features_u=args.n_features_u,
+            n_features_x=max(args.dimensions),
+            n_features_u=max(args.dimensions),
             n_calibration=args.n_calibration,
             split_seed=args.split_seed,
         )
@@ -365,8 +364,12 @@ def _owned_outputs(root: Path, case_names: Sequence[str]) -> list[Path]:
     if not root.exists():
         return []
     paths = [root / "manifest.json", root / "config.yaml"]
-    for name in case_names:
-        case_root = root / name
+    for case_root in (
+        dimension_root / name
+        for dimension_root in root.glob("d-*")
+        if dimension_root.is_dir()
+        for name in case_names
+    ):
         paths.extend(
             [
                 case_root / "manifest.json",
@@ -392,6 +395,8 @@ def build(args: argparse.Namespace) -> Path:
             f"{', '.join(sorted(unavailable))}"
         )
     root = Path(args.out_root) / args.name
+    if any((root / name).exists() for name in args._case_configs):
+        raise ValueError("legacy build layout found; choose a new --name")
     existing = _owned_outputs(root, list(args._case_configs))
     if existing and not args.force:
         raise FileExistsError(
@@ -401,67 +406,83 @@ def build(args: argparse.Namespace) -> Path:
     sources = _load_sources(args)
     cli_command = shlex.join([Path(sys.argv[0]).name, *sys.argv[1:]])
     generated = []
-    pending = generate_paired_episodes(
-        sources,
-        list(args._case_configs.values()),
-        selected_cases,
-        row_sampling=args.row_sampling,
-        replicates_per_csv=args.replicates_per_csv,
-        n_rows=args.n_context + args.n_query,
-        seed=args.seed,
-    )
+    max_sources = sources
     if existing and args.force:
         for path in existing:
             path.unlink()
-
     root.mkdir(parents=True, exist_ok=True)
-    for case in selected_cases:
-        datasets, episodes, records = pending[case.name]
-        case_root = root / case.name
-        digest = _content_digest(args, case, datasets)
-        n_files, dpf = save_validation(
-            episodes,
-            out_dir=case_root / "val",
-            train_size=args.n_context,
-            datasets_per_file=args.datasets_per_file,
-            dataset=datasets,
-            cli_command=cli_command,
+    for dimension in args.dimensions:
+        sources = [dimension_view(source, dimension) for source in max_sources]
+        cell_args = argparse.Namespace(**vars(args))
+        cell_args.dimensions = [dimension]
+        if args.x_columns is not None:
+            # Saved cell recipes must rebuild independently using their own prefixes.
+            cell_args.x_columns = list(sources[0].x_columns)
+            cell_args.u_columns = list(sources[0].u_columns)
+        pending = generate_paired_episodes(
+            sources,
+            list(args._case_configs.values()),
+            selected_cases,
+            row_sampling=args.row_sampling,
+            replicates_per_csv=args.replicates_per_csv,
+            n_rows=args.n_context + args.n_query,
+            seed=args.seed,
         )
-        manifest = {
-            "content_digest": digest,
-            "matrix_name": args.name,
-            "case": case.name,
-            "mechanism": case.mechanism,
-            "case_config": _case_payload(case),
-            "sources": _source_payload(sources),
-            "target_kind": datasets[0].target_capability,
-            "replicates_per_csv": args.replicates_per_csv,
-            "n_episodes": len(records),
-            "episodes": records,
-            "n_context": args.n_context,
-            "n_query": args.n_query,
-            "seed": args.seed,
-            "datasets_per_val_file": dpf,
-            "n_val_files": n_files,
-            "val_dir": str((case_root / "val").resolve()),
-            "cli_command": cli_command,
-        }
-        (case_root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        _write_yaml(case_root / "config.yaml", _resolved_recipe(args, sources))
-        generated.append(
-            {
+        for case in selected_cases:
+            datasets, episodes, records = pending[case.name]
+            case_root = root / f"d-{dimension}" / case.name
+            digest = _content_digest(cell_args, case, datasets)
+            n_files, dpf = save_validation(
+                episodes,
+                out_dir=case_root / "val",
+                train_size=args.n_context,
+                datasets_per_file=args.datasets_per_file,
+                dataset=datasets,
+                cli_command=cli_command,
+            )
+            manifest = {
+                "dimension": dimension,
+                "content_digest": digest,
+                "matrix_name": args.name,
                 "case": case.name,
                 "mechanism": case.mechanism,
-                "family": case.family,
                 "case_config": _case_payload(case),
-                "content_digest": digest,
+                "sources": _source_payload(sources),
+                "target_kind": datasets[0].target_capability,
+                "replicates_per_csv": args.replicates_per_csv,
+                "n_episodes": len(records),
+                "episodes": [dict(record, dimension=dimension) for record in records],
+                "n_context": args.n_context,
+                "n_query": args.n_query,
+                "seed": args.seed,
+                "datasets_per_val_file": dpf,
+                "n_val_files": n_files,
                 "val_dir": str((case_root / "val").resolve()),
-                "pair_ids": [record["pair_id"] for record in records],
+                "cli_command": cli_command,
             }
-        )
+            (case_root / "manifest.json").write_text(
+                json.dumps(manifest, indent=2) + "\n"
+            )
+            _write_yaml(case_root / "config.yaml", _resolved_recipe(cell_args, sources))
+            generated.append(
+                {
+                    "dimension": dimension,
+                    "case": case.name,
+                    "mechanism": case.mechanism,
+                    "family": case.family,
+                    "case_config": _case_payload(case),
+                    "content_digest": digest,
+                    "val_dir": str((case_root / "val").resolve()),
+                    "pair_ids": [record["pair_id"] for record in records],
+                }
+            )
+
+        del pending, datasets, episodes, records
+    sources = max_sources
 
     matrix_identity = [
         {
+            "dimension": item["dimension"],
             "case": item["case"],
             "mechanism": item["mechanism"],
             "family": item["family"],
@@ -473,6 +494,7 @@ def build(args: argparse.Namespace) -> Path:
     ]
     matrix_payload = {
         "name": args.name,
+        "dimensions": args.dimensions,
         "mechanisms": sorted({item["mechanism"] for item in generated}),
         "content_digest": hashlib.sha256(
             json.dumps(matrix_identity, sort_keys=True).encode()
@@ -516,8 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--x_columns")
     parser.add_argument("--u_columns")
     parser.add_argument("--drop_columns")
-    parser.add_argument("--n_features_x", type=int)
-    parser.add_argument("--n_features_u", type=int)
+    parser.add_argument("--dimensions", type=int, nargs="+")
     parser.add_argument("--n_calibration", type=int)
     parser.add_argument("--split_seed", type=int)
     parser.add_argument("--row_sampling", choices=("without_replacement",))
@@ -612,6 +633,17 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args._expected_source_sha256 = {
         source["file"]: source["sha256"] for source in recipe.get("sources", [])
     }
+    dimensions = args.dimensions
+    if (
+        not isinstance(dimensions, list)
+        or not dimensions
+        or any(
+            isinstance(d, bool) or not isinstance(d, int) or d < 1 for d in dimensions
+        )
+        or len(dimensions) != len(set(dimensions))
+    ):
+        parser.error("dimensions must be a nonempty list of distinct positive integers")
+    args.dimensions = sorted(dimensions)
     if args.list:
         return args
     if args.name is None:

@@ -373,9 +373,7 @@ def _tiny_build_args(csv: Path, out_root: Path, name: str):
             "1",
             "--datasets_per_file",
             "1",
-            "--n_features_x",
-            "2",
-            "--n_features_u",
+            "--dimensions",
             "2",
             "--seed",
             "7",
@@ -384,7 +382,9 @@ def _tiny_build_args(csv: Path, out_root: Path, name: str):
 
 
 def _batch(root: Path, case: str) -> dict:
-    return torch.load(root / case / "val" / "batch_000000.pt", weights_only=True)
+    return torch.load(
+        root / "d-2" / case / "val" / "batch_000000.pt", weights_only=True
+    )
 
 
 def test_tiny_build_materializes_all_paired_cases(tmp_path):
@@ -394,9 +394,10 @@ def test_tiny_build_materializes_all_paired_cases(tmp_path):
     root = build(args)
 
     assert root == tmp_path / "matrix"
-    assert {path.name for path in root.iterdir() if path.is_dir()} == set(_configs())
+    assert {path.name for path in root.iterdir() if path.is_dir()} == {"d-2"}
+    assert {path.name for path in (root / "d-2").iterdir()} == set(_configs())
     manifests = {
-        case: json.loads((root / case / "manifest.json").read_text())
+        case: json.loads((root / "d-2" / case / "manifest.json").read_text())
         for case in _configs()
     }
     row_hashes = {
@@ -409,7 +410,9 @@ def test_tiny_build_materializes_all_paired_cases(tmp_path):
         for manifest in manifests.values()
         for record in manifest["episodes"]
     } == {("source.csv", 1, 7)}
-    benchmark = load_benchmark_from_val_dir(root / "linear_conf_low_proxy_low" / "val")
+    benchmark = load_benchmark_from_val_dir(
+        root / "d-2" / "linear_conf_low_proxy_low" / "val"
+    )
     assert benchmark["true_CATEs"] is not None
     assert benchmark["true_CATEs"].shape == (1, 2)
 
@@ -440,8 +443,10 @@ def test_single_case_build_matches_full_matrix(tmp_path):
     selected_args._selected_case_configs = {case: selected_args._case_configs[case]}
     selected = build(selected_args)
 
-    full_manifest = json.loads((full / case / "manifest.json").read_text())
-    selected_manifest = json.loads((selected / case / "manifest.json").read_text())
+    full_manifest = json.loads((full / "d-2" / case / "manifest.json").read_text())
+    selected_manifest = json.loads(
+        (selected / "d-2" / case / "manifest.json").read_text()
+    )
     assert full_manifest["content_digest"] == selected_manifest["content_digest"]
     full_batch, selected_batch = _batch(full, case), _batch(selected, case)
     assert full_batch.keys() == selected_batch.keys()
@@ -451,7 +456,7 @@ def test_single_case_build_matches_full_matrix(tmp_path):
             assert torch.equal(value, selected_batch[key])
         else:
             assert value == selected_batch[key]
-    assert {path.name for path in selected.iterdir() if path.is_dir()} == {case}
+    assert {path.name for path in (selected / "d-2").iterdir()} == {case}
 
 
 @pytest.mark.parametrize(
@@ -515,3 +520,156 @@ def test_case_traversal_order_does_not_change_case_outputs(tmp_path):
                 assert torch.equal(value, other)
             else:
                 assert value == other
+
+
+@pytest.mark.parametrize("dimensions", [[], [0], [-1], [True], [1, 1], [1.5], "5"])
+def test_invalid_dimension_recipes(tmp_path, dimensions):
+    recipe = _recipe()
+    recipe["build"]["dimensions"] = dimensions
+    path = tmp_path / "invalid.yaml"
+    path.write_text(yaml.safe_dump(recipe))
+    with pytest.raises(SystemExit):
+        parse_args(["--config", str(path), "--list"])
+
+
+def test_dimension_cli_is_sorted_and_replaces_old_flags():
+    assert parse_args(["--list", "--dimensions", "5", "1", "3"]).dimensions == [1, 3, 5]
+    with pytest.raises(SystemExit):
+        parse_args(["--list", "--n_features_x", "3"])
+
+
+def test_source_roles_are_nested_even_when_loaded_independently(tmp_path):
+    from semisynt_eval.source import dimension_view
+
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    large = load_csv(csv, n_features_x=2, n_features_u=2, n_calibration=4)
+    small = load_csv(csv, n_features_x=1, n_features_u=1, n_calibration=4)
+    view = dimension_view(large, 1)
+    assert small.x_columns == large.x_columns[:1] == view.x_columns
+    assert small.u_columns == large.u_columns[:1] == view.u_columns
+    assert set(large.x_columns).isdisjoint(large.u_columns)
+    assert torch.equal(small.X_cal, view.X_cal)
+    assert torch.equal(small.U_eval, view.U_eval)
+
+
+def test_dimension_matrix_matches_standalone_and_saved_recipe(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    args = _tiny_build_args(csv, tmp_path, "matrix")
+    args.dimensions = [1, 2]
+    matrix = build(args)
+    standalone_args = _tiny_build_args(csv, tmp_path, "standalone")
+    standalone_args.dimensions = [1]
+    standalone = build(standalone_args)
+    for case in _configs():
+        small_root = matrix / "d-1" / case
+        manifest = json.loads((small_root / "manifest.json").read_text())
+        large_manifest = json.loads(
+            (matrix / "d-2" / case / "manifest.json").read_text()
+        )
+        solo_manifest = json.loads(
+            (standalone / "d-1" / case / "manifest.json").read_text()
+        )
+        assert manifest["content_digest"] == solo_manifest["content_digest"]
+        assert manifest["dimension"] == 1
+        assert (
+            manifest["episodes"][0]["source_row_indices_sha256"]
+            == large_manifest["episodes"][0]["source_row_indices_sha256"]
+        )
+        for role in ("x_columns", "u_columns"):
+            assert (
+                manifest["sources"][0][role] == large_manifest["sources"][0][role][:1]
+            )
+        first = torch.load(small_root / "val" / "batch_000000.pt", weights_only=True)
+        second = torch.load(
+            standalone / "d-1" / case / "val" / "batch_000000.pt", weights_only=True
+        )
+        for key, value in first.items():
+            assert (
+                torch.equal(value, second[key])
+                if isinstance(value, torch.Tensor)
+                else value == second[key]
+            )
+        for field in ("d_X", "d_U", "d_W", "d_Z"):
+            assert first[field].item() == 1
+        assert torch.allclose(first["Y1"] - first["Y0"], first["CATE"], atol=1e-6)
+        loaded = load_benchmark_from_val_dir(small_root / "val")
+        assert loaded["true_CATEs"].shape == (1, 2)
+    cell = matrix / "d-1" / "linear_conf_low_proxy_low"
+    rebuilt = build(
+        parse_args(
+            [
+                "--config",
+                str(cell / "config.yaml"),
+                "--name",
+                "rebuilt",
+                "--case",
+                cell.name,
+            ]
+        )
+    )
+    assert (
+        json.loads((rebuilt / "d-1" / cell.name / "manifest.json").read_text())[
+            "content_digest"
+        ]
+        == json.loads((cell / "manifest.json").read_text())["content_digest"]
+    )
+
+
+def test_explicit_feature_lists_use_prefixes(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    args = _tiny_build_args(csv, tmp_path, "explicit")
+    args.dimensions = [1, 2]
+    args.x_columns = ["numeric", "category"]
+    args.u_columns = ["id", "missing"]
+    root = build(args)
+    cell = root / "d-1" / "linear_conf_low_proxy_low"
+    recipe = yaml.safe_load((cell / "config.yaml").read_text())
+    assert recipe["build"]["x_columns"] == ["numeric"]
+    assert recipe["build"]["u_columns"] == ["id"]
+    build(
+        parse_args(
+            ["--config", str(cell / "config.yaml"), "--name", "explicit-rebuilt"]
+        )
+    )
+
+
+def test_force_preserves_benchmark_files_and_validates_first(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    args = _tiny_build_args(csv, tmp_path, "matrix")
+    root = build(args)
+    bench = root / "d-2" / "linear_conf_low_proxy_low" / "bench"
+    bench.mkdir()
+    keep = bench / "keep.md"
+    keep.write_text("keep")
+    with pytest.raises(FileExistsError):
+        build(args)
+    args.force = True
+    old = (root / "manifest.json").read_bytes()
+    args.dimensions = [3]
+    with pytest.raises(ValueError, match="usable columns"):
+        build(args)
+    assert (root / "manifest.json").read_bytes() == old
+    args.dimensions = [2]
+    args.n_context = 20
+    with pytest.raises(ValueError, match="source rows"):
+        build(args)
+    assert (root / "manifest.json").read_bytes() == old
+    args.n_context = 4
+    args.dimensions = [1]
+    build(args)
+    assert keep.read_text() == "keep"
+    assert not list((root / "d-2").glob("*/val/batch_*.pt"))
+
+
+def test_legacy_root_is_rejected_even_with_force(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    args = _tiny_build_args(csv, tmp_path, "legacy")
+    (tmp_path / "legacy" / "linear_conf_low_proxy_low").mkdir(parents=True)
+    args.force = True
+    with pytest.raises(ValueError, match="legacy build layout"):
+        build(args)
