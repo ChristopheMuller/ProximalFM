@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the complete semi-synthetic linear/nonlinear evaluation matrix.
+# Build the complete 12-source semi-synthetic linearity/confounding/proxy
+# evaluation matrix (eight cases per dimension).
 #
 #   validation set:  NAME=semisynt_val_v1  SEED=20260904 ./scripts/build_semisynt_eval.sh
 #   held-out set:    NAME=semisynt_test_v1 SEED=<new>    ./scripts/build_semisynt_eval.sh
@@ -24,10 +25,10 @@ NAME=${NAME:-semisynt_val_v1}
 OUT_ROOT=${OUT_ROOT:-data/semisynt_eval}
 CSV=${CSV:-all}
 
-N_CONTEXT=${N_CONTEXT:-2048}
+N_CONTEXT=${N_CONTEXT:-8192}
 N_QUERY=${N_QUERY:-256}
-REPLICATES_PER_CSV=${REPLICATES_PER_CSV:-4}
-read -r -a DIMENSION_VALUES <<< "${DIMENSIONS:-5}"
+REPLICATES_PER_CSV=${REPLICATES_PER_CSV:-3}
+read -r -a DIMENSION_VALUES <<< "${DIMENSIONS:-1 2 3 5 10}"
 N_CALIBRATION=${N_CALIBRATION:-1000}
 SPLIT_SEED=${SPLIT_SEED:-1234}
 SEED=${SEED:-1234}
