@@ -58,8 +58,52 @@ def test_get_data_force_regen_rebuilds_from_val_dir(tmp_path):
     assert_dicts_equal(data, build_from_pool(new_pool))
 
 
+def test_get_data_refreshes_cache_when_val_directory_grows(tmp_path):
+    pool = make_pool(B=2)
+    val_dir = tmp_path / "val"
+    val_dir.mkdir()
+    write_val_file(val_dir / "batch_000000.pt", pool, slice(0, 1))
+    output_dir = tmp_path / "exp"
+
+    assert run.get_data(val_dir, output_dir)["N_BATCH"] == 1
+    write_val_file(val_dir / "batch_000001.pt", pool, slice(1, 2))
+    refreshed = run.get_data(val_dir, output_dir)
+    assert refreshed["N_BATCH"] == 2
+    assert_dicts_equal(refreshed, build_from_pool(pool))
+
+
 def test_default_output_dir_is_val_sibling():
     assert run.default_output_dir(Path("data/a/val")) == Path("data/a/bench")
+
+
+def test_extended_diagnostics_preserve_episode_alignment_and_summary(tmp_path):
+    path = tmp_path / "diagnostics.yaml"
+    run.save_diagnostics_yaml(
+        path, {"shared": np.array([1.0, 3.0]), "old_only": np.array([5.0, 7.0])}
+    )
+    merged = run.extend_diagnostics(
+        path, {"shared": np.array([8.0]), "new_only": np.array([9.0])}, 2, 1
+    )
+    run.save_diagnostics_yaml(path, merged)
+    loaded = run.load_diagnostics_yaml(path)
+    np.testing.assert_equal(loaded["shared"], [1.0, 3.0, 8.0])
+    np.testing.assert_equal(loaded["old_only"], [5.0, 7.0, np.nan])
+    np.testing.assert_equal(loaded["new_only"], [np.nan, np.nan, 9.0])
+    assert run.yaml.safe_load(path.read_text())["summary"]["shared"] == 4.0
+
+
+def test_extended_diagnostics_pad_when_suffix_emits_nothing(tmp_path):
+    path = tmp_path / "diagnostics.yaml"
+    run.save_diagnostics_yaml(path, {"value": np.array([2.0])})
+    merged = run.extend_diagnostics(path, {}, 1, 2)
+    np.testing.assert_equal(merged["value"], [2.0, np.nan, np.nan])
+
+
+def test_extended_diagnostics_pad_missing_historical_file(tmp_path):
+    merged = run.extend_diagnostics(
+        tmp_path / "missing.yaml", {"value": np.array([2.0])}, 2, 1
+    )
+    np.testing.assert_equal(merged["value"], [np.nan, np.nan, 2.0])
 
 
 # ─────────────────────────────────────────────────────────────────────────────

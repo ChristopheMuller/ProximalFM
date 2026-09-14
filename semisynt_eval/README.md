@@ -54,6 +54,25 @@ NAME=semisynt_matrix_v1 DIMENSIONS="3 5 10" N_CONTEXT=1024 N_QUERY=256 \
 Use `CONFIG=path/to/recipe.yaml` for another scientific matrix and `FORCE=1`
 to replace builder-owned files for the selected name.
 
+### Staged replicate builds
+
+`replicates_per_csv` is an appendable target count. Build a small pilot, then
+extend the same immutable matrix without rewriting its existing episodes:
+
+```bash
+NAME=semisynt_matrix_v1 REPLICATES_PER_CSV=2 ./scripts/build_semisynt_eval.sh
+NAME=semisynt_matrix_v1 REPLICATES_PER_CSV=10 ./scripts/build_semisynt_eval.sh
+```
+
+The second command writes only IDs 3–10, retains the existing `batch_*.pt`
+files and benchmark output, and updates the cell and matrix manifests. A
+repeated build requires the same sources, mechanism recipe, row settings, and
+seed; it may add new dimensions, but it cannot remove a dimension or replicate.
+Each benchmark prediction cache records its ordered episode IDs, so the runner
+evaluates only the appended episodes for caches created by the current runner.
+Historical caches without IDs are safely recomputed once when an extension is
+detected.
+
 The result is one matrix root and eight benchmark sets per dimension:
 
 ```text

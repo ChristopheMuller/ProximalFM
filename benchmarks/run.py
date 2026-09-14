@@ -36,6 +36,7 @@ own are gone; a config still carrying `models:` is refused with the translation.
 from __future__ import annotations
 
 import argparse
+import json
 import multiprocessing
 import sys
 import time
@@ -155,7 +156,38 @@ def get_data(val_dir: Path, output_dir: Path, force_regen: bool = False) -> dict
         return data
 
     console.print(f"    Loading existing data from [cyan]{data_path}[/]…")
-    return torch.load(data_path, weights_only=False)
+    cached = torch.load(data_path, weights_only=False)
+    # Semi-synthetic matrices can append immutable episodes.  Rebuild the
+    # standardized view when their val directory has grown, while retaining
+    # prediction caches that cover the old prefix.
+    # Retain the historical cache-only behaviour when an archived/moved val
+    # directory is unavailable.  A present directory is checked for appended
+    # episodes rather than trusted blindly.
+    if not any(val_dir.glob("batch_*.pt")):
+        return cached
+    current = load_benchmark_from_val_dir(val_dir)
+    if cached.get("N_BATCH") != current["N_BATCH"]:
+        console.print("    [cyan]↻[/] Val set grew; refreshing benchmark data cache…")
+        torch.save(current, data_path)
+        return current
+    return cached
+
+
+def episode_ids_for_cache(val_dir: Path, n_batch: int) -> np.ndarray:
+    """Stable IDs for append-aware semi-synthetic caches, or positional IDs."""
+    manifest_path = val_dir.parent / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        episodes = manifest.get("episodes")
+        if isinstance(episodes, list) and len(episodes) == n_batch:
+            return np.asarray(
+                [
+                    episode.get("episode_id", episode.get("pair_id", ""))
+                    for episode in episodes
+                ],
+                dtype=str,
+            )
+    return np.asarray([f"position:{i}" for i in range(n_batch)], dtype=str)
 
 
 def resolve_context_sizes(requested: Optional[list[int]], available: int) -> list[int]:
@@ -460,10 +492,7 @@ def save_diagnostics_yaml(path: Path, diagnostics: dict[str, np.ndarray]) -> Non
 def load_diagnostics_yaml(path: Path) -> dict[str, np.ndarray]:
     """Inverse of `save_diagnostics_yaml`, for reading a finished run back in.
 
-    Not called by the run loop — diagnostics are written and never re-read
-    during a run — but kept as the round-trip partner of the writer, so
-    analysis code has one place to parse the format rather than reaching into
-    the YAML itself.
+    Used when extending a prediction cache and by analysis code.
     """
     with open(path) as f:
         data = yaml.safe_load(f) or {}
@@ -471,6 +500,24 @@ def load_diagnostics_yaml(path: Path) -> dict[str, np.ndarray]:
         key: np.array([np.nan if v is None else v for v in vals], dtype=np.float32)
         for key, vals in data.get("episodes", {}).items()
     }
+
+
+def extend_diagnostics(
+    path: Path,
+    diagnostics: dict[str, np.ndarray],
+    prefix_len: int,
+    suffix_len: int,
+) -> dict[str, np.ndarray]:
+    """Keep diagnostics aligned with the cached prefix and appended episodes."""
+    previous = load_diagnostics_yaml(path) if path.exists() else {}
+    merged = {}
+    for key in previous.keys() | diagnostics.keys():
+        old = previous.get(key, np.full(prefix_len, np.nan, dtype=np.float32))
+        new = diagnostics.get(key, np.full(suffix_len, np.nan, dtype=np.float32))
+        if old.shape != (prefix_len,) or new.shape != (suffix_len,):
+            raise ValueError(f"diagnostic {key!r} in {path} has an unexpected length")
+        merged[key] = np.concatenate([old, new])
+    return merged
 
 
 def print_partial_results(
@@ -596,6 +643,7 @@ def main() -> None:
 
     N_TEST = data["N_TEST"]
     N_BATCH = data["N_BATCH"]
+    episode_ids = episode_ids_for_cache(val_dir, N_BATCH)
     requested_context_sizes = args.context_sizes
     context_sizes = resolve_context_sizes(requested_context_sizes, int(data["N_TRAIN"]))
     largest_n_ctx = context_sizes[-1]
@@ -686,17 +734,52 @@ def main() -> None:
                         f"Precomputed method {name!r} is missing {names}. Run {producer}."
                     )
 
-                # Skip only when every output of this config is already cached.
-                if precomputed or (not force and not missing):
+                # A cache may be an append-only prefix after semisynt_eval adds
+                # replicates.  All outputs of a multi-output method must agree
+                # on that prefix; otherwise recompute the configuration.
+                cached_prefix = {}
+                prefix_len = 0
+                if not missing and (not force or precomputed):
+                    lengths = set()
                     for out_name, f in pred_files.items():
                         loaded = np.load(f)
                         preds = np.asarray(loaded["preds"], dtype=np.float32)
-                        expected = (N_BATCH, N_TEST)
-                        if preds.shape != expected:
+                        if preds.ndim != 2 or preds.shape[1] != N_TEST:
                             raise ValueError(
                                 f"prediction cache {f} has shape {preds.shape}, "
-                                f"expected {expected}"
+                                f"expected (*, {N_TEST})"
                             )
+                        if preds.shape[0] > N_BATCH:
+                            raise ValueError(
+                                f"prediction cache {f} has {preds.shape[0]} episodes, "
+                                f"but the val set has only {N_BATCH}"
+                            )
+                        cached_ids = loaded.get("episode_ids")
+                        if cached_ids is None:
+                            # Historical caches are usable only for the exact
+                            # old set; they cannot safely be extended.
+                            if preds.shape[0] != N_BATCH:
+                                cached_prefix = {}
+                                break
+                        elif not np.array_equal(
+                            np.asarray(cached_ids, dtype=str),
+                            episode_ids[: preds.shape[0]],
+                        ):
+                            raise ValueError(
+                                f"prediction cache {f} has episode IDs that do not match "
+                                "the current val set"
+                            )
+                        lengths.add(preds.shape[0])
+                        cached_prefix[out_name] = (loaded, preds)
+                    if len(lengths) == 1:
+                        prefix_len = lengths.pop()
+                    else:
+                        cached_prefix = {}
+
+                # Skip only when every output covers the current episode set.
+                if precomputed or (cached_prefix and prefix_len == N_BATCH):
+                    for out_name, f in pred_files.items():
+                        loaded, preds = cached_prefix[out_name]
                         times = loaded.get(
                             "times", np.zeros(len(preds), dtype=np.float32)
                         )
@@ -721,13 +804,23 @@ def main() -> None:
                     continue
 
                 method_compute = resolve_method_compute(global_compute, mcfg)
+                # ``run_method`` uses each batch's ``b`` as an index into its
+                # result arrays.  Rebase an appended suffix to zero so its
+                # local result arrays can later be concatenated with the cache.
+                suffix = batches[prefix_len:] if cached_prefix else batches
+                batches_to_run = [dict(batch, b=i) for i, batch in enumerate(suffix)]
                 task = progress.add_task(
                     f"  [cyan]{name:<28}[/] [dim]n_ctx={n_ctx} · "
                     f"{method_compute.describe()}[/]",
-                    total=len(batches),
+                    total=len(batches_to_run),
                 )
 
                 t0 = time.perf_counter()
+                if cached_prefix:
+                    console.print(
+                        f"  [cyan]↻[/] {name:<28} n_ctx={n_ctx}: "
+                        f"running {N_BATCH - prefix_len} appended episode(s)"
+                    )
                 (
                     preds_map,
                     times_map,
@@ -736,7 +829,7 @@ def main() -> None:
                     n_errors,
                 ) = run_method(
                     mcfg,
-                    batches,
+                    batches_to_run,
                     N_TEST,
                     method_compute,
                     manager,
@@ -745,21 +838,47 @@ def main() -> None:
                 if n_errors:
                     console.print(
                         f"    [yellow]⚠[/] {name} at n_ctx={n_ctx}: "
-                        f"{n_errors}/{len(batches)} batches failed (NaN filled)."
+                        f"{n_errors}/{len(batches_to_run)} batches failed (NaN filled)."
                     )
 
                 elapsed = time.perf_counter() - t0
                 for out_name in output_names:
                     preds, times = preds_map[out_name], times_map[out_name]
                     post_tune_times = post_tune_times_map[out_name]
+                    output_diagnostics = diagnostics
+                    if cached_prefix:
+                        output_diagnostics = extend_diagnostics(
+                            diag_files[out_name], diagnostics, prefix_len, len(preds)
+                        )
+                        loaded, old_preds = cached_prefix[out_name]
+                        preds = np.concatenate([old_preds, preds], axis=0)
+                        times = np.concatenate(
+                            [
+                                np.asarray(loaded.get("times", np.zeros(prefix_len))),
+                                times,
+                            ]
+                        )
+                        old_post = loaded.get("times_post_tune")
+                        if old_post is None:
+                            old_post = (
+                                np.full(prefix_len, np.nan)
+                                if method_has_explicit_tuning(mcfg)
+                                else np.asarray(
+                                    loaded.get("times", np.zeros(prefix_len))
+                                )
+                            )
+                        post_tune_times = np.concatenate(
+                            [np.asarray(old_post), post_tune_times]
+                        )
                     np.savez(
                         pred_files[out_name],
                         preds=preds,
                         times=times,
                         times_post_tune=post_tune_times,
+                        episode_ids=episode_ids,
                     )
-                    if diagnostics:
-                        save_diagnostics_yaml(diag_files[out_name], diagnostics)
+                    if output_diagnostics:
+                        save_diagnostics_yaml(diag_files[out_name], output_diagnostics)
                     console.print(
                         f"  [green]✓[/] {out_name:<28} n_ctx={n_ctx} saved  "
                         f"[dim]({elapsed:.1f}s)[/]"

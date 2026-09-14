@@ -417,6 +417,35 @@ def test_tiny_build_materializes_all_paired_cases(tmp_path):
     assert benchmark["true_CATEs"].shape == (1, 2)
 
 
+def test_extend_appends_replicates_without_rewriting_existing_episodes(tmp_path):
+    csv = tmp_path / "source.csv"
+    _csv(csv)
+    root = build(_tiny_build_args(csv, tmp_path, "matrix"))
+    case = "linear_conf_low_proxy_low"
+    cell = root / "d-2" / case
+    first_batch = cell / "val" / "batch_000000.pt"
+    original = first_batch.read_bytes()
+    bench_file = cell / "bench" / "keep.txt"
+    bench_file.parent.mkdir()
+    bench_file.write_text("keep")
+
+    args = _tiny_build_args(csv, tmp_path, "matrix")
+    args.replicates_per_csv = 3
+    build(args)
+
+    assert first_batch.read_bytes() == original
+    assert bench_file.read_text() == "keep"
+    manifest = json.loads((cell / "manifest.json").read_text())
+    assert [episode["episode_id"] for episode in manifest["episodes"]] == [
+        "source.csv:1",
+        "source.csv:2",
+        "source.csv:3",
+    ]
+    assert manifest["n_episodes"] == 3
+    assert len(list((cell / "val").glob("batch_*.pt"))) == 3
+    assert load_benchmark_from_val_dir(cell / "val")["N_BATCH"] == 3
+
+
 def test_written_cases_preserve_factorial_pairing(tmp_path):
     csv = tmp_path / "source.csv"
     _csv(csv)
@@ -645,8 +674,7 @@ def test_force_preserves_benchmark_files_and_validates_first(tmp_path):
     bench.mkdir()
     keep = bench / "keep.md"
     keep.write_text("keep")
-    with pytest.raises(FileExistsError):
-        build(args)
+    assert build(args) == root  # An identical staged build is a safe no-op.
     args.force = True
     old = (root / "manifest.json").read_bytes()
     args.dimensions = [3]
