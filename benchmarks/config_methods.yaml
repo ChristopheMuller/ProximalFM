@@ -131,28 +131,28 @@ methods:
 
 
   # ── X-Learner baselines ──────────────────────────────────────────────────
-  # - name: X-RF
-  #   cls:   X_Learner
-  #   base:  rf
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
-  # - name: X-TabICL
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    interactions: false
 
   # - name: X-TabICL-WZ-Marginalized
   #   cls:   ProxyMarginalizer
