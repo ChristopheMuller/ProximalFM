@@ -307,16 +307,16 @@ methods:
   #     - { name: NMMR-U-median-Wcond, strategy: conditional }
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
-  # - name: CausalFM
-  #   cls:  CausalFM
-  #   checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
 
-  # - name: DoPFN
-  #   cls:  DoPFN
-  #   use_W: false
-  #   use_Z: false
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
 
   - name: CausalPFN
     cls:  CausalPFN
