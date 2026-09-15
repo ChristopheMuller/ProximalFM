@@ -194,19 +194,19 @@ methods:
       - { name: P-Kernel-OLS, kind: cate, base: linear }
       - { name: P-Kernel-ATE, kind: ate }
   
-  # - name: KPV
-  #   cls:         KernelPV
-  #   compute: { n_workers: 1 }
-  #   tune:
-  #     enabled:  true
-  #     n_trials: 3
-  #     seed:     1234
-  #     grid:
-  #       kernel_scale: [0.8, 1.0, 1.2]
-  #   outputs:
-  #     - { name: KPV-X-Wind, strategy: independent }
-  #     - { name: KPV-X-Wcond, strategy: conditional }
-  #     - { name: KPV-ATE,    strategy: marginal }
+  - name: KPV
+    cls:         KernelPV
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      n_trials: 3
+      seed:     1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]
+    outputs:
+      - { name: KPV-X-Wind, strategy: independent }
+      - { name: KPV-X-Wcond, strategy: conditional }
+      - { name: KPV-ATE,    strategy: marginal }
 
   # - name: PMMR
   #   cls:         PMMR
