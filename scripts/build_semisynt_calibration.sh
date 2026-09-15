@@ -7,10 +7,11 @@
 #   - high latent confounding and low proxy informativeness
 #   - all 12 bundled empirical CSV sources
 #   - 10 independently seeded episodes per source
-#   - 2048 context rows and 256 fixed query rows per episode
+#   - 8192 context rows and 256 fixed query rows per episode
 #
 # Build the maximum context once. Evaluation should use the nested prefixes
-# 128, 256, 512, 1024, and 2048 while retaining the same query rows.
+# 128, 256, 512, 1024, 2048, 4096, and 8192 while retaining the same query
+# rows. The final two prefixes test context extrapolation beyond pre-training.
 #
 # Example:
 #   ./scripts/build_semisynt_calibration.sh
@@ -32,8 +33,8 @@ CSV=${CSV:-all}
 
 CASE=nonlinear_conf_high_proxy_low
 DIMENSION=5
-N_CONTEXT=2048
-N_QUERY=256
+N_CONTEXT=${N_CONTEXT:-8192}
+N_QUERY=${N_QUERY:-256}
 REPLICATES_PER_CSV=10
 N_CALIBRATION=${N_CALIBRATION:-1000}
 SPLIT_SEED=${SPLIT_SEED:-1234}
@@ -72,7 +73,7 @@ echo "  csv                    = ${CSV}"
 echo "  case                   = ${CASE}"
 echo "  dimension              = ${DIMENSION}"
 echo "  n_context/n_query      = ${N_CONTEXT}/${N_QUERY}"
-echo "  context prefixes       = 128 256 512 1024 2048"
+echo "  context prefixes       = 128 256 512 1024 2048 4096 8192"
 echo "  replicates/source      = ${REPLICATES_PER_CSV}"
 echo "  calibration rows       = ${N_CALIBRATION}"
 echo "  split_seed/seed        = ${SPLIT_SEED}/${SEED}"
@@ -83,4 +84,4 @@ echo
 echo
 echo "Done. Calibration set:"
 echo "  ${OUT}/d-${DIMENSION}/${CASE}/val"
-echo "Use context prefixes 128 256 512 1024 2048 during posterior scoring."
+echo "Use context prefixes 128 256 512 1024 2048 4096 8192 during posterior scoring."

@@ -45,7 +45,7 @@ from proximalfm.train._dist_eval import (
 from proximalfm.train._dist_metrics import pit, predictive_mean_var
 from proximalfm.train._eval import CausalEvaluator
 
-DEFAULT_CONTEXTS = (128, 256, 512, 1024, 2048)
+DEFAULT_CONTEXTS = (128, 256, 512, 1024, 2048, 4096, 8192)
 DEFAULT_LEVEL_PERCENTS = (1, *range(5, 100, 5), 99)
 PIT_GRID = np.linspace(0.0, 1.0, 201)
 OUTPUT_FILES = (

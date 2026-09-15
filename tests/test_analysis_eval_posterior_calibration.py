@@ -99,6 +99,15 @@ def test_resolve_sidecar_backed_input_checks_episode_alignment(tmp_path, monkeyp
 
 def test_context_and_level_normalization_and_validation():
     assert calibration.default_contexts(700) == [128, 256, 512, 700]
+    assert calibration.default_contexts(8192) == [
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+    ]
     assert calibration.normalize_contexts([512, 128], 700) == [128, 512]
     assert calibration.normalize_levels([90, 50, 1]) == (0.01, 0.5, 0.9)
     with pytest.raises(ValueError, match="outside"):
