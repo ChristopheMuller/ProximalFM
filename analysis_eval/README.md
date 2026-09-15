@@ -1,7 +1,36 @@
 # `analysis_eval` — evaluation-section artifacts
 
 This folder builds paper-ready descriptions of benchmark runs. It does not run
-estimators or read prediction caches.
+estimators or read prediction caches, with one exception: the posterior
+calibration runner below evaluates a ProximalFM checkpoint against fixed
+evaluation data.
+
+## Posterior calibration
+
+```bash
+uv run python -m analysis_eval.posterior_calibration \
+  --data-root data/semisynt_eval/semisynt_posterior_calibration_v1/d-5/nonlinear_conf_high_proxy_low \
+  --ckpt path/to/checkpoint-or-directory \
+  --device mps
+```
+
+The runner supports analytic-CATE semi-synthetic dataset roots and frozen
+`val/` datasets with `frozen_meta.pt`. By default it scores nested context
+prefixes from 128 through the dataset maximum against the same query rows. It
+uses a single forward posterior prediction, with the comparison scale frozen
+at the largest context size. Use `--contexts` and `--levels` to override the
+context sizes and central coverage levels, `--max-episodes` to limit a run,
+`--out-dir` to choose its destination, and `--force` to replace existing
+outputs.
+
+Each run writes `points.parquet` (per-query posterior and target values),
+`metrics.csv` (distributional scores by context size), `coverage.csv`
+(pooled and per-episode interval coverage), `pit_ecdf.csv`, `run.json` with
+dataset/checkpoint provenance, and `posterior_calibration.pdf` / `.png`. These
+artifacts preserve per-episode variation while the figure summarizes nominal
+versus empirical coverage and the PIT empirical CDF. The runner requires a
+single CATE-distribution head; two-potential-outcome checkpoints are not
+supported for this evaluation.
 
 ## Method table
 
