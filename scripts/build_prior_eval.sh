@@ -43,6 +43,15 @@ K=${K:-10000}
 SEED=${SEED:-20260806}
 MEM_BUDGET=${MEM_BUDGET:-8000000000}
 
+MIN_DIM_U=${MIN_DIM_U:-1}
+MAX_DIM_U=${MAX_DIM_U:-10}
+MIN_DIM_W=${MIN_DIM_W:-1}
+MAX_DIM_W=${MAX_DIM_W:-10}
+MIN_DIM_Z=${MIN_DIM_Z:-1}
+MAX_DIM_Z=${MAX_DIM_Z:-10}
+MIN_DIM_X=${MIN_DIM_X:-1}
+MAX_DIM_X=${MAX_DIM_X:-10}
+
 OUT="${OUT_ROOT}/${NAME}"
 
 echo "Building frozen prior set:"
@@ -50,6 +59,7 @@ echo "  out         = ${OUT}"
 echo "  device      = ${DEVICE}"
 echo "  n_datasets  = ${N_DATASETS}"
 echo "  n_max/n_q/K = ${N_MAX}/${N_Q}/${K}   (rows per episode: $((N_MAX + N_Q * K)))"
+echo "  dims U/X/W/Z = ${MIN_DIM_U}-${MAX_DIM_U}/${MIN_DIM_X}-${MAX_DIM_X}/${MIN_DIM_W}-${MAX_DIM_W}/${MIN_DIM_Z}-${MAX_DIM_Z}"
 echo "  seed        = ${SEED}"
 echo
 
@@ -63,6 +73,14 @@ python -m prior_eval.build \
   --mc_cate "${K}" \
   --seed "${SEED}" \
   --prior_mc_mem_budget "${MEM_BUDGET}" \
+  --min_dim_U "${MIN_DIM_U}" \
+  --max_dim_U "${MAX_DIM_U}" \
+  --min_dim_W "${MIN_DIM_W}" \
+  --max_dim_W "${MAX_DIM_W}" \
+  --min_dim_Z "${MIN_DIM_Z}" \
+  --max_dim_Z "${MAX_DIM_Z}" \
+  --min_dim_X "${MIN_DIM_X}" \
+  --max_dim_X "${MAX_DIM_X}" \
   --datasets_per_file 8 \
   --n_jobs 1
 
