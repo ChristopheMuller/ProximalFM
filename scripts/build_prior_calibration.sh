@@ -10,7 +10,7 @@ set -euo pipefail
 # adding independent episodes.
 #
 # A cheap production-shaped pilot can be built first with:
-#   N_DATASETS=120 NAME=prior_calibration_d5_v1 scripts/build_prior_calibration.sh
+#   N_DATASETS=120 NAME=prior_calibration_v1 scripts/build_prior_calibration.sh
 # Rerunning the default command with the same NAME, seed, device, and structural
 # settings appends deterministically from 120 to 400 episodes.
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-export NAME="${NAME:-prior_calibration_d5_v1}"
+export NAME="${NAME:-prior_calibration_v1}"
 export N_DATASETS="${N_DATASETS:-400}"
 export N_MAX="${N_MAX:-2048}"
 export N_Q="${N_Q:-256}"
