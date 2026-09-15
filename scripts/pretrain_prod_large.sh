@@ -2,9 +2,9 @@
 # Post-tune whole_1 on larger in-context datasets (up to 5k context rows).
 #
 # This keeps the effective meta-batch and causal prior from pretrain_prod.sh,
-# but uses smaller gradient-accumulation chunks plus activation recomputation
-# for the longer context.  It is a fresh optimization run initialized from the
-# complete trained ProximalFM checkpoint, not a resume of whole_1.
+# but uses smaller gradient-accumulation chunks and activation recomputation
+# for the longer context.  It is initialized from the complete trained
+# ProximalFM checkpoint, not a resume of whole_1.
 #
 # Sequence lengths are sampled uniformly over [64, 5000).  This expands the
 # original support instead of replacing it: about 40% of episodes remain below
@@ -13,14 +13,10 @@
 # too much of this short post-tune at small contexts.  Dedicated frozen
 # large-context validation sets are used for evaluation.
 #
-# MAX_STEPS=3000 is provisional until steps/second and validation overhead have
-# been measured on the target GPU.  All runtime-sensitive choices below are
-# environment-overridable without editing this production recipe.
-
 set -euo pipefail
 
-RUN=${RUN:-large_run}
-CUDA=${CUDA:-0}
+RUN=${RUN:-large_5k}
+CUDA=${CUDA:-2}
 CKPT=${CKPT:-whole_1/best_model.ckpt}
 TRANSFER=${TRANSFER:-large_run/transfer_rules_freezing.yml}
 
@@ -31,7 +27,7 @@ PRIOR_EVAL_INTERVAL=${PRIOR_EVAL_INTERVAL:-200}
 PRIOR_MAX_EP=${PRIOR_MAX_EP:-250}
 SYNT_MAX_EP=${SYNT_MAX_EP:-240}
 
-MAX_STEPS=${MAX_STEPS:-3000}
+MAX_STEPS=${MAX_STEPS:-30000}
 BATCH_SIZE=${BATCH_SIZE:-64}
 MICRO_BATCH_SIZE=${MICRO_BATCH_SIZE:-16}
 MIN_SEQ_LEN=${MIN_SEQ_LEN:-64}
@@ -44,7 +40,7 @@ RECOMPUTE=${RECOMPUTE:-True}
 # budget; the short warmup is for the fresh AdamW state.
 LR=${LR:-2e-5}
 SCHEDULER=${SCHEDULER:-cosine_warmup}
-WARMUP_STEPS=${WARMUP_STEPS:-100}
+WARMUP_STEPS=${WARMUP_STEPS:-500}
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export CUDA_VISIBLE_DEVICES=${CUDA}
