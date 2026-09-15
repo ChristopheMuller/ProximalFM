@@ -3,7 +3,7 @@
 The command accepts either a sidecar-backed frozen set (prior, realistic, or
 literature) or a semi-synthetic cell carrying an analytic ``CATE`` field.  It
 runs the model once per episode and context prefix, retains compact row-level
-diagnostics, and writes the coverage/PIT figure used by the paper.
+diagnostics, and writes a calibration/contraction figure used by the paper.
 
 Run from the repository root::
 
@@ -495,50 +495,200 @@ def run_calibration(
     return CalibrationResult(points, metrics, coverage, pit_ecdf)
 
 
-def make_calibration_figure(coverage: pd.DataFrame, pit_ecdf: pd.DataFrame) -> Any:
-    """Coverage reliability and PIT ECDF, sharing a context-size colour scale."""
-    # Keep plotting imports lazy: argument parsing, dataset validation, and
-    # ``--help`` must not initialize Matplotlib or scan the system font cache.
-    from analysis_eval.design import FULL_PAGE_WIDTH_IN, apply_style
+def _plot_calibration_panels(
+    coverage: pd.DataFrame,
+    points: pd.DataFrame,
+    axes: Sequence[Any],
+    *,
+    titles: Sequence[str],
+    row_label: Optional[str] = None,
+) -> None:
+    """Render one three-panel calibration row onto supplied axes.
+
+    Coverage is pooled over all query rows. Posterior width is its row-level
+    arithmetic mean in frozen target units; its IQR is taken across
+    episode-level mean widths, making the band a description of heterogeneity
+    rather than a standard error for the pooled mean.
+    """
     from analysis_eval.plotting import plt
 
-    apply_style()
+    if len(axes) != 3 or len(titles) != 3:
+        raise ValueError("calibration rows need exactly three axes and titles")
+    ax_cov, ax_reliability, ax_width = axes
     contexts = sorted(int(value) for value in coverage["n_ctx"].unique())
-    if contexts != sorted(int(value) for value in pit_ecdf["n_ctx"].unique()):
-        raise ValueError("coverage and PIT tables contain different context sizes")
-    colours = plt.cm.viridis(np.linspace(0.08, 0.88, len(contexts)))
-    fig, (ax_cov, ax_pit) = plt.subplots(
-        1, 2, figsize=(FULL_PAGE_WIDTH_IN, 3.35), constrained_layout=True
-    )
+    if contexts != sorted(int(value) for value in points["n_ctx"].unique()):
+        raise ValueError("coverage and point tables contain different context sizes")
+    if "posterior_sd" not in points:
+        raise ValueError("point table must contain row-level posterior_sd")
+    if "episode" not in points:
+        raise ValueError("point table must identify each episode")
+    if (
+        not np.isfinite(points["posterior_sd"]).all()
+        or (points["posterior_sd"] <= 0).any()
+    ):
+        raise ValueError(
+            "posterior_sd must be strictly positive for log-scale plotting"
+        )
 
-    ax_cov.plot([0, 1], [0, 1], color="0.45", linestyle=":", linewidth=1)
-    ax_pit.plot([0, 1], [0, 1], color="0.45", linestyle=":", linewidth=1)
-    for colour, n_ctx in zip(colours, contexts):
-        cov = coverage[coverage["n_ctx"].eq(n_ctx)].sort_values("nominal")
-        ecdf = pit_ecdf[pit_ecdf["n_ctx"].eq(n_ctx)].sort_values("pit")
-        label = f"{n_ctx:,}"
+    levels = sorted(float(value) for value in coverage["nominal"].unique())
+    level_colours = plt.cm.viridis(np.linspace(0.06, 0.94, len(levels)))
+    context_colours = plt.cm.plasma(np.linspace(0.1, 0.9, len(contexts)))
+    for colour, level in zip(level_colours, levels):
+        cov = coverage[coverage["nominal"].eq(level)].sort_values("n_ctx")
         ax_cov.plot(
+            cov["n_ctx"],
+            cov["empirical"],
+            color=colour,
+            marker="o",
+            markersize=2.4,
+            linewidth=1.35,
+            label=f"{level:.0%}",
+        )
+        ax_cov.axhline(level, color=colour, linestyle=":", linewidth=0.8, alpha=0.45)
+
+    ax_reliability.plot([0, 1], [0, 1], color="0.45", linestyle=":", linewidth=1)
+    for colour, n_ctx in zip(context_colours, contexts):
+        cov = coverage[coverage["n_ctx"].eq(n_ctx)].sort_values("nominal")
+        ax_reliability.plot(
             cov["nominal"],
             cov["empirical"],
             color=colour,
             marker="o",
             markersize=2.4,
             linewidth=1.35,
-            label=label,
+            label=f"{n_ctx:,}",
         )
-        ax_pit.plot(ecdf["pit"], ecdf["ecdf"], color=colour, linewidth=1.35)
 
-    for ax in (ax_cov, ax_pit):
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.set_aspect("equal", adjustable="box")
-    ax_cov.set_xlabel("Nominal central credible level")
+    episode_widths = points.groupby(["n_ctx", "episode"], sort=True)[
+        "posterior_sd"
+    ].mean()
+    width_summary = episode_widths.groupby("n_ctx").agg(
+        mean="mean",
+        p25=lambda value: value.quantile(0.25),
+        p75=lambda value: value.quantile(0.75),
+    )
+    width_summary = width_summary.reindex(contexts)
+    ax_width.fill_between(
+        width_summary.index,
+        width_summary["p25"],
+        width_summary["p75"],
+        color="0.55",
+        alpha=0.25,
+        linewidth=0,
+        label="Episode IQR",
+    )
+    ax_width.plot(
+        width_summary.index,
+        width_summary["mean"],
+        color="black",
+        marker="o",
+        markersize=3.2,
+        linewidth=1.5,
+        label="Row mean",
+    )
+
+    for ax in (ax_cov, ax_width):
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(contexts)
+        ax.set_xticklabels([f"{n:,}" for n in contexts])
+    ax_cov.set_ylim(0, 1)
+    ax_cov.set_xlabel("Context size")
     ax_cov.set_ylabel("Empirical coverage")
-    ax_cov.set_title("(a) Credible-interval calibration", loc="left")
-    ax_pit.set_xlabel("Probability integral transform")
-    ax_pit.set_ylabel("Empirical CDF")
-    ax_pit.set_title("(b) PIT calibration", loc="left")
-    ax_cov.legend(title="Context size", frameon=False, ncol=1)
+    ax_cov.set_title(titles[0], loc="left")
+    ax_reliability.set_xlim(0, 1)
+    ax_reliability.set_ylim(0, 1)
+    ax_reliability.set_aspect("equal", adjustable="box")
+    ax_reliability.set_xlabel("Nominal central credible level")
+    ax_reliability.set_ylabel("Empirical coverage")
+    ax_reliability.set_title(titles[1], loc="left")
+    ax_width.set_yscale("log")
+    ax_width.set_xlabel("Context size")
+    ax_width.set_ylabel("Mean posterior SD")
+    ax_width.set_title(titles[2], loc="left")
+    ax_reliability.legend(title="Context size", frameon=False, fontsize="small")
+    ax_width.legend(frameon=False, fontsize="small")
+    # Give every panel the same square box. The calibration panel therefore
+    # keeps a geometrically meaningful diagonal, while the x-axes and titles
+    # line up across a row instead of its square axis floating vertically.
+    for ax in (ax_cov, ax_reliability, ax_width):
+        ax.set_box_aspect(1)
+        ax.set_anchor("S")
+    if row_label is not None:
+        ax_cov.annotate(
+            row_label,
+            xy=(-0.34, 0.5),
+            xycoords="axes fraction",
+            ha="center",
+            va="center",
+            rotation=90,
+            fontsize="medium",
+            fontweight="bold",
+        )
+
+
+def make_calibration_figure(coverage: pd.DataFrame, points: pd.DataFrame) -> Any:
+    """Plot coverage calibration and posterior-width contraction by context."""
+    # Keep plotting imports lazy: argument parsing, dataset validation, and
+    # ``--help`` must not initialize Matplotlib or scan the system font cache.
+    from analysis_eval.design import FULL_PAGE_WIDTH_IN, apply_style
+    from analysis_eval.plotting import plt
+
+    apply_style()
+    fig, axes = plt.subplots(
+        1, 3, figsize=(FULL_PAGE_WIDTH_IN, 3.35), constrained_layout=True
+    )
+    _plot_calibration_panels(
+        coverage,
+        points,
+        axes,
+        titles=(
+            "(a) Coverage by context",
+            "(b) Calibration",
+            "(c) Posterior contraction",
+        ),
+    )
+    return fig
+
+
+def make_comparison_figure(
+    prior_coverage: pd.DataFrame,
+    prior_points: pd.DataFrame,
+    semisynt_coverage: pd.DataFrame,
+    semisynt_points: pd.DataFrame,
+) -> Any:
+    """Compare cached prior and semi-synthetic calibration diagnostics."""
+    from analysis_eval.design import FULL_PAGE_WIDTH_IN, apply_style
+    from analysis_eval.plotting import plt
+
+    apply_style()
+    fig, axes = plt.subplots(
+        2,
+        3,
+        figsize=(FULL_PAGE_WIDTH_IN, 6.4),
+        constrained_layout=True,
+    )
+    _plot_calibration_panels(
+        prior_coverage,
+        prior_points,
+        axes[0],
+        titles=(
+            "(a) Coverage by context",
+            "(b) Calibration",
+            "(c) Posterior contraction",
+        ),
+        row_label="Prior",
+    )
+    _plot_calibration_panels(
+        semisynt_coverage,
+        semisynt_points,
+        axes[1],
+        titles=(
+            "(d) Coverage by context",
+            "(e) Calibration",
+            "(f) Posterior contraction",
+        ),
+        row_label="Semi-synthetic",
+    )
     return fig
 
 
@@ -603,11 +753,31 @@ def write_outputs(
     (out_dir / "run.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    figure = make_calibration_figure(result.coverage, result.pit_ecdf)
+    figure = make_calibration_figure(result.coverage, result.points)
     from analysis_eval.plotting import save_figure
 
     save_figure(figure, out_dir, "posterior_calibration")
     return [out_dir / name for name in OUTPUT_FILES]
+
+
+def rerender_cached_figure(out_dir: Path) -> list[Path]:
+    """Regenerate the figure from cached row diagnostics without inference."""
+    cache_paths = {
+        "points": out_dir / "points.parquet",
+        "coverage": out_dir / "coverage.csv",
+    }
+    missing = [name for name, path in cache_paths.items() if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"cannot render cached figure in {out_dir}: missing "
+            f"{', '.join(cache_paths[name].name for name in missing)}"
+        )
+    figure = make_calibration_figure(
+        pd.read_csv(cache_paths["coverage"]), pd.read_parquet(cache_paths["points"])
+    )
+    from analysis_eval.plotting import save_figure
+
+    return save_figure(figure, out_dir, "posterior_calibration")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -631,6 +801,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--no-progress", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="regenerate the PDF/PNG from cached points.parquet and coverage.csv",
+    )
     return parser
 
 
@@ -646,6 +821,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.out_dir is None
         else args.out_dir.resolve()
     )
+    if args.plot_only:
+        paths = rerender_cached_figure(out_dir)
+        print(f"Regenerated cached figure in: {out_dir}")
+        for path in paths:
+            print(f"  {path.name}")
+        return 0
     _check_outputs(out_dir, args.force)
 
     model, step = load_model(checkpoint, device=args.device)

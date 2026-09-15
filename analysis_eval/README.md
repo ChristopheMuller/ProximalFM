@@ -26,11 +26,44 @@ outputs.
 Each run writes `points.parquet` (per-query posterior and target values),
 `metrics.csv` (distributional scores by context size), `coverage.csv`
 (pooled and per-episode interval coverage), `pit_ecdf.csv`, `run.json` with
-dataset/checkpoint provenance, and `posterior_calibration.pdf` / `.png`. These
-artifacts preserve per-episode variation while the figure summarizes nominal
-versus empirical coverage and the PIT empirical CDF. The runner requires a
-single CATE-distribution head; two-potential-outcome checkpoints are not
-supported for this evaluation.
+dataset/checkpoint provenance, and `posterior_calibration.pdf` / `.png`. The
+three-panel figure shows: empirical coverage at each nominal level as context
+grows; nominal-versus-empirical calibration curves with the 45° reference;
+and posterior-width contraction. The contraction curve is the mean row-level
+posterior SD, with a shaded IQR computed over episode-level mean widths. That
+band describes between-episode heterogeneity, rather than the sampling error
+of the pooled mean. `pit_ecdf.csv` remains available for PIT diagnostics even
+though it is not a figure panel. The runner requires a single
+CATE-distribution head; two-potential-outcome checkpoints are not supported
+for this evaluation.
+
+Once a calibration run exists, regenerate only its figure—without loading the
+model or running inference—with `--plot-only`:
+
+```bash
+uv run python -m analysis_eval.posterior_calibration \
+  --data-root data/prior_eval/prior_calibration_v1 \
+  --ckpt whole_1/best_model.ckpt \
+  --plot-only
+```
+
+### Prior versus semi-synthetic comparison
+
+`analysis_eval.compare_posterior_calibration` is also cache-only. It combines
+two completed calibration output directories into a two-row, three-column
+figure: prior results on the first row and semi-synthetic results on the
+second. Each row contains the same coverage, calibration, and contraction
+panels described above.
+
+```bash
+uv run python -m analysis_eval.compare_posterior_calibration \
+  --prior-dir analysis_eval/results/posterior_calibration/prior_calibration_v1__whole_1-best_model \
+  --semisynt-dir analysis_eval/results/posterior_calibration/nonlinear_conf_high_proxy_low__whole_1-best_model \
+  --out-dir analysis_eval/results/posterior_calibration/comparison
+```
+
+Use `--name` to change the output basename; the command writes both PDF and
+PNG files and never recomputes posterior predictions.
 
 ## Method table
 

@@ -219,6 +219,7 @@ def test_checkpoint_directory_resolution_and_figure_formats(tmp_path, monkeypatc
                 "n_ctx": [4],
                 "target": [0.0],
                 "pit": [0.5],
+                "posterior_sd": [0.25],
             }
         ),
         metrics=pd.DataFrame({"n_ctx": [4], "crps": [0.25]}),
@@ -243,3 +244,54 @@ def test_checkpoint_directory_resolution_and_figure_formats(tmp_path, monkeypatc
     assert json.loads((tmp_path / "outputs" / "run.json").read_text()) == {
         "dataset_kind": "test"
     }
+
+
+def test_figure_uses_context_trajectories_and_log_contraction(monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: b"")
+    coverage = pd.DataFrame(
+        {
+            "n_ctx": [4, 8, 4, 8],
+            "nominal": [0.5, 0.5, 0.9, 0.9],
+            "empirical": [0.55, 0.52, 0.88, 0.91],
+        }
+    )
+    points = pd.DataFrame(
+        {
+            "n_ctx": [4, 4, 8, 8],
+            "episode": [0, 1, 0, 1],
+            "posterior_sd": [2.0, 4.0, 1.0, 3.0],
+        }
+    )
+
+    figure = calibration.make_calibration_figure(coverage, points)
+    coverage_ax, reliability_ax, width_ax = figure.axes
+    assert coverage_ax.get_xscale() == "log"
+    assert reliability_ax.get_title(loc="left").endswith("Calibration")
+    assert reliability_ax.get_anchor() == "S"
+    assert width_ax.get_xscale() == "log"
+    assert width_ax.get_yscale() == "log"
+    assert width_ax.get_ylabel() == "Mean posterior SD"
+    np.testing.assert_allclose(width_ax.lines[0].get_ydata(), [3.0, 2.0])
+    assert len(width_ax.collections) == 1
+
+
+def test_rerender_cached_figure_reuses_points_and_coverage(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "check_output", lambda *_args, **_kwargs: b"")
+    pd.DataFrame(
+        {"n_ctx": [4, 8], "nominal": [0.9, 0.9], "empirical": [0.8, 0.85]}
+    ).to_csv(tmp_path / "coverage.csv", index=False)
+    pd.DataFrame(
+        {"n_ctx": [4, 8], "episode": [0, 0], "posterior_sd": [0.4, 0.2]}
+    ).to_parquet(tmp_path / "points.parquet", index=False)
+
+    paths = calibration.rerender_cached_figure(tmp_path)
+
+    assert [path.name for path in paths] == [
+        "posterior_calibration.pdf",
+        "posterior_calibration.png",
+    ]
+    assert all(path.is_file() and path.stat().st_size > 100 for path in paths)
