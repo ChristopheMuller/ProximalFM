@@ -93,37 +93,55 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     # Conventional meta-learners: colour and marker identify OLS/RF/TabICL;
     # line style identifies the S/T/X learner.
     "S-OLS": MethodStyle(
-        "S-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["S"]
+        "S-learner (ridge)",
+        META_COLORS["OLS"],
+        META_MARKERS["OLS"],
+        META_LINESTYLES["S"],
     ),
     "S-RF": MethodStyle(
-        "S-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["S"]
+        "S-learner (RF)",
+        META_COLORS["RF"],
+        META_MARKERS["RF"],
+        META_LINESTYLES["S"],
     ),
     "S-TabICL": MethodStyle(
-        "S-TabICL",
+        "S-learner (TabICL)",
         META_COLORS["TabICL"],
         META_MARKERS["TabICL"],
         META_LINESTYLES["S"],
     ),
     "T-OLS": MethodStyle(
-        "T-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["T"]
+        "T-learner (ridge)",
+        META_COLORS["OLS"],
+        META_MARKERS["OLS"],
+        META_LINESTYLES["T"],
     ),
     "T-RF": MethodStyle(
-        "T-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["T"]
+        "T-learner (RF)",
+        META_COLORS["RF"],
+        META_MARKERS["RF"],
+        META_LINESTYLES["T"],
     ),
     "T-TabICL": MethodStyle(
-        "T-TabICL",
+        "T-learner (TabICL)",
         META_COLORS["TabICL"],
         META_MARKERS["TabICL"],
         META_LINESTYLES["T"],
     ),
     "X-OLS": MethodStyle(
-        "X-OLS", META_COLORS["OLS"], META_MARKERS["OLS"], META_LINESTYLES["X"]
+        "X-learner (ridge)",
+        META_COLORS["OLS"],
+        META_MARKERS["OLS"],
+        META_LINESTYLES["X"],
     ),
     "X-RF": MethodStyle(
-        "X-RF", META_COLORS["RF"], META_MARKERS["RF"], META_LINESTYLES["X"]
+        "X-learner (RF)",
+        META_COLORS["RF"],
+        META_MARKERS["RF"],
+        META_LINESTYLES["X"],
     ),
     "X-TabICL": MethodStyle(
-        "X-TabICL",
+        "X-learner (TabICL)",
         META_COLORS["TabICL"],
         META_MARKERS["TabICL"],
         META_LINESTYLES["X"],
@@ -132,19 +150,19 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     # Their dash-dot line distinguishes marginalised outputs from the parent;
     # the marker identifies the integration rule (diamond=kernel, hexagon=kNN).
     "S-RF-WZ-Kernel-128": MethodStyle(
-        "S-RF + kernel marginalisation",
+        "S-learner (RF) + kernel marg.",
         META_COLORS["RF"],
         "d",
         MARGINALIZED_LINESTYLE,
     ),
     "S-RF-WZ-kNN-128": MethodStyle(
-        "S-RF + kNN marginalisation",
+        "S-learner (RF) + kNN marg.",
         META_COLORS["RF"],
         "h",
         MARGINALIZED_LINESTYLE,
     ),
     "S-TabICL-WZ-kNN-16": MethodStyle(
-        "S-TabICL + kNN marginalisation",
+        "S-learner (TabICL) + kNN marg.",
         META_COLORS["TabICL"],
         "h",
         MARGINALIZED_LINESTYLE,
@@ -152,8 +170,8 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     # Classical proximal learners. P-learner outputs share a colour, distinct
     # from PMMR; markers and line styles encode their output variants.
     "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", "--"),
-    "P-Kernel-RF": MethodStyle("P-Kernel-RF", COLORS["green"], "s"),
-    "P-Kernel-OLS": MethodStyle("P-Kernel-OLS", COLORS["green"], "o", "--"),
+    "P-Kernel-RF": MethodStyle("P-learner (RF)", COLORS["green"], "s"),
+    "P-Kernel-OLS": MethodStyle("P-learner (ridge)", COLORS["green"], "o", "--"),
     "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["green"], "P", ":"),
     "KPV-X-Wcond": MethodStyle(
         "KPV (cond. W)",
@@ -236,13 +254,21 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         zorder=4,
     ),
     "CausalPFN-WZ-kNN-16": MethodStyle(
-        "CausalPFN + kNN marginalisation",
+        "CausalPFN + kNN marg.",
         COLORS["blue"],
         "h",
         MARGINALIZED_LINESTYLE,
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=4,
+    ),
+    "CausalPFN-WZ-kernel-16": MethodStyle(
+        "CausalPFN + kernel marg.",
+        COLORS["blue"],
+        "h",
+        MARGINALIZED_LINESTYLE,
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
     ),
     "ProximalFM": MethodStyle(
         "ProximalFM",
