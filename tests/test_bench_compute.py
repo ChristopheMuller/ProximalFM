@@ -15,6 +15,7 @@ exists to make, each of which used to be made in several places at once:
 """
 
 import warnings
+import sys
 from unittest import mock
 
 import pytest
@@ -25,10 +26,19 @@ from benchmarks.compute import (
     ComputeConfig,
     LegacyComputeKeyError,
     WorkerManager,
+    apply_compute,
     parse_global_compute,
     resolve_device,
     resolve_method_compute,
 )
+
+
+def test_apply_compute_limits_loaded_faiss_runtime():
+    faiss = mock.Mock()
+    with mock.patch.dict(sys.modules, {"faiss": faiss}):
+        apply_compute(ComputeConfig(blas_threads=2))
+        apply_compute(ComputeConfig(blas_threads=1))
+    assert faiss.omp_set_num_threads.call_args_list == [mock.call(2), mock.call(1)]
 
 
 # ── 1. Hard migration ────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ out over processes" are mutually exclusive and the config has to be able to say 
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, fields, replace
@@ -280,6 +281,13 @@ def apply_compute(compute: ComputeConfig) -> None:
         torch.set_num_interop_threads(1)
     except RuntimeError:
         pass
+    # FAISS owns a separate OpenMP runtime. Torch's limit does not constrain it,
+    # and inline runs bypass the pool's OMP_NUM_THREADS bootstrap. Unrestricted
+    # FAISS searches can segfault alongside torch on macOS. Apply the configured
+    # budget at runtime too, without importing an optional dependency here.
+    faiss = sys.modules.get("faiss")
+    if faiss is not None:
+        faiss.omp_set_num_threads(int(compute.blas_threads))
 
 
 def _pool_init(blas_threads: int) -> None:
