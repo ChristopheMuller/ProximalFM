@@ -156,7 +156,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "P-Kernel-OLS": MethodStyle("P-Kernel-OLS", COLORS["green"], "o", "--"),
     "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["green"], "P", ":"),
     "KPV-X-Wcond": MethodStyle(
-        "KPV (conditional W)",
+        "KPV (cond. W)",
         COLORS["red"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
@@ -174,7 +174,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["red"], "P", ":"),
     "PMMR-X-Wcond": MethodStyle(
-        "PMMR (conditional W)",
+        "PMMR (cond. W)",
         COLORS["brown"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
@@ -192,7 +192,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     "PMMR-ATE": MethodStyle("PMMR (ATE)", COLORS["brown"], "H", ":"),
     "NMMR-V-fixed-Wcond": MethodStyle(
-        "NMMR (conditional W)",
+        "NMMR (cond. W)",
         COLORS["wine"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
