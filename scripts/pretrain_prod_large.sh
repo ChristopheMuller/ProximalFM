@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Post-tune whole_1 on larger in-context datasets (up to 10k context rows).
+# Post-tune whole_1 on larger in-context datasets (up to 5k context rows).
 #
 # This keeps the effective meta-batch and causal prior from pretrain_prod.sh,
 # but uses smaller gradient-accumulation chunks plus activation recomputation
 # for the longer context.  It is a fresh optimization run initialized from the
 # complete trained ProximalFM checkpoint, not a resume of whole_1.
 #
-# Sequence lengths are sampled uniformly over [64, 10000).  This expands the
-# original support instead of replacing it: about 20% of episodes remain below
-# 2048 for rehearsal, while about 20% are at least 8000 for large-context
+# Sequence lengths are sampled uniformly over [64, 5000).  This expands the
+# original support instead of replacing it: about 40% of episodes remain below
+# 2048 for rehearsal, while about 20% are at least 4000 for large-context
 # adaptation.  Log-uniform is deliberately off because it would concentrate
-# too much of this short post-tune at small contexts.  The fixed validation
-# point is 10000 context rows (+ 128 query rows).
+# too much of this short post-tune at small contexts.  Dedicated frozen
+# large-context validation sets are used for evaluation.
 #
-# MAX_STEPS=5000 is provisional until steps/second and validation overhead have
+# MAX_STEPS=3000 is provisional until steps/second and validation overhead have
 # been measured on the target GPU.  All runtime-sensitive choices below are
 # environment-overridable without editing this production recipe.
 
