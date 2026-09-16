@@ -214,3 +214,15 @@ mixing that hypothetical cost into the end-to-end benchmark. Historical tuned
 caches cannot reconstruct this split and are shown only at their total time;
 run `FORCE=1 scripts/run_semisynt_benchmarks.sh` to populate the second timing.
 Use `--context-size` or `--methods` to override the defaults.
+
+## Causal Chambers ATE learning curve
+
+```bash
+uv run python -m analysis_eval.causal_chambers \
+  --summary-csv benchmarks/causal_chambers/results/ate/summary.csv
+```
+
+This reads the Causal Chambers runner's `summary.csv` and writes
+`analysis_eval/results/causal_chambers_rmse.{pdf,png}`. The figure shows one
+ATE RMSE line per method over the available context sizes. Use `--methods`,
+`--out-dir`, or `--name` to customize the figure.
