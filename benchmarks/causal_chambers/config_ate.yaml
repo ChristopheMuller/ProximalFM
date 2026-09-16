@@ -146,3 +146,18 @@ methods:
       seed: 1234
       grid:
         kernel_scale: [0.8, 1.0, 1.2]
+
+  - name: PMMR-ATE
+    cls: PMMR
+    strategy: marginal
+    compute: {n_workers: 1}
+    tune:
+      enabled: true
+      val_frac: 0.2
+      n_trials: 9
+      seed: 1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]
+        kernel_scale_z: [0.8, 1.0, 1.2]
+      sweep:
+        lam1: [0.00001, 0.0001, 0.001, 0.01, 0.1]

@@ -14,6 +14,7 @@ from benchmarks.methods import (
     DoPFN_Estimator,
     FeatureBuilder,
     KPV_Wrapper,
+    PMMR_Wrapper,
     S_Learner,
     T_Learner,
     X_Learner,
@@ -316,3 +317,22 @@ def test_kpv_wrapper_exposes_its_native_context_marginal_ate():
 
     assert wrapper.predict_ate() == 2.75
     assert native.calls == 1
+
+
+def test_pmmr_native_ate_and_wrapper_use_the_context_marginal_head():
+    from benchmarks.methods.pmmr import PMMREstimator
+
+    estimator = object.__new__(PMMREstimator)
+    calls = []
+
+    def mean_outcome(a, n=1):
+        calls.append((a, n))
+        return np.array([5.0 if a == 1.0 else 2.25])
+
+    estimator.predict_mean_outcome = mean_outcome
+    np.testing.assert_allclose(estimator.predict_ate(), 2.75)
+    assert calls == [(1.0, 1), (0.0, 1)]
+
+    wrapper = object.__new__(PMMR_Wrapper)
+    wrapper.model = estimator
+    np.testing.assert_allclose(wrapper.predict_ate(), 2.75)

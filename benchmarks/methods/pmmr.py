@@ -646,6 +646,18 @@ class PMMREstimator:
 
         raise ValueError(f"Unknown prediction strategy: {strategy!r}")
 
+    def predict_ate(self) -> float:
+        """Return the marginal ATE over the fitted empirical joint ``(W, X)``.
+
+        This is the scalar counterpart to ``predict(..., strategy='marginal')``.
+        The bridge is evaluated at each treatment arm and integrated using the
+        joint mean kernel feature saved during :meth:`fit`; no query covariates
+        are part of this estimand.
+        """
+        y1 = self.predict_mean_outcome(1.0, n=1)
+        y0 = self.predict_mean_outcome(0.0, n=1)
+        return float((y1 - y0).item())
+
     def _predict_effect_paired_w(self, X: np.ndarray, W: np.ndarray) -> np.ndarray:
         return self.predict_bridge(1.0, W=W, X=X) - self.predict_bridge(0.0, W=W, X=X)
 
