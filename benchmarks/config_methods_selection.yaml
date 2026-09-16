@@ -60,26 +60,26 @@ methods:
           min_samples_leaf: [1, 5, 10]
           max_features: [1.0]
 
-  # - name: S-TabICL
-  #   cls:   S_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   tabicl: { kv_cache: true, n_estimators: 1 }
-  #   compute: { torch_threads: 2 }
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
 
-  # - name: S-TabICL-WZ-Marginalized
-  #   cls:   ProxyMarginalizer
-  #   estimator:
-  #     cls: S_Learner
-  #     base: tabicl
-  #     use_W: true
-  #     use_Z: true
-  #     tabicl: { kv_cache: true , n_estimators: 1}
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
-  #     - {name: S-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+  - name: S-TabICL-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: S_Learner
+      base: tabicl
+      use_W: true
+      use_Z: true
+      tabicl: { kv_cache: true , n_estimators: 1}
+    predict_batch_size: 4096
+    outputs:
+      - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+      - {name: S-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
   - name: T-OLS
@@ -135,28 +135,28 @@ methods:
 
 
   # ── X-Learner baselines ──────────────────────────────────────────────────
-  # - name: X-RF
-  #   cls:   X_Learner
-  #   base:  rf
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
-  # - name: X-TabICL
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    interactions: false
 
   # - name: X-TabICL-WZ-Marginalized
   #   cls:   ProxyMarginalizer
@@ -176,27 +176,27 @@ methods:
   #   cls:          P2SLS
   #   interactions: false
 
-  # - name: P-Kernel
-  #   cls:      PLearner
-  #   bridge:   kernel
-  #   n_splits: 4
-  #   q_clip:   20.0
-  #   bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
-  #   compute: { n_workers: 1 }
-  #   outputs:
-  #     - { name: P-Kernel-RF,  kind: cate, base: rf }
-  #     - { name: P-Kernel-OLS, kind: cate, base: linear }
-  #     - { name: P-Kernel-ATE, kind: ate }
+  - name: P-Kernel
+    cls:      PLearner
+    bridge:   kernel
+    n_splits: 4
+    q_clip:   20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-RF,  kind: cate, base: rf }
+      - { name: P-Kernel-OLS, kind: cate, base: linear }
+      - { name: P-Kernel-ATE, kind: ate }
   
   # - name: KPV
   #   cls:         KernelPV
@@ -250,65 +250,65 @@ methods:
       - { name: NMMR-V-fixed-Wind,  strategy: independent }
       - { name: NMMR-V-fixed-Wcond, strategy: conditional }
 
-  # - name: NMMR-U-fixed
-  #   cls:          NMMR
-  #   loss:         u_stat
-  #   kernel_width: fixed
-  #   tune:
-  #     enabled:  true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed:     1234
-  #     grid:
-  #       hidden_dim:    [16, 32, 64]
-  #       n_layers:      [2, 4, 6]
-  #       lr:            [0.001, 0.005]
-  #       weight_decay:  [0.0001]
-  #     sweep:
-  #       n_epochs:      [25, 50, 75, 100]
-  #   outputs:
-  #     - { name: NMMR-U-fixed-Wind,  strategy: independent }
-  #     - { name: NMMR-U-fixed-Wcond, strategy: conditional }
+  - name: NMMR-U-fixed
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-fixed-Wind,  strategy: independent }
+      - { name: NMMR-U-fixed-Wcond, strategy: conditional }
 
-  # - name: NMMR-V-median
-  #   cls:          NMMR
-  #   loss:         v_stat
-  #   kernel_width: median
-  #   tune:
-  #     enabled:  true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed:     1234
-  #     grid:
-  #       hidden_dim:    [16, 32, 64]
-  #       n_layers:      [2, 4, 6]
-  #       lr:            [0.001, 0.005]
-  #       weight_decay:  [0.0001]
-  #     sweep:
-  #       n_epochs:      [25, 50, 75, 100]
-  #   outputs:
-  #     - { name: NMMR-V-median-Wind,  strategy: independent }
-  #     - { name: NMMR-V-median-Wcond, strategy: conditional }
+  - name: NMMR-V-median
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-median-Wind,  strategy: independent }
+      - { name: NMMR-V-median-Wcond, strategy: conditional }
 
-  # - name: NMMR-U-median
-  #   cls:          NMMR
-  #   loss:         u_stat
-  #   kernel_width: median
-  #   tune:
-  #     enabled:  true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed:     1234
-  #     grid:
-  #       hidden_dim:    [16, 32, 64]
-  #       n_layers:      [2, 4, 6]
-  #       lr:            [0.001, 0.005]
-  #       weight_decay:  [0.0001]
-  #     sweep:
-  #       n_epochs:      [25, 50, 75, 100]
-  #   outputs:
-  #     - { name: NMMR-U-median-Wind,  strategy: independent }
-  #     - { name: NMMR-U-median-Wcond, strategy: conditional }
+  - name: NMMR-U-median
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-median-Wind,  strategy: independent }
+      - { name: NMMR-U-median-Wcond, strategy: conditional }
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
   # - name: CausalFM
@@ -322,21 +322,21 @@ methods:
   #   use_W: false
   #   use_Z: false
 
-  # - name: CausalPFN
-  #   cls:  CausalPFN
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: false
+    use_Z: false
 
-  # - name: CausalPFN-WZ-Marginalized
-  #   cls: ProxyMarginalizer
-  #   estimator:
-  #     cls: CausalPFN
-  #     use_W: true
-  #     use_Z: true
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: CausalPFN-WZ-kNN-16, integration: {method: knn, n_points: 16}}
-  #     - {name: CausalPFN-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+  - name: CausalPFN-WZ-Marginalized
+    cls: ProxyMarginalizer
+    estimator:
+      cls: CausalPFN
+      use_W: true
+      use_Z: true
+    predict_batch_size: 4096
+    outputs:
+      - {name: CausalPFN-WZ-kNN-16, integration: {method: knn, n_points: 16}}
+      - {name: CausalPFN-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
 
   # ── ProximalFM ────────────────────────────────────────────────────────────
 
