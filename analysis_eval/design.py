@@ -265,7 +265,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "CausalPFN-WZ-kernel-16": MethodStyle(
         "CausalPFN + kernel marg.",
         COLORS["blue"],
-        "h",
+        "d",
         MARGINALIZED_LINESTYLE,
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
