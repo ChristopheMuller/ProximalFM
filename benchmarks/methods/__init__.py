@@ -1335,6 +1335,10 @@ class NMMR_Wrapper(CATEEstimator):
     def predict(self, X, *, W=None, Z=None):
         return self._predict_strategy(self.strategy, X, W=W)
 
+    def predict_ate(self) -> float:
+        """Return NMMR's joint-empirical ATE over its fitted context."""
+        return self.model.predict_ate()
+
     def predict_variants(self, X, *, W=None, Z=None):
         if not self._outputs:
             return {None: self.predict(X, W=W, Z=Z)}

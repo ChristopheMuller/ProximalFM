@@ -539,6 +539,26 @@ class NMMREstimator:
 
         raise ValueError(f"Unknown W prediction strategy: {strategy!r}")
 
+    def predict_ate(self) -> float:
+        """Estimate the empirical ATE over this fit's complete context.
+
+        NMMR's bridge is ``h(A, W, X)``. For the Causal Chambers protocol the
+        target population is the *joint empirical distribution* of the fitted
+        context, not a product of its X and W marginals. Therefore this uses
+        the observed ``(X_i, W_i)`` pairs and returns
+
+        ``mean_i[h(1, W_i, X_i) - h(0, W_i, X_i)]``.
+
+        This deliberately does not use either CATE marginalisation strategy:
+        ``independent`` breaks the fitted X--W pairing, while ``conditional``
+        replaces it with a kernel-smoothed approximation that is unnecessary
+        when the target is this context itself.
+        """
+        if self._model is None or self._X_train is None or self._W_train is None:
+            raise RuntimeError("Call fit() before predict_ate().")
+
+        return float(self._predict_effect_paired_w(self._X_train, self._W_train).mean())
+
     # ── Internals ─────────────────────────────────────────────────────────────
 
     @staticmethod

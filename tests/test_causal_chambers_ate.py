@@ -14,6 +14,7 @@ from benchmarks.methods import (
     DoPFN_Estimator,
     FeatureBuilder,
     KPV_Wrapper,
+    NMMR_Wrapper,
     PMMR_Wrapper,
     S_Learner,
     T_Learner,
@@ -336,3 +337,25 @@ def test_pmmr_native_ate_and_wrapper_use_the_context_marginal_head():
     wrapper = object.__new__(PMMR_Wrapper)
     wrapper.model = estimator
     np.testing.assert_allclose(wrapper.predict_ate(), 2.75)
+
+
+def test_nmmr_native_ate_and_wrapper_average_observed_context_pairs():
+    from benchmarks.methods.nmmr import NMMREstimator
+
+    estimator = object.__new__(NMMREstimator)
+    estimator._model = object()
+    estimator._X_train = object()
+    estimator._W_train = object()
+    calls = []
+
+    def paired_effect(X, W):
+        calls.append((X, W))
+        return np.array([1.0, 2.5, 4.0])
+
+    estimator._predict_effect_paired_w = paired_effect
+    np.testing.assert_allclose(estimator.predict_ate(), 2.5)
+    assert calls == [(estimator._X_train, estimator._W_train)]
+
+    wrapper = object.__new__(NMMR_Wrapper)
+    wrapper.model = estimator
+    np.testing.assert_allclose(wrapper.predict_ate(), 2.5)
