@@ -279,7 +279,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         zorder=5,
         alpha=1.0,
     ),
-    "ProximalFM-FT-3000": MethodStyle(
+    "ProximalFM-FT": MethodStyle(
         "ProximalFM-FT",
         COLORS["vermillion"],
         "*",
@@ -335,6 +335,7 @@ RELEVANT_METHODS: tuple[str, ...] = (
     "CausalPFN",
     "CausalPFN-WZ-kNN-16",
     "ProximalFM",
+    "ProximalFM-FT",
 )
 
 

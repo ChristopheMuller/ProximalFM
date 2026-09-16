@@ -345,3 +345,9 @@ methods:
     checkpoint: whole_1/best_model.ckpt
     ensemble:   1
     compute: { device: mps }
+
+  - name:       ProximalFM-FT
+    cls:        ProximalFM
+    checkpoint: large_5k/step-030000.ckpt
+    ensemble:   1
+    compute: { device: mps }
