@@ -18,6 +18,13 @@ import sys
 import numpy as np
 import pandas as pd
 import yaml
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -167,46 +174,67 @@ def main() -> None:
     )
     rows: list[dict[str, object]] = []
 
-    for method_cfg in cfg.get("methods", []):
-        method_compute = resolve_method_compute(compute, method_cfg)
-        apply_compute(method_compute)
-        for episode_index, (path, episode) in enumerate(zip(paths, episodes)):
-            for repeat in range(n_permutations):
-                order = _permutation(
-                    int(cfg["run"].get("seed", 0)), episode_index, repeat, episode["n"]
-                )
-                for n_ctx in context_sizes:
-                    context = order[:n_ctx]
-                    # The method gets precisely the factual prefix; the paired
-                    # intervention contrasts below remain evaluation-only.
-                    _, method = build_method(method_cfg, method_compute)
-                    method.fit(
-                        episode["X"][context],
-                        episode["A"][context],
-                        episode["Y"][context],
-                        W=episode["W"][context],
-                        Z=episode["Z"][context],
+    methods = cfg.get("methods", [])
+    total_fits = len(methods) * len(paths) * n_permutations * len(context_sizes)
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(bar_width=30),
+        MofNCompleteColumn(),
+        TextColumn("·"),
+        TimeElapsedColumn(),
+    ) as progress:
+        task = progress.add_task("Fitting ATE estimators", total=total_fits)
+        for method_cfg in methods:
+            method_compute = resolve_method_compute(compute, method_cfg)
+            apply_compute(method_compute)
+            for episode_index, (path, episode) in enumerate(zip(paths, episodes)):
+                for repeat in range(n_permutations):
+                    order = _permutation(
+                        int(cfg["run"].get("seed", 0)),
+                        episode_index,
+                        repeat,
+                        episode["n"],
                     )
-                    predict_ate = getattr(method, "predict_ate", None)
-                    if not callable(predict_ate):
-                        raise TypeError(
-                            f"{method_cfg['name']!r} must implement predict_ate() "
-                            "for the Causal Chambers ATE protocol."
+                    for n_ctx in context_sizes:
+                        progress.update(
+                            task,
+                            description=(
+                                f"{method_cfg['name']} · {path.stem} · "
+                                f"permutation {repeat + 1}/{n_permutations} · n={n_ctx}"
+                            ),
                         )
-                    ate_hat = float(predict_ate())
-                    ate_ref = float(episode["tau_ref"][context].mean())
-                    rows.append(
-                        {
-                            "condition": path.stem,
-                            "permutation": repeat,
-                            "n_ctx": n_ctx,
-                            "method": method_cfg["name"],
-                            "ate_hat": ate_hat,
-                            "ate_ref": ate_ref,
-                            "error": ate_hat - ate_ref,
-                            "abs_error": abs(ate_hat - ate_ref),
-                        }
-                    )
+                        context = order[:n_ctx]
+                        # The method gets precisely the factual prefix; the paired
+                        # intervention contrasts below remain evaluation-only.
+                        _, method = build_method(method_cfg, method_compute)
+                        method.fit(
+                            episode["X"][context],
+                            episode["A"][context],
+                            episode["Y"][context],
+                            W=episode["W"][context],
+                            Z=episode["Z"][context],
+                        )
+                        predict_ate = getattr(method, "predict_ate", None)
+                        if not callable(predict_ate):
+                            raise TypeError(
+                                f"{method_cfg['name']!r} must implement predict_ate() "
+                                "for the Causal Chambers ATE protocol."
+                            )
+                        ate_hat = float(predict_ate())
+                        ate_ref = float(episode["tau_ref"][context].mean())
+                        rows.append(
+                            {
+                                "condition": path.stem,
+                                "permutation": repeat,
+                                "n_ctx": n_ctx,
+                                "method": method_cfg["name"],
+                                "ate_hat": ate_hat,
+                                "ate_ref": ate_ref,
+                                "error": ate_hat - ate_ref,
+                                "abs_error": abs(ate_hat - ate_ref),
+                            }
+                        )
+                        progress.advance(task)
 
     results = pd.DataFrame(rows)
     destination = output_dir / "results.csv"

@@ -13,12 +13,13 @@ run:
     blas_threads: 1
     n_jobs: 1
 
-# Context prefixes are nested within each deterministic row permutation.  The
-# paired intervention reference is recomputed on the same prefix, so it is an
-# empirical ATE that correctly varies with n_ctx.
+# Context prefixes are nested within one deterministic row order. The paired
+# intervention reference is recomputed on the same prefix, so it is an
+# empirical ATE that correctly varies with n_ctx. Extra permutations are an
+# optional robustness check, not part of the default learning curve.
 ate:
   context_sizes: [128, 256, 512, 1000]
-  n_permutations: 20
+  n_permutations: 1
 
 data:
   csv_dir: benchmarks/causal_chambers/data
