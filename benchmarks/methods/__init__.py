@@ -1573,6 +1573,11 @@ class CausalPFN_Estimator(CATEEstimator):
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         feat = self.fb.build(X, W=W, Z=Z)
 
         X_train = np.ascontiguousarray(feat, dtype=np.float32)
@@ -1591,6 +1596,18 @@ class CausalPFN_Estimator(CATEEstimator):
             estimated_cate = self.model.estimate_cate(X_test)
 
         return np.asarray(estimated_cate).squeeze()
+
+    def predict_ate(self) -> float:
+        """Average CausalPFN's CATE prediction over its fitted context.
+
+        CausalPFN exposes a direct CATE interface rather than separate outcome
+        heads. Its call is therefore the equivalent of the S-learner's two-arm
+        plug-in difference, with the contrast formed inside CausalPFN.
+        """
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

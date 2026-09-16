@@ -7,7 +7,13 @@ import pandas as pd
 import yaml
 
 from benchmarks.causal_chambers import run_ate
-from benchmarks.methods import S_Learner, T_Learner, X_Learner
+from benchmarks.methods import (
+    CausalPFN_Estimator,
+    FeatureBuilder,
+    S_Learner,
+    T_Learner,
+    X_Learner,
+)
 
 
 class _ZeroATE:
@@ -55,6 +61,19 @@ class _MeanModel:
 
     def predict(self, X):
         return np.full(len(X), self.mean_)
+
+
+class _FakeCausalPFN:
+    """Minimal direct-CATE API used to exercise the adapter without a checkpoint."""
+
+    def fit(self, X, A, Y):
+        self.fit_X = np.asarray(X).copy()
+        self.fit_A = np.asarray(A).copy()
+        self.fit_Y = np.asarray(Y).copy()
+
+    def estimate_cate(self, X):
+        self.predict_X = np.asarray(X).copy()
+        return self.predict_X[:, 0]
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -189,3 +208,23 @@ def test_t_and_x_learners_predict_ate_average_their_fitted_context():
         # Both learners recover the two-unit arm difference and average it over
         # their stored fit context without accepting query covariates.
         np.testing.assert_allclose(learner.predict_ate(), 2.0)
+
+
+def test_causalpfn_predict_ate_averages_direct_cate_on_its_fitted_context():
+    X = np.array([[2.0], [4.0], [8.0]])
+    W = np.array([[10.0], [11.0], [12.0]])
+    Z = np.array([[20.0], [21.0], [22.0]])
+    A = np.array([0.0, 1.0, 0.0])
+    Y = np.array([100.0, 101.0, 102.0])
+    fake = _FakeCausalPFN()
+
+    # Bypass the installed-model constructor: only the adapter protocol is
+    # under test here, not CausalPFN's external checkpoint loading.
+    learner = object.__new__(CausalPFN_Estimator)
+    learner.model = fake
+    learner.fb = FeatureBuilder(use_W=True, use_Z=True)
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    np.testing.assert_allclose(learner.predict_ate(), X[:, 0].mean())
+    np.testing.assert_array_equal(fake.fit_A, A)
+    np.testing.assert_array_equal(fake.predict_X[:, 0], X[:, 0])
