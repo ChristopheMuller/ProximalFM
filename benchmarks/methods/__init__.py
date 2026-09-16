@@ -403,12 +403,15 @@ class P2SLS(CATEEstimator):
         self.ate_ = float(self.stage2.coef_.reshape(-1)[0])
         return self
 
-    def predict(self, X, **kwargs) -> np.ndarray:
-        """Return the estimated ATE for every observation."""
+    def predict_ate(self) -> float:
+        """Return the fitted scalar ATE without requiring prediction covariates."""
         if self.ate_ is None:
-            raise ValueError("Call fit() before predict().")
+            raise ValueError("Call fit() before predict_ate().")
+        return self.ate_
 
-        return np.full(X.shape[0], self.ate_)
+    def predict(self, X, **kwargs) -> np.ndarray:
+        """Broadcast :meth:`predict_ate` for the generic CATE benchmark API."""
+        return np.full(X.shape[0], self.predict_ate())
 
 
 def _make_plearner(cfg: dict, compute) -> CATEEstimator:

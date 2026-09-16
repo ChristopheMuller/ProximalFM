@@ -1,0 +1,40 @@
+# Causal Chambers: full-context, physical ATE benchmark.
+#
+# Each CSV is one physical operating condition.  A method receives all factual
+# (X, W, Z, A, Y) rows in that file, then its estimated contrast is averaged
+# over the same rows.  Y0/Y1 are used only for the paired intervention
+# reference; they are never passed to an estimator.
+run:
+  seed: 20260916
+  compute:
+    device: cpu
+    n_workers: 1
+    torch_threads: 1
+    blas_threads: 1
+    n_jobs: 1
+
+# Context prefixes are nested within each deterministic row permutation.  The
+# paired intervention reference is recomputed on the same prefix, so it is an
+# empirical ATE that correctly varies with n_ctx.
+ate:
+  context_sizes: [128, 256, 512, 1000]
+  n_permutations: 20
+
+data:
+  csv_dir: benchmarks/causal_chambers/data
+  csv_pattern: out_binaryA_counterfactuals_*_smoothA_a350.csv
+  columns:
+    U: green                 # oracle-only
+    X: red
+    W: pol_1
+    Z: led_2_uv
+    A: led_3_uv
+    Y: ir_3                  # factual physical sensor measurement
+    Y0: Y0                   # paired forced-control measurement, reference only
+    Y1: Y1                   # paired forced-treated measurement, reference only
+
+output_dir: benchmarks/causal_chambers/results/ate
+
+methods:
+  - name: P2SLS
+    cls: P2SLS
