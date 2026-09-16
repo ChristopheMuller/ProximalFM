@@ -253,7 +253,7 @@ def test_learning_curve_default_uses_compact_method_set(tmp_path):
     summary = pd.concat([summary, relevant], ignore_index=True)
     fig = make_learning_curve_figure(summary)
     legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
-    assert legend_labels == ["T-OLS", "ProximalFM"]
+    assert legend_labels == ["T-learner (ridge)", "ProximalFM"]
 
 
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
@@ -434,7 +434,7 @@ def test_combined_figure_renders_selected_case_as_two_panels(tmp_path):
     assert fig.axes[1].get_title(loc="left").startswith("(b)")
     assert len(fig.legends) == 1
     assert [text.get_text() for text in fig.legends[0].get_texts()] == [
-        "S-OLS",
+        "S-learner (ridge)",
         "ProximalFM",
     ]
 
