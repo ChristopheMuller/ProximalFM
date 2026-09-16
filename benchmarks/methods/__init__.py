@@ -1477,6 +1477,11 @@ class CausalFM_Estimator(CATEEstimator):
         self.ctx_y = None
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         # Build unified covariate matrix (stacking X, W, Z if configured)
         feat = self.fb.build(X, W=W, Z=Z)
 
@@ -1501,6 +1506,13 @@ class CausalFM_Estimator(CATEEstimator):
 
         # Convert back to numpy array of shape (n,)
         return result["cate"].cpu().numpy().squeeze()
+
+    def predict_ate(self) -> float:
+        """Average CausalFM's direct CATE over its fitted physical context."""
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 class DoPFN_Estimator(CATEEstimator):

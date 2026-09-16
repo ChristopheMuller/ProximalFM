@@ -129,3 +129,9 @@ methods:
     cls: DoPFN
     use_W: true
     use_Z: true
+
+  - name: CausalFM-XWZ
+    cls: CausalFM
+    checkpoint: CausalFM/checkpoints/checkpoints_standard/best_model.pth
+    use_W: true
+    use_Z: true

@@ -4,10 +4,12 @@ import sys
 
 import numpy as np
 import pandas as pd
+import torch
 import yaml
 
 from benchmarks.causal_chambers import run_ate
 from benchmarks.methods import (
+    CausalFM_Estimator,
     CausalPFN_Estimator,
     DoPFN_Estimator,
     FeatureBuilder,
@@ -87,6 +89,17 @@ class _FakeDoPFN:
     def predict(self, X):
         self.predict_X = X.detach().cpu().numpy().copy()
         return X[:, -1]
+
+
+class _FakeCausalFM:
+    """Minimal direct-CATE API used to exercise the CausalFM adapter."""
+
+    def estimate_cate(self, ctx_x, ctx_a, ctx_y, x_test):
+        self.ctx_x = ctx_x.detach().cpu().numpy().copy()
+        self.ctx_a = ctx_a.detach().cpu().numpy().copy()
+        self.ctx_y = ctx_y.detach().cpu().numpy().copy()
+        self.predict_x = x_test.detach().cpu().numpy().copy()
+        return {"cate": x_test[:, 0]}
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -261,3 +274,25 @@ def test_dopfn_predict_ate_averages_two_arm_contrast_on_its_fitted_context():
     np.testing.assert_allclose(learner.predict_ate(), 1.0)
     np.testing.assert_array_equal(fake.fit_X[:, 0], X[:, 0])
     np.testing.assert_array_equal(fake.predict_X[:, -1], np.zeros(len(X)))
+
+
+def test_causalfm_predict_ate_averages_direct_cate_on_its_fitted_context():
+    X = np.array([[2.0], [4.0], [8.0]])
+    W = np.array([[10.0], [11.0], [12.0]])
+    Z = np.array([[20.0], [21.0], [22.0]])
+    A = np.array([0.0, 1.0, 0.0])
+    Y = np.array([100.0, 101.0, 102.0])
+    fake = _FakeCausalFM()
+
+    # Bypass the external checkpoint constructor: this tests the in-context
+    # adapter and its scalar aggregation protocol.
+    learner = object.__new__(CausalFM_Estimator)
+    learner.model = fake
+    learner.fb = FeatureBuilder(use_W=True, use_Z=True)
+    learner.device = torch.device("cpu")
+    learner.ctx_x = learner.ctx_a = learner.ctx_y = None
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    np.testing.assert_allclose(learner.predict_ate(), X[:, 0].mean())
+    np.testing.assert_array_equal(fake.ctx_a.ravel(), A)
+    np.testing.assert_array_equal(fake.predict_x[:, 0], X[:, 0])
