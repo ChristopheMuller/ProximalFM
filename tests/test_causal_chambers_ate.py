@@ -44,6 +44,19 @@ class _ZeroATE:
         return 0.0
 
 
+class _FixedATE:
+    """Dummy method returning a fixed estimate in fitted outcome units."""
+
+    def __init__(self, value):
+        self.value = value
+
+    def fit(self, X, A, Y, *, W, Z):
+        return self
+
+    def predict_ate(self):
+        return self.value
+
+
 class _AdditiveOutcomeModel:
     """Toy f(X, W, Z, A) whose treatment contrast is exactly one."""
 
@@ -194,11 +207,19 @@ def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypat
         np.testing.assert_allclose(row.abs_error, expected_ate)
 
     # Every fit saw the same prefix used to calculate that result's reference,
-    # and received factual Y rather than either potential-outcome column.
+    # and received context-only standardized factual data rather than either
+    # potential-outcome column. A remains the binary treatment indicator.
     for fit, row in zip(fitted_contexts, results.itertuples(index=False)):
         prefix = run_ate._permutation(17, 0, row.permutation, n_rows)[: row.n_ctx]
-        np.testing.assert_array_equal(fit["X"].ravel(), frame["x"].to_numpy()[prefix])
-        np.testing.assert_array_equal(fit["Y"], factual_y[prefix])
+        x = frame["x"].to_numpy()[prefix]
+        w = frame["w"].to_numpy()[prefix]
+        z = frame["z"].to_numpy()[prefix]
+        y = factual_y[prefix]
+        np.testing.assert_allclose(fit["X"].ravel(), (x - x.mean()) / x.std(ddof=1))
+        np.testing.assert_allclose(fit["W"].ravel(), (w - w.mean()) / w.std(ddof=1))
+        np.testing.assert_allclose(fit["Z"].ravel(), (z - z.mean()) / z.std(ddof=1))
+        np.testing.assert_allclose(fit["Y"], (y - y.mean()) / y.std(ddof=0))
+        np.testing.assert_array_equal(fit["A"], frame["a"].to_numpy()[prefix])
 
     # A second identical invocation must resume from the four scalar cache
     # entries rather than construct or fit another estimator.
@@ -209,6 +230,69 @@ def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypat
     )
     run_ate.main()
     pd.testing.assert_frame_equal(results, pd.read_csv(output_dir / "results.csv"))
+
+
+def test_ate_prediction_is_rescaled_to_raw_outcome_units(tmp_path, monkeypatch):
+    n_rows = 4
+    y = np.array([10.0, 20.0, 40.0, 80.0])
+    frame = pd.DataFrame(
+        {
+            "x": np.arange(n_rows, dtype=float),
+            "w": 10 + np.arange(n_rows, dtype=float),
+            "z": 20 + np.arange(n_rows, dtype=float),
+            "a": np.array([0, 1, 0, 1]),
+            "y": y,
+            "y0": np.zeros(n_rows),
+            "y1": np.ones(n_rows),
+        }
+    )
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    frame.to_csv(data_dir / "condition.csv", index=False)
+
+    output_dir = tmp_path / "results"
+    config = {
+        "run": {
+            "seed": 17,
+            "compute": {
+                "device": "cpu",
+                "n_workers": 1,
+                "torch_threads": 1,
+                "blas_threads": 1,
+                "n_jobs": 1,
+            },
+        },
+        "ate": {"context_sizes": [n_rows], "n_permutations": 1},
+        "data": {
+            "csv_dir": str(data_dir),
+            "columns": {
+                "X": "x",
+                "W": "w",
+                "Z": "z",
+                "A": "a",
+                "Y": "y",
+                "Y0": "y0",
+                "Y1": "y1",
+            },
+        },
+        "output_dir": str(output_dir),
+        "methods": [{"name": "Fixed", "cls": "test-only"}],
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+
+    monkeypatch.setattr(
+        run_ate,
+        "build_method",
+        lambda cfg, compute: ("Fixed", _FixedATE(1.0)),
+    )
+    monkeypatch.setattr(run_ate, "apply_compute", lambda compute: None)
+    monkeypatch.setattr(sys, "argv", ["run_ate.py", "--config", str(config_path)])
+
+    run_ate.main()
+
+    result = pd.read_csv(output_dir / "results.csv").iloc[0]
+    np.testing.assert_allclose(result.ate_hat, y.std(ddof=0))
 
 
 def test_s_learner_predict_ate_averages_counterfactuals_on_its_fitted_context():

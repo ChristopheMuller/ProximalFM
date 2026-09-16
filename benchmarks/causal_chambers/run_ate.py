@@ -40,7 +40,7 @@ from benchmarks.compute import (
 from benchmarks.methods import build_method
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2
 _RESULT_COLUMNS = (
     "condition",
     "permutation",
@@ -92,6 +92,56 @@ def _read_episode(path: Path, columns: dict) -> dict[str, np.ndarray]:
         - frame[columns["Y0"]].to_numpy(dtype=np.float64),
         "n": len(frame),
     }
+
+
+def _standardize_values(
+    values: np.ndarray, *, ddof: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Standardize values and return the fitted location and scale.
+
+    The scale convention mirrors ``benchmarks.data.build_benchmark_dict``:
+    feature blocks use the sample standard deviation while the outcome scale
+    uses the population standard deviation. A singleton or constant column is
+    left centered with unit scale, matching the benchmark loader's protection
+    against degenerate context statistics.
+    """
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim == 1:
+        values = values[:, None]
+    if values.ndim != 2:
+        raise ValueError(f"expected a 1D or 2D array, got shape {values.shape}")
+
+    location = values.mean(axis=0, keepdims=True)
+    if values.shape[0] <= ddof:
+        scale = np.ones_like(location)
+    else:
+        scale = values.std(axis=0, ddof=ddof, keepdims=True)
+        scale = np.where(scale < 1e-5, 1.0, scale)
+    return (values - location) / scale, scale
+
+
+def _standardize_context(
+    episode: dict[str, np.ndarray], context: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Prepare one exact fit prefix using context-only statistics.
+
+    ``run_ate`` evaluates arbitrary shuffled prefixes, so this cannot be done
+    once while preparing the CSV. The returned outcome scale converts a method's
+    standardized-unit ATE back to the raw sensor units used by ``tau_ref``.
+    Treatment remains binary and is intentionally not standardized.
+    """
+    X, _ = _standardize_values(episode["X"][context], ddof=1)
+    W, _ = _standardize_values(episode["W"][context], ddof=1)
+    Z, _ = _standardize_values(episode["Z"][context], ddof=1)
+    Y, y_scale = _standardize_values(episode["Y"][context], ddof=0)
+    return (
+        X,
+        episode["A"][context],
+        Y[:, 0],
+        W,
+        Z,
+        float(y_scale[0, 0]),
+    )
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -312,13 +362,21 @@ def main() -> None:
                         context = order[:n_ctx]
                         # The method gets precisely the factual prefix; the paired
                         # intervention contrasts below remain evaluation-only.
+                        (
+                            X_ctx,
+                            A_ctx,
+                            Y_ctx,
+                            W_ctx,
+                            Z_ctx,
+                            y_scale,
+                        ) = _standardize_context(episode, context)
                         _, method = build_method(method_cfg, method_compute)
                         method.fit(
-                            episode["X"][context],
-                            episode["A"][context],
-                            episode["Y"][context],
-                            W=episode["W"][context],
-                            Z=episode["Z"][context],
+                            X_ctx,
+                            A_ctx,
+                            Y_ctx,
+                            W=W_ctx,
+                            Z=Z_ctx,
                         )
                         predict_ate = getattr(method, "predict_ate", None)
                         if not callable(predict_ate):
@@ -326,7 +384,9 @@ def main() -> None:
                                 f"{method_cfg['name']!r} must implement predict_ate() "
                                 "for the Causal Chambers ATE protocol."
                             )
-                        ate_hat = float(predict_ate())
+                        # The fitted model works in standardized outcome units;
+                        # compare with the raw-unit intervention reference.
+                        ate_hat = float(predict_ate()) * y_scale
                         ate_ref = float(episode["tau_ref"][context].mean())
                         result = {
                             "condition": path.stem,
