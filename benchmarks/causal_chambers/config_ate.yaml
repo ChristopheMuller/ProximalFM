@@ -48,20 +48,20 @@ methods:
     tabicl: {kv_cache: true, n_estimators: 1}
     compute: {torch_threads: 2}
 
-  # - name: S-RF
-  #   cls: S_Learner
-  #   base: rf
-  #   use_W: true
-  #   use_Z: true
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: S-RF
+    cls: S_Learner
+    base: rf
+    use_W: true
+    use_Z: true
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
   - name: T-OLS
     cls: T_Learner
@@ -191,56 +191,56 @@ methods:
       sweep:
         n_epochs: [25, 50, 75, 100]
 
-  # - name: NMMR-U-fixed-ATE
-  #   cls: NMMR
-  #   loss: u_stat
-  #   kernel_width: fixed
-  #   tune:
-  #     enabled: true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed: 1234
-  #     grid:
-  #       hidden_dim: [16, 32, 64]
-  #       n_layers: [2, 4, 6]
-  #       lr: [0.001, 0.005]
-  #       weight_decay: [0.0001]
-  #     sweep:
-  #       n_epochs: [25, 50, 75, 100]
+  - name: NMMR-U-fixed-ATE
+    cls: NMMR
+    loss: u_stat
+    kernel_width: fixed
+    tune:
+      enabled: true
+      val_frac: 0.2
+      n_trials: 10
+      seed: 1234
+      grid:
+        hidden_dim: [16, 32, 64]
+        n_layers: [2, 4, 6]
+        lr: [0.001, 0.005]
+        weight_decay: [0.0001]
+      sweep:
+        n_epochs: [25, 50, 75, 100]
 
-  # - name: NMMR-V-median-ATE
-  #   cls: NMMR
-  #   loss: v_stat
-  #   kernel_width: median
-  #   tune:
-  #     enabled: true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed: 1234
-  #     grid:
-  #       hidden_dim: [16, 32, 64]
-  #       n_layers: [2, 4, 6]
-  #       lr: [0.001, 0.005]
-  #       weight_decay: [0.0001]
-  #     sweep:
-  #       n_epochs: [25, 50, 75, 100]
+  - name: NMMR-V-median-ATE
+    cls: NMMR
+    loss: v_stat
+    kernel_width: median
+    tune:
+      enabled: true
+      val_frac: 0.2
+      n_trials: 10
+      seed: 1234
+      grid:
+        hidden_dim: [16, 32, 64]
+        n_layers: [2, 4, 6]
+        lr: [0.001, 0.005]
+        weight_decay: [0.0001]
+      sweep:
+        n_epochs: [25, 50, 75, 100]
 
-  # - name: NMMR-U-median-ATE
-  #   cls: NMMR
-  #   loss: u_stat
-  #   kernel_width: median
-  #   tune:
-  #     enabled: true
-  #     val_frac: 0.2
-  #     n_trials: 10
-  #     seed: 1234
-  #     grid:
-  #       hidden_dim: [16, 32, 64]
-  #       n_layers: [2, 4, 6]
-  #       lr: [0.001, 0.005]
-  #       weight_decay: [0.0001]
-  #     sweep:
-  #       n_epochs: [25, 50, 75, 100]
+  - name: NMMR-U-median-ATE
+    cls: NMMR
+    loss: u_stat
+    kernel_width: median
+    tune:
+      enabled: true
+      val_frac: 0.2
+      n_trials: 10
+      seed: 1234
+      grid:
+        hidden_dim: [16, 32, 64]
+        n_layers: [2, 4, 6]
+        lr: [0.001, 0.005]
+        weight_decay: [0.0001]
+      sweep:
+        n_epochs: [25, 50, 75, 100]
 
   - name: ProximalFM-ATE
     cls: ProximalFM

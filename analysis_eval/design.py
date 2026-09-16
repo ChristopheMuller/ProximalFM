@@ -235,6 +235,33 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
     ),
+    "NMMR-U-fixed-ATE": MethodStyle(
+        "NMMR (U, fixed; ATE)",
+        COLORS["wine"],
+        "H",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
+    ),
+    "NMMR-V-median-ATE": MethodStyle(
+        "NMMR (V, median; ATE)",
+        COLORS["wine"],
+        "8",
+        ":",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
+    ),
+    "NMMR-U-median-ATE": MethodStyle(
+        "NMMR (U, median; ATE)",
+        COLORS["wine"],
+        "8",
+        "--",
+        linewidth=EMPHASIZED_LINEWIDTH,
+        markersize=EMPHASIZED_MARKERSIZE,
+        zorder=3,
+    ),
     # Competing foundation models share a colour but use distinct markers.
     "CausalFM": MethodStyle(
         "CausalFM",

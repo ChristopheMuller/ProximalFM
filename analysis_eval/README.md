@@ -226,3 +226,16 @@ This reads the Causal Chambers runner's `summary.csv` and writes
 `analysis_eval/results/causal_chambers_rmse.{pdf,png}`. The figure shows one
 ATE RMSE line per method over the available context sizes. Use `--methods`,
 `--out-dir`, or `--name` to customize the figure.
+
+To compare methods on each Causal Chambers dataset at 1,000 datapoints, use
+the long-form results file:
+
+```bash
+uv run python -m analysis_eval.causal_chambers_rank
+```
+
+This writes `analysis_eval/results/causal_chambers_rank_grid.{pdf,png}`. Rows
+are sorted by average within-dataset RMSE rank; columns are grouped as linear
+versus non-linear, then strong versus weak confounding, then low/mid/high proxy
+informativeness. Use `--context-size`, `--methods`, `--out-dir`, or `--name`
+to customize the figure.
