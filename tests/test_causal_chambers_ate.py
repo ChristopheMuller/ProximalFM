@@ -13,6 +13,7 @@ from benchmarks.methods import (
     CausalPFN_Estimator,
     DoPFN_Estimator,
     FeatureBuilder,
+    KPV_Wrapper,
     S_Learner,
     T_Learner,
     X_Learner,
@@ -100,6 +101,16 @@ class _FakeCausalFM:
         self.ctx_y = ctx_y.detach().cpu().numpy().copy()
         self.predict_x = x_test.detach().cpu().numpy().copy()
         return {"cate": x_test[:, 0]}
+
+
+class _FakeNativeATE:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def predict_ate(self):
+        self.calls += 1
+        return self.value
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -296,3 +307,12 @@ def test_causalfm_predict_ate_averages_direct_cate_on_its_fitted_context():
     np.testing.assert_allclose(learner.predict_ate(), X[:, 0].mean())
     np.testing.assert_array_equal(fake.ctx_a.ravel(), A)
     np.testing.assert_array_equal(fake.predict_x[:, 0], X[:, 0])
+
+
+def test_kpv_wrapper_exposes_its_native_context_marginal_ate():
+    native = _FakeNativeATE(2.75)
+    wrapper = object.__new__(KPV_Wrapper)
+    wrapper.model = native
+
+    assert wrapper.predict_ate() == 2.75
+    assert native.calls == 1

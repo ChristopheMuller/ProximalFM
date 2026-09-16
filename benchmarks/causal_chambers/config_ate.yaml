@@ -135,3 +135,14 @@ methods:
     checkpoint: CausalFM/checkpoints/checkpoints_standard/best_model.pth
     use_W: true
     use_Z: true
+
+  - name: KPV-ATE
+    cls: KernelPV
+    strategy: marginal
+    compute: {n_workers: 1}
+    tune:
+      enabled: true
+      n_trials: 3
+      seed: 1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]

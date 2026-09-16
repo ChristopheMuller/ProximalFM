@@ -825,6 +825,15 @@ class KPV_Wrapper(CATEEstimator):
     def predict(self, X, *, W=None, Z=None):
         return self._predict_strategy(self.strategy, X, W=W)
 
+    def predict_ate(self) -> float:
+        """Return KPV's native marginal ATE over the fitted context.
+
+        ``KPVEstimator.predict_ate`` integrates the learned bridge over the
+        empirical *joint* distribution of ``(X, W)`` saved at :meth:`fit`, so
+        it is already a scalar and deliberately accepts no query covariates.
+        """
+        return float(self.model.predict_ate())
+
     def predict_variants(self, X, *, W=None, Z=None):
         if not self._outputs:
             return {None: self.predict(X, W=W, Z=Z)}
