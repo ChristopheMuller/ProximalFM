@@ -189,6 +189,14 @@ class S_Learner(CATEEstimator):
         self.model = base_model
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        # Retain the factual context for the physical ATE plug-in protocol.
+        # Copies make the scalar estimate independent of caller-side reuse of a
+        # mutable row buffer between context prefixes.
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         self._tuning_time = fit_and_measure_tuning(
             self.model, self.fb.build(X, A=A, W=W, Z=Z), Y
         )
@@ -214,6 +222,20 @@ class S_Learner(CATEEstimator):
         )
         y1, y0 = np.split(np.asarray(both), [n])
         return y1 - y0
+
+    def predict_ate(self) -> float:
+        """Plug-in ATE over the full factual context supplied to :meth:`fit`.
+
+        The method evaluates the one fitted outcome model on the stored
+        ``(X, W, Z)`` rows twice, at treatment values one and zero, then
+        averages the resulting within-row contrasts.  No prediction-time
+        variables are accepted because the target population is the fitted
+        physical context itself.
+        """
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 class T_Learner(CATEEstimator):

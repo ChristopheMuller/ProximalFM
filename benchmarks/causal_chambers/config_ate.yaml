@@ -38,3 +38,11 @@ output_dir: benchmarks/causal_chambers/results/ate
 methods:
   - name: P2SLS
     cls: P2SLS
+
+  - name: S-TabICL
+    cls: S_Learner
+    base: tabicl
+    use_W: true
+    use_Z: true
+    tabicl: {kv_cache: true, n_estimators: 1}
+    compute: {torch_threads: 2}

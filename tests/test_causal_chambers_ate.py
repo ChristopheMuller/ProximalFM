@@ -7,6 +7,7 @@ import pandas as pd
 import yaml
 
 from benchmarks.causal_chambers import run_ate
+from benchmarks.methods import S_Learner
 
 
 class _ZeroATE:
@@ -29,6 +30,20 @@ class _ZeroATE:
 
     def predict_ate(self):
         return 0.0
+
+
+class _AdditiveOutcomeModel:
+    """Toy f(X, W, Z, A) whose treatment contrast is exactly one."""
+
+    def fit(self, X, Y):
+        self.fit_X = np.asarray(X).copy()
+        self.fit_Y = np.asarray(Y).copy()
+        return self
+
+    def predict(self, X):
+        self.predict_X = np.asarray(X).copy()
+        # FeatureBuilder puts A in the last column when interactions are off.
+        return self.predict_X[:, 0] + self.predict_X[:, -1]
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -115,3 +130,25 @@ def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypat
         prefix = run_ate._permutation(17, 0, row.permutation, n_rows)[: row.n_ctx]
         np.testing.assert_array_equal(fit["X"].ravel(), frame["x"].to_numpy()[prefix])
         np.testing.assert_array_equal(fit["Y"], factual_y[prefix])
+
+
+def test_s_learner_predict_ate_averages_counterfactuals_on_its_fitted_context():
+    X = np.array([[1.0], [3.0], [7.0]])
+    W = np.array([[10.0], [11.0], [12.0]])
+    Z = np.array([[20.0], [21.0], [22.0]])
+    A = np.array([0.0, 1.0, 0.0])
+    Y = np.array([100.0, 101.0, 102.0])
+    base = _AdditiveOutcomeModel()
+    learner = S_Learner(base, use_W=True, use_Z=True)
+
+    learner.fit(X, A, Y, W=W, Z=Z)
+    got = learner.predict_ate()
+
+    # f(x, w, z, 1) - f(x, w, z, 0) = 1 for every stored context row.
+    assert got == 1.0
+    queried = base.predict_X
+    n = len(X)
+    np.testing.assert_array_equal(queried[:n, 0], X[:, 0])
+    np.testing.assert_array_equal(queried[n:, 0], X[:, 0])
+    np.testing.assert_array_equal(queried[:n, -1], np.ones(n))
+    np.testing.assert_array_equal(queried[n:, -1], np.zeros(n))
