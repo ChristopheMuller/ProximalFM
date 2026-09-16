@@ -12,7 +12,11 @@ determining the learning curve.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 from pathlib import Path
+import re
 import sys
 
 import numpy as np
@@ -36,6 +40,17 @@ from benchmarks.compute import (
 from benchmarks.methods import build_method
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_CACHE_VERSION = 1
+_RESULT_COLUMNS = (
+    "condition",
+    "permutation",
+    "n_ctx",
+    "method",
+    "ate_hat",
+    "ate_ref",
+    "error",
+    "abs_error",
+)
 
 
 def _columns(frame: pd.DataFrame, configured, role: str) -> np.ndarray:
@@ -106,6 +121,72 @@ def _permutation(seed: int, episode_index: int, repeat: int, n_rows: int) -> np.
     ).permutation(n_rows)
 
 
+def _file_sha256(path: Path) -> str:
+    """Content identity for a physical condition, read once before fitting."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _cache_key(
+    *,
+    method_cfg: dict,
+    source_sha256: str,
+    episode_index: int,
+    repeat: int,
+    n_ctx: int,
+    seed: int,
+) -> str:
+    """Identity of one fit, including data, method settings and row prefix."""
+    payload = {
+        "cache_version": _CACHE_VERSION,
+        "method": method_cfg,
+        "source_sha256": source_sha256,
+        "episode_index": episode_index,
+        "repeat": repeat,
+        "n_ctx": n_ctx,
+        "seed": seed,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _cache_path(cache_dir: Path, method_name: str, key: str) -> Path:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", method_name).strip("_") or "method"
+    return cache_dir / f"{safe_name}-{key}.json"
+
+
+def _load_cached_result(path: Path) -> dict[str, object] | None:
+    try:
+        with path.open() as handle:
+            result = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+    required = {
+        "condition",
+        "permutation",
+        "n_ctx",
+        "method",
+        "ate_hat",
+        "ate_ref",
+        "error",
+        "abs_error",
+    }
+    return result if required.issubset(result) else None
+
+
+def _write_cached_result(path: Path, result: dict[str, object]) -> None:
+    """Publish a completed scalar fit atomically, so interruption is harmless."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("w") as handle:
+        json.dump(result, handle, sort_keys=True)
+        handle.write("\n")
+    os.replace(temporary, path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -127,6 +208,11 @@ def main() -> None:
         type=int,
         help="Override ate.n_permutations from the config.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute every fit instead of reusing its cached scalar result.",
+    )
     args = parser.parse_args()
 
     with args.config.open() as handle:
@@ -146,6 +232,7 @@ def main() -> None:
 
     output_dir = args.output_dir or _resolve_path(cfg.get("output_dir", "ate_results"))
     output_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir = output_dir / "cache"
     compute = parse_global_compute(cfg["run"])
     ate_cfg = cfg.get("ate") or {}
     n_permutations = int(
@@ -159,6 +246,7 @@ def main() -> None:
     if configured_sizes is None:
         raise ValueError("set ate.context_sizes or pass --context-sizes")
     episodes = [_read_episode(path, columns) for path in paths]
+    source_hashes = [_file_sha256(path) for path in paths]
     context_sizes = _context_sizes(configured_sizes, episodes[0]["n"])
     unequal = [
         path
@@ -176,6 +264,7 @@ def main() -> None:
 
     methods = cfg.get("methods", [])
     total_fits = len(methods) * len(paths) * n_permutations * len(context_sizes)
+    cache_hits = 0
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(bar_width=30),
@@ -203,6 +292,23 @@ def main() -> None:
                                 f"permutation {repeat + 1}/{n_permutations} · n={n_ctx}"
                             ),
                         )
+                        key = _cache_key(
+                            method_cfg=method_cfg,
+                            source_sha256=source_hashes[episode_index],
+                            episode_index=episode_index,
+                            repeat=repeat,
+                            n_ctx=n_ctx,
+                            seed=int(cfg["run"].get("seed", 0)),
+                        )
+                        cached_path = _cache_path(cache_dir, method_cfg["name"], key)
+                        cached = (
+                            None if args.force else _load_cached_result(cached_path)
+                        )
+                        if cached is not None:
+                            rows.append(cached)
+                            cache_hits += 1
+                            progress.advance(task)
+                            continue
                         context = order[:n_ctx]
                         # The method gets precisely the factual prefix; the paired
                         # intervention contrasts below remain evaluation-only.
@@ -222,21 +328,21 @@ def main() -> None:
                             )
                         ate_hat = float(predict_ate())
                         ate_ref = float(episode["tau_ref"][context].mean())
-                        rows.append(
-                            {
-                                "condition": path.stem,
-                                "permutation": repeat,
-                                "n_ctx": n_ctx,
-                                "method": method_cfg["name"],
-                                "ate_hat": ate_hat,
-                                "ate_ref": ate_ref,
-                                "error": ate_hat - ate_ref,
-                                "abs_error": abs(ate_hat - ate_ref),
-                            }
-                        )
+                        result = {
+                            "condition": path.stem,
+                            "permutation": repeat,
+                            "n_ctx": n_ctx,
+                            "method": method_cfg["name"],
+                            "ate_hat": ate_hat,
+                            "ate_ref": ate_ref,
+                            "error": ate_hat - ate_ref,
+                            "abs_error": abs(ate_hat - ate_ref),
+                        }
+                        _write_cached_result(cached_path, result)
+                        rows.append(result)
                         progress.advance(task)
 
-    results = pd.DataFrame(rows)
+    results = pd.DataFrame(rows, columns=_RESULT_COLUMNS)
     destination = output_dir / "results.csv"
     results.to_csv(destination, index=False)
     summary = (
@@ -250,6 +356,8 @@ def main() -> None:
     )
     summary.to_csv(output_dir / "summary.csv", index=False)
     print(summary.to_string(index=False))
+    if cache_hits:
+        print(f"Reused {cache_hits}/{total_fits} completed fits from {cache_dir}")
     print(f"\nWrote {destination}")
 
 

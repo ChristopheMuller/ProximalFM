@@ -131,6 +131,16 @@ def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypat
         np.testing.assert_array_equal(fit["X"].ravel(), frame["x"].to_numpy()[prefix])
         np.testing.assert_array_equal(fit["Y"], factual_y[prefix])
 
+    # A second identical invocation must resume from the four scalar cache
+    # entries rather than construct or fit another estimator.
+    monkeypatch.setattr(
+        run_ate,
+        "build_method",
+        lambda *_: (_ for _ in ()).throw(AssertionError("cache was not reused")),
+    )
+    run_ate.main()
+    pd.testing.assert_frame_equal(results, pd.read_csv(output_dir / "results.csv"))
+
 
 def test_s_learner_predict_ate_averages_counterfactuals_on_its_fitted_context():
     X = np.array([[1.0], [3.0], [7.0]])
