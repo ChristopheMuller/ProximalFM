@@ -263,6 +263,11 @@ class T_Learner(CATEEstimator):
         self.model1 = base_model_factory()
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         self._tuning_time = 0.0
         feat = self.fb.build(X, W=W, Z=Z)
         mask0 = A == 0
@@ -283,6 +288,13 @@ class T_Learner(CATEEstimator):
     def predict(self, X, *, W=None, Z=None):
         feat = self.fb.build(X, W=W, Z=Z)
         return self.model1.predict(feat) - self.model0.predict(feat)
+
+    def predict_ate(self) -> float:
+        """Plug-in ATE over the full factual context supplied to :meth:`fit`."""
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 class X_Learner(CATEEstimator):
@@ -323,6 +335,11 @@ class X_Learner(CATEEstimator):
         self.prop_model = LogisticRegression(max_iter=1000)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         self._tuning_time = 0.0
         feat = self.fb.build(X, W=W, Z=Z)
         mask0 = A == 0
@@ -363,6 +380,13 @@ class X_Learner(CATEEstimator):
         g = self.prop_model.predict_proba(feat)[:, 1]
 
         return g * pred_tau0 + (1 - g) * pred_tau1
+
+    def predict_ate(self) -> float:
+        """Plug-in ATE over the full factual context supplied to :meth:`fit`."""
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

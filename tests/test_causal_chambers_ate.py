@@ -7,7 +7,7 @@ import pandas as pd
 import yaml
 
 from benchmarks.causal_chambers import run_ate
-from benchmarks.methods import S_Learner
+from benchmarks.methods import S_Learner, T_Learner, X_Learner
 
 
 class _ZeroATE:
@@ -44,6 +44,17 @@ class _AdditiveOutcomeModel:
         self.predict_X = np.asarray(X).copy()
         # FeatureBuilder puts A in the last column when interactions are off.
         return self.predict_X[:, 0] + self.predict_X[:, -1]
+
+
+class _MeanModel:
+    """Toy regressor returning the mean target on which it was fitted."""
+
+    def fit(self, X, Y):
+        self.mean_ = float(np.mean(Y))
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.mean_)
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -162,3 +173,19 @@ def test_s_learner_predict_ate_averages_counterfactuals_on_its_fitted_context():
     np.testing.assert_array_equal(queried[n:, 0], X[:, 0])
     np.testing.assert_array_equal(queried[:n, -1], np.ones(n))
     np.testing.assert_array_equal(queried[n:, -1], np.zeros(n))
+
+
+def test_t_and_x_learners_predict_ate_average_their_fitted_context():
+    X = np.array([[1.0], [3.0], [7.0], [9.0]])
+    W = np.array([[10.0], [11.0], [12.0], [13.0]])
+    Z = np.array([[20.0], [21.0], [22.0], [23.0]])
+    A = np.array([0.0, 1.0, 0.0, 1.0])
+    Y = np.array([1.0, 3.0, 2.0, 4.0])
+
+    for learner_cls in (T_Learner, X_Learner):
+        learner = learner_cls(_MeanModel, use_W=True, use_Z=True)
+        learner.fit(X, A, Y, W=W, Z=Z)
+
+        # Both learners recover the two-unit arm difference and average it over
+        # their stored fit context without accepting query covariates.
+        np.testing.assert_allclose(learner.predict_ate(), 2.0)
