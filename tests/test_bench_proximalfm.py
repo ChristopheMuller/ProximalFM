@@ -125,6 +125,25 @@ def test_the_checkpoint_is_loaded_once_per_process(ckpt):
     assert len(_MODEL_CACHE) == 1
 
 
+def test_predict_ate_averages_context_x_with_query_proxies_hidden(ckpt):
+    path, _ = ckpt
+    ep = make_episode(n_ctx=12, n_q=5)
+    _, method = build_method(
+        {"name": "PFM", "cls": "ProximalFM", "checkpoint": str(path)}
+    )
+    k = ep["n_ctx"]
+    method.fit(ep["X"][:k], ep["A"], ep["Y"], W=ep["W"][:k], Z=ep["Z"][:k])
+
+    # ProximalFM hides query W/Z, so arbitrary proxy values leave the CATEs
+    # unchanged. Its scalar ATE is their mean over every fitted context X.
+    expected = method.predict(
+        ep["X"][:k],
+        W=np.full_like(ep["W"][:k], 123.0),
+        Z=np.full_like(ep["Z"][:k], -456.0),
+    ).mean()
+    assert method.predict_ate() == pytest.approx(expected)
+
+
 def test_swap_diag_exchanges_proxy_values_and_dimensions(ckpt):
     """The diagnostic presents original Z as W and original W as Z."""
     path, model = ckpt

@@ -222,6 +222,24 @@ class ProximalFM_Estimator(CATEEstimator):
     def predict(self, X, *, W=None, Z=None):
         return next(iter(self.predict_variants(X, W=W, Z=Z).values()))
 
+    def predict_ate(self) -> float:
+        """Average CATE predictions over the fitted context's covariates.
+
+        ProximalFM is trained to answer ``tau(x)``: the factual context carries
+        ``(X, W, Z, A, Y)``, while query-time W/Z are hidden inside the model.
+        The Causal Chambers ATE is therefore the empirical mean of that CATE
+        over every stored context X. Zero proxy blocks supply only the required
+        query shapes, making the absence of query-proxy information explicit.
+        """
+        if self._ctx is None:
+            raise ValueError("Call fit() before predict_ate().")
+
+        ctx = self._ctx
+        X = ctx["X"].detach().cpu().numpy()
+        W = np.zeros((len(X), ctx["W"].shape[1]), dtype=np.float32)
+        Z = np.zeros((len(X), ctx["Z"].shape[1]), dtype=np.float32)
+        return float(self.predict(X, W=W, Z=Z).mean())
+
     def predict_variants(self, X, *, W=None, Z=None):
         if self._ctx is None:
             raise ValueError("Call fit() before predict().")

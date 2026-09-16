@@ -241,3 +241,8 @@ methods:
         weight_decay: [0.0001]
       sweep:
         n_epochs: [25, 50, 75, 100]
+
+  - name: ProximalFM-ATE
+    cls: ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble: 1
