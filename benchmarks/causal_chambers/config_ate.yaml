@@ -136,6 +136,18 @@ methods:
     use_W: true
     use_Z: true
 
+  - name: P-Kernel-ATE
+    cls: PLearner
+    bridge: kernel
+    n_splits: 4
+    q_clip: 20.0
+    bridge_params:
+      rank: 256
+      lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1]
+    compute: {n_workers: 1}
+    outputs:
+      - {name: P-Kernel-ATE, kind: ate}
+
   - name: KPV-ATE
     cls: KernelPV
     strategy: marginal

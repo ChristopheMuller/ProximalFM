@@ -572,8 +572,12 @@ class _PLearner_Estimator(CATEEstimator):
     def predict_variants(self, X, *, W=None, Z=None) -> dict[str, np.ndarray]:
         out = self.learner.predict_variants(X)
         for name in self.ate_outputs:
-            out[name] = self.learner.predict_ate(X)
+            out[name] = np.full(X.shape[0], self.learner.predict_ate(), dtype=float)
         return out
+
+    def predict_ate(self) -> float:
+        """Return the P-learner's scalar cross-fitted context ATE."""
+        return self.learner.predict_ate()
 
     def diagnostics(self) -> dict[str, float]:
         return self.learner.diagnostics()

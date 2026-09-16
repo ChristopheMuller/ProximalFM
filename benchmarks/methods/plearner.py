@@ -861,9 +861,18 @@ class PLearner(CATEEstimator):
             for name, model in self.final_models_.items()
         }
 
-    def predict_ate(self, X) -> np.ndarray:
-        """The single proximal ATE, broadcast to one value per row."""
-        return np.full(_as_2d(X, "X").shape[0], self.ate_, dtype=float)
+    def predict_ate(self) -> float:
+        """Return the cross-fitted proximal ATE of the fitted context.
+
+        ``ate_`` is the mean of the out-of-fold proximal scores computed in
+        :meth:`fit`; it is already a scalar and needs no prediction covariates.
+        Consumers that need a per-row representation (the generic benchmark's
+        ``outputs: {kind: ate}`` path) deliberately broadcast this value at the
+        adapter boundary instead.
+        """
+        if not hasattr(self, "ate_"):
+            raise ValueError("Call fit() before predict_ate().")
+        return float(self.ate_)
 
     # ── diagnostics ──────────────────────────────────────────────────────────
 

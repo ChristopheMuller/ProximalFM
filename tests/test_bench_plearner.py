@@ -310,7 +310,7 @@ def test_base_cv_rejects_unknown_parameters_early():
         build_method(cfg)
 
 
-def test_predict_ate_broadcasts_the_scalar():
+def test_predict_ate_returns_the_scalar_and_wrapper_broadcasts_it():
     X, A, Y, W, Z, _ = _toy()
     pl = PLearner(
         bridge="kernel",
@@ -318,9 +318,22 @@ def test_predict_ate_broadcasts_the_scalar():
         final_models={"m": DummyRegressor()},
     ).fit(X, A, Y, W=W, Z=Z)
 
-    got = pl.predict_ate(X[:7])
+    assert pl.predict_ate() == pytest.approx(pl.ate_)
+
+    _, wrapped = build_method(
+        {
+            "name": "P",
+            "cls": "PLearner",
+            "bridge_params": {"rank": 64},
+            "outputs": [{"name": "P-ATE", "kind": "ate"}],
+        }
+    )
+    wrapped.fit(X, A, Y, W=W, Z=Z)
+
+    assert wrapped.predict_ate() == pytest.approx(wrapped.learner.ate_)
+    got = wrapped.predict_variants(X[:7])["P-ATE"]
     assert got.shape == (7,)
-    assert np.allclose(got, pl.ate_)
+    assert np.allclose(got, wrapped.learner.ate_)
 
 
 # ── interface guarantees the bridges rely on ─────────────────────────────────
