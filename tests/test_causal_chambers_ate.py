@@ -9,6 +9,7 @@ import yaml
 from benchmarks.causal_chambers import run_ate
 from benchmarks.methods import (
     CausalPFN_Estimator,
+    DoPFN_Estimator,
     FeatureBuilder,
     S_Learner,
     T_Learner,
@@ -74,6 +75,18 @@ class _FakeCausalPFN:
     def estimate_cate(self, X):
         self.predict_X = np.asarray(X).copy()
         return self.predict_X[:, 0]
+
+
+class _FakeDoPFN:
+    """Minimal outcome-prediction API whose outcome equals the A feature."""
+
+    def fit(self, X, Y):
+        self.fit_X = np.asarray(X).copy()
+        self.fit_Y = np.asarray(Y).copy()
+
+    def predict(self, X):
+        self.predict_X = X.detach().cpu().numpy().copy()
+        return X[:, -1]
 
 
 def test_zero_ate_uses_the_same_prefix_for_fit_and_reference(tmp_path, monkeypatch):
@@ -228,3 +241,23 @@ def test_causalpfn_predict_ate_averages_direct_cate_on_its_fitted_context():
     np.testing.assert_allclose(learner.predict_ate(), X[:, 0].mean())
     np.testing.assert_array_equal(fake.fit_A, A)
     np.testing.assert_array_equal(fake.predict_X[:, 0], X[:, 0])
+
+
+def test_dopfn_predict_ate_averages_two_arm_contrast_on_its_fitted_context():
+    X = np.array([[2.0], [4.0], [8.0]])
+    W = np.array([[10.0], [11.0], [12.0]])
+    Z = np.array([[20.0], [21.0], [22.0]])
+    A = np.array([0.0, 1.0, 0.0])
+    Y = np.array([100.0, 101.0, 102.0])
+    fake = _FakeDoPFN()
+
+    # Bypass the external-model constructor: this tests the adapter's two-arm
+    # outcome-prediction protocol, not DoPFN's checkpoint loading.
+    learner = object.__new__(DoPFN_Estimator)
+    learner.model = fake
+    learner.fb = FeatureBuilder(use_W=True, use_Z=True)
+    learner.fit(X, A, Y, W=W, Z=Z)
+
+    np.testing.assert_allclose(learner.predict_ate(), 1.0)
+    np.testing.assert_array_equal(fake.fit_X[:, 0], X[:, 0])
+    np.testing.assert_array_equal(fake.predict_X[:, -1], np.zeros(len(X)))

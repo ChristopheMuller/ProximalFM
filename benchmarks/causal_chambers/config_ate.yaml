@@ -124,3 +124,8 @@ methods:
     cls: CausalPFN
     use_W: true
     use_Z: true
+
+  - name: DoPFN-XWZ
+    cls: DoPFN
+    use_W: true
+    use_Z: true

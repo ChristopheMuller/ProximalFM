@@ -1531,6 +1531,11 @@ class DoPFN_Estimator(CATEEstimator):
         self.fb = FeatureBuilder(use_W=use_W, use_Z=use_Z, interaction_AX=False)
 
     def fit(self, X, A, Y, *, W=None, Z=None):
+        self._ate_context = {
+            "X": np.asarray(X).copy(),
+            "W": None if W is None else np.asarray(W).copy(),
+            "Z": None if Z is None else np.asarray(Z).copy(),
+        }
         feat = self.fb.build(X, A=A, W=W, Z=Z)
 
         with silent():
@@ -1556,6 +1561,13 @@ class DoPFN_Estimator(CATEEstimator):
             pred0 = pred0.detach().cpu().numpy()
 
         return (pred1 - pred0).squeeze()
+
+    def predict_ate(self) -> float:
+        """Plug-in ATE over the full factual context supplied to :meth:`fit`."""
+        if not hasattr(self, "_ate_context"):
+            raise ValueError("Call fit() before predict_ate().")
+        context = self._ate_context
+        return float(self.predict(context["X"], W=context["W"], Z=context["Z"]).mean())
 
 
 class CausalPFN_Estimator(CATEEstimator):
