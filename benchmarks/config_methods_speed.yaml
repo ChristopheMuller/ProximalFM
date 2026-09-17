@@ -24,173 +24,173 @@ run:
     n_workers:     6
     torch_threads: 1
     blas_threads:  1
-    n_jobs:        1
+    n_jobs:        -1
 
 # ── Methods ───────────────────────────────────────────────────────────────────
 methods:
 
   # ── S-Learner baselines ──────────────────────────────────────────────────
-  # - name: S-OLS
-  #   cls:   S_Learner
-  #   base:  linear
-  #   use_W: false
-  #   use_Z: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+  - name: S-OLS
+    cls:   S_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
 
-  # - name: S-RF
-  #   cls: S_Learner
-  #   base: rf
-  #   use_W: false
-  #   use_Z: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: S-RF
+    cls: S_Learner
+    base: rf
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
-  # - name: S-TabICL
-  #   cls:   S_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   tabicl: { kv_cache: true, n_estimators: 1 }
-  #   compute: { torch_threads: 2 }
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
 
-  # - name: S-TabICL-WZ-Marginalized
-  #   cls:   ProxyMarginalizer
-  #   estimator:
-  #     cls: S_Learner
-  #     base: tabicl
-  #     use_W: true
-  #     use_Z: true
-  #     tabicl: { kv_cache: true , n_estimators: 1}
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
-  #     - {name: S-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+  - name: S-TabICL-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: S_Learner
+      base: tabicl
+      use_W: true
+      use_Z: true
+      tabicl: { kv_cache: true , n_estimators: 1}
+    predict_batch_size: 4096
+    outputs:
+      - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+      - {name: S-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
 
   # ── T-Learner baselines ──────────────────────────────────────────────────
-  # - name: T-OLS
-  #   cls:   T_Learner
-  #   base:  linear
-  #   use_W: false
-  #   use_Z: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+  - name: T-OLS
+    cls:   T_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
 
-  # - name: T-RF
-  #   cls:   T_Learner
-  #   base:  rf
-  #   use_W: false
-  #   use_Z: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: T-RF
+    cls:   T_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
-  # - name: T-TabICL
-  #   cls:   T_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   tabicl: { kv_cache: true, n_estimators: 1 }
-  #   compute: { torch_threads: 2 }
+  - name: T-TabICL
+    cls:   T_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
 
-  # - name: T-OLS-WZ-Marginalized
-  #   cls:   ProxyMarginalizer
-  #   estimator:
-  #     cls: T_Learner
-  #     base: linear
-  #     use_W: true
-  #     use_Z: true
-  #     base_cv:
-  #       folds: 4
-  #       seed: 1234
-  #       grids:
-  #         linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: T-OLS-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
-  #     - {name: T-OLS-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+  - name: T-OLS-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: T_Learner
+      base: linear
+      use_W: true
+      use_Z: true
+      base_cv:
+        folds: 4
+        seed: 1234
+        grids:
+          linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+    predict_batch_size: 4096
+    outputs:
+      - {name: T-OLS-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+      - {name: T-OLS-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
 
 
   # ── X-Learner baselines ──────────────────────────────────────────────────
-  # - name: X-RF
-  #   cls:   X_Learner
-  #   base:  rf
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
 
-  # - name: X-TabICL
-  #   cls:   X_Learner
-  #   base:  tabicl
-  #   use_W: false
-  #   use_Z: false
-  #   interactions: false
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    interactions: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
+
 
   # ── Proximal baselines ───────────────────────────────────────────────────
-  # - name: P2SLS
-  #   cls:          P2SLS
-  #   interactions: false
 
-  # - name: P-Kernel
-  #   cls:      PLearner
-  #   bridge:   kernel
-  #   n_splits: 4
-  #   q_clip:   20.0
-  #   bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
-  #   base_cv:
-  #     folds: 4
-  #     seed: 1234
-  #     grids:
-  #       linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
-  #       rf:
-  #         n_estimators: [100]
-  #         max_depth: [1, 3, 5]
-  #         min_samples_leaf: [1, 5, 10]
-  #         max_features: [1.0]
-  #   compute: { n_workers: 1 }
-  #   outputs:
-  #     - { name: P-Kernel-RF,  kind: cate, base: rf }
-  #     - { name: P-Kernel-OLS, kind: cate, base: linear }
-  #     - { name: P-Kernel-ATE, kind: ate }
+  - name: P-Kernel
+    cls:      PLearner
+    bridge:   kernel
+    n_splits: 4
+    q_clip:   20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-RF,  kind: cate, base: rf }
+      - { name: P-Kernel-OLS, kind: cate, base: linear }
+      - { name: P-Kernel-ATE, kind: ate }
 
-  # - name: P-Kernel-TabICL
-  #   cls: PLearner
-  #   bridge: kernel
-  #   n_splits: 4
-  #   q_clip: 20.0
-  #   bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
-  #   tabicl: { kv_cache: true, n_estimators: 1 }
-  #   compute: { n_workers: 1 }
-  #   outputs:
-  #     - { name: P-Kernel-TabICL, kind: cate, base: tabicl }
+  - name: P-Kernel-TabICL
+    cls: PLearner
+    bridge: kernel
+    n_splits: 4
+    q_clip: 20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { n_workers: 1, torch_threads: 2 }
+    outputs:
+      - { name: P-Kernel-TabICL, kind: cate, base: tabicl }
   
   # - name: KPV
   #   cls:         KernelPV
