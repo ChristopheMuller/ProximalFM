@@ -55,6 +55,13 @@ META_COLORS = {
 META_MARKERS = {"OLS": "o", "RF": "s", "TabICL": "D"}
 META_LINESTYLES = {"S": "--", "T": "-", "X": ":"}
 MARGINALIZED_LINESTYLE = "-."
+# Causal Chambers uses a compact, eight-method legend. These additional
+# patterns separate otherwise similar curves without making the panel grid a
+# field of dotted lines. They are intentionally used only by its ATE outputs.
+ATE_SHORT_DASH = (0, (4.0, 2.0))
+ATE_MEDIUM_DASH = (0, (6.5, 2.0))
+ATE_LONG_DASH = (0, (9.0, 2.5))
+ATE_DASH_DOT_DOT = (0, (5.0, 1.5, 1.0, 1.5, 1.0, 1.5))
 
 
 @dataclass(frozen=True)
@@ -143,8 +150,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "X-TabICL": MethodStyle(
         "X-learner (TabICL)",
         META_COLORS["TabICL"],
-        META_MARKERS["TabICL"],
-        META_LINESTYLES["X"],
+        "d",
     ),
     # Proxy-marginalisation variants retain the parent estimator's colour.
     # Their dash-dot line distinguishes marginalised outputs from the parent;
@@ -169,7 +175,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     # Classical proximal learners. P-learner outputs share a colour, distinct
     # from PMMR; markers and line styles encode their output variants.
-    "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", "--"),
+    "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", ATE_SHORT_DASH),
     "P-Kernel-RF": MethodStyle("P-learner (RF)", COLORS["green"], "s"),
     "P-Kernel-OLS": MethodStyle("P-learner (ridge)", COLORS["green"], "o", "--"),
     "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["green"], "P", ":"),
@@ -190,7 +196,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
     ),
-    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["red"], "P", ":"),
+    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["red"], "P", MARGINALIZED_LINESTYLE),
     "PMMR-X-Wcond": MethodStyle(
         "PMMR (cond. W)",
         COLORS["brown"],
@@ -208,7 +214,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
     ),
-    "PMMR-ATE": MethodStyle("PMMR (ATE)", COLORS["brown"], "H", ":"),
+    "PMMR-ATE": MethodStyle("PMMR (ATE)", COLORS["brown"], "H", ATE_LONG_DASH),
     "NMMR-V-fixed-Wcond": MethodStyle(
         "NMMR (cond. W)",
         COLORS["wine"],
@@ -230,7 +236,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         "NMMR (V, fixed; ATE)",
         COLORS["wine"],
         "H",
-        ":",
+        ATE_DASH_DOT_DOT,
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
@@ -311,7 +317,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         "CausalPFN (XWZ)",
         COLORS["blue"],
         "X",
-        MARGINALIZED_LINESTYLE,
+        ATE_MEDIUM_DASH,
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=4,
@@ -355,8 +361,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     "ProximalFM-ATE": MethodStyle(
         "ProximalFM (ATE)",
         COLORS["vermillion"],
-        "*",
-        MARGINALIZED_LINESTYLE,
+        "p",
         linewidth=PROPOSED_LINEWIDTH,
         markersize=5.8,
         zorder=5,
@@ -409,6 +414,17 @@ RELEVANT_METHODS: tuple[str, ...] = (
     "CausalPFN-WZ-kNN-16",
     "ProximalFM",
     "ProximalFM-FT",
+)
+
+SELECTION_CAUSAL_CHAMERS: tuple[str, ...] = (
+    "X-TabICL",
+    "CausalPFN-XWZ",
+    "P-Kernel-ATE",
+    "P2SLS",
+    "KPV-ATE",
+    "PMMR-ATE",
+    "NMMR-V-fixed-ATE",
+    "ProximalFM-ATE",
 )
 
 

@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import tempfile
+
+_MPL_CONFIG_DIR = Path(tempfile.gettempdir()) / "proximalfm-matplotlib"
+if "MPLCONFIGDIR" not in os.environ:
+    _MPL_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(_MPL_CONFIG_DIR)
 
 import matplotlib
 

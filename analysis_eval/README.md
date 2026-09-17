@@ -215,17 +215,19 @@ caches cannot reconstruct this split and are shown only at their total time;
 run `FORCE=1 scripts/run_semisynt_benchmarks.sh` to populate the second timing.
 Use `--context-size` or `--methods` to override the defaults.
 
-## Causal Chambers ATE learning curve
+## Causal Chambers ATE learning curves
 
 ```bash
-uv run python -m analysis_eval.causal_chambers \
-  --summary-csv benchmarks/causal_chambers/results/ate/summary.csv
+uv run python -m analysis_eval.causal_chambers
 ```
 
-This reads the Causal Chambers runner's `summary.csv` and writes
-`analysis_eval/results/causal_chambers_rmse.{pdf,png}`. The figure shows one
-ATE RMSE line per method over the available context sizes. Use `--methods`,
-`--out-dir`, or `--name` to customize the figure.
+This reads the Causal Chambers runner's long-form `results.csv` and writes
+`analysis_eval/results/causal_chambers/causal_chambers_absolute_error.{pdf,png}`.
+The figure has one panel for each cell of the physical 2 x 2 x 3 factorial
+design. Each panel shows absolute ATE error in sensor counts as context grows;
+both axes are logarithmic and share their scales across panels. The default
+method set is the fixed `design.SELECTION_CAUSAL_CHAMERS` subset. Use
+`--results-csv`, `--methods`, `--out-dir`, or `--name` to customize it.
 
 To compare methods on each Causal Chambers dataset at 1,000 datapoints, use
 the long-form results file:
