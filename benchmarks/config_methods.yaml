@@ -154,19 +154,6 @@ methods:
     use_Z: false
     interactions: false
 
-  # - name: X-TabICL-WZ-Marginalized
-  #   cls:   ProxyMarginalizer
-  #   estimator:
-  #     cls: X_Learner
-  #     base: tabicl
-  #     use_W: true
-  #     use_Z: true
-  #     interactions: false
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: X-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
-  #     - {name: X-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
-
   # ── Proximal baselines ───────────────────────────────────────────────────
   # - name: P2SLS
   #   cls:          P2SLS
