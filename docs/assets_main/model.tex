@@ -106,7 +106,7 @@ every node/.style={text=black}
 \node[small text] at (215,222) {$y_N$};
 
 % -----------------------------------------------------------------------------
-% Gathers: features -> concat ; (a, y) -> enc(y, a)
+% Gathers: features -> concat ; (a, y) -> joint outcome--treatment embedding
 % -----------------------------------------------------------------------------
 % Feature brace
 \draw[decorate, decoration={brace, mirror, amplitude=4pt}, draw=black!55, line width=0.5pt]
@@ -116,14 +116,14 @@ every node/.style={text=black}
 % Supervision brace into target encoder
 \draw[decorate, decoration={brace, mirror, amplitude=4pt}, draw=black!55, line width=0.5pt]
     (250,235) -- (250,175);
-\draw[operation] (272,188) rectangle (392,222);
-\node[small text] at (332,205) {$\mathrm{enc}(y, a)$};
+\draw[operation] (272,188) rectangle (368,222);
+\node[small text] at (320,205) {$e_{y \times a}$};
 \draw[edge] (260,205) -- (272,205);
 
 % Join: encoder output is added to the context tokens
 \draw[draw=black!55, line width=0.5pt] (422,138) circle (7);
 \node[small text] at (422,138) {$+$};
-\draw[edge] (392,205) .. controls (412,205) and (420,165) .. (422,145);
+\draw[edge] (368,205) .. controls (402,205) and (420,165) .. (422,145);
 \draw[edge] (429,138) -- (470,138);
 
 % -----------------------------------------------------------------------------
