@@ -33,11 +33,7 @@ from .plotting import plt, save_figure
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 _RESULTS_ROOT = REPO_ROOT / "benchmarks" / "causal_chambers" / "results"
-_CANONICAL_RESULTS = _RESULTS_ROOT / "ate" / "results.csv"
-_EXISTING_RESULTS = _RESULTS_ROOT / "ate_p2sls" / "results.csv"
-DEFAULT_RESULTS_CSV = (
-    _EXISTING_RESULTS if _EXISTING_RESULTS.exists() else _CANONICAL_RESULTS
-)
+DEFAULT_RESULTS_CSV = _RESULTS_ROOT / "results.csv"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "causal_chambers_rank_grid"
 DEFAULT_CONTEXT_SIZE = 1000

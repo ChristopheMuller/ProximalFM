@@ -193,6 +193,17 @@ methods:
       - { name: P-Kernel-RF,  kind: cate, base: rf }
       - { name: P-Kernel-OLS, kind: cate, base: linear }
       - { name: P-Kernel-ATE, kind: ate }
+
+  - name: P-Kernel-TabICL
+    cls: PLearner
+    bridge: kernel
+    n_splits: 4
+    q_clip: 20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-TabICL, kind: cate, base: tabicl }
   
   - name: KPV
     cls:         KernelPV

@@ -22,19 +22,19 @@ ate:
   n_permutations: 1
 
 data:
-  csv_dir: benchmarks/causal_chambers/data
-  csv_pattern: out_binaryA_counterfactuals_*_smoothA_a350.csv
+  csv_dir: benchmarks/causal_chambers/data/prepared
+  csv_pattern: "*.csv"
   columns:
-    U: green                 # oracle-only
-    X: red
-    W: pol_1
-    Z: led_2_uv
-    A: led_3_uv
-    Y: ir_3                  # factual physical sensor measurement
-    Y0: Y0                   # paired forced-control measurement, reference only
-    Y1: Y1                   # paired forced-treated measurement, reference only
-
-output_dir: benchmarks/causal_chambers/results/ate
+  columns:
+      U: U_1
+      X: X_1
+      W: W_1
+      Z: Z_1
+      A: A
+      Y: Y
+      Y0: Y0
+      Y1: Y1
+output_dir: benchmarks/causal_chambers/results/
 
 methods:
   - name: P2SLS

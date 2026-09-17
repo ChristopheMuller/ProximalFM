@@ -10,7 +10,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 CONFIG="${CONFIG:-benchmarks/causal_chambers/config_ate.yaml}"
 CONTEXT_SIZES="${CONTEXT_SIZES:-128 256 512 1000}"
 N_PERMUTATIONS="${N_PERMUTATIONS:-1}"
-OUT="${OUT:-benchmarks/causal_chambers/results/ate_p2sls}"
+OUT="${OUT:-benchmarks/causal_chambers/results/}"
 
 python benchmarks/causal_chambers/run_ate.py \
   --config "${CONFIG}" \
