@@ -256,6 +256,23 @@ def test_learning_curve_default_uses_compact_method_set(tmp_path):
     assert legend_labels == ["T-learner (ridge)", "ProximalFM"]
 
 
+def test_learning_curve_keeps_curated_method_with_incomplete_coverage(tmp_path):
+    summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
+    plearner = summary[summary["method"].eq("S-OLS")].copy()
+    plearner["method"] = "P-Kernel-RF"
+    missing_case = CASES[0]
+    plearner = plearner[~plearner["case"].eq(missing_case)]
+    summary = pd.concat([summary, plearner], ignore_index=True)
+
+    fig = make_learning_curve_figure(summary)
+
+    legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
+    assert "P-learner (RF)" in legend_labels
+    assert len(fig.axes[0].lines) == 3  # two available methods plus chance line
+    assert np.isnan(fig.axes[0].lines[0].get_ydata()).all()
+    assert np.isfinite(fig.axes[1].lines[0].get_ydata()).all()
+
+
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     args = build_parser().parse_args([])
     assert args.y_max == 1.2

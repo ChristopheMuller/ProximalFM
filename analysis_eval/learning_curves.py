@@ -60,9 +60,13 @@ def draw_learning_curve_panel(
 ) -> None:
     """Draw one learning-curve cell on an existing axis."""
     for method in methods:
-        curve = cell[cell["method"].eq(method)].sort_values("n_ctx")
+        # Reindex explicitly so a failed fit leaves an honest break instead of
+        # connecting the successful points on either side. A method that
+        # failed throughout this panel simply contributes no visible curve;
+        # it remains in the shared legend and in every panel where it worked.
+        curve = cell[cell["method"].eq(method)].set_index("n_ctx").reindex(contexts)
         style = method_style(method)
-        x = curve["n_ctx"].to_numpy(dtype=float)
+        x = curve.index.to_numpy(dtype=float)
         if confidence_interval == "iqr":
             lower = curve["q25"].to_numpy(dtype=float)
             upper = curve["q75"].to_numpy(dtype=float)
@@ -124,13 +128,7 @@ def _validate_summary(
     if len(contexts) < 2:
         raise ValueError("learning curves require at least two context sizes")
 
-    if case is None:
-        cells = {
-            (family, confounding, proxy)
-            for family in ("linear", "nonlinear")
-            for confounding, proxy in CONF_PROXY_ORDER
-        }
-    else:
+    if case is not None:
         cells = set(
             selected[["family", "confounding", "proxy"]]
             .drop_duplicates()
@@ -139,23 +137,12 @@ def _validate_summary(
         if len(cells) != 1:
             raise ValueError(f"case {case!r} maps to multiple factorial cells")
 
-    expected = {
-        (family, confounding, proxy, method, n_ctx)
-        for family, confounding, proxy in cells
-        for method in methods
-        for n_ctx in contexts
-    }
-    observed = set(
-        selected[["family", "confounding", "proxy", "method", "n_ctx"]].itertuples(
-            index=False, name=None
-        )
-    )
-    missing = expected - observed
-    if missing:
-        sample = sorted(missing)[:5]
+    keys = ["family", "confounding", "proxy", "method", "n_ctx"]
+    duplicates = selected[selected["method"].isin(methods)].duplicated(keys, keep=False)
+    if duplicates.any():
+        sample = selected.loc[duplicates, keys].head().to_dict("records")
         raise ValueError(
-            f"learning-curve grid is incomplete ({len(missing)} cells missing), "
-            f"e.g. {sample}"
+            "learning-curve summary has duplicate method points, " f"e.g. {sample}"
         )
     return contexts
 
@@ -178,6 +165,10 @@ def make_learning_curve_figure(
 
     When ``case`` is provided, it must be a matrix case name such as
     ``"linear_conf_low_proxy_low"`` and only that cell is rendered.
+
+    Missing method/context points are rendered as gaps. This keeps successful
+    results visible when a competitor fails in one cell without implying an
+    interpolated result for the failed fit.
 
     ``interval`` is retained as a backwards-compatible alias for
     ``confidence_interval``. Its ``"iqr"`` value selects the IQR bands and its
@@ -206,6 +197,9 @@ def make_learning_curve_figure(
         )
     available = set(plot_summary["method"])
     methods = relevant_methods(available) if methods is None else list(methods)
+    absent = set(methods) - available
+    if absent:
+        raise ValueError(f"requested methods absent from summary: {sorted(absent)}")
     for method in methods:
         method_style(method)
     contexts = _validate_summary(summary, methods, case=case)
@@ -265,7 +259,9 @@ def make_learning_curve_figure(
     # The full matrix has a wide canvas, but a single panel often contains
     # long method labels. Wrap that legend into two columns so it stays inside
     # the saved figure instead of extending past the left and right edges.
-    legend_ncol = min(2, len(handles)) if case is not None else min(5, len(handles))
+    # Four columns give the twelve-method curated set three balanced rows.
+    # Five columns left a visually awkward final row with only two entries.
+    legend_ncol = min(2, len(handles)) if case is not None else min(4, len(handles))
     fig.legend(
         handles=handles,
         loc="outside lower center",
@@ -342,8 +338,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     frame = load_cate_results(
         args.matrix_root, selected_case=args.case, dimension=args.dim
     )
-    complete, incomplete = complete_learning_curve_methods(frame)
-    selected = args.methods if args.methods is not None else relevant_methods(complete)
+    _, incomplete = complete_learning_curve_methods(frame)
+    selected = (
+        args.methods
+        if args.methods is not None
+        else relevant_methods(frame["method"].unique())
+    )
     summary = summarize_learning_curves(frame, selected)
     methods = ordered_methods(set(summary["method"]))
     if args.interval is not None and args.confidence_interval is not False:
@@ -362,10 +362,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{frame['episode'].nunique()} episode IDs, {len(methods)} methods, "
         f"and {frame['n_ctx'].nunique()} context sizes."
     )
-    if args.methods is None and incomplete:
+    incomplete_selected = [method for method in methods if method in incomplete]
+    if incomplete_selected:
         print(
-            "Excluded methods without complete factorial/context coverage: "
-            + ", ".join(sorted(incomplete))
+            "Plotted available points with gaps for methods without complete "
+            "factorial/context coverage: " + ", ".join(incomplete_selected)
         )
     for path in paths:
         print(path)

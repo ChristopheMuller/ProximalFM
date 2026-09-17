@@ -24,6 +24,7 @@ ISO_NPEHE_LEVELS = (0.25, 0.5, 0.75, 1.0)
 # family; marker and line style distinguish variants within that family.
 COLORS = {
     "black": "#000000",
+    "charcoal": "#3C3C3C",
     "grey": "#777777",
     "light_grey": "#AAAAAA",
     "orange": "#E69F00",
@@ -41,11 +42,11 @@ COLORS = {
 # family. Marker and line style identify variants within that family. The
 # combination (colour, marker, line style) is unique across the registry, so
 # every method remains identifiable in colour and in monochrome.
-LINEWIDTH = 1.35
-EMPHASIZED_LINEWIDTH = 1.75
+LINEWIDTH = 1.45
+EMPHASIZED_LINEWIDTH = 1.85
 PROPOSED_LINEWIDTH = 2.15
-MARKERSIZE = 3.6
-EMPHASIZED_MARKERSIZE = 4.2
+MARKERSIZE = 4.0
+EMPHASIZED_MARKERSIZE = 4.6
 
 META_COLORS = {
     "OLS": COLORS["sky_blue"],
@@ -75,7 +76,7 @@ class MethodStyle:
     linewidth: float = LINEWIDTH
     markersize: float = MARKERSIZE
     zorder: int = 2
-    alpha: float = 0.9
+    alpha: float = 0.95
 
     def line_kwargs(self) -> dict[str, object]:
         return {
@@ -84,8 +85,11 @@ class MethodStyle:
             "linestyle": self.linestyle,
             "linewidth": self.linewidth,
             "markersize": self.markersize,
+            "markeredgewidth": 0.65,
             "zorder": self.zorder,
             "alpha": self.alpha,
+            "solid_capstyle": "round",
+            "dash_capstyle": "round",
         }
 
     def identity(self) -> tuple[str, str, str]:
@@ -151,6 +155,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         "X-learner (TabICL)",
         META_COLORS["TabICL"],
         "d",
+        META_LINESTYLES["X"],
     ),
     # Proxy-marginalisation variants retain the parent estimator's colour.
     # Their dash-dot line distinguishes marginalised outputs from the parent;
@@ -173,15 +178,16 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         "h",
         MARGINALIZED_LINESTYLE,
     ),
-    # Classical proximal learners. P-learner outputs share a colour, distinct
-    # from PMMR; markers and line styles encode their output variants.
-    "P2SLS": MethodStyle("P2SLS", COLORS["brown"], "P", ATE_SHORT_DASH),
+    # Classical proximal learners. P-learner outputs share a colour and solid
+    # line; their OLS/RF/TabICL markers match the meta-learner grammar above.
+    "P2SLS": MethodStyle("P2SLS", COLORS["grey"], "P", ATE_SHORT_DASH),
     "P-Kernel-RF": MethodStyle("P-learner (RF)", COLORS["green"], "s"),
-    "P-Kernel-OLS": MethodStyle("P-learner (ridge)", COLORS["green"], "o", "--"),
+    "P-Kernel-OLS": MethodStyle("P-learner (ridge)", COLORS["green"], "o"),
+    "P-Kernel-TabICL": MethodStyle("P-learner (TabICL)", COLORS["green"], "D"),
     "P-Kernel-ATE": MethodStyle("P-Kernel-ATE", COLORS["green"], "P", ":"),
     "KPV-X-Wcond": MethodStyle(
         "KPV (cond. W)",
-        COLORS["red"],
+        COLORS["charcoal"],
         "v",
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
@@ -189,14 +195,16 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
     ),
     "KPV-X-Wind": MethodStyle(
         "KPV (independent W)",
-        COLORS["red"],
+        COLORS["charcoal"],
         "^",
         "--",
         linewidth=EMPHASIZED_LINEWIDTH,
         markersize=EMPHASIZED_MARKERSIZE,
         zorder=3,
     ),
-    "KPV-ATE": MethodStyle("KPV (ATE)", COLORS["red"], "P", MARGINALIZED_LINESTYLE),
+    "KPV-ATE": MethodStyle(
+        "KPV (ATE)", COLORS["charcoal"], "P", MARGINALIZED_LINESTYLE
+    ),
     "PMMR-X-Wcond": MethodStyle(
         "PMMR (cond. W)",
         COLORS["brown"],
@@ -405,8 +413,8 @@ _validate_method_styles(METHOD_STYLES)
 RELEVANT_METHODS: tuple[str, ...] = (
     "T-OLS",
     "S-TabICL-WZ-kNN-16",
-    "P-Kernel-RF",
     "P-Kernel-OLS",
+    "P-Kernel-TabICL",
     "NMMR-V-fixed-Wcond",
     "KPV-X-Wcond",
     "PMMR-X-Wcond",
