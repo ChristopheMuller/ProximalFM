@@ -305,37 +305,43 @@ methods:
       - { name: NMMR-U-median-Wcond, strategy: conditional }
 
   # ── Tabular Causal Models ─────────────────────────────────────────────────
-  # - name: CausalFM
-  #   cls:  CausalFM
-  #   checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
 
-  # - name: DoPFN
-  #   cls:  DoPFN
-  #   use_W: false
-  #   use_Z: false
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
 
-  # - name: CausalPFN
-  #   cls:  CausalPFN
-  #   use_W: false
-  #   use_Z: false
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: false
+    use_Z: false
 
-  # - name: CausalPFN-WZ-Marginalized
-  #   cls: ProxyMarginalizer
-  #   estimator:
-  #     cls: CausalPFN
-  #     use_W: true
-  #     use_Z: true
-  #   predict_batch_size: 4096
-  #   outputs:
-  #     - {name: CausalPFN-WZ-kNN-16, integration: {method: knn, n_points: 16}}
-  #     - {name: CausalPFN-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+  - name: CausalPFN-WZ-Marginalized
+    cls: ProxyMarginalizer
+    estimator:
+      cls: CausalPFN
+      use_W: true
+      use_Z: true
+    predict_batch_size: 4096
+    outputs:
+      - {name: CausalPFN-WZ-kNN-16, integration: {method: knn, n_points: 16}}
+      - {name: CausalPFN-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
 
   # ── ProximalFM ────────────────────────────────────────────────────────────
 
-  # - name:       ProximalFM
+  # - name:       ProximalFM-MPS
   #   cls:        ProximalFM
   #   checkpoint: whole_1/best_model.ckpt
   #   ensemble:   1
   #   compute: { device: mps }
+
+  # - name:       ProximalFM-CPU
+  #   cls:        ProximalFM
+  #   checkpoint: whole_1/best_model.ckpt
+  #   ensemble:   1
+  #   compute: { device: cpu }
