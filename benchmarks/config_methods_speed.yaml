@@ -192,37 +192,37 @@ methods:
     outputs:
       - { name: P-Kernel-TabICL, kind: cate, base: tabicl }
   
-  # - name: KPV
-  #   cls:         KernelPV
-  #   compute: { n_workers: 1 }
-  #   tune:
-  #     enabled:  true
-  #     n_trials: 3
-  #     seed:     1234
-  #     grid:
-  #       kernel_scale: [0.8, 1.0, 1.2]
-  #   outputs:
-  #     - { name: KPV-X-Wind, strategy: independent }
-  #     - { name: KPV-X-Wcond, strategy: conditional }
-  #     - { name: KPV-ATE,    strategy: marginal }
+  - name: KPV
+    cls:         KernelPV
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      n_trials: 3
+      seed:     1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]
+    outputs:
+      - { name: KPV-X-Wind, strategy: independent }
+      - { name: KPV-X-Wcond, strategy: conditional }
+      - { name: KPV-ATE,    strategy: marginal }
 
-  # - name: PMMR
-  #   cls:         PMMR
-  #   compute: { n_workers: 1 }
-  #   tune:
-  #     enabled:  true
-  #     val_frac: 0.2
-  #     n_trials: 9
-  #     seed:     1234
-  #     grid:
-  #       kernel_scale:   [0.8, 1, 1.2]
-  #       kernel_scale_z: [0.8, 1, 1.2]
-  #     sweep:
-  #       lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
-  #   outputs:
-  #     - { name: PMMR-X-Wind, strategy: independent }
-  #     - { name: PMMR-X-Wcond, strategy: conditional }
-  #     - { name: PMMR-ATE,    strategy: marginal }
+  - name: PMMR
+    cls:         PMMR
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 9
+      seed:     1234
+      grid:
+        kernel_scale:   [0.8, 1, 1.2]
+        kernel_scale_z: [0.8, 1, 1.2]
+      sweep:
+        lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
+    outputs:
+      - { name: PMMR-X-Wind, strategy: independent }
+      - { name: PMMR-X-Wcond, strategy: conditional }
+      - { name: PMMR-ATE,    strategy: marginal }
 
   # - name: NMMR-V-fixed
   #   cls:          NMMR
