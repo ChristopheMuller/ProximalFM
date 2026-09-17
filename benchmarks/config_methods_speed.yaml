@@ -334,14 +334,14 @@ methods:
 
   # ── ProximalFM ────────────────────────────────────────────────────────────
 
-  # - name:       ProximalFM-MPS
-  #   cls:        ProximalFM
-  #   checkpoint: whole_1/best_model.ckpt
-  #   ensemble:   1
-  #   compute: { device: mps }
+  - name:       ProximalFM-MPS
+    cls:        ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble:   1
+    compute: { device: mps }
 
-  # - name:       ProximalFM-CPU
-  #   cls:        ProximalFM
-  #   checkpoint: whole_1/best_model.ckpt
-  #   ensemble:   1
-  #   compute: { device: cpu }
+  - name:       ProximalFM-CPU
+    cls:        ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble:   1
+    compute: { device: cpu }
