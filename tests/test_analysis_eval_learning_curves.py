@@ -521,7 +521,7 @@ def test_speed_rank_figure_has_one_panel_per_confounding_level(tmp_path):
     }
     assert all(ax.get_xscale() == "log" for ax in fig.axes)
     assert all(ax.yaxis_inverted() for ax in fig.axes)
-    assert fig.get_size_inches()[1] == 4.25
+    assert fig.get_size_inches()[1] == 3.5
 
 
 def test_speed_rank_only_highlights_and_labels_relevant_methods(tmp_path):

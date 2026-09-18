@@ -210,7 +210,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
     fig, axes = plt.subplots(
         1,
         len(panels),
-        figsize=(6.07, 4.25) if len(panels) == 1 else (9.4, 4.25),
+        figsize=(6.07, 3.5) if len(panels) == 1 else (9.4, 3.5),
         sharex=True,
         sharey=True,
         squeeze=False,
@@ -237,11 +237,11 @@ def make_speed_rank_figure(summary: pd.DataFrame):
             )
             ax.plot(
                 mps.time_median,
-                cpu.rank_median,
+                mps.rank_median,
                 color=COLORS["vermillion"],
                 marker="o",
                 markersize=5.0,
-                markerfacecolor="white",
+                markerfacecolor=COLORS["vermillion"],
                 markeredgewidth=1.2,
                 linestyle="none",
                 zorder=6,
@@ -297,20 +297,25 @@ def make_speed_rank_figure(summary: pd.DataFrame):
                     zorder=zorder + 2 if highlighted else 3,
                 )
             if highlighted:
+                is_proximal_hardware_label = (
+                    has_proximal_hardware_pair and row.method == "ProximalFM-CPU"
+                )
                 annotation = ax.annotate(
-                    label,
-                    (row.time_median, row.rank_median),
-                    xytext=(5, 0),
+                    "ProximalFM" if is_proximal_hardware_label else label,
+                    (
+                        (mps.time_median, mps.rank_median)
+                        if is_proximal_hardware_label
+                        else (row.time_median, row.rank_median)
+                    ),
+                    xytext=(0, -5) if is_proximal_hardware_label else (5, 0),
                     textcoords="offset points",
                     color=color,
                     fontsize=6.8,
-                    va="center",
+                    ha="center" if is_proximal_hardware_label else "left",
+                    va="top" if is_proximal_hardware_label else "center",
                     clip_on=False,
                 )
-                if row.method == "ProximalFM-CPU":
-                    annotation.set_text("ProximalFM")
-                    annotation.set_position((6, 10))
-                else:
+                if not is_proximal_hardware_label:
                     labels.append(annotation)
         ax.set_xscale("log")
         ax.set_title(panel_name)
