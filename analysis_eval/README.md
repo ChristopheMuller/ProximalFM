@@ -215,6 +215,22 @@ caches cannot reconstruct this split and are shown only at their total time;
 run `FORCE=1 scripts/run_semisynt_benchmarks.sh` to populate the second timing.
 Use `--context-size` or `--methods` to override the defaults.
 
+## Semisynthetic speed by context size
+
+```bash
+uv run python -m analysis_eval.speed_context
+```
+
+This reads the timing arrays written by
+`scripts/run_semisynt_speed_benchmarks.sh` and writes
+`analysis_eval/results/speed/semisynt_speed_by_context.{pdf,png}`. It shows
+median wall-clock latency per episode against context size on log scales, with
+an interquartile ribbon across episodes. A fixed representative set is styled
+and labelled; every other completed benchmark method is retained as a muted
+reference curve. Use `--methods METHOD ...` to choose the highlighted set or
+`--all` for a fully labelled (denser) view. `--bench-dir` and `--out-dir` make
+the command reusable for another speed run or output location.
+
 ## Causal Chambers ATE learning curves
 
 ```bash
