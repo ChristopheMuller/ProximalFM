@@ -19,6 +19,7 @@ import pandas as pd
 
 from .design import COLORS, RELEVANT_METHODS, apply_style
 from .plotting import place_point_labels, plt, save_figure
+from matplotlib.lines import Line2D
 from .semisynt import CELL_ORDER, load_cate_results
 from .speed_context import (
     DEFAULT_BENCH_DIR,
@@ -39,6 +40,7 @@ SPEED_RANK_ALIASES = {
 }
 MUTED_METHOD_COLOR = COLORS["light_grey"]
 MUTED_METHOD_ALPHA = 0.55
+HARDWARE_LINESTYLE = "-"
 
 
 def _case_label(case: str) -> str:
@@ -83,7 +85,7 @@ def _rank_panels(
     ]
     levels = ("linear", "nonlinear") if factor == "family" else ("low", "high")
     suffix = {
-        "family": "linearity",
+        "family": "mechanisms",
         "confounding": "confounding",
         "proxy": "proxy information",
     }[factor]
@@ -175,6 +177,7 @@ def summarize_sequential_speed_rank(
                     "time_median": float(speed_row.median),
                     "time_q25": float(speed_row.q25),
                     "time_q75": float(speed_row.q75),
+                    "time_post_median": float(speed_row.post_median),
                     "n_blocks": len(scores),
                     "n_speed_episodes": int(speed_row.n),
                 }
@@ -192,6 +195,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         "rank_q25",
         "rank_q75",
         "time_median",
+        "time_post_median",
         "n_ctx",
     }
     missing = required - set(summary.columns)
@@ -216,7 +220,35 @@ def make_speed_rank_figure(summary: pd.DataFrame):
     for ax, panel_name in zip(axes, panels):
         panel = summary[summary["panel"].eq(panel_name)]
         labels = []
+        hardware = panel.set_index("method")
+        has_proximal_hardware_pair = {"ProximalFM-CPU", "ProximalFM-MPS"} <= set(
+            hardware.index
+        )
+        if has_proximal_hardware_pair:
+            cpu = hardware.loc["ProximalFM-CPU"]
+            mps = hardware.loc["ProximalFM-MPS"]
+            ax.plot(
+                [mps.time_median, cpu.time_median],
+                [mps.rank_median, cpu.rank_median],
+                color=COLORS["vermillion"],
+                linestyle=HARDWARE_LINESTYLE,
+                linewidth=1.35,
+                zorder=4,
+            )
+            ax.plot(
+                mps.time_median,
+                cpu.rank_median,
+                color=COLORS["vermillion"],
+                marker="o",
+                markersize=5.0,
+                markerfacecolor="white",
+                markeredgewidth=1.2,
+                linestyle="none",
+                zorder=6,
+            )
         for row in panel.itertuples():
+            if has_proximal_hardware_pair and row.method == "ProximalFM-MPS":
+                continue
             label, color, marker, _, _, markersize, zorder = _display_style(row.method)
             highlighted = row.rank_method in RELEVANT_METHODS or row.method.startswith(
                 "ProximalFM-"
@@ -241,35 +273,99 @@ def make_speed_rank_figure(summary: pd.DataFrame):
                 zorder=zorder + 1 if highlighted else 2,
                 alpha=alpha,
             )
-            if highlighted:
-                labels.append(
-                    ax.annotate(
-                        label,
-                        (row.time_median, row.rank_median),
-                        xytext=(5, 0),
-                        textcoords="offset points",
-                        color=color,
-                        fontsize=6.8,
-                        va="center",
-                        clip_on=False,
-                    )
+            post = row.time_post_median
+            if np.isfinite(post) and post > 0 and post < row.time_median * (1.0 - 1e-3):
+                ax.plot(
+                    [post, row.time_median],
+                    [row.rank_median, row.rank_median],
+                    color=color,
+                    linestyle=":",
+                    linewidth=0.9 if highlighted else 0.7,
+                    alpha=alpha,
+                    zorder=zorder if highlighted else 1,
                 )
+                ax.plot(
+                    post,
+                    row.rank_median,
+                    color=color,
+                    marker=marker,
+                    markersize=max(markersize, 5.0),
+                    markerfacecolor="white",
+                    markeredgewidth=1.1,
+                    linestyle="none",
+                    alpha=alpha,
+                    zorder=zorder + 2 if highlighted else 3,
+                )
+            if highlighted:
+                annotation = ax.annotate(
+                    label,
+                    (row.time_median, row.rank_median),
+                    xytext=(5, 0),
+                    textcoords="offset points",
+                    color=color,
+                    fontsize=6.8,
+                    va="center",
+                    clip_on=False,
+                )
+                if row.method == "ProximalFM-CPU":
+                    annotation.set_text("ProximalFM")
+                    annotation.set_position((6, 10))
+                else:
+                    labels.append(annotation)
         ax.set_xscale("log")
         ax.set_title(panel_name)
-        ax.set_xlabel("Median sequential runtime (seconds per episode, log scale)")
+        ax.set_xlabel("Median runtime (seconds)")
         panel_labels.append(labels)
 
     axes[0].set_ylim(rank_count + 0.75, 0.25)
     axes[0].set_yticks(range(1, rank_count + 1))
     fig.supylabel("CATE nPEHE rank (median and IQR)")
-    fig.suptitle(
-        f"Accuracy–speed trade-off at context size {int(summary['n_ctx'].iloc[0]):,}",
-        x=0.125,
-        ha="left",
-        weight="bold",
-    )
     for ax, labels in zip(axes, panel_labels):
         place_point_labels(fig, ax, labels)
+    legend_handles = [
+        Line2D(
+            [],
+            [],
+            color="black",
+            marker="o",
+            markerfacecolor="black",
+            linestyle="none",
+            label="End-to-end runtime",
+        )
+    ]
+    has_post_selection = (
+        np.isfinite(summary["time_post_median"])
+        & summary["time_post_median"].gt(0)
+        & summary["time_post_median"].lt(summary["time_median"] * (1.0 - 1e-3))
+    ).any()
+    if has_post_selection:
+        legend_handles.append(
+            Line2D(
+                [],
+                [],
+                color="black",
+                marker="o",
+                markerfacecolor="white",
+                linestyle=":",
+                label="Post-selection runtime",
+            )
+        )
+    if {"ProximalFM-CPU", "ProximalFM-MPS"} <= set(summary["method"]):
+        legend_handles.append(
+            Line2D(
+                [],
+                [],
+                color=COLORS["vermillion"],
+                linestyle=HARDWARE_LINESTYLE,
+                label="ProximalFM: MPS ↔ CPU",
+            )
+        )
+    fig.legend(
+        handles=legend_handles,
+        loc="outside lower center",
+        ncol=len(legend_handles),
+        columnspacing=1.35,
+    )
     return fig
 
 

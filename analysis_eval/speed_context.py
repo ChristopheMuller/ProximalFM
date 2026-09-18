@@ -72,6 +72,16 @@ def load_speed_results(bench_dir: Path) -> pd.DataFrame:
             if "times" not in cache:
                 raise ValueError(f"timing array missing from {path}")
             times = np.asarray(cache["times"], dtype=float).reshape(-1)
+            post_tune = np.asarray(
+                cache["times_post_tune"]
+                if "times_post_tune" in cache
+                else np.full_like(times, np.nan),
+                dtype=float,
+            ).reshape(-1)
+        if post_tune.shape != times.shape:
+            raise ValueError(
+                f"post-selection timing shape differs from total timing in {path}"
+            )
         finite_times = times[np.isfinite(times) & (times > 0)]
         if finite_times.size == 0:
             raise ValueError(f"no finite positive timings in {path}")
@@ -80,8 +90,10 @@ def load_speed_results(bench_dir: Path) -> pd.DataFrame:
                 "method": match["method"],
                 "n_ctx": int(match["n_ctx"]),
                 "seconds": float(value),
+                "seconds_post_tune": float(post_value),
             }
-            for value in finite_times
+            for value, post_value in zip(times, post_tune)
+            if np.isfinite(value) and value > 0
         )
 
     if not rows:
@@ -97,17 +109,20 @@ def load_speed_results(bench_dir: Path) -> pd.DataFrame:
 
 def summarize_speed(frame: pd.DataFrame) -> pd.DataFrame:
     """Summarize latency robustly over episodes at every context size."""
-    required = {"method", "n_ctx", "seconds"}
+    required = {"method", "n_ctx", "seconds", "seconds_post_tune"}
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"speed summary requires columns {sorted(missing)}")
     summary = (
-        frame.groupby(["method", "n_ctx"], observed=True)["seconds"]
+        frame.groupby(["method", "n_ctx"], observed=True)
         .agg(
-            median="median",
-            q25=lambda values: values.quantile(0.25),
-            q75=lambda values: values.quantile(0.75),
-            n="count",
+            median=("seconds", "median"),
+            q25=("seconds", lambda values: values.quantile(0.25)),
+            q75=("seconds", lambda values: values.quantile(0.75)),
+            post_median=("seconds_post_tune", "median"),
+            post_q25=("seconds_post_tune", lambda values: values.quantile(0.25)),
+            post_q75=("seconds_post_tune", lambda values: values.quantile(0.75)),
+            n=("seconds", "count"),
         )
         .reset_index()
     )

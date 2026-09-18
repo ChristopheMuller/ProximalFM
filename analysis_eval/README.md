@@ -199,7 +199,11 @@ runtime coordinate exclusively from the sequential timing run made by
 `scripts/run_semisynt_speed_benchmarks.sh`. The x-axis is therefore the
 benchmark's measured end-to-end latency, rather than incidental timings from
 another experimental run. `ProximalFM-CPU` and `ProximalFM-MPS` appear as two
-separate measured speed points at the common `ProximalFM` accuracy rank.
+separate measured speed points at the common `ProximalFM` accuracy rank, joined
+by an orange dotted hardware-comparison line. The CPU point carries the rank
+IQR; MPS is its hollow endpoint. Filled points are end-to-end runtime; hollow
+points connected by a dotted segment are post-selection runtime with
+hyperparameter search removed.
 
 The default `--scope overall` pools all eight configurations. Use one of these
 to choose what ranks are summarized:

@@ -414,7 +414,7 @@ RELEVANT_METHODS: tuple[str, ...] = (
     "T-OLS",
     "S-TabICL-WZ-kNN-16",
     "P-Kernel-OLS",
-    "P-Kernel-RF",
+    # "P-Kernel-RF",
     "P-Kernel-TabICL",
     "NMMR-V-fixed-Wcond",
     "KPV-X-Wcond",
