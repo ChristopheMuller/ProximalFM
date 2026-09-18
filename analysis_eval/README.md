@@ -193,27 +193,35 @@ and the decomposition's `--aggregation`, `--xlim`, and `--ylim` options.
 uv run python -m analysis_eval.speed_rank
 ```
 
-This writes `analysis_eval/results/semisynt_speed_rank.{pdf,png}`. At the
-largest available context size (2048 in the production matrix), separate low-
-and high-confounding panels rank every method within each `(factorial cell,
-episode)` block. Each panel therefore summarizes four linearity/proxy cells
-independently rather than inheriting ranks from a pooled eight-cell comparison.
-The y-axis shows median paired rank with an
-interquartile whisker; the x-axis shows mean wall-clock seconds per episode on
-a shared log scale. Thus the upper-left is better. All complete methods remain
-in the ranking and are plotted, but only the fixed `design.RELEVANT_METHODS`
-subset is coloured and labelled; the remaining methods form a light-grey
-context layer.
+This writes `analysis_eval/results/speed/semisynt_speed_rank.{pdf,png}`. It
+computes paired CATE nPEHE ranks from the completed matrix, but takes every
+runtime coordinate exclusively from the sequential timing run made by
+`scripts/run_semisynt_speed_benchmarks.sh`. The x-axis is therefore the
+benchmark's measured end-to-end latency, rather than incidental timings from
+another experimental run. `ProximalFM-CPU` and `ProximalFM-MPS` appear as two
+separate measured speed points at the common `ProximalFM` accuracy rank.
 
-A filled marker uses the complete measured runtime: estimator construction,
-hyperparameter search, final fit, prediction, and diagnostics. For methods with
-explicit tuning, a connected hollow marker uses `time_post_tune`, the measured
-total after subtracting search-only regions. It answers the deployment-like
-question “what if the selected configuration were already known?” without
-mixing that hypothetical cost into the end-to-end benchmark. Historical tuned
-caches cannot reconstruct this split and are shown only at their total time;
-run `FORCE=1 scripts/run_semisynt_benchmarks.sh` to populate the second timing.
-Use `--context-size` or `--methods` to override the defaults.
+The default `--scope overall` pools all eight configurations. Use one of these
+to choose what ranks are summarized:
+
+```bash
+# One configuration
+uv run python -m analysis_eval.speed_rank --scope case \
+  --case nonlinear_conf_high_proxy_low
+
+# Two explicit configurations, side by side
+uv run python -m analysis_eval.speed_rank --scope pair --cases \
+  linear_conf_low_proxy_low nonlinear_conf_high_proxy_high
+
+# Two factorial groups, side by side
+uv run python -m analysis_eval.speed_rank --scope linearity
+uv run python -m analysis_eval.speed_rank --scope confounding
+uv run python -m analysis_eval.speed_rank --scope proxy
+```
+
+All plots use the largest context size common to the matrix and speed run by
+default; override it with `--context-size`. `--speed-dir`, `--methods`, and
+`--out-dir` support alternate timing runs, subsets, and destinations.
 
 ## Semisynthetic speed by context size
 

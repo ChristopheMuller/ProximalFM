@@ -1,8 +1,11 @@
-"""Low/high-confounding runtime versus paired nPEHE-rank figure.
+"""Plot accuracy rank against sequential-benchmark runtime.
 
 Run from the repository root::
 
     uv run python -m analysis_eval.speed_rank
+
+Accuracy ranks come from the completed semi-synthetic matrix. Runtime always
+comes from the dedicated sequential speed benchmark, never a matrix cache.
 """
 
 from __future__ import annotations
@@ -13,209 +16,279 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
-from matplotlib.lines import Line2D
 
-from .design import (
-    COLORS,
-    RELEVANT_METHODS,
-    apply_style,
-    method_style,
-    ordered_methods,
-    speed_rank_figsize,
-)
+from .design import COLORS, RELEVANT_METHODS, apply_style
 from .plotting import place_point_labels, plt, save_figure
-from .semisynt import (
-    LEVELS,
-    complete_learning_curve_methods,
-    load_cate_results,
-    summarize_speed_rank,
+from .semisynt import CELL_ORDER, load_cate_results
+from .speed_context import (
+    DEFAULT_BENCH_DIR,
+    _display_style,
+    _ordered_speed_methods,
+    load_speed_results,
+    summarize_speed,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
-DEFAULT_OUT_DIR = Path(__file__).with_name("results")
+DEFAULT_OUT_DIR = Path(__file__).with_name("results") / "speed"
 OUTPUT_NAME = "semisynt_speed_rank"
+SCOPE_CHOICES = ("overall", "case", "pair", "linearity", "confounding", "proxy")
+SPEED_RANK_ALIASES = {
+    "ProximalFM-CPU": "ProximalFM",
+    "ProximalFM-MPS": "ProximalFM",
+}
 MUTED_METHOD_COLOR = COLORS["light_grey"]
 MUTED_METHOD_ALPHA = 0.55
 
 
+def _case_label(case: str) -> str:
+    family, _, confounding, _, proxy = case.split("_")
+    return f"{family.capitalize()} · {confounding} conf. · {proxy} proxy info"
+
+
+def _rank_panels(
+    frame: pd.DataFrame,
+    *,
+    scope: str,
+    case: str | None,
+    cases: Sequence[str] | None,
+) -> list[tuple[str, list[str]]]:
+    """Resolve one or two labelled rank-comparison panels."""
+    available = set(frame["case"].unique())
+    ordered_cases = [
+        f"{family}_conf_{confounding}_proxy_{proxy}"
+        for family, confounding, proxy in CELL_ORDER
+    ]
+    if scope == "overall":
+        return [("Overall", ordered_cases)]
+    if scope == "case":
+        if case is None:
+            raise ValueError("--scope case requires --case CASE")
+        if case not in available:
+            raise ValueError(f"case {case!r} is absent; available={sorted(available)}")
+        return [(_case_label(case), [case])]
+    if scope == "pair":
+        if cases is None or len(cases) != 2:
+            raise ValueError("--scope pair requires --cases CASE_A CASE_B")
+        if len(set(cases)) != 2:
+            raise ValueError("--cases must name two distinct configurations")
+        absent = set(cases) - available
+        if absent:
+            raise ValueError(f"cases absent from matrix: {sorted(absent)}")
+        return [(_case_label(value), [value]) for value in cases]
+    if case is not None or cases is not None:
+        raise ValueError(f"--case/--cases are invalid for --scope {scope}")
+    factor = {"linearity": "family", "confounding": "confounding", "proxy": "proxy"}[
+        scope
+    ]
+    levels = ("linear", "nonlinear") if factor == "family" else ("low", "high")
+    suffix = {
+        "family": "linearity",
+        "confounding": "confounding",
+        "proxy": "proxy information",
+    }[factor]
+    return [
+        (
+            f"{level.capitalize()} {suffix}",
+            [
+                value
+                for value in ordered_cases
+                if value in set(frame.loc[frame[factor].eq(level), "case"])
+            ],
+        )
+        for level in levels
+    ]
+
+
+def _select_rank_methods(
+    frame: pd.DataFrame,
+    speed: pd.DataFrame,
+    *,
+    context_size: int,
+    panels: Sequence[tuple[str, list[str]]],
+    requested: Sequence[str] | None,
+) -> list[str]:
+    """Find methods with accuracy and measured sequential speed in every panel."""
+    speed_methods = set(speed.loc[speed["n_ctx"].eq(context_size), "method"])
+    rank_to_speed = {
+        SPEED_RANK_ALIASES.get(speed_method, speed_method)
+        for speed_method in speed_methods
+    }
+    candidates = set(frame["method"]) & rank_to_speed
+    if requested is not None:
+        requested = list(requested)
+        absent = set(requested) - candidates
+        if absent:
+            raise ValueError(
+                "requested methods lack either a rank or sequential timing at "
+                f"n_ctx={context_size}: {sorted(absent)}"
+            )
+        candidates = set(requested)
+
+    work = frame[frame["n_ctx"].eq(context_size) & frame["method"].isin(candidates)]
+    required_cases = {case for _, panel_cases in panels for case in panel_cases}
+    complete = []
+    for method in candidates:
+        observed = set(work.loc[work["method"].eq(method), "case"])
+        if required_cases <= observed:
+            complete.append(method)
+    if not complete:
+        raise ValueError("no methods have complete rank coverage and sequential timing")
+    return _ordered_speed_methods(set(complete))
+
+
+def summarize_sequential_speed_rank(
+    frame: pd.DataFrame,
+    speed: pd.DataFrame,
+    methods: Sequence[str],
+    *,
+    context_size: int,
+    panels: Sequence[tuple[str, list[str]]],
+) -> pd.DataFrame:
+    """Rank methods per episode, then attach independent sequential timings."""
+    speed_at_context = speed[speed["n_ctx"].eq(context_size)].copy()
+    speed_at_context["rank_method"] = speed_at_context["method"].map(
+        lambda value: SPEED_RANK_ALIASES.get(value, value)
+    )
+    speed_at_context = speed_at_context[speed_at_context["rank_method"].isin(methods)]
+    rows = []
+    work = frame[frame["n_ctx"].eq(context_size) & frame["method"].isin(methods)]
+    for panel, panel_cases in panels:
+        scores = work[work["case"].isin(panel_cases)].pivot(
+            index=["case", "episode"], columns="method", values="npehe"
+        )
+        scores = scores.reindex(columns=methods).dropna(axis=0, how="any")
+        if scores.empty:
+            raise ValueError(f"no complete episode blocks remain for panel {panel!r}")
+        ranks = scores.rank(axis=1, method="average", ascending=True)
+        for speed_row in speed_at_context.itertuples():
+            rank_values = ranks[speed_row.rank_method]
+            rows.append(
+                {
+                    "panel": panel,
+                    "method": speed_row.method,
+                    "rank_method": speed_row.rank_method,
+                    "n_ctx": context_size,
+                    "rank_median": float(rank_values.median()),
+                    "rank_q25": float(rank_values.quantile(0.25)),
+                    "rank_q75": float(rank_values.quantile(0.75)),
+                    "time_median": float(speed_row.median),
+                    "time_q25": float(speed_row.q25),
+                    "time_q75": float(speed_row.q75),
+                    "n_blocks": len(scores),
+                    "n_speed_episodes": int(speed_row.n),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def make_speed_rank_figure(summary: pd.DataFrame):
-    """Draw one paired speed/rank panel per confounding level."""
+    """Draw one or two independent speed/rank panels."""
     required = {
-        "confounding",
+        "panel",
         "method",
+        "rank_method",
         "rank_median",
         "rank_q25",
         "rank_q75",
-        "time_mean",
-        "time_post_tune_mean",
+        "time_median",
         "n_ctx",
     }
     missing = required - set(summary.columns)
     if missing:
         raise ValueError(f"speed/rank figure requires columns {sorted(missing)}")
-    if summary.empty:
-        raise ValueError("speed/rank figure received an empty summary")
-    if summary["n_ctx"].nunique() != 1:
-        raise ValueError("speed/rank figure requires exactly one context size")
-    if set(summary["confounding"]) != set(LEVELS):
-        raise ValueError(
-            f"speed/rank figure requires confounding levels {LEVELS}, "
-            f"got {sorted(summary['confounding'].unique())}"
-        )
+    panels = list(summary["panel"].drop_duplicates())
+    if not 1 <= len(panels) <= 2:
+        raise ValueError("speed/rank figure requires one or two panels")
 
-    methods = ordered_methods(set(summary["method"]))
+    rank_count = summary["rank_method"].nunique()
     apply_style()
     fig, axes = plt.subplots(
-        1, 2, figsize=speed_rank_figsize(), sharex=True, sharey=True
+        1,
+        len(panels),
+        figsize=(6.07, 4.25) if len(panels) == 1 else (9.4, 4.25),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
     )
+    axes = axes.ravel()
     panel_labels = []
-    for ax, confounding in zip(axes, LEVELS):
-        panel = summary[summary["confounding"].eq(confounding)]
-        panel = panel.set_index("method").loc[methods].reset_index()
+    for ax, panel_name in zip(axes, panels):
+        panel = summary[summary["panel"].eq(panel_name)]
         labels = []
         for row in panel.itertuples():
-            style = method_style(row.method)
-            highlighted = row.method in RELEVANT_METHODS
-            color = style.color if highlighted else MUTED_METHOD_COLOR
-            alpha = style.alpha if highlighted else MUTED_METHOD_ALPHA
-            zorder = style.zorder if highlighted else 1
+            label, color, marker, _, _, markersize, zorder = _display_style(row.method)
+            highlighted = row.rank_method in RELEVANT_METHODS or row.method.startswith(
+                "ProximalFM-"
+            )
+            color = color if highlighted else MUTED_METHOD_COLOR
+            alpha = 0.98 if highlighted else MUTED_METHOD_ALPHA
             lower = row.rank_median - row.rank_q25
             upper = row.rank_q75 - row.rank_median
             ax.errorbar(
-                row.time_mean,
+                row.time_median,
                 row.rank_median,
                 yerr=np.array([[lower], [upper]]),
                 color=color,
-                marker=style.marker,
-                markersize=max(style.markersize, 5.0),
+                marker=marker,
+                markersize=max(markersize, 5.0),
                 markerfacecolor=color,
                 markeredgecolor="white",
                 markeredgewidth=0.55,
                 linestyle="none",
                 linewidth=1.15 if highlighted else 0.8,
                 capsize=2.5,
-                zorder=zorder + 1,
+                zorder=zorder + 1 if highlighted else 2,
                 alpha=alpha,
             )
-
-            post = row.time_post_tune_mean
-            if np.isfinite(post) and post < row.time_mean * (1.0 - 1e-3):
-                ax.plot(
-                    [post, row.time_mean],
-                    [row.rank_median, row.rank_median],
-                    color=color,
-                    linestyle=":",
-                    linewidth=0.9 if highlighted else 0.7,
-                    alpha=alpha,
-                    zorder=zorder,
-                )
-                ax.plot(
-                    post,
-                    row.rank_median,
-                    color=color,
-                    marker=style.marker,
-                    markersize=max(style.markersize, 5.0),
-                    markerfacecolor="white",
-                    markeredgewidth=1.1,
-                    linestyle="none",
-                    alpha=alpha,
-                    zorder=zorder + 2,
-                )
-
             if highlighted:
                 labels.append(
                     ax.annotate(
-                        style.label,
-                        (row.time_mean, row.rank_median),
+                        label,
+                        (row.time_median, row.rank_median),
                         xytext=(5, 0),
                         textcoords="offset points",
-                        color=style.color,
+                        color=color,
                         fontsize=6.8,
                         va="center",
                         clip_on=False,
                     )
                 )
-
         ax.set_xscale("log")
-        ax.set_title(f"{confounding.capitalize()} confounding")
-        ax.set_xlabel("Mean runtime (seconds per episode, log scale)")
+        ax.set_title(panel_name)
+        ax.set_xlabel("Median sequential runtime (seconds per episode, log scale)")
         panel_labels.append(labels)
 
-    context_size = int(summary["n_ctx"].iloc[0])
-    axes[0].set_ylim(len(methods) + 0.75, 0.25)
-    axes[0].set_yticks(range(1, len(methods) + 1))
+    axes[0].set_ylim(rank_count + 0.75, 0.25)
+    axes[0].set_yticks(range(1, rank_count + 1))
     fig.supylabel("CATE nPEHE rank (median and IQR)")
-    # fig.suptitle(f"Speed–accuracy trade-off at context size {context_size:,}")
+    fig.suptitle(
+        f"Accuracy–speed trade-off at context size {int(summary['n_ctx'].iloc[0]):,}",
+        x=0.125,
+        ha="left",
+        weight="bold",
+    )
     for ax, labels in zip(axes, panel_labels):
         place_point_labels(fig, ax, labels)
-
-    handles = [
-        Line2D(
-            [],
-            [],
-            color="black",
-            marker="o",
-            markerfacecolor="black",
-            linestyle="none",
-            label="End-to-end runtime",
-        )
-    ]
-    has_distinct_post_time = (
-        np.isfinite(summary["time_post_tune_mean"])
-        & summary["time_post_tune_mean"].lt(summary["time_mean"] * (1.0 - 1e-3))
-    ).any()
-    if has_distinct_post_time:
-        handles.append(
-            Line2D(
-                [],
-                [],
-                color="black",
-                marker="o",
-                markerfacecolor="white",
-                linestyle=":",
-                label="Post-selection runtime",
-            )
-        )
-    fig.legend(
-        handles=handles,
-        loc="outside lower center",
-        ncol=len(handles),
-        columnspacing=1.5,
-    )
     return fig
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--matrix-root", type=Path, default=DEFAULT_MATRIX_ROOT)
+    parser.add_argument("--speed-dir", type=Path, default=DEFAULT_BENCH_DIR)
+    parser.add_argument("--dim", type=int, default=None)
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
+    parser.add_argument("--name", default=OUTPUT_NAME)
+    parser.add_argument("--context-size", type=int)
+    parser.add_argument("--methods", nargs="+")
+    parser.add_argument("--scope", choices=SCOPE_CHOICES, default="overall")
+    parser.add_argument("--case", help="One case for --scope case")
     parser.add_argument(
-        "--matrix-root",
-        type=Path,
-        default=DEFAULT_MATRIX_ROOT,
-        help=f"Matrix build root (default: {DEFAULT_MATRIX_ROOT})",
-    )
-    parser.add_argument(
-        "--dim",
-        type=int,
-        default=None,
-        help="Dimension in a per-dimension matrix (default: 5)",
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=Path,
-        default=DEFAULT_OUT_DIR,
-        help=f"Output directory (default: {DEFAULT_OUT_DIR})",
-    )
-    parser.add_argument("--name", default=OUTPUT_NAME, help="Output filename stem")
-    parser.add_argument(
-        "--context-size",
-        type=int,
-        help="Context size to plot (default: largest available)",
-    )
-    parser.add_argument(
-        "--methods",
-        nargs="+",
-        help="Optional method subset; names must match results.csv exactly",
+        "--cases",
+        nargs=2,
+        metavar=("CASE_A", "CASE_B"),
+        help="Two cases for --scope pair",
     )
     return parser
 
@@ -223,37 +296,34 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     frame = load_cate_results(args.matrix_root, dimension=args.dim)
-    complete, incomplete = complete_learning_curve_methods(frame)
-    selected = args.methods if args.methods is not None else complete
-    methods = ordered_methods(set(selected))
-    summary = summarize_speed_rank(frame, methods, context_size=args.context_size)
-    fig = make_speed_rank_figure(summary)
-    paths = save_figure(fig, args.out_dir, args.name)
-
+    speed = summarize_speed(load_speed_results(args.speed_dir))
+    contexts = sorted(set(frame["n_ctx"]) & set(speed["n_ctx"]))
+    if not contexts:
+        raise ValueError(
+            "accuracy matrix and sequential benchmark have no context size in common"
+        )
+    context_size = contexts[-1] if args.context_size is None else args.context_size
+    if context_size not in contexts:
+        raise ValueError(f"context size {context_size} unavailable; common={contexts}")
+    panels = _rank_panels(frame, scope=args.scope, case=args.case, cases=args.cases)
+    methods = _select_rank_methods(
+        frame, speed, context_size=context_size, panels=panels, requested=args.methods
+    )
+    summary = summarize_sequential_speed_rank(
+        frame, speed, methods, context_size=context_size, panels=panels
+    )
+    figure = make_speed_rank_figure(summary)
+    paths = save_figure(figure, args.out_dir, args.name)
     block_counts = ", ".join(
-        f"{confounding}={int(group['n_blocks'].iloc[0])}"
-        for confounding, group in summary.groupby("confounding", sort=False)
+        f"{panel}={int(group['n_blocks'].iloc[0])}"
+        for panel, group in summary.groupby("panel", sort=False)
     )
     print(
-        f"Ranked {summary['method'].nunique()} methods separately by confounding "
-        f"({block_counts} paired blocks) at n_ctx={int(summary['n_ctx'].iloc[0])}."
+        f"Ranked {len(methods)} accuracy methods ({summary['method'].nunique()} speed points) "
+        f"at n_ctx={context_size:,}; "
+        f"sequential speed uses {int(summary['n_speed_episodes'].iloc[0])} episodes "
+        f"({block_counts} rank blocks)."
     )
-    if args.methods is None and incomplete:
-        print(
-            "Excluded methods without complete factorial/context coverage: "
-            + ", ".join(sorted(incomplete))
-        )
-    missing_post = sorted(
-        set(
-            summary.loc[~np.isfinite(summary["time_post_tune_mean"]), "method"].tolist()
-        )
-    )
-    if missing_post:
-        print(
-            "Post-selection timing unavailable for: "
-            + ", ".join(missing_post)
-            + ". Re-run their benchmark caches with --force to add it."
-        )
     for path in paths:
         print(path)
     return 0
