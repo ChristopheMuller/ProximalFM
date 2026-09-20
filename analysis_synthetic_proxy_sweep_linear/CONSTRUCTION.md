@@ -35,6 +35,13 @@ uv run python run_ablation.py --context-sizes 128 512 2048 8192 --proximalfm-dev
 uv run python plot_results.py
 ```
 
+The runner shows a progress bar over dataset settings, with completed cache
+hits and fits. Use `--workers N` to fit settings in parallel on CPU; each worker
+uses one BLAS and PyTorch thread, and the main process alone writes the result
+and fit-cache files. For example, `--backdoor-methods causalpfn --workers 4`
+replaces TabICL with four CPU CausalPFN workers. Runs using MPS or CUDA models
+use `--workers 1`.
+
 Outputs are saved beside the scripts. Comparisons use linear proximal 2SLS,
 OLS(X), OLS(X,W,Z), ProximalFM, proxy-adjusted TabICL (default), optionally
 proxy-adjusted CausalPFN, and optionally oracle OLS(X,U), scored against test

@@ -3,6 +3,7 @@ import json
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from benchmarks.methods.proximalfm import ProximalFM_Estimator, _MODEL_CACHE
@@ -296,6 +297,69 @@ def test_second_run_computes_only_the_new_context_size(tmp_path, monkeypatch):
         metadata = json.load(stream)
     assert metadata["cache"]["hits"] == 10
     assert metadata["cache"]["computed"] == 5
+
+
+def test_parallel_workers_match_serial_results(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    observed = make_observed()
+    truth = {"CATE": np.zeros(len(observed["split"])), "row_id": observed["row_id"]}
+    for setting in range(2):
+        np.savez(data_dir / f"observed_{setting}.npz", **observed)
+        np.savez(data_dir / f"truth_{setting}.npz", **truth)
+    (data_dir / "index.csv").write_text(
+        "dimension,joint_r2_target,level_id,observed_path,truth_path,n_train\n"
+        + "".join(
+            f"2,0.5,{setting},observed_{setting}.npz,truth_{setting}.npz,12\n"
+            for setting in range(2)
+        )
+    )
+    args = SimpleNamespace(
+        data_dir=data_dir,
+        output_dir=tmp_path / "serial",
+        dimensions=None,
+        levels=None,
+        limit=None,
+        context_sizes=[12],
+        proximalfm_checkpoint=None,
+        proximalfm_device="cpu",
+        proximalfm_query_batch_size=512,
+        proximalfm_ensemble=1,
+        backdoor_methods=[],
+        backdoor_device="cpu",
+        backdoor_proxy_samples=16,
+        backdoor_seed=0,
+        backdoor_predict_batch_size=4096,
+        tabicl_estimators=1,
+        oracle=False,
+        fail_fast=True,
+        force=False,
+        workers=1,
+    )
+    assert sweep.run(args) == 0
+    args.output_dir = tmp_path / "parallel"
+    args.workers = 2
+    assert sweep.run(args) == 0
+
+    def scored_rows(path):
+        with path.open(newline="") as stream:
+            return [
+                {key: value for key, value in row.items() if key != "elapsed_seconds"}
+                for row in csv.DictReader(stream)
+            ]
+
+    assert scored_rows(tmp_path / "serial" / "method_results.csv") == scored_rows(
+        tmp_path / "parallel" / "method_results.csv"
+    )
+    with (tmp_path / "parallel" / "run_metadata.json").open() as stream:
+        assert json.load(stream)["workers"] == 2
+    assert sweep.run(args) == 0
+    with (tmp_path / "parallel" / "run_metadata.json").open() as stream:
+        assert json.load(stream)["cache"]["hits"] == 6
+    args.backdoor_methods = ["causalpfn"]
+    args.backdoor_device = "mps"
+    with pytest.raises(ValueError, match="requires CPU devices"):
+        sweep.run(args)
 
 
 def test_chunked_proximalfm_predictions_match_one_query_pass(tmp_path):

@@ -148,6 +148,19 @@ def test_empirical_uses_one_seeded_random_aligned_sample_for_every_query():
     )
 
 
+def test_empirical_fit_does_not_compute_pairwise_context_distances(monkeypatch):
+    import benchmarks.methods.proxy_marginalizer as marginalizer
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("empirical integration does not need context distances")
+
+    monkeypatch.setattr(marginalizer, "cdist", fail_if_called)
+    wrapper, _ = fit_wrapper(
+        integration={"method": "empirical", "n_points": 3, "seed": 7}
+    )
+    assert wrapper.predict(np.array([[0.0]])).shape == (1,)
+
+
 def test_empirical_support_caps_at_context_size():
     wrapper, nested = fit_wrapper(
         n=4, integration={"method": "empirical", "n_points": 128}

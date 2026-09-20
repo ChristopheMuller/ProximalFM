@@ -19,9 +19,11 @@ under the output directory and reused across overlapping context-size runs.
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import csv
 import hashlib
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import platform
@@ -32,6 +34,7 @@ import time
 import numpy as np
 import scipy
 from scipy import linalg
+from tqdm import tqdm
 
 METHODS = ("proximal_2sls", "backdoor_ols_x", "backdoor_ols_xwz")
 PROXIMALFM = "proximalfm"
@@ -666,6 +669,132 @@ def load_setting(data_dir, row, oracle=False):
     return observed, truth
 
 
+def _worker_init():
+    """Keep CPU model and BLAS threads from multiplying across processes."""
+    from threadpoolctl import threadpool_limits
+
+    threadpool_limits(limits=1)
+    import torch
+
+    torch.set_num_threads(1)
+
+
+def _compute_setting(args, row, methods, cached_results):
+    required = (
+        "dimension",
+        "joint_r2_target",
+        "level_id",
+        "observed_path",
+        "truth_path",
+    )
+    common = {name: row[name] for name in required}
+    requested = [
+        (context_size, method)
+        for context_size in args.context_sizes
+        for method in methods
+    ]
+    if all(
+        fit_cache_key({**common, "context_size": context_size, "method": method})
+        in cached_results
+        for context_size, method in requested
+    ):
+        return [
+            {
+                **cached_results[
+                    fit_cache_key(
+                        {**common, "context_size": context_size, "method": method}
+                    )
+                ],
+                "cached": "1",
+            }
+            for context_size, method in requested
+        ]
+    try:
+        observed, truth = load_setting(args.data_dir, row, args.oracle)
+        load_error = None
+    except (OSError, ValueError, KeyError, IndexError) as error:
+        load_error = error
+    results = []
+    for context_size in args.context_sizes:
+        context_observed = context_u = None
+        context_error = load_error
+        context_prepared = False
+        for method in methods:
+            method_started = time.perf_counter()
+            result = {
+                **common,
+                "method": method,
+                "context_size": context_size,
+                "status": "error",
+                "error": "",
+            }
+            key = fit_cache_key(result)
+            if key in cached_results:
+                results.append({**cached_results[key], "cached": "1"})
+                continue
+            if not context_prepared:
+                context_prepared = True
+                if context_error is None:
+                    try:
+                        context_observed = restrict_context(observed, context_size)
+                        context_u = (
+                            None
+                            if "U" not in truth
+                            else restrict_aligned(
+                                truth["U"], observed["split"], context_size
+                            )
+                        )
+                    except (OSError, ValueError, KeyError, IndexError) as error:
+                        context_error = error
+            try:
+                if context_error is not None:
+                    raise context_error
+                if method == PROXIMALFM:
+                    predicted, fit = fit_proximalfm(
+                        context_observed,
+                        checkpoint=args.proximalfm_checkpoint,
+                        device=args.proximalfm_device,
+                        query_batch_size=args.proximalfm_query_batch_size,
+                        ensemble=args.proximalfm_ensemble,
+                    )
+                elif method in BACKDOOR_METHODS.values():
+                    predicted, fit = fit_backdoor_foundation_model(
+                        context_observed,
+                        method,
+                        device=args.backdoor_device,
+                        proxy_samples=args.backdoor_proxy_samples,
+                        seed=args.backdoor_seed,
+                        predict_batch_size=args.backdoor_predict_batch_size,
+                        tabicl_estimators=args.tabicl_estimators,
+                    )
+                else:
+                    predicted, fit = fit_method(context_observed, method, context_u)
+                result.update(fit)
+                result.update(
+                    score_cate(predicted, truth["CATE"][observed["split"] == 1])
+                )
+            except (
+                OSError,
+                ValueError,
+                KeyError,
+                IndexError,
+                np.linalg.LinAlgError,
+                RuntimeError,
+                ImportError,
+            ) as error:
+                result.update(status="error", error=f"{type(error).__name__}: {error}")
+                if args.fail_fast:
+                    raise
+            result["elapsed_seconds"] = time.perf_counter() - method_started
+            result["cached"] = "0"
+            results.append(result)
+    return results
+
+
+def _compute_setting_star(task):
+    return _compute_setting(*task)
+
+
 def run(args):
     index_path = args.data_dir / "index.csv"
     with index_path.open(newline="") as stream:
@@ -695,130 +824,92 @@ def run(args):
         methods.append(PROXIMALFM)
     if args.oracle:
         methods.append(ORACLE)
+    workers = getattr(args, "workers", 1)
+    if workers < 1:
+        raise ValueError("workers must be positive")
+    if workers > 1 and (
+        (PROXIMALFM in methods and not args.proximalfm_device.startswith("cpu"))
+        or (
+            any(method in BACKDOOR_METHODS.values() for method in methods)
+            and not args.backdoor_device.startswith("cpu")
+        )
+    ):
+        raise ValueError("--workers > 1 requires CPU devices for all selected models")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     cached_results, cache_path, cache_signature = prepare_fit_cache(args, index_path)
     output = args.output_dir / "method_results.csv"
     temporary = output.with_suffix(".tmp.csv")
     started, statuses = time.perf_counter(), {}
     cache_hits = computed_fits = 0
+
+    def tasks():
+        for row in rows:
+            relevant_cache = {}
+            for context_size in args.context_sizes:
+                for method in methods:
+                    key = fit_cache_key(
+                        {**row, "method": method, "context_size": context_size}
+                    )
+                    if key in cached_results:
+                        relevant_cache[key] = cached_results[key]
+            yield args, row, methods, relevant_cache
+
     with temporary.open("w", newline="") as stream, cache_path.open(
         "a", newline=""
     ) as cache_stream:
         writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
         cache_writer = csv.DictWriter(cache_stream, fieldnames=RESULT_FIELDS)
         writer.writeheader()
-        for number, row in enumerate(rows, 1):
-            common = {name: row[name] for name in required}
-            try:
-                observed, truth = load_setting(args.data_dir, row, args.oracle)
-                load_error = None
-            except (OSError, ValueError, KeyError, IndexError) as error:
-                load_error = error
-            for context_size in args.context_sizes:
-                context_observed = context_u = None
-                context_error = load_error
-                context_prepared = False
-                for method in methods:
-                    method_started = time.perf_counter()
-                    result = {
-                        **common,
-                        "method": method,
-                        "context_size": context_size,
-                        "status": "error",
-                        "error": "",
-                    }
-                    key = fit_cache_key(result)
-                    if key in cached_results:
-                        result = {**cached_results[key], "cached": "1"}
-                        cache_hits += 1
+        if workers == 1:
+            results = (
+                (number, _compute_setting(*task)) for number, task in enumerate(tasks())
+            )
+        else:
+            pool = ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=_worker_init,
+            )
+            pending = {
+                pool.submit(_compute_setting_star, task): number
+                for number, task in enumerate(tasks())
+            }
+            results = (
+                (pending[future], future.result()) for future in as_completed(pending)
+            )
+        try:
+            waiting = {}
+            next_to_write = 0
+            with tqdm(
+                results, total=len(rows), unit="setting", desc="Sweep"
+            ) as progress:
+                for number, setting_results in progress:
+                    for result in setting_results:
                         statuses[result["status"]] = (
                             statuses.get(result["status"], 0) + 1
                         )
-                        writer.writerow(result)
-                        continue
-                    if not context_prepared:
-                        context_prepared = True
-                        if context_error is None:
-                            try:
-                                context_observed = restrict_context(
-                                    observed, context_size
-                                )
-                                context_u = (
-                                    None
-                                    if "U" not in truth
-                                    else restrict_aligned(
-                                        truth["U"], observed["split"], context_size
-                                    )
-                                )
-                            except (
-                                OSError,
-                                ValueError,
-                                KeyError,
-                                IndexError,
-                            ) as error:
-                                context_error = error
-                    try:
-                        if context_error is not None:
-                            raise context_error
-                        if method == PROXIMALFM:
-                            predicted, fit = fit_proximalfm(
-                                context_observed,
-                                checkpoint=args.proximalfm_checkpoint,
-                                device=args.proximalfm_device,
-                                query_batch_size=args.proximalfm_query_batch_size,
-                                ensemble=args.proximalfm_ensemble,
-                            )
-                        elif method in BACKDOOR_METHODS.values():
-                            predicted, fit = fit_backdoor_foundation_model(
-                                context_observed,
-                                method,
-                                device=args.backdoor_device,
-                                proxy_samples=args.backdoor_proxy_samples,
-                                seed=args.backdoor_seed,
-                                predict_batch_size=args.backdoor_predict_batch_size,
-                                tabicl_estimators=args.tabicl_estimators,
-                            )
+                        if result["cached"] == "1":
+                            cache_hits += 1
                         else:
-                            predicted, fit = fit_method(
-                                context_observed, method, context_u
-                            )
-                        result.update(fit)
-                        result.update(
-                            score_cate(predicted, truth["CATE"][observed["split"] == 1])
-                        )
-                    except (
-                        OSError,
-                        ValueError,
-                        KeyError,
-                        IndexError,
-                        np.linalg.LinAlgError,
-                        RuntimeError,
-                        ImportError,
-                    ) as error:
-                        result.update(
-                            status="error", error=f"{type(error).__name__}: {error}"
-                        )
-                        if args.fail_fast:
-                            raise
-                    result["elapsed_seconds"] = time.perf_counter() - method_started
-                    result["cached"] = "0"
-                    computed_fits += 1
-                    statuses[result["status"]] = statuses.get(result["status"], 0) + 1
-                    writer.writerow(result)
-                    if result["status"] != "error":
-                        cache_writer.writerow(result)
-                        cache_stream.flush()
-            stream.flush()
-            print(
-                f"[{number}/{len(rows)}] dimension={row['dimension']} "
-                f"level={row['level_id']} (cached={cache_hits}, computed={computed_fits})",
-                flush=True,
-            )
+                            computed_fits += 1
+                            if result["status"] != "error":
+                                cache_writer.writerow(result)
+                    waiting[number] = setting_results
+                    while next_to_write in waiting:
+                        writer.writerows(waiting.pop(next_to_write))
+                        next_to_write += 1
+                    stream.flush()
+                    cache_stream.flush()
+                    progress.set_postfix(cached=cache_hits, computed=computed_fits)
+        finally:
+            if workers > 1:
+                pool.shutdown(cancel_futures=True)
     temporary.replace(output)
     metadata = {
         "settings": len(rows),
         "methods": methods,
         "context_sizes": args.context_sizes,
+        "workers": workers,
         "result_status_counts": statuses,
         "cache": {
             "path": str(cache_path),
@@ -882,6 +973,12 @@ def main():
     parser.add_argument("--dimensions", type=int, nargs="+")
     parser.add_argument("--levels", nargs="+")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel dataset workers (default: 1; multiple workers require CPU models).",
+    )
     parser.add_argument(
         "--proximalfm-checkpoint",
         type=Path,
@@ -968,6 +1065,8 @@ def main():
     args = parser.parse_args()
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be positive")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     if any(size < 1 for size in args.context_sizes):
         parser.error("--context-sizes values must be positive")
     if len(set(args.context_sizes)) != len(args.context_sizes):

@@ -176,13 +176,15 @@ class ProxyMarginalizer(CATEEstimator):
         self._W_context = np.array(W, copy=True)
         self._Z_context = np.array(Z, copy=True)
 
-        sigmas = np.empty(X.shape[1], dtype=np.float64)
-        for d in range(X.shape[1]):
-            column = np.asarray(X[:, [d]], dtype=np.float64)
-            distances = cdist(column, column, metric="euclidean")
-            sigma = 2.0 * np.median(distances) ** 2
-            sigmas[d] = sigma if np.isfinite(sigma) and sigma > 0 else 1e-3
-        self._inv_width = 1.0 / np.sqrt(sigmas)
+        self._inv_width = None
+        if any(spec.method != "empirical" for spec in self._specs.values()):
+            sigmas = np.empty(X.shape[1], dtype=np.float64)
+            for d in range(X.shape[1]):
+                column = np.asarray(X[:, [d]], dtype=np.float64)
+                distances = cdist(column, column, metric="euclidean")
+                sigma = 2.0 * np.median(distances) ** 2
+                sigmas[d] = sigma if np.isfinite(sigma) and sigma > 0 else 1e-3
+            self._inv_width = 1.0 / np.sqrt(sigmas)
 
         self.estimator.fit(X, A, Y, W=W, Z=Z)
         return self
