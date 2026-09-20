@@ -7,7 +7,7 @@
 %   * SQUARE node      = a parameter  (sampled dimension + fixed MLP + noise root)
 %   * CIRCLE node      = a data / random variable  (Xt,Ut,Wt,Zt, U^[A]/U^[Y], A, (Y0,Y1))
 %   * ROUNDED BOX      = a process step  (Generate, post-processing, Sample A/Y,
-%                        aggregate, accept/reject, output)
+%                        aggregate, validity check, output)
 %   * dotted grey      = a parameter configures a step
 %   * dotted coloured  = a post-processed block feeds a later generation step
 %                        (Xt -> f_U,f_W,f_Z in X's colour; Ut -> f_W,f_Z in U's)
@@ -19,7 +19,7 @@
 %   one colour across this figure and every appendix plot:
 %     X blue - U vermilion - W green - Z orange - A purple - Y sky blue.
 %   Anything that is not a structural block (header, post-processing, aggregate,
-%   accept/reject, output, the T*K plate) is deliberately ACHROMATIC, so the
+%   validity check, output, the T*K plate) is deliberately ACHROMATIC, so the
 %   causal spine is the only thing carrying hue. Keep it that way: introducing a
 %   new hue for a process step would make the reader hunt for a variable that
 %   does not exist.
@@ -33,7 +33,7 @@
 %
 % LAYOUT (top -> bottom): header -> parameter row -> generation row ->
 %   post-processing box (tilde circles + caption) -> {Sample A | confounding | Sample Y}
-%   -> aggregate -> accept/reject -> output.
+%   -> aggregate -> validity check -> output.
 %
 % X lives on T rows and is only *broadcast* across K, so the green T*K plate is
 % L-SHAPED: its top-left notch excludes the Generate-X box and \tilde X; U,W,Z,A,Y
@@ -281,11 +281,11 @@
 \draw[ppflow=ppcY] (Yvar.south) -- ([xshift= 2.0cm]agg.north);
 
 % =============================================================================
-% 7. Accept / reject completeness gate (below the plate).
+% 7. Validity check (below the plate).
 % =============================================================================
 \node[ppacc, text width=13.0cm] (acc) at (7.10,7.45) {%
-  \textbf{10.\ Accept / reject.}\;
-  keep iff $\min(d_W,d_Z)\ge d_U>0$ on the realised blocks; else resample.};
+  \textbf{10.\ Validity check (resample if needed).}\;
+  after filtering, require nonempty observed blocks and proxy profiles compatible with $U$.};
 
 \draw[ppgrey] (agg.south) -- (acc.north);
 
