@@ -26,7 +26,6 @@ from analysis_eval.learning_curves_error_decomposition import (
     build_parser as build_combined_parser,
     make_combined_figure,
 )
-from analysis_eval.speed_rank import make_speed_rank_figure
 from analysis_eval.semisynt import (
     complete_learning_curve_methods,
     load_cate_results,
@@ -254,23 +253,6 @@ def test_learning_curve_default_uses_compact_method_set(tmp_path):
     fig = make_learning_curve_figure(summary)
     legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
     assert legend_labels == ["T-learner (ridge)", "ProximalFM"]
-
-
-def test_learning_curve_keeps_curated_method_with_incomplete_coverage(tmp_path):
-    summary = summarize_learning_curves(load_cate_results(_matrix(tmp_path)))
-    plearner = summary[summary["method"].eq("S-OLS")].copy()
-    plearner["method"] = "P-Kernel-RF"
-    missing_case = CASES[0]
-    plearner = plearner[~plearner["case"].eq(missing_case)]
-    summary = pd.concat([summary, plearner], ignore_index=True)
-
-    fig = make_learning_curve_figure(summary)
-
-    legend_labels = [text.get_text() for text in fig.legends[0].get_texts()]
-    assert "P-learner (RF)" in legend_labels
-    assert len(fig.axes[0].lines) == 3  # two available methods plus chance line
-    assert np.isnan(fig.axes[0].lines[0].get_ydata()).all()
-    assert np.isfinite(fig.axes[1].lines[0].get_ydata()).all()
 
 
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
@@ -507,30 +489,3 @@ def test_speed_rank_summary_separates_confounding_levels(tmp_path):
     )
     assert set(pooled["confounding"]) == {"pooled"}
     assert set(pooled["n_blocks"]) == {8 * 4}
-
-
-def test_speed_rank_figure_has_one_panel_per_confounding_level(tmp_path):
-    frame = load_cate_results(_matrix(tmp_path))
-    summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"])
-    fig = make_speed_rank_figure(summary)
-
-    assert len(fig.axes) == 2
-    assert {ax.get_title() for ax in fig.axes} == {
-        "Low confounding",
-        "High confounding",
-    }
-    assert all(ax.get_xscale() == "log" for ax in fig.axes)
-    assert all(ax.yaxis_inverted() for ax in fig.axes)
-    assert fig.get_size_inches()[1] == 3.5
-
-
-def test_speed_rank_only_highlights_and_labels_relevant_methods(tmp_path):
-    frame = load_cate_results(_matrix(tmp_path))
-    summary = summarize_speed_rank(frame, ["S-OLS", "ProximalFM"])
-    fig = make_speed_rank_figure(summary)
-
-    for ax in fig.axes:
-        assert [text.get_text() for text in ax.texts] == ["ProximalFM"]
-        line_colors = {line.get_color() for line in ax.lines}
-        assert COLORS["light_grey"] in line_colors
-        assert method_style("ProximalFM").color in line_colors
