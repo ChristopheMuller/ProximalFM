@@ -231,7 +231,8 @@
 \node[ppabox, text width=4.25cm] (A) at (2.95,12.95) {%
   \textbf{7.\ Sample treatment }$A$\\[2pt]
   $\ell=f_A(U^{[A]},\tilde X_A,\tilde Z_A,\varepsilon_A)$\\[1pt]
-  $A\sim\mathrm{Bern}\!\big(\operatorname{clip}(\sigma(s\hat\ell+b),\epsilon,1-\epsilon)\big)$};
+  $\tilde\ell=\operatorname{standardise}(\ell)$\\[1pt]
+  $A\sim\mathrm{Bern}\!\big(\operatorname{clip}(\sigma(s\tilde\ell+b),\epsilon,1-\epsilon)\big)$};
 \node[ppvar=ppcA] (Avar) at (2.95,10.95) {$A$};
 
 \node[ppybox, text width=4.65cm] (Y) at (11.15,12.95) {%
