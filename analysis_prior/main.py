@@ -33,6 +33,7 @@ from typing import List, Optional, Sequence
 from .analyses import ComparisonAnalysis, all_analyses, get_analysis
 from .config import FAMILIES, PRESETS, PriorSpec, SpecFamily
 from .generate import DEFAULT_CACHE_DIR, list_caches, load_or_generate
+from .generate import PriorCache
 
 #: Default location for rendered figures and tables.
 DEFAULT_OUTPUT_DIR = Path(__file__).parent / "results"
@@ -233,13 +234,19 @@ def _run_single(args: argparse.Namespace, analysis_names: List[str]) -> int:
         print(f"Skipping comparison analyses (need --family): {', '.join(comparisons)}")
 
     spec = build_spec(args)
-    cache = load_or_generate(
-        spec,
-        cache_dir=args.cache_dir,
-        force=args.force,
-        n_jobs=args.n_jobs,
-        progress_bar=args.progress_bar,
-    )
+    # Parameter tables are pure functions of the specification.  In particular
+    # the production table describes a variable-length, query-only-MC training
+    # stream that is intentionally not materialised by the dense audit cache.
+    if analysis_names == ["hyperparameters"]:
+        cache = PriorCache(spec=spec, records=[])
+    else:
+        cache = load_or_generate(
+            spec,
+            cache_dir=args.cache_dir,
+            force=args.force,
+            n_jobs=args.n_jobs,
+            progress_bar=args.progress_bar,
+        )
 
     # Results are grouped by the spec's *name*: caches are content-addressed
     # (an opaque hash), but output directories should stay human-browsable.

@@ -76,6 +76,11 @@ generation.
 # B.2.1 Parameters of the prior (spec-only: reads the HP config, no dataset cache needed)
 uv run python -m analysis_prior.main --spec general_ite --analysis hyperparameters
 
+# Final production pre-training prior (the same prior arguments as
+# scripts/pretrain_prod.sh; writes no audit cache)
+bash -c 'source scripts/_env.sh
+python -m analysis_prior.main --spec pretrain_prod --analysis hyperparameters'
+
 # B.2.2 Dimensions + B.2.4 numeric completeness (one run produces both)
 uv run python -m analysis_prior.main --family dim_ablation --analysis dimension_comparison
 

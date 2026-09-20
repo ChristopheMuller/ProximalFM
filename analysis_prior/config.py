@@ -45,8 +45,19 @@ CACHE_FORMAT_VERSION = 3
 
 #: Spec fields that do not affect the content of any individual dataset, and so
 #: are excluded from the per-dataset seed. ``name`` is a label; ``n_datasets`` is
-#: how many draws to take, not what a draw looks like.
-_NON_GENERATIVE_FIELDS = frozenset({"name", "n_datasets"})
+#: how many draws to take, not what a draw looks like.  The presentation fields
+#: describe a training stream in the structural table; analysis caches always
+#: use their own fixed-length, all-target layout (see ``generate._generate_one``).
+_NON_GENERATIVE_FIELDS = frozenset(
+    {
+        "name",
+        "n_datasets",
+        "min_context_rows",
+        "max_context_rows",
+        "n_query",
+        "mc_targets_on_context",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -127,6 +138,15 @@ class PriorSpec:
     mc_cate: int = 100
     seed: int = 0
 
+    # Optional training-layout fields for the structural parameter table.  The
+    # audit cache intentionally has no row split, so leave these unset for its
+    # fixed-length presets.  A production training preset fills them from the
+    # actual trainer invocation.
+    min_context_rows: int | None = None
+    max_context_rows: int | None = None
+    n_query: int | None = None
+    mc_targets_on_context: bool | None = None
+
     fixed_hp_overrides: Dict[str, Any] = field(default_factory=dict)
     sampled_hp_overrides: Dict[str, Any] = field(default_factory=dict)
 
@@ -150,12 +170,39 @@ class PriorSpec:
             (self.min_dim_U, self.max_dim_U, "U"),
             (self.min_dim_W, self.max_dim_W, "W"),
             (self.min_dim_Z, self.max_dim_Z, "Z"),
-            (self.min_dim_X, self.max_dim_X, "X"),
         ):
             if lo < 1:
                 raise ValueError(f"min_dim_{label} must be >= 1")
             if lo > hi:
                 raise ValueError(f"min_dim_{label} must be <= max_dim_{label}")
+        if self.min_dim_X < 0:
+            raise ValueError("min_dim_X must be >= 0")
+        if self.min_dim_X > self.max_dim_X:
+            raise ValueError("min_dim_X must be <= max_dim_X")
+        layout = (
+            self.min_context_rows,
+            self.max_context_rows,
+            self.n_query,
+            self.mc_targets_on_context,
+        )
+        if any(value is not None for value in layout):
+            if self.min_context_rows is None or self.max_context_rows is None:
+                raise ValueError(
+                    "min_context_rows and max_context_rows must be set together"
+                )
+            if (
+                self.min_context_rows < 1
+                or self.min_context_rows > self.max_context_rows
+            ):
+                raise ValueError("invalid context-row range")
+            if self.n_query is None or self.n_query < 1:
+                raise ValueError(
+                    "n_query must be a positive integer when a context range is set"
+                )
+            if self.mc_targets_on_context is None:
+                raise ValueError(
+                    "mc_targets_on_context must be set when a context range is set"
+                )
 
         # Overrides land in the cache key, so they must survive a JSON round trip.
         for attr in ("fixed_hp_overrides", "sampled_hp_overrides"):
@@ -310,6 +357,26 @@ PRESETS: Dict[str, PriorSpec] = {
         max_dim_Z=10,
         min_dim_X=1,
         max_dim_X=10,
+    ),
+    # The final production pre-training stream.  This is table-only: unlike
+    # the analysis presets, its variable context length and query-only MC
+    # targets cannot be represented by analysis_prior's dense audit cache.
+    "pretrain_prod": PriorSpec(
+        name="pretrain_prod",
+        seq_len=2048,
+        mc_cate=250,
+        min_dim_U=1,
+        max_dim_U=10,
+        min_dim_W=1,
+        max_dim_W=10,
+        min_dim_Z=1,
+        max_dim_Z=10,
+        min_dim_X=0,
+        max_dim_X=10,
+        min_context_rows=64,
+        max_context_rows=2048,
+        n_query=128,
+        mc_targets_on_context=False,
     ),
     "smoke": PriorSpec(
         name="smoke",

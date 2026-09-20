@@ -3,8 +3,9 @@
 Three paper tables, all derived from a single :class:`PriorSpec` with no data
 generation required:
 
-- **structural** parameters: the :class:`PriorSpec` fields themselves (block
-  dimension ranges, ``seq_len``, ``mc_cate``, ``prior_type``). These live on
+- **structural** parameters: the :class:`PriorSpec` fields that control the
+  dataset layout (block-dimension ranges, context/query rows, and
+  ``mc_cate``). These live on
   the spec rather than in the hyperparameter dicts only because the training
   CLI passes them separately, but they are the most load-bearing knobs in the
   prior -- $d^{\\max}$ is what makes the dimension laws of B.2.2 concrete -- so
@@ -138,7 +139,16 @@ REMOVED_FIXED_HP = {
 STRUCTURAL_GROUPS: List[Tuple[str, List[str]]] = [
     ("Block dimensions", ["dim_X", "dim_U", "dim_W", "dim_Z"]),
     ("Dimension bounds", ["max_dim_X", "max_dim_U", "max_dim_W", "max_dim_Z"]),
-    ("Dataset", ["seq_len", "mc_cate", "prior_type"]),
+    (
+        "Dataset",
+        [
+            "seq_len",
+            "context_rows",
+            "n_query",
+            "mc_cate",
+            "mc_target_rows",
+        ],
+    ),
 ]
 
 #: One-line gloss per hyperparameter. Kept deliberately terse (fits a table
@@ -182,8 +192,10 @@ NOTES: Dict[str, str] = {
     "max_dim_W": "outcome-proxy dimension ceiling",
     "max_dim_Z": "treatment-proxy dimension ceiling",
     "seq_len": "rows per dataset",
+    "context_rows": "context rows per episode",
+    "n_query": "fixed query rows per episode",
     "mc_cate": "MC replicates $K$ per row behind the $\\mu_0/\\mu_1$ targets",
-    "prior_type": "mechanism family",
+    "mc_target_rows": "rows carrying MC CEPO targets",
     # fixed
     "mix_probs": "MLP vs.\\ tree SCM mixture weights",
     "tree_model": "tree SCM family",
@@ -416,9 +428,28 @@ def build_structural_table(spec: PriorSpec) -> pd.DataFrame:
         "max_dim_W": f"${_num(spec.max_dim_W)}$",
         "max_dim_Z": f"${_num(spec.max_dim_Z)}$",
         "seq_len": f"${_num(spec.seq_len)}$",
-        "mc_cate": f"${_num(spec.mc_cate)}$",
-        "prior_type": _tt(spec.prior_type),
     }
+    if spec.min_context_rows is None:
+        values["mc_cate"] = f"${_num(spec.mc_cate)}$"
+    else:
+        values.update(
+            {
+                "context_rows": (
+                    f"$\\mathrm{{Unif}}\\{{{_num(spec.min_context_rows)}, \\dots, "
+                    f"{_num(spec.max_context_rows - 1)}\\}}$"
+                    if spec.min_context_rows != spec.max_context_rows
+                    else f"${_num(spec.max_context_rows)}$"
+                ),
+                "n_query": f"${_num(spec.n_query)}$",
+                "mc_cate": f"${_num(spec.mc_cate)}$",
+                "mc_target_rows": (
+                    "all rows" if spec.mc_targets_on_context else "query rows only"
+                ),
+            }
+        )
+        # The production stream samples n_ctx and composes the stored row count
+        # as n_ctx + n_query.  Replace the audit-only fixed-length display.
+        del values["seq_len"]
     # Values are pre-rendered, so the describer is the identity.
     return _grouped_rows(values, STRUCTURAL_GROUPS, lambda v: v, "value")
 

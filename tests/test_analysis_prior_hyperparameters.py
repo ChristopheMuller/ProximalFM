@@ -21,7 +21,7 @@ from analysis_prior.analyses.hyperparameters import (
     describe_sampled,
     format_fixed,
 )
-from analysis_prior.config import PriorSpec
+from analysis_prior.config import PRESETS, PriorSpec
 from proximalfm.prior._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
 
@@ -176,7 +176,19 @@ def test_structural_table_reports_spec_fields():
     table = build_structural_table(spec).set_index("hyperparameter")
     assert table.loc[_tt("seq_len"), "value"] == "$2048$"
     assert table.loc[_tt("mc_cate"), "value"] == "$100$"
-    assert table.loc[_tt("prior_type"), "value"] == "\\texttt{mlp\\_\\allowbreak scm}"
+
+
+def test_production_structural_table_reports_the_training_row_layout():
+    table = build_structural_table(PRESETS["pretrain_prod"]).set_index("hyperparameter")
+    assert _tt("seq_len") not in table.index
+    assert table.loc[_tt("dim_X"), "value"].startswith("$\\mathrm{Unif}\\{0")
+    assert (
+        table.loc[_tt("context_rows"), "value"]
+        == "$\\mathrm{Unif}\\{64, \\dots, 2047\\}$"
+    )
+    assert table.loc[_tt("n_query"), "value"] == "$128$"
+    assert table.loc[_tt("mc_cate"), "value"] == "$250$"
+    assert table.loc[_tt("mc_target_rows"), "value"] == "query rows only"
 
 
 def test_structural_laws_name_their_ceiling_and_the_ceiling_has_a_row():
@@ -242,7 +254,18 @@ def test_structural_table_uses_max_when_the_min_dim_binds():
 def test_structural_table_groups_and_omits_bookkeeping_fields():
     table = build_structural_table(PriorSpec(name="s", n_datasets=17, seed=3))
     keys = {_bare_key(cell) for cell in table["hyperparameter"]}
-    assert keys == {k for _, group in STRUCTURAL_GROUPS for k in group}
+    assert keys == {
+        "dim_X",
+        "dim_U",
+        "dim_W",
+        "dim_Z",
+        "max_dim_X",
+        "max_dim_U",
+        "max_dim_W",
+        "max_dim_Z",
+        "seq_len",
+        "mc_cate",
+    }
     assert keys.isdisjoint({"name", "n_datasets", "seed"})
     non_empty = [g for g in table["group"] if g]
     assert non_empty == [name for name, _ in STRUCTURAL_GROUPS]
