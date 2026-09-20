@@ -258,8 +258,7 @@
   node[pos=.42,below,ppsubset=ppcZ,yshift=5mm] {$\tilde Z_A$};
 
 % confounding control: \tilde U -> box 6 -> U^[A], U^[Y] -> {A,Y}.
-\draw[ppdup] (Ut.south) -- (auglab.north)
-  node[midway,right,font=\scriptsize,inner sep=1.5pt]{$f_{\mathrm{aug}}$};
+\draw[ppdup] (Ut.south) -- (auglab.north);
 \draw[ppdup] (auglab.south) -- (aug.north);
 % these leave the node sideways and come down OUTSIDE the parent channels above.
 \draw[ppdup] (aug.west) -- (3.60,15.05)  -- ([xshift=6.5mm]A.north);
