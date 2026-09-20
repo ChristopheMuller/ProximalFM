@@ -201,7 +201,7 @@ NOTES: Dict[str, str] = {
     "tree_model": "tree SCM family",
     "tree_depth_lambda": "tree-depth exponential rate",
     "tree_n_estimators_lambda": "tree-count exponential rate",
-    "max_categories": "cap on categories per column",
+    "max_categories": "cap on categories per feature",
     "corrupt_U": "categorise $U$ as well as the proxies",
     "enforce_categorical_completeness": "accept/reject on each proxy dominating $U$'s category profile",
     "proxy_cat_cover_prob": "chance a proxy mirrors a $U$ category (vs.\\ a continuous wildcard)",
