@@ -28,6 +28,8 @@
 %   convention where Corrupt(.) + standardisation gives \tilde X, \tilde U, ...
 %   Per-mechanism column subsets keep their appendix subscripts (\tilde X_U,
 %   \tilde W_Y, \tilde Z_A), and U^[A], U^[Y] are the confounding-controlled inputs.
+%   Pill-shaped subset nodes explicitly mark the edge-specific column-subsampling
+%   step; the masks only drop parent columns and never add graph edges.
 %
 % LAYOUT (top -> bottom): header -> parameter row -> generation row ->
 %   post-processing box (tilde circles + caption) -> {Sample A | confounding | Sample Y}
@@ -94,6 +96,11 @@
     inner sep=3pt, font=\scriptsize},
   ppvarY/.style={rounded corners=3pt, ppcol=ppcY, line width=0.7pt,
     inner sep=2.5pt, font=\scriptsize},
+  % ---- selected parent-column blocks (compact, coloured pills on data paths) -
+  ppsubset/.style={rounded corners=2pt, ppcol=#1, fill=white,
+    line width=0.4pt, inner xsep=1.4pt, inner ysep=0.5pt,
+    font=\tiny},
+  ppsubset/.default=ppcX,
   % ---- containers -----------------------------------------------------------
   ppplate/.style={rounded corners=6pt, draw=black!38, fill=black!3,
     line width=0.7pt},
@@ -132,11 +139,11 @@
 % 1. Header + the parameter squares that configure the generation steps.
 % =============================================================================
 \node[pphdr, text width=14.8cm] (hdr) at (7.20,25.85) {%
-  \textbf{1.\ Sample dimensions, MLP mechanisms \& noise roots}\\
-  \; {\scriptsize\itshape (once per dataset -- fixed across resamples)}\\[2pt]
+  \textbf{1.\ Sample dimensions, MLP mechanisms, noise roots \& edge masks}\\
+  \; {\scriptsize\itshape (once per candidate dataset -- shared across its $K$ replicates)}\\[2pt]
   dimensions $d_X,d_U,d_W,d_Z$ with $\min(d_W,d_Z)\!\ge\!d_U$;\quad
   fixed MLPs $f_X,f_U,f_W,f_Z,f_A,f_Y,f_{\mathrm{aug}}$;\quad
-  noise roots $\varepsilon_{(\cdot)}$};
+  noise roots $\varepsilon_{(\cdot)}$;\quad edge-specific column masks};
 
 \node[ppparam=ppcX] (pX) at (2.30,24.05) {$d_X,\ f_X,\ \varepsilon_X$};
 \node[ppparam=ppcU] (pU) at (7.00,24.05) {$d_U,\ f_U,\ \varepsilon_U$};
@@ -203,8 +210,10 @@
 % Both leave their circle ON its border (anchors, not xshifts off the rim).
 % -----------------------------------------------------------------------------
 \draw[ppdep=ppcX] (Xt.west) -- (0.45,18.65) -- (0.45,20.90) -- (6.05,20.90)
-  -- ([xshift=-9.5mm]genU.south);
-\draw[ppdep=ppcX] (6.05,20.90) -- (10.15,20.90) -- ([xshift=-13.5mm]genWZ.south);
+  -- ([xshift=-9.5mm]genU.south)
+  node[pos=.79,above,ppsubset=ppcX,xshift=-3mm,yshift=-4mm] {$\tilde X_U$};
+\draw[ppdep=ppcX] (6.05,20.90) -- (10.15,20.90) -- ([xshift=-13.5mm]genWZ.south)
+  node[pos=.78,above,ppsubset=ppcX,yshift=-4mm] {$\tilde X_Z,\ \tilde X_W$};
 
 \draw[ppdep=ppcU] (Ut.south east) |- (13.95,17.75) -- (13.95,21.90) -- (genWZ.east);
 
@@ -237,11 +246,15 @@
 % channels sit at different heights so they never meet each other either.
 % The four X-side departures use angular anchors so they leave \tilde X exactly
 % on its rim (an xshift off .south floats free of the circle).
-\draw[pparrA] (Xt.250) to[out=-90,in=105] (A.north west);
-\draw[pparrY] (Wt.south) to[out=-90,in=75]  (Y.north east);
+\draw[pparrA] (Xt.250) to[out=-90,in=105] (A.north west)
+  node[pos=.52,left,ppsubset=ppcX,yshift=3mm] {$\tilde X_A$};
+\draw[pparrY] (Wt.south) to[out=-90,in=75]  (Y.north east)
+  node[pos=.52,right,ppsubset=ppcW,yshift=3mm] {$\tilde W_Y$};
 
-\draw[pparrY] (Xt.290) |- (11.60,14.55) -- ([xshift=4.5mm]Y.north);
-\draw[pparrA] (Zt.south) |- (4.95,14.20)  -- ([xshift=20mm]A.north);
+\draw[pparrY] (Xt.290) |- (11.60,14.55) -- ([xshift=4.5mm]Y.north)
+  node[pos=.44,below,ppsubset=ppcX,yshift=5mm] {$\tilde X_Y$};
+\draw[pparrA] (Zt.south) |- (4.95,14.20)  -- ([xshift=20mm]A.north)
+  node[pos=.42,below,ppsubset=ppcZ,yshift=5mm] {$\tilde Z_A$};
 
 % confounding control: \tilde U -> box 6 -> U^[A], U^[Y] -> {A,Y}.
 \draw[ppdup] (Ut.south) -- (auglab.north)

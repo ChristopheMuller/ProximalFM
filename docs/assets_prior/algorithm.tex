@@ -9,10 +9,12 @@
 \Statex\vspace{2pt}
 \Repeat
   \State $X \gets \mathrm{Corrupt}(f_X(\varepsilon_X)) \in \R^{T\times d_X}$, tiled $K$ times and standardised to $\tilde X$
+  \State subsample covariate inputs $\tilde X_U,\tilde X_W,\tilde X_Z,\tilde X_A,\tilde X_Y\subseteq\tilde X$
   \State draw independent noise $\varepsilon_U,\varepsilon_W,\varepsilon_Z,\varepsilon_A,\varepsilon_Y$ over all $TK$ rows
   \State $U \gets \mathrm{Corrupt}(f_U(\tilde X_U,\varepsilon_U))$, standardised to $\tilde U$
   \State $W \gets \mathrm{Corrupt}(f_W(\tilde U,\tilde X_W,\varepsilon_W))$, standardised to $\tilde W$ \Comment{$Z\not\to f_W$}
   \State $Z \gets \mathrm{Corrupt}(f_Z(\tilde U,\tilde X_Z,\varepsilon_Z))$, standardised to $\tilde Z$ \Comment{$W\not\to f_Z$}
+  \State subsample direct-proxy inputs $\tilde Z_A\subseteq\tilde Z$ and $\tilde W_Y\subseteq\tilde W$
   \State form $U^{[A]},U^{[Y]}$ from $\tilde U$ and $U^{\mathrm{aug}}=f_{\mathrm{aug}}(\tilde U)$ via confounding shares $s_A,s_Y$
   \State $\ell \gets f_A(U^{[A]},\tilde X_A,\tilde Z_A,\varepsilon_A)$;\quad $\pi \gets \operatorname{clip}\big(\sigma(s\,\hat\ell+b),\,\epsilon,\,1-\epsilon\big)$
   \State $A \sim \mathrm{Bernoulli}(\pi)$
