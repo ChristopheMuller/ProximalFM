@@ -147,6 +147,32 @@ The error-decomposition, combined, and speed/rank commands use the same
 dimension selection. Direct `d-<dimension>` paths remain accepted for
 backward-compatible one-dimension invocations.
 
+## Exhaustive semisynthetic nPEHE tables
+
+```bash
+uv run python -m analysis_eval.exhaustive_tables
+```
+
+This writes four LaTeX tables for the context sizes shared by all eight
+factorial cells (`128`, `512`, `1024`, and `2048`) to
+`analysis_eval/results/semisynt_exhaustive_npehe.tex`, together with a
+machine-readable CSV containing the means and comparison p-values. Pass
+`--out docs/latex/assets/results/semisynt_exhaustive_npehe.tex` to refresh the
+copy included by the paper. Every table contains every CATE(X) method from the
+shared factorial experiment;
+`ProximalFM-FT`, which belongs only to the targeted large-context experiment,
+is deliberately excluded. Missing or incomplete method/cell combinations are
+printed as dashes.
+
+Aggregation respects the experimental hierarchy: nPEHE is first averaged over
+the three replicates of each source dataset and then macro-averaged over the 12
+sources. The lowest mean in a configuration is bold. Other underlined methods
+are not significantly worse under a one-sided exact paired sign-flip test on
+the 12 source-level means, with Holm correction across comparisons to the
+empirical best within that configuration and context size. This is a
+failure-to-reject set, not an equivalence set. Use `--alpha`, `--contexts`,
+`--matrix-root`, `--dim`, or `--out` to override the defaults.
+
 ## Semisynthetic error decomposition
 
 ```bash

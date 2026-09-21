@@ -76,6 +76,21 @@ def test_oracle_and_ate_outputs_are_excluded():
     assert rows == []
 
 
+def test_finetuned_proximalfm_is_excluded_from_method_tables():
+    metadata = load_metadata(DEFAULT_METADATA)
+    rows = build_rows(
+        _config(
+            [
+                {"name": "ProximalFM", "cls": "ProximalFM"},
+                {"name": "ProximalFM-FT", "cls": "ProximalFM"},
+            ]
+        ),
+        metadata,
+    )
+
+    assert [row.method for row in rows] == ["ProximalFM"]
+
+
 def test_missing_class_metadata_fails_loudly():
     metadata = load_metadata(DEFAULT_METADATA)
     with pytest.raises(KeyError, match="NoSuchMethod"):

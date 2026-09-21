@@ -35,6 +35,9 @@ CAPTION = (
     "the implementation or prediction-time choice. Detailed settings are "
     "reported in Appendix~\\ref{app:results}."
 )
+# The fine-tuned checkpoint is confined to the targeted large-context
+# experiment and is intentionally omitted from every tabular method summary.
+EXCLUDED_TABLE_METHODS = frozenset({"ProximalFM-FT"})
 
 
 @dataclass(frozen=True)
@@ -214,6 +217,8 @@ def build_rows(config: dict[str, Any], metadata: dict[str, Any]) -> list[MethodR
         outputs = cfg.get("outputs") or [None]
         for output in outputs:
             name = cfg["name"] if output is None else output["name"]
+            if name in EXCLUDED_TABLE_METHODS:
+                continue
             # Exact, rather than "any CATE": cate(x,w), cate(x,u), and ATE
             # answer different questions and do not belong in this table.
             if estimands[name] != "cate(x)":
