@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from analysis_eval.exhaustive_tables import (
     EXCLUDED_METHODS,
     aggregate_replicates,
     exact_sign_flip_pvalue,
     holm_adjust,
+    render_extended_table,
     render_tables,
     summarize,
+    summarize_extended_case,
 )
 from analysis_eval.semisynt import CELL_ORDER
 
@@ -112,3 +115,42 @@ def test_summary_and_latex_mark_best_and_paired_comparison_set():
     assert "\\underline{0.500}" in latex
     assert "\\\\textbf" not in latex
     assert "$n_{\\mathrm{ctx}}=128$" in latex
+
+
+def test_extended_table_uses_context_columns_and_drops_unrun_methods():
+    frame = _source_means()
+    case = "nonlinear_conf_high_proxy_low"
+    unrun = frame[frame["case"].eq("linear_conf_low_proxy_low")].copy()
+    unrun["method"] = "CausalPFN"
+    extra = frame[frame["case"].eq(case)].copy()
+    extra["n_ctx"] = 256
+    extra["source_mean"] += 0.1
+    fine_tuned = extra[extra["method"].eq("ProximalFM")].copy()
+    fine_tuned["method"] = "ProximalFM-FT"
+    fine_tuned["source_mean"] = 0.4
+    frame = pd.concat([frame, unrun, extra, fine_tuned], ignore_index=True)
+
+    summary = summarize_extended_case(frame, case=case, alpha=0.05)
+    latex = render_extended_table(summary, alpha=0.05, replicates=3)
+
+    assert set(summary["n_ctx"]) == {128, 256}
+    assert set(summary["method"]) == {
+        "ProximalFM",
+        "ProximalFM-FT",
+        "S-OLS",
+        "S-RF",
+    }
+    assert latex.count("\\begin{table*}") == 1
+    assert "Context size $n_{\\mathrm{ctx}}$" in latex
+    assert "ProximalFM-FT & -- & \\textbf{0.400}" in latex
+    assert "S-learner (ridge)" in latex
+    assert "CausalPFN" not in set(summary["method"])
+    assert "CausalPFN &" not in latex
+
+
+def test_extended_table_refuses_stale_shared_context_results():
+    with pytest.raises(ValueError, match="run_semisynt_selection_benchmarks.sh last"):
+        summarize_extended_case(
+            _source_means(),
+            expected_contexts=[128, 256, 512, 1024, 2048, 4096, 8192],
+        )

@@ -154,15 +154,30 @@ uv run python -m analysis_eval.exhaustive_tables
 ```
 
 This writes four LaTeX tables for the context sizes shared by all eight
-factorial cells (`128`, `512`, `1024`, and `2048`) to
+factorial cells (`128`, `512`, `1024`, and `2048`), followed by one table for
+all seven context sizes in the targeted nonlinear/high-confounding/low-proxy
+experiment, to
 `analysis_eval/results/semisynt_exhaustive_npehe.tex`, together with a
-machine-readable CSV containing the means and comparison p-values. Pass
+machine-readable CSV for the shared tables and a sibling `_extended.csv` for
+the extended table. Pass
 `--out docs/latex/assets/results/semisynt_exhaustive_npehe.tex` to refresh the
 copy included by the paper. Every table contains every CATE(X) method from the
 shared factorial experiment;
 `ProximalFM-FT`, which belongs only to the targeted large-context experiment,
-is deliberately excluded. Missing or incomplete method/cell combinations are
-printed as dashes.
+is deliberately excluded from the four shared tables and included in the
+extended one. The extended table automatically omits methods with no complete
+result at any of its seven context sizes. A method with partial coverage is
+retained and its missing or incomplete context-size entries are printed as
+dashes.
+
+The extended table reads the regular dimension-five
+`nonlinear_conf_high_proxy_low/bench/results/results.csv`, not the separate
+`d4_10k` experiment. Because benchmark scripts share that output path,
+`scripts/run_semisynt_selection_benchmarks.sh` must be the last benchmark
+script run before generating the tables. The command validates that all seven
+expected context sizes are present and otherwise fails with that instruction
+rather than silently writing a four-context table. Use `--extended-case` or
+`--extended-contexts` to override those defaults.
 
 Aggregation respects the experimental hierarchy: nPEHE is first averaged over
 the three replicates of each source dataset and then macro-averaged over the 12
@@ -171,7 +186,8 @@ are not significantly worse under a one-sided exact paired sign-flip test on
 the 12 source-level means, with Holm correction across comparisons to the
 empirical best within that configuration and context size. This is a
 failure-to-reject set, not an equivalence set. Use `--alpha`, `--contexts`,
-`--matrix-root`, `--dim`, or `--out` to override the defaults.
+`--extended-contexts`, `--matrix-root`, `--dim`, or `--out` to override the
+defaults.
 
 ## Semisynthetic error decomposition
 

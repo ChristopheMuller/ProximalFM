@@ -31,6 +31,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT = REPO_ROOT / "analysis_eval" / "results" / "semisynt_exhaustive_npehe.tex"
 DEFAULT_CONTEXTS = (128, 512, 1024, 2048)
+DEFAULT_EXTENDED_CASE = "nonlinear_conf_high_proxy_low"
+DEFAULT_EXTENDED_CONTEXTS = (128, 256, 512, 1024, 2048, 4096, 8192)
 DEFAULT_ALPHA = 0.05
 DEFAULT_REPLICATES = 3
 # ProximalFM-FT belongs only to the targeted large-context experiment, not to
@@ -86,7 +88,6 @@ def load_results(matrix_root: Path, *, dimension: int | None = None) -> pd.DataF
             frame["target"].eq("cate")
             & frame["estimand"].eq("cate(x)")
             & ~frame["is_reference"].astype(bool)
-            & ~frame["method"].isin(EXCLUDED_METHODS)
         ].copy()
         frame["npehe"] = pd.to_numeric(frame["npehe"], errors="coerce")
         frame.loc[frame["failed"].astype(bool), "npehe"] = np.nan
@@ -261,6 +262,96 @@ def summarize(
     return pd.DataFrame(rows)
 
 
+def summarize_extended_case(
+    source_means: pd.DataFrame,
+    *,
+    case: str = DEFAULT_EXTENDED_CASE,
+    expected_contexts: Sequence[int] | None = None,
+    alpha: float = DEFAULT_ALPHA,
+) -> pd.DataFrame:
+    """Summarize every available context size for one extended-run case."""
+    if not 0 < alpha < 1:
+        raise ValueError("alpha must lie strictly between zero and one")
+    cell_case = source_means[source_means["case"].eq(case)]
+    if cell_case.empty:
+        available = sorted(str(value) for value in source_means["case"].unique())
+        raise ValueError(
+            f"unknown extended case {case!r}; available cases are: "
+            + ", ".join(available)
+        )
+
+    # Begin from the full factorial method union. After constructing all
+    # context columns, methods never evaluated in the extended run are removed;
+    # methods with partial coverage retain honest dashes for missing contexts.
+    methods = ordered_methods(source_means["method"].unique())
+    expected_sources = sorted(cell_case["source_file"].unique())
+    contexts = sorted(int(value) for value in cell_case["n_ctx"].unique())
+    if expected_contexts is not None:
+        expected = {int(value) for value in expected_contexts}
+        absent = expected - set(contexts)
+        if absent:
+            raise ValueError(
+                f"{case}: extended context sizes are absent: {sorted(absent)}. "
+                "Run scripts/run_semisynt_selection_benchmarks.sh last so "
+                "bench/results/results.csv contains the seven-context selection run."
+            )
+        contexts = sorted(expected)
+    rows = []
+    for n_ctx in contexts:
+        cell = cell_case[cell_case["n_ctx"].eq(n_ctx)]
+        complete: dict[str, pd.Series] = {}
+        for method in methods:
+            values = (
+                cell[cell["method"].eq(method)]
+                .set_index("source_file")["source_mean"]
+                .reindex(expected_sources)
+            )
+            if len(values) == len(expected_sources) and values.notna().all():
+                complete[method] = values
+
+        if not complete:
+            raise ValueError(f"{case}, n_ctx={n_ctx}: no complete methods")
+        best = min(complete, key=lambda name: (complete[name].mean(), name))
+        raw = {
+            method: exact_sign_flip_pvalue(complete[method] - complete[best])
+            for method in complete
+            if method != best
+        }
+        adjusted = holm_adjust(raw)
+
+        factors = cell[["family", "confounding", "proxy"]].drop_duplicates()
+        if len(factors) != 1:
+            raise ValueError(f"{case}, n_ctx={n_ctx}: inconsistent factorial labels")
+        family, confounding, proxy = next(factors.itertuples(index=False, name=None))
+        for method in methods:
+            values = complete.get(method)
+            rows.append(
+                {
+                    "case": case,
+                    "family": family,
+                    "confounding": confounding,
+                    "proxy": proxy,
+                    "n_ctx": n_ctx,
+                    "method": method,
+                    "mean_npehe": float(values.mean())
+                    if values is not None
+                    else np.nan,
+                    "n_sources": len(values) if values is not None else 0,
+                    "best": method == best,
+                    "not_significantly_worse": (
+                        method == best or adjusted.get(method, 0.0) >= alpha
+                    )
+                    if values is not None
+                    else False,
+                    "pvalue_vs_best": raw.get(method, np.nan),
+                    "pvalue_holm": adjusted.get(method, np.nan),
+                }
+            )
+    result = pd.DataFrame(rows)
+    ran_methods = set(result.loc[result["mean_npehe"].notna(), "method"])
+    return result[result["method"].isin(ran_methods)].reset_index(drop=True)
+
+
 def _tex(text: str) -> str:
     specials = {"&": r"\&", "%": r"\%", "_": r"\_", "#": r"\#"}
     return "".join(specials.get(char, char) for char in str(text))
@@ -354,8 +445,8 @@ def render_table(summary: pd.DataFrame, n_ctx: int, *, alpha: float) -> str:
         + "significantly worse than that empirical best under one-sided exact "
         + "paired sign-flip tests across source-level means, with Holm correction "
         + rf"within the column ($\alpha={alpha:.2f}$). Underlining is a failure "
-        + "to reject inferiority, not an equivalence claim. A dash denotes a "
-        + "method not run or without a complete result.}",
+        + "to reject inferiority, not an equivalence claim. A dash denotes no "
+        + "complete result at that context size.}",
         rf"    \label{{tab:semisynt_exhaustive_npehe_{n_ctx}}}",
         "    \\resizebox{\\textwidth}{!}{%",
         "    \\begin{tabular}{@{}lrrrrrrrr@{}}",
@@ -410,6 +501,80 @@ def render_tables(
     return "\n".join(render_table(summary, n_ctx, alpha=alpha) for n_ctx in contexts)
 
 
+def render_extended_table(
+    summary: pd.DataFrame, *, alpha: float, replicates: int
+) -> str:
+    """Render one case with context sizes as columns."""
+    cases = summary["case"].drop_duplicates().tolist()
+    if len(cases) != 1:
+        raise ValueError("extended table summary must contain exactly one case")
+    case = cases[0]
+    contexts = sorted(int(value) for value in summary["n_ctx"].unique())
+    methods = _table_methods(summary["method"].unique())
+    lookup = summary.set_index(["method", "n_ctx"])
+    n_sources = int(summary["n_sources"].max())
+    column_spec = "l" + "r" * len(contexts)
+    header = " & ".join(rf"${value:,}$" for value in contexts)
+    lines = [
+        "% Generated by `python -m analysis_eval.exhaustive_tables`; do not edit.",
+        "\\begin{table*}[p]",
+        "    \\centering",
+        "    \\scriptsize",
+        "    \\setlength{\\tabcolsep}{4.0pt}",
+        "    \\renewcommand{\\arraystretch}{0.92}",
+        "    \\caption{Extended-context semisynthetic CATE nPEHE results for "
+        "nonlinear mechanisms with high confounding and low proxy reliability. "
+        + f"Each entry first averages the {replicates} replicates of each source "
+        + f"dataset, then averages equally over the {n_sources} sources; lower "
+        + "is better. The lowest "
+        "mean in each column is bold. Other underlined methods are not "
+        "significantly worse than that empirical best under one-sided exact "
+        "paired sign-flip tests across source-level means, with Holm correction "
+        + rf"within the column ($\alpha={alpha:.2f}$). Underlining is a failure "
+        + "to reject inferiority, not an equivalence claim. A dash denotes a "
+        + "method not run or without a complete result.}",
+        "    \\label{tab:semisynt_extended_context_npehe}",
+        "    \\resizebox{\\textwidth}{!}{%",
+        f"    \\begin{{tabular}}{{@{{}}{column_spec}@{{}}}}",
+        "        \\toprule",
+        rf"        Method & \multicolumn{{{len(contexts)}}}{{c}}{{Context size $n_{{\mathrm{{ctx}}}}$}}"
+        + r" \\",
+        f"        \\cmidrule(l){{2-{len(contexts) + 1}}}",
+        "        & " + header + " \\\\",
+        "        \\midrule",
+    ]
+    previous_family = None
+    for method in methods:
+        family = _method_family(method)
+        if previous_family is not None and family != previous_family:
+            lines.append("        \\addlinespace[2pt]")
+        previous_family = family
+        cells = []
+        for n_ctx in contexts:
+            row = lookup.loc[(method, n_ctx)]
+            value = _number(float(row["mean_npehe"]))
+            if bool(row["best"]):
+                value = rf"\textbf{{{value}}}"
+            elif bool(row["not_significantly_worse"]):
+                value = rf"\underline{{{value}}}"
+            cells.append(value)
+        lines.append(
+            "        "
+            + _tex(method_style(method).label)
+            + " & "
+            + " & ".join(cells)
+            + " \\\\"
+        )
+    lines += [
+        "        \\bottomrule",
+        "    \\end{tabular}%",
+        "    }",
+        "\\end{table*}",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def write_summary_csv(summary: pd.DataFrame, path: Path) -> None:
     fields = list(summary.columns)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -422,7 +587,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--matrix-root", type=Path, default=DEFAULT_MATRIX_ROOT)
     parser.add_argument("--dim", type=int, default=5)
+    parser.add_argument("--extended-case", default=DEFAULT_EXTENDED_CASE)
     parser.add_argument("--contexts", type=int, nargs="+", default=DEFAULT_CONTEXTS)
+    parser.add_argument(
+        "--extended-contexts",
+        type=int,
+        nargs="+",
+        default=DEFAULT_EXTENDED_CONTEXTS,
+    )
     parser.add_argument("--replicates", type=int, default=DEFAULT_REPLICATES)
     parser.add_argument("--alpha", type=float, default=DEFAULT_ALPHA)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
@@ -436,15 +608,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("--out must be a .tex path")
     frame = load_results(args.matrix_root, dimension=args.dim)
     source_means = aggregate_replicates(frame, expected_replicates=args.replicates)
-    summary = summarize(source_means, contexts=args.contexts, alpha=args.alpha)
+    shared = source_means[~source_means["method"].isin(EXCLUDED_METHODS)]
+    summary = summarize(shared, contexts=args.contexts, alpha=args.alpha)
+    extended = summarize_extended_case(
+        source_means,
+        case=args.extended_case,
+        expected_contexts=args.extended_contexts,
+        alpha=args.alpha,
+    )
     latex = render_tables(summary, contexts=args.contexts, alpha=args.alpha)
+    latex += "\n" + render_extended_table(
+        extended, alpha=args.alpha, replicates=args.replicates
+    )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(latex, encoding="utf-8")
     csv_path = args.out.with_suffix(".csv")
     write_summary_csv(summary, csv_path)
+    extended_csv_path = args.out.with_name(args.out.stem + "_extended.csv")
+    write_summary_csv(extended, extended_csv_path)
     print(f"wrote {args.out}")
     print(f"wrote {csv_path}")
+    print(f"wrote {extended_csv_path}")
     if args.to_stdout:
         print(latex, end="")
     return 0
