@@ -437,7 +437,7 @@ class P2SLS(CATEEstimator):
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError(
-                "P2SLS requires both W (outcome proxy) and Z (treatment proxy)."
+                "P2SLS requires both W (outcome-confounding proxy) and Z (treatment-confounding proxy)."
             )
 
         s1 = self._s1_features(A, X, Z)

@@ -578,7 +578,7 @@ def test_residual_mse_and_moment_loss_rank_the_bridge_oppositely():
 
     Tuning `h` on held-out `mean (Y - h)^2` does not merely pick a different
     damping — it targets a different function: the *regression* of Y on the
-    outcome proxy, which under confounding is not the bridge. So take the two
+    outcome-confounding proxy, which under confounding is not the bridge. So take the two
     candidates directly. The regression beats the bridge on MSE (it is the least
     squares fit, so this is by construction) and the bridge beats the regression
     on moment loss. Every ordering an MSE-based tuner would produce is therefore

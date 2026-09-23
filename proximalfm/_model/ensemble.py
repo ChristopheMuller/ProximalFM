@@ -328,7 +328,7 @@ class FeatureEnsemble:
         view and deduplicated into the front of the list otherwise.
 
     shuffle_X, shuffle_Z, shuffle_W : bool, default=(True, False, False)
-        Whether to permute the covariate / treatment-proxy / outcome-proxy
+        Whether to permute the covariate / treatment-confounding proxy / outcome-confounding proxy
         columns across views.
 
     transform_X, transform_Z, transform_W : bool, default=(True, False, False)

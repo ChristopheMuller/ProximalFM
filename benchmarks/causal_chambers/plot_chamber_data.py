@@ -14,8 +14,8 @@ the two questions that decide how its benchmark results may be read:
                                           (f) overlap: e(U,Z) = P(A=1|U,Z).
                                               Mass at 0/1 means the effect is not identified
                                               there, however good the estimator.
-                                          (g) Z vs U -- treatment-proxy relevance
-                                          (h) W vs U -- outcome-proxy relevance
+                                          (g) Z vs U -- treatment-confounding proxy relevance
+                                          (h) W vs U -- outcome-confounding proxy relevance
 
 ``chamber_<name>_ite_signal.pdf/.png`` — a four-panel diagnostic of the
 realized individual treatment effect, ``ITE = Y1 - Y0``, against each observed
@@ -144,8 +144,8 @@ def plot_ite_signal(df: pd.DataFrame, name: str, outdir: Path) -> list[Path]:
     ate = tau.mean()
     blocks = (
         ("X", "covariate"),
-        ("W", "outcome proxy"),
-        ("Z", "treatment proxy"),
+        ("W", "outcome-confounding proxy"),
+        ("Z", "treatment-confounding proxy"),
         ("U", "latent confounder"),
     )
 

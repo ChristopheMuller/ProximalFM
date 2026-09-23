@@ -5,7 +5,7 @@
 
 ProximalFM is a tabular foundation model approach to **Proximal Causal Inference**. It uses a specialized multi-stage Transformer architecture to estimate **Conditional Average Treatment Effects (CATE)** and potential outcomes in settings plagued by unobserved confounding ($U$).
 
-The core idea is to leverage measurement **proxies**—treatment proxies ($Z$) and outcome proxies ($W$)—to non-parametrically "bridge" and neutralize unobserved confounding, following the proximal causal framework (Miao et al., 2018; Tchetgen Tchetgen et al., 2020).
+The core idea is to leverage measurement **proxies**—treatment-confounding proxies ($Z$) and outcome-confounding proxies ($W$)—to non-parametrically "bridge" and neutralize unobserved confounding, following the proximal causal framework (Miao et al., 2018; Tchetgen Tchetgen et al., 2020).
 
 ## What it Does
 
@@ -142,7 +142,7 @@ Query rows attend only to context rows (asymmetric masking), and no positional e
 
 The proximal estimand conditions on $X$ alone, while the proxies $W$ and $Z$ play distinct, non-exchangeable roles in identification — so the model must be told which feature group is which:
 
-* **Structural role embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment Proxy } Z$, $2=\text{Outcome Proxy } W$, $3=\text{Treatment } A$) before processing.
+* **Structural role embeddings:** Features are explicitly augmented with unique, role-specific structural tokens ($0=\text{Covariates } X$, $1=\text{Treatment-confounding proxy } Z$, $2=\text{Outcome-confounding proxy } W$, $3=\text{Treatment } A$) before processing.
 * **Treatment-aware target encoder:** The observed context targets ($Y_{train}$) are standard-scaled and encoded by two distinct projections selected by the treatment track ($A=0$ vs $A=1$), acting as an anchored context for query predictions.
 
 ### Output heads & training loss
@@ -196,8 +196,8 @@ Rather than relying entirely on a static configuration, the orchestration enviro
 | `--micro_batch_size` | `int` | Batch slice size used for gradient accumulation. |
 | `--loss_type` | `str` | Objective routing framework (`bins_po`, `cate_decomposition`, `hl`). |
 | `--min_dim_X` / `--max_dim_X` | `int` | Dimensionality boundaries for baseline covariates $X$. |
-| `--min_dim_Z` / `--max_dim_Z` | `int` | Dimensionality boundaries for treatment proxies $Z$. |
-| `--min_dim_W` / `--max_dim_W` | `int` | Dimensionality boundaries for outcome proxies $W$. |
+| `--min_dim_Z` / `--max_dim_Z` | `int` | Dimensionality boundaries for treatment-confounding proxies $Z$. |
+| `--min_dim_W` / `--max_dim_W` | `int` | Dimensionality boundaries for outcome-confounding proxies $W$. |
 | `--n_query` | `int` | Query rows per episode (default 128), the same for every episode. `--min/max_seq_len` bound the context, so `seq_len = n_ctx + n_query`. |
 
 ---

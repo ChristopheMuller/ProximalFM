@@ -2,7 +2,7 @@
 # Changes vs TabICL:
 # - Proximal Input Protocol: Expanded 'forward', '_train_forward', and
 #   '_inference_forward' to accept the full causal quadruple: X (covariates),
-#   Z (treatment proxies), W (outcome proxies), and A (treatment).
+#   Z (treatment-confounding proxies), W (outcome-confounding proxies), and A (treatment).
 # - Causal Dimension Aggregation: Added '_get_d_total' to compute the unified
 #   feature count ($d_{total} = d_X + d_Z + d_W + 1$) required for
 #   position-aware row interactions.

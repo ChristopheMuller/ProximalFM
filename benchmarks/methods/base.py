@@ -44,8 +44,8 @@ class FeatureBuilder:
     for a given config — important for fair comparisons.
 
     Args:
-        use_W          : include outcome proxy W columns.
-        use_Z          : include treatment proxy Z columns.
+        use_W          : include outcome-confounding proxy W columns.
+        use_Z          : include treatment-confounding proxy Z columns.
         interaction_AX : append element-wise A * X_j for each covariate.
                          Useful in stage-2 of 2SLS to allow heterogeneous
                          treatment effects.
@@ -74,8 +74,8 @@ class FeatureBuilder:
         Args:
             X : covariates,          shape (n, d_x).
             A : treatment indicator, shape (n,) or (n, 1).  Optional.
-            W : outcome proxy,       shape (n, d_w).         Optional.
-            Z : treatment proxy,     shape (n, d_z).         Optional.
+            W : outcome-confounding proxy,       shape (n, d_w).         Optional.
+            Z : treatment-confounding proxy, shape (n, d_z). Optional.
 
         Returns:
             np.ndarray of shape (n, d_total).

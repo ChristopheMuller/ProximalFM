@@ -26,8 +26,8 @@ comes out of the same fit for free and is exposed as ``ate_``.
 Arrays convention, matching the rest of ``benchmarks.methods``::
 
     X: (n, d_x) covariates       A: (n,) binary treatment in {0, 1}
-    W: (n, d_w) outcome proxy    Y: (n,) observed outcome
-    Z: (n, d_z) treatment proxy
+    W: (n, d_w) outcome-confounding proxy    Y: (n,) observed outcome
+    Z: (n, d_z) treatment-confounding proxy
 
 The production bridge is ``bridge="kernel"``: the minimax RKHS bridge of the
 proximal literature, solved in an explicit Nyström feature space so no ``n x n``
@@ -301,9 +301,9 @@ class _MomentSystem:
     ``E[Y - h(W, A, X) | Z, A, X] = 0``, not by a prediction target. Scoring a
     candidate by held-out ``mean (Y - h)^2`` therefore selects the wrong function
     outright: that loss is minimised by ``E[Y | W, A, X]``, the regression of Y on
-    the outcome proxy, which under confounding differs from the bridge by exactly
-    the quantity the method exists to remove. It would drive ``lam_h`` to zero and
-    hand back the naive answer.
+    the outcome-confounding proxy, which under confounding differs from the
+    bridge by exactly the quantity the method exists to remove. It would drive
+    ``lam_h`` to zero and hand back the naive answer.
 
     What is well posed is the *violation* of the moment, measured against the same
     test class the fit maximises over. Writing ``g = Phi_Q omega``, the empirical

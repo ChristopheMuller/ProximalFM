@@ -1,8 +1,8 @@
 ####
 # Changes vs TabICL:
 # - Proximal Variable Support: Redesigned the module to accept and process
-#   four distinct variable groups: X (covariates), Z (treatment proxies),
-#   W (outcome proxies), and A (treatment).
+#   four distinct variable groups: X (covariates), Z (treatment-confounding proxies),
+#   W (outcome-confounding proxies), and A (treatment).
 # - Role Embeddings: Added an nn.Embedding layer to assign unique role-specific
 #   tokens to each group, allowing the Set Transformer to distinguish
 #   between proxy types.

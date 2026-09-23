@@ -18,7 +18,7 @@ an infinite stream of synthetic datasets with diverse characteristics.
 # - Proximal DAG Structure: Implemented specific causal relationships (U -> X, W, Z, A, Y)
 #   to replace generic i.i.d. feature sampling.
 # - Feature Partitioning: Replaced 'max_features' with specific ranges for Latent U,
-#   Covariates X, Outcome Proxies W, and Treatment Proxies Z.
+#   Covariates X, Outcome-confounding proxies W, and Treatment-confounding proxies Z.
 # - Potential Outcomes: Added counterfactual generation for Y(0) and Y(1) via joint
 #   forward passes with intervened treatment values.
 # - Completeness Heuristic: Enforced dim(W) >= dim(U) and dim(Z) >= dim(U) during
@@ -506,10 +506,10 @@ class SCMPrior(Prior):
         Minimum and maximum dimensionality for the latent confounder U.
 
     min_dim_W, max_dim_W : int
-        Minimum and maximum dimensionality for outcome proxies W.
+        Minimum and maximum dimensionality for outcome-confounding proxies W.
 
     min_dim_Z, max_dim_Z : int
-        Minimum and maximum dimensionality for treatment proxies Z.
+        Minimum and maximum dimensionality for treatment-confounding proxies Z.
 
     min_dim_X, max_dim_X : int
         Minimum and maximum dimensionality for observed covariates X.

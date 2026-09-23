@@ -11,8 +11,9 @@ their rows and treating several physical runs as one dataset.
 The mapping mirrors the one used in
 ``benchmarks/causal_chambers/Proximal Causal Inference on Causal Chambers.Rmd``
 (``load_cc_data()``): ``U`` is the unobserved confounder (oracle-only, may be
-omitted), ``X`` the covariates, ``Z`` the treatment proxy, ``W`` the outcome
-proxy, ``A`` the treatment, ``Y`` the observed outcome, and ``Y0``/``Y1`` the
+omitted), ``X`` the covariates, ``Z`` the treatment-confounding proxy, ``W`` the
+outcome-confounding proxy, ``A`` the treatment, ``Y`` the observed outcome, and
+``Y0``/``Y1`` the
 ground-truth potential outcomes (obtained on the chamber by physically forcing
 the treatment to each extreme) that make ``true_ITEs`` — and therefore the
 whole existing metrics stack — meaningful for real, non-synthetic data.

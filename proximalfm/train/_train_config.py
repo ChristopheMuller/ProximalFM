@@ -218,25 +218,25 @@ def build_parser():
         "--min_dim_W",
         type=int,
         default=3,
-        help="Minimum dimensionality of outcome proxy W",
+        help="Minimum dimensionality of outcome-confounding proxy W",
     )
     parser.add_argument(
         "--max_dim_W",
         type=int,
         default=10,
-        help="Maximum dimensionality of outcome proxy W",
+        help="Maximum dimensionality of outcome-confounding proxy W",
     )
     parser.add_argument(
         "--min_dim_Z",
         type=int,
         default=3,
-        help="Minimum dimensionality of treatment proxy Z",
+        help="Minimum dimensionality of treatment-confounding proxy Z",
     )
     parser.add_argument(
         "--max_dim_Z",
         type=int,
         default=10,
-        help="Maximum dimensionality of treatment proxy Z",
+        help="Maximum dimensionality of treatment-confounding proxy Z",
     )
     parser.add_argument(
         "--min_dim_X",

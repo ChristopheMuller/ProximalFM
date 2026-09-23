@@ -9,7 +9,7 @@ Reference: Mastouri et al. "Proximal Causal Learning with Kernels" (ICML 2021)
 Pipeline (the full context is reused in both stages, as in the released code):
   Stage 1:
       Γ = (K_ZAX + λ₁ n I)⁻¹ K_ZAX
-      Bridges outcome proxy W to the (A, Z, X) space.
+      Bridges outcome-confounding proxy W to the (A, Z, X) space.
 
   Stage 2:
       Σ = (Γᵀ K_W Γ) ⊙ K_A ⊙ K_X
@@ -213,7 +213,7 @@ def _loocv_stage1_block(
 ) -> float:
     """One arm's contribution to the Stage-1 LOOCV score. Lower is better.
 
-    Measures how well the kernel embedding predicts the outcome proxy W, as
+    Measures how well the kernel embedding predicts the outcome-confounding proxy W, as
     tr(D H K_W H D) with D = diag(1/H_ii). Evaluated as tr(G K_W Gᵀ) with
     G = D H, i.e. as one matmul and an elementwise sum: D is diagonal, so the
     literal form's ``np.diag(...) @ ...`` would spend two full n³ matmuls
@@ -669,7 +669,7 @@ class KPVEstimator:
                 Test covariates, required for paired/independent/conditional
                 when the model was fit with non-empty X.
             W:
-                Test outcome proxies, required for paired mode.
+                Test outcome-confounding proxies, required for paired mode.
             n:
                 Optional number of outputs when `a` is scalar and the chosen
                 mode is constant.

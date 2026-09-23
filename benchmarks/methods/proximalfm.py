@@ -207,7 +207,7 @@ class ProximalFM_Estimator(CATEEstimator):
     def fit(self, X, A, Y, *, W=None, Z=None):
         if W is None or Z is None:
             raise ValueError(
-                "ProximalFM requires both W (outcome) and Z (treatment) proxies."
+                "ProximalFM requires both W (outcome-confounding proxy) and Z (treatment-confounding proxy)."
             )
         W, Z = self._proxy_inputs(W, Z)
         self._ctx = {
