@@ -63,17 +63,17 @@ every node/.style={text=black}
 \node[small text, font=\scriptsize\bfseries\color{blue!85!black}] at (244,188.5) {$Y(1)$};
 \draw[draw=blue!30, line width=0.4pt] (218,182) -- (270,182);
 
-\draw[box context] (402,18) rectangle (826,114);
-\node[font=\small\bfseries\color{teal!70!black}] at (614,34) {Observational Context ($i=1,\ldots,N$)};
-\draw[box divider] (418,48) -- (810,48);
+\draw[box context] (402,18) rectangle (846,114);
+\node[font=\small\bfseries\color{teal!70!black}] at (624,34) {Observational Context ($i=1,\ldots,N$)};
+\draw[box divider] (418,48) -- (830,48);
 \node[output math, anchor=west] at (420,70) {Subsample: \quad $k_i \sim \operatorname{Unif}\{1,\ldots,K\}$};
 \node[output math, anchor=west] at (420,96) {Context: \quad $\mathcal{D}_N = \bigl\{(x_i,\, w_{i,k_i},\, z_{i,k_i},\, a_{i,k_i},\, y_{i,k_i})\bigr\}_{i=1}^N$};
 
 \draw[pipeline edge context] (328,70) -- node[above, font=\fontsize{6}{7}\selectfont\bfseries, color=teal!75!black, inner sep=1.5pt] {subsample} (402,70);
 
-\draw[box target] (402,130) rectangle (826,254);
-\node[font=\small\bfseries\color{blue!80!black}] at (614,146) {Training Targets ($i=N+1,\ldots,T$)};
-\draw[box divider] (418,160) -- (810,160);
+\draw[box target] (402,130) rectangle (846,254);
+\node[font=\small\bfseries\color{blue!80!black}] at (624,146) {Training Targets ($i=N+1,\ldots,T$)};
+\draw[box divider] (418,160) -- (830,160);
 \node[output math, anchor=west] at (420,182) {MC mean: \quad $\widehat{\mu}_a(x_i) = \frac{1}{K}\sum_{k=1}^K y_{i,k}(a), \quad a \in \{0,1\}$};
 \node[output math, anchor=west] at (420,208) {CATE target: \quad $\widehat{Q}_{i,K} = \widehat{\mu}_1(x_i) - \widehat{\mu}_0(x_i)$};
 \node[output math, anchor=west] at (420,234) {MC noise: \quad $S_{i,K}^2 = \frac{1}{K}\operatorname{var}_K\bigl(y_{i,k}(1) - y_{i,k}(0)\bigr)$};
