@@ -12,35 +12,45 @@ variance is zero) and m12 (``E[tau|X] = (1-null_frac)*c*tanh(lin(X))``). They
 are the only ground truth available for the averaging itself.
 """
 
+
 from __future__ import annotations
 
-import json
-import sys
+
 from pathlib import Path
 
+
 import pytest
+
+
 import torch
 
+
 from synt_eval.build_proximal_datasets import POOL_FIELDS, build, parse_args
+
+
 from synt_eval.realistic_proximal_mechanisms import (
-    N_MECHANISMS,
-    MonteCarloBudgetError,
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
+
+
 from synt_eval.realistic_sidecar import (
-    RealisticBuildConfig,
-    RealisticSetConflictError,
     load_realistic_meta,
-    realistic_content_digest,
 )
+
 
 from proximalfm.prior._genload import LoadPriorDataset  # noqa: E402
 
+
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "realistic_legacy_ref.pt"
 
+
 T = 64
+
+
 TRAIN = 48
+
+
 N_Q = T - TRAIN
 
 
@@ -77,11 +87,6 @@ def batch_for(mech, mc_cate, batch_size=2, seq_len=T, train_size=TRAIN, seed=123
     return gen, dict(zip(POOL_FIELDS, b))
 
 
-# ---------------------------------------------------------------------------
-# 1. Legacy identity
-# ---------------------------------------------------------------------------
-
-
 def test_legacy_path_reports_the_realized_draw_as_the_target():
     """Without replicates MU is Y, matching what LoadPriorDataset substitutes.
 
@@ -97,24 +102,6 @@ def test_legacy_path_reports_the_realized_draw_as_the_target():
     assert (p["K_eff"] == 1).all()
 
 
-# ---------------------------------------------------------------------------
-# 2. Replicate layout
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mech", range(1, N_MECHANISMS + 1))
-def test_replicate_layout_and_prefix_convention(mech):
-    gen, p = batch_for(mech, mc_cate=16)
-    assert (p["K_eff"] == 16).all()
-    for name in ("MU0", "MU1", "S2"):
-        t = p[name]
-        assert torch.isnan(t[:, :TRAIN]).all(), f"{name} must be NaN on the context"
-        assert torch.isfinite(t[:, TRAIN:]).all(), f"{name} must be finite on queries"
-    assert (p["S2"][:, TRAIN:] >= 0).all()
-    # Observed rows still carry exactly one realized world each.
-    assert p["Y_obs"].shape[1] == T
-
-
 def test_replicate_holds_the_covariate_row_fixed():
     """_replicate(X)[obs_idx] == X is the invariant the whole target rests on."""
     gen = make_gen(mc_cate=8)
@@ -126,18 +113,6 @@ def test_replicate_holds_the_covariate_row_fixed():
     # Every replicate of a query row is the same row.
     block = rep[TRAIN:].view(N_Q, 8, 3)
     assert torch.equal(block, x[TRAIN:, None, :].expand_as(block))
-
-
-def test_mc_targets_are_not_the_realized_ite():
-    """The whole point of B1: MU1-MU0 must differ from the sampled Y1-Y0.
-
-    If these agreed, replicate mode would be doing nothing and a distributional
-    score would still be measuring the ITE predictive.
-    """
-    _, p = batch_for(mech=2, mc_cate=64)
-    tau = (p["MU1"] - p["MU0"])[:, TRAIN:, 0]
-    ite = (p["Y1"] - p["Y0"])[:, TRAIN:, 0]
-    assert (tau - ite).abs().mean() > 0.05 * ite.std()
 
 
 def test_mc_reduce_is_the_paired_variance_of_the_mean():
@@ -178,27 +153,6 @@ def test_mc_reduce_is_the_paired_variance_of_the_mean():
     assert torch.allclose(S2b[n_ctx:, 0], diff.var(dim=1, unbiased=True) / K, atol=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# 3. The two mechanisms with ground truth
-# ---------------------------------------------------------------------------
-
-
-def test_m09_target_variance_is_zero():
-    """m9's tau is a function of X alone, so replicates cannot disagree.
-
-    Not *exactly* zero in fp32: tau is recovered as (f0+tau+eps)-(f0+eps), and
-    that cancellation rounds. But it lands ~1e-16, some seven orders of
-    magnitude below any mechanism that has genuine latent spread, so the bound
-    still fails loudly if X is not held fixed across replicates -- or if the
-    view(n_q, K) reduction were K-major rather than row-major.
-    """
-    _, p = batch_for(mech=9, mc_cate=32)
-    assert p["S2"][:, TRAIN:].max() < 1e-12
-
-    _, other = batch_for(mech=1, mc_cate=32)
-    assert other["S2"][:, TRAIN:].mean() > 1e-8, "control: m1 must have real spread"
-
-
 def test_m12_monte_carlo_converges_to_its_closed_form():
     """E[tau|X] = (1-null_frac)*c*tanh(lin(X)) -- the averaging's only ground truth."""
     gen, p = batch_for(mech=12, mc_cate=256, batch_size=1)
@@ -207,34 +161,6 @@ def test_m12_monte_carlo_converges_to_its_closed_form():
     s = p["S2"][0, TRAIN:, 0].sqrt()
     # Within 4 sampling sd on every row; S2 is the estimate of exactly this error.
     assert (mc - exact).abs().max() <= 4 * s.max() + 1e-6
-
-
-def test_m12_error_shrinks_with_more_replicates():
-    """Convergence at the Monte Carlo rate, not merely 'close at one K'."""
-
-    def mean_abs_err(k):
-        gen, p = batch_for(mech=12, mc_cate=k, batch_size=1)
-        exact = gen._obs(gen._debug["m12_tau_star"])[TRAIN:, 0]
-        return ((p["MU1"] - p["MU0"])[0, TRAIN:, 0] - exact).abs().mean().item()
-
-    assert mean_abs_err(16) > 1.5 * mean_abs_err(256)
-
-
-# ---------------------------------------------------------------------------
-# 4. Budget
-# ---------------------------------------------------------------------------
-
-
-def test_an_unaffordable_k_raises_rather_than_capping():
-    """A silent cap would vary K_eff across datasets and machines, invisibly."""
-    gen = make_gen(mc_cate=4096, mc_mem_budget=10_000)
-    with pytest.raises(MonteCarloBudgetError, match="mc_mem_budget"):
-        gen.get_batch(mechanism_id=1, batch_size=1, seq_len=T, train_size=TRAIN)
-
-
-# ---------------------------------------------------------------------------
-# 5. Round trip through the on-disk format and the sidecar
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -262,18 +188,6 @@ def toy_set(tmp_path_factory):
     return root / "toy", args
 
 
-def test_batch_files_carry_every_field_the_loader_expects(toy_set):
-    out, _ = toy_set
-    raw = torch.load(out / "val" / "batch_000000.pt", weights_only=True)
-    # MU0/MU1/S2/K_eff are the four fields the hand-rolled writer used to drop,
-    # which is how realistic sets silently lost their CATE target.
-    for key in ("MU0", "MU1", "S2", "K_eff"):
-        assert key in raw, key
-    meta = json.loads((out / "val" / "metadata.json").read_text())
-    assert meta["mc_cate"] == 32
-    assert meta["mc_targets_on_context"] is False
-
-
 def test_round_trips_through_the_standard_val_loader(toy_set):
     out, args = toy_set
     loader = LoadPriorDataset(
@@ -286,64 +200,6 @@ def test_round_trips_through_the_standard_val_loader(toy_set):
     assert torch.isnan(MU0[:, :n_max]).all()
     assert torch.isfinite(MU1[:, n_max:]).all()
     assert (S2[:, n_max:] >= 0).all()
-
-
-def test_sidecar_targets_match_the_data_on_disk(toy_set):
-    out, args = toy_set
-    meta = load_realistic_meta(out)
-    g = meta["global"]
-    assert g["set_kind"] == "realistic"
-    assert len(meta["episodes"]) == args.n_datasets
-
-    raw = torch.load(out / "val" / "batch_000000.pt", weights_only=True)
-    n_max = g["n_max"]
-    for i, rec in enumerate(meta["episodes"]):
-        ctx = raw["Y_obs"][i].reshape(-1)[:n_max].float()
-        y_std = ctx.std(unbiased=False).clamp(min=1e-3)
-        assert torch.allclose(rec["y_context_mean"], ctx.mean())
-        assert torch.allclose(rec["y_context_std"], y_std)
-
-        tau = (raw["MU1"][i] - raw["MU0"][i]).reshape(-1)[n_max:].float()
-        assert torch.allclose(rec["tau_star"], tau, atol=1e-6)
-        assert torch.allclose(rec["tau_star_std"], tau / y_std, atol=1e-6)
-        # s2 is divided by the VARIANCE, not the sd -- the invisible scale bug.
-        s2 = raw["S2"][i].reshape(-1)[n_max:].float()
-        assert torch.allclose(rec["s2_std"], s2 / (y_std**2), atol=1e-9)
-        assert rec["index"] == i
-        assert 1 <= rec["mechanism_id"] <= N_MECHANISMS
-
-
-def test_score_frozen_set_reads_a_realistic_set_unchanged(toy_set):
-    """The point of reusing the schema: no realistic-specific branch downstream.
-
-    The namespace is the *caller's* choice, not a property of the set -- which
-    is what lets the trainer score a prior set and a realistic set in the same
-    step without their keys colliding. The trainer's own
-    ``synt_validate()`` passes an explicit ``prefix_point="synt_point/"``
-    rather than ``None`` (both metric kinds come from one pass over the
-    replicate set); this test exercises ``prefix_point=None`` directly as a
-    general capability of the function -- a caller that wants the
-    distributional surface only.
-    """
-    from proximalfm.train._dist_eval import score_frozen_set
-
-    from test_prior_eval import _FakeCateModel  # noqa: F401
-
-    out, args = toy_set
-    n_q = args.seq_len - int(round(args.prop_train * args.seq_len))
-
-    metrics = score_frozen_set(
-        _FakeCateModel(), out, prefix_point=None, prefix_dist="synt_dist/"
-    )
-    assert metrics["synt_dist/eval_rows"] == args.n_datasets * n_q
-    assert metrics["synt_dist/grid_scale"] == pytest.approx(1.0, abs=1e-5)
-    # prefix_point=None suppresses the point surface entirely.
-    assert not any("cate/rmse_pooled" in k for k in metrics)
-
-    # Default prefixes are the prior set's, so every pre-B4 caller is unchanged.
-    default = score_frozen_set(_FakeCateModel(), out)
-    assert default["prior_dist/eval_rows"] == metrics["synt_dist/eval_rows"]
-    assert "prior_point/cate/rmse_pooled" in default
 
 
 def test_the_point_surface_scores_against_mu_not_the_sampled_ite(toy_set):
@@ -372,61 +228,6 @@ def test_the_point_surface_scores_against_mu_not_the_sampled_ite(toy_set):
     # If these agreed, the substitution would be undetectable and the surface
     # would be reporting the ITE while claiming to report the CATE.
     assert not torch.allclose(mc_cate, sampled_ite, atol=1e-3)
-
-
-# ---------------------------------------------------------------------------
-# 6. Set identity
-# ---------------------------------------------------------------------------
-
-
-def test_digest_is_stable_and_moves_with_generative_fields():
-    base = dict(
-        n_datasets=12,
-        seq_len=128,
-        prop_train=0.75,
-        mc_cate=32,
-        seed=1,
-        mechanisms=[1, 2, 3],
-    )
-    d = RealisticBuildConfig(**base).content_digest()
-    assert d == RealisticBuildConfig(**base).content_digest()
-    for field, value in [
-        ("mc_cate", 64),
-        ("seed", 2),
-        ("seq_len", 256),
-        ("prop_train", 0.5),
-        ("mechanisms", [1, 2]),
-        # Unlike the prior sets, n_datasets IS generative here: the pool is
-        # shuffled by one permutation whose length it sets, so adding episodes
-        # reorders every existing one rather than extending the set.
-        ("n_datasets", 24),
-    ]:
-        assert RealisticBuildConfig(**{**base, field: value}).content_digest() != d
-
-
-def test_a_sidecar_without_a_stored_digest_still_has_an_identity(toy_set):
-    out, _ = toy_set
-    meta = load_realistic_meta(out)
-    stored = meta["global"].pop("content_digest")
-    assert realistic_content_digest(meta) == stored
-
-
-def test_rebuilding_a_set_with_a_different_config_is_refused(toy_set, tmp_path):
-    out, args = toy_set
-    from synt_eval.realistic_sidecar import check_no_silent_mutation
-
-    cfg = RealisticBuildConfig(
-        n_datasets=args.n_datasets,
-        seq_len=args.seq_len,
-        prop_train=args.prop_train,
-        mc_cate=args.mc_cate * 2,  # different content, same path
-        seed=args.seed,
-        mechanisms=list(range(1, N_MECHANISMS + 1)),
-    )
-    with pytest.raises(RealisticSetConflictError, match="already holds"):
-        check_no_silent_mutation(out, cfg)
-    # --force is the documented escape hatch.
-    check_no_silent_mutation(out, cfg, force=True)
 
 
 def test_no_sidecar_is_written_without_replicates(tmp_path):

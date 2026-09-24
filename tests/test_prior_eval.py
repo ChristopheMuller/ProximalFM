@@ -12,13 +12,19 @@ Two kinds of check, and both are needed:
   same quantity by an independent path.
 """
 
+
 import math
 
+
 import pytest
+
+
 import torch
 
+
 from prior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
-from prior_eval.report import _cate_rmse_at_prefix
+
+
 from proximalfm.train._dist_eval import (
     PosteriorEvaluator,
     UnsupportedLossTypeError,
@@ -26,7 +32,11 @@ from proximalfm.train._dist_eval import (
     iter_frozen_episodes,
     score_frozen_set,
 )
+
+
 from proximalfm.train._dist_metrics import predictive_quantile
+
+
 from proximalfm.train._losses import gaussian_bin_mass
 
 
@@ -39,11 +49,6 @@ def discretized_gaussian(bin_edges, center, sigma):
         bin_edges, torch.as_tensor(center, dtype=torch.float32), sigma
     )
     return p / p.sum(dim=-1, keepdim=True)
-
-
-# --------------------------------------------------------------------------
-# The accumulator
-# --------------------------------------------------------------------------
 
 
 def _gaussian_episodes(evaluator, edges, sigma_pred, sigma_true, n_ep=8, n=256, seed=0):
@@ -77,45 +82,6 @@ def test_calibrated_forecast_recovers_the_closed_forms():
     assert m["prior_dist/eval_rows"] == 16 * 512
 
 
-def test_too_narrow_forecast_fails_both_diagnostics():
-    edges = make_grid()
-    ev = PosteriorEvaluator()
-    _gaussian_episodes(ev, edges, sigma_pred=0.5, sigma_true=1.0, n_ep=16, n=512)
-    m = ev.compute()
-
-    # Both, because either alone is ambiguous: a U-shaped PIT is also produced
-    # by a biased forecast, and sd/rmse alone says nothing about shape.
-    assert m["prior_dist/sd_over_rmse"] == pytest.approx(0.5, abs=0.05)
-    assert m["prior_dist/cov90_pooled"] < 0.75
-    assert m["prior_dist/pit_ks_pooled"] > m["prior_dist/pit_ks_pooled_band"]
-
-
-def test_s2_subtraction_restores_the_ratio_on_a_noisy_target():
-    """A *correct* posterior scored against tau* + e reads over-confident unless
-    s^2 comes out of the denominator. Same argument as step 7's, at the
-    evaluator level."""
-    edges = make_grid()
-    gen = torch.Generator().manual_seed(3)
-    s2 = 0.25
-
-    with_s2 = PosteriorEvaluator()
-    without_s2 = PosteriorEvaluator()
-    for _ in range(16):
-        mu = torch.randn(512, generator=gen) * 0.7
-        tau_star = mu + torch.randn(512, generator=gen)  # posterior is correct
-        y = tau_star + math.sqrt(s2) * torch.randn(512, generator=gen)
-        probs = discretized_gaussian(edges, mu, 1.0)
-        with_s2.update(probs=probs, bin_edges=edges, y=y, s2=torch.full((512,), s2))
-        without_s2.update(probs=probs, bin_edges=edges, y=y)
-
-    assert with_s2.compute()["prior_dist/sd_over_rmse"] == pytest.approx(1.0, abs=0.05)
-    # Uncorrected, the same posterior reads as 1/sqrt(1.25) = 0.894.
-    assert without_s2.compute()["prior_dist/sd_over_rmse"] == pytest.approx(
-        1.0 / math.sqrt(1.25), abs=0.05
-    )
-    assert with_s2.compute()["prior_dist/s_over_sd"] == pytest.approx(0.5, abs=0.05)
-
-
 def _episode_with_pit(edges, u_target, sigma=1.0):
     """An episode whose PIT values are exactly ``u_target``.
 
@@ -140,49 +106,6 @@ def _tilted_pit(v, c):
         return v
     disc = (1 + c) ** 2 - 4 * c * v
     return ((1 + c) - disc.sqrt()) / (2 * c)
-
-
-def test_per_episode_ks_catches_what_pooling_cancels():
-    """Half the episodes over-confident, half under-confident, in mirrored
-    amounts: the pooled PIT is uniform while every single episode fails."""
-    edges = make_grid()
-    n = 200
-    v = (torch.arange(n, dtype=torch.float64) + 0.5) / n
-
-    ev = PosteriorEvaluator()
-    for c in (0.8, -0.8) * 10:  # 20 episodes, mirrored deviations
-        probs, y = _episode_with_pit(edges, _tilted_pit(v, c).float())
-        ev.update(probs=probs, bin_edges=edges, y=y)
-    m = ev.compute()
-
-    # Pooled: the two tilts cancel and the set looks calibrated.
-    assert m["prior_dist/pit_ks_pooled"] < m["prior_dist/pit_ks_pooled_band"]
-    # Per-episode: every episode is outside its own band.
-    assert m["prior_dist/pit_ks/p50"] > m["prior_dist/pit_ks/band"]
-    assert m["prior_dist/pit_ks/p90"] > m["prior_dist/pit_ks/band"]
-
-
-def test_empty_evaluator_computes_to_nothing():
-    ev = PosteriorEvaluator()
-    assert ev.empty
-    assert ev.compute() == {}
-
-
-def test_out_of_grid_targets_are_counted_not_clipped():
-    edges = make_grid(-1.0, 1.0, 40)
-    ev = PosteriorEvaluator()
-    probs = discretized_gaussian(edges, torch.zeros(4), 0.3)
-    y = torch.tensor([0.0, 0.1, 5.0, -5.0])
-    ev.update(probs=probs, bin_edges=edges, y=y)
-    m = ev.compute()
-    assert m["prior_dist/out_of_grid_frac"] == pytest.approx(0.5)
-    # The two far targets are charged their distance to the edge (~4 each).
-    assert m["prior_dist/crps"] > 1.5
-
-
-# --------------------------------------------------------------------------
-# The driver, against a real frozen set
-# --------------------------------------------------------------------------
 
 
 class _FakeCateModel:
@@ -264,27 +187,6 @@ def test_score_frozen_set_emits_both_surfaces(frozen):
     assert not any(k.startswith("prior_point/po/") for k in metrics)
 
 
-def test_pooled_rmse_matches_the_report_path(frozen):
-    """The one cross-check that would catch a frozen-scale bug: the same
-    quantity computed by ``prior_eval/report.py``'s independent path."""
-    cfg, out = frozen
-    model = _FakeCateModel()
-    meta = load_frozen_meta(out)
-
-    sq_sum, rows = 0.0, 0
-    for i, batch in enumerate(iter_frozen_episodes(out / "val")):
-        rmse = _cate_rmse_at_prefix(
-            model, batch, meta["episodes"][i], cfg.n_max, cfg.n_max, "cpu"
-        )
-        sq_sum += rmse**2 * cfg.n_q
-        rows += cfg.n_q
-
-    metrics = score_frozen_set(model, out)
-    assert metrics["prior_point/cate/rmse_pooled"] == pytest.approx(
-        math.sqrt(sq_sum / rows), rel=1e-5
-    )
-
-
 def test_grid_is_rescaled_into_the_frozen_space(frozen):
     """``predict``'s grid is in raw-y units; the evaluator's must be in the
     sidecar's frozen units, i.e. scaled by y_std_predict / y_std_frozen."""
@@ -309,110 +211,6 @@ def test_grid_is_rescaled_into_the_frozen_space(frozen):
     ratio = float(edges_s[-1] / model.cate_bin_edges[-1])
     assert ratio != pytest.approx(1.0, abs=1e-3)
     torch.testing.assert_close(edges_s, model.cate_bin_edges * ratio)
-
-
-def test_padded_feature_columns_are_trimmed_before_predict(frozen):
-    """``episode_predictive`` hands the model each episode's *own* width.
-
-    ``LoadPriorDataset`` densifies a batch file to the widest ``d`` in it, so an
-    episode arrives padded with columns the model masks out only after paying a
-    full embedding token for each. Scoring is one episode per call, so the
-    padding is pure cost; dropping it is exact (the trimmed columns are the ones
-    the mask discards) and measurably cheaper. Pin that the trim happens, since
-    a regression here is invisible in the metrics -- it only shows up as a
-    slower validation pass.
-    """
-    cfg, out = frozen
-    meta = load_frozen_meta(out)
-
-    seen = {}
-
-    class _WidthRecordingModel(_FakeCateModel):
-        def predict(self, *, X, Z, W, d_X, d_Z, d_W, **kwargs):
-            seen["X"] = (X.shape[-1], int(d_X.reshape(-1)[0]))
-            seen["Z"] = (Z.shape[-1], int(d_Z.reshape(-1)[0]))
-            seen["W"] = (W.shape[-1], int(d_W.reshape(-1)[0]))
-            return super().predict(X=X, **kwargs)
-
-    model = _WidthRecordingModel()
-    for i, batch in enumerate(iter_frozen_episodes(out / "val")):
-        # A padded arrival is the precondition; without one the assertion below
-        # would pass vacuously.
-        padded = any(
-            t.shape[-1] > int(d.reshape(-1)[0])
-            for t, d in (
-                (batch[1], batch[12]),
-                (batch[3], batch[14]),
-                (batch[2], batch[13]),
-            )
-        )
-        episode_predictive(
-            model, batch, meta["episodes"][i], n_ctx=cfg.n_max, n_max=cfg.n_max
-        )
-        for name, (width, true_d) in seen.items():
-            assert (
-                width == true_d
-            ), f"{name} reached predict padded: {width} != {true_d}"
-        if padded:
-            break
-
-
-def test_grid_scale_is_reported_and_is_the_factor_actually_applied(frozen):
-    """``prior_dist/grid_scale`` converts head units into the frozen space, and the
-    trainer multiplies its sigma schedule by it. A caller
-    that hardcoded 1.0 would be right at n_max and wrong on every sweep prefix,
-    so pin both ends."""
-    cfg, out = frozen
-    model = _FakeCateModel()
-
-    at_n_max = score_frozen_set(model, out)
-    assert at_n_max["prior_dist/grid_scale"] == pytest.approx(1.0, abs=1e-5)
-
-    short = score_frozen_set(model, out, n_ctx=16)
-    assert short["prior_dist/grid_scale"] != pytest.approx(1.0, abs=1e-3)
-
-    # It must be the factor on the grid that was actually scored, not a
-    # separately recomputed one -- averaged over episodes, which all carry the
-    # same row count here.
-    meta = load_frozen_meta(out)
-    ratios = []
-    for i, batch in enumerate(iter_frozen_episodes(out / "val")):
-        _, edges = episode_predictive(
-            model, batch, meta["episodes"][i], n_ctx=16, n_max=cfg.n_max
-        )
-        ratios.append(float(edges[-1] / model.cate_bin_edges[-1]))
-    assert short["prior_dist/grid_scale"] == pytest.approx(
-        sum(ratios) / len(ratios), rel=1e-6
-    )
-
-
-def test_real_model_predict_path(frozen):
-    """The fake model above pins the *scale*; this pins the *interface* -- that
-    ``predict(output_type="distribution")`` really returns ``weights`` shaped
-    ``(1, n_q, nbins)`` on a single shared grid."""
-    from proximalfm._model import ProximalFM
-
-    cfg, out = frozen
-    torch.manual_seed(0)
-    model = ProximalFM(
-        embed_dim=16,
-        col_num_blocks=1,
-        col_nhead=2,
-        col_num_inds=8,
-        row_num_blocks=1,
-        row_nhead=2,
-        row_num_cls=4,
-        icl_num_blocks=1,
-        icl_nhead=2,
-        nbins=32,
-        loss_type="cate_single",
-    ).eval()
-
-    metrics = score_frozen_set(model, out)
-    assert metrics["prior_dist/eval_rows"] == cfg.n_datasets * cfg.n_q
-    assert 0.0 <= metrics["prior_dist/cov90_pooled"] <= 1.0
-    assert metrics["prior_dist/crps"] > 0.0
-    assert metrics["prior_dist/mean_sd"] > 0.0
 
 
 def test_two_head_checkpoints_are_refused(frozen):

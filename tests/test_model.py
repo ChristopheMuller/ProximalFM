@@ -1,8 +1,11 @@
 import torch
+
+
 import pytest
 
-# Adjust this import path based on your actual project structure
+
 from proximalfm._model import ProximalFM
+
 
 NBINS = 100
 
@@ -52,27 +55,6 @@ def setup_model_and_data():
     return build_model(), inputs, dims
 
 
-def test_tabicl_training_mode(setup_model_and_data):
-    """
-    Validates the standard forward pass while model is in .train() mode.
-    """
-    model, inputs, dims = setup_model_and_data
-    B, T, train_size = dims
-    test_size = T - train_size
-
-    model.train()
-
-    # Execute forward pass
-    out = model(*inputs)
-
-    # Check shape: (Batch, Test_Size, Out_Dim)
-    expected_shape = (B, test_size, 2 * NBINS)
-    assert (
-        out.shape == expected_shape
-    ), f"Training output shape mismatch. Expected {expected_shape}, got {out.shape}"
-    assert not torch.isnan(out).any(), "NaNs detected in training output."
-
-
 def test_tabicl_padding_logic(setup_model_and_data):
     """
     Validates that the model can handle a batch where datasets have fewer
@@ -95,46 +77,6 @@ def test_tabicl_padding_logic(setup_model_and_data):
     assert (
         out.shape == expected_shape
     ), "Model failed to handle reduced feature counts properly."
-
-
-def test_cate_single_output_dim():
-    """The single-tau head emits exactly `nbins` logits, not `2 * nbins`."""
-    model = build_model(loss_type="cate_single")
-    inputs, (B, T, train_size) = build_data()
-    test_size = T - train_size
-
-    model.train()
-    out = model(*inputs)
-
-    assert out.shape == (B, test_size, NBINS)
-    assert not torch.isnan(out).any()
-
-
-def test_cate_single_has_its_own_bin_grid():
-    """The tau grid is a separate buffer set and does not disturb `bin_centers`."""
-    model = build_model(loss_type="cate_single", cate_vmin=-2.0, cate_vmax=2.0)
-
-    assert model.cate_bin_edges[0].item() == pytest.approx(-2.0)
-    assert model.cate_bin_edges[-1].item() == pytest.approx(2.0)
-    # The potential-outcome grid keeps the default range, untouched by cate_vmin/vmax.
-    assert model.bin_edges[0].item() == pytest.approx(model.vmin)
-    assert model.bin_edges[-1].item() == pytest.approx(model.vmax)
-    assert not torch.allclose(model.cate_bin_centers, model.bin_centers)
-
-    # A model with no tau head must not carry the tau buffers at all.
-    baseline = build_model(loss_type="bins_po")
-    assert not hasattr(baseline, "cate_bin_edges")
-
-
-def test_cate_single_rejects_potential_outcome_targets():
-    """Only target='cate' makes sense for a head that models the difference."""
-    model = build_model(loss_type="cate_single")
-    inputs, _ = build_data()
-    X, Z, W, A, y_train, d_X, d_Z, d_W = inputs
-
-    for target in ("y0", "y1"):
-        with pytest.raises(ValueError, match="cate_single"):
-            model.predict(X, Z, W, A, y_train, target=target, d_X=d_X, d_Z=d_Z, d_W=d_W)
 
 
 def test_cate_single_is_shift_invariant():

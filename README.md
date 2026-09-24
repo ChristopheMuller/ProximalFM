@@ -356,7 +356,8 @@ figure/table to the exact CLI command that regenerates it.
 
 ## Testing
 
-Validation relies on `pytest`. To run the verification suites across model dimensions and loss metrics:
+The focused test suite checks the prior's target and storage contracts, model and loss behavior,
+evaluation datasets, and benchmark scoring. Run it with:
 ```bash
 uv run python -m pytest tests/
 ```
