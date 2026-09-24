@@ -5,6 +5,21 @@ estimators or read prediction caches, with one exception: the posterior
 calibration runner below evaluates a ProximalFM checkpoint against fixed
 evaluation data.
 
+## Main-text practical-results figure
+
+```bash
+.venv/bin/python -m analysis_eval.main_results_figure
+```
+
+This cache-only command writes `docs/latex/assets/main/practical_results.pdf`
+and `.png`. Panel (a) reuses the complete-case ranks and dedicated sequential
+timings from `speed_rank.py` at context size 2048. Panel (b) takes the nominal
+90% coverage slice from the existing prior and semi-synthetic calibration
+caches. Panel (c) reads the source-averaged extended-context CSV used by the
+appendix table; the current raw matrix CSV only reaches 2048. Each input path
+and the output directory can be overridden with CLI flags. Run the upstream
+analyses first if an input cache is absent.
+
 ## Posterior calibration
 
 ```bash
