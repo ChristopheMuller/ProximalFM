@@ -283,7 +283,12 @@ uv run python -m analysis_eval.speed_rank --scope proxy
 
 All plots use the largest context size common to the matrix and speed run by
 default; override it with `--context-size`. `--speed-dir`, `--methods`, and
-`--out-dir` support alternate timing runs, subsets, and destinations.
+`--out-dir` support alternate timing runs, subsets, and destinations. The
+labelled, coloured points are selected by `speed_rank.HIGHLIGHTED_METHODS`,
+independently of `design.RELEVANT_METHODS`. Edit its `"linear"` and
+`"nonlinear"` entries to choose different labels in those panels. Panels that
+mix both mechanism families use the union of the two entries. The `--methods`
+option instead filters which methods participate in the rank calculation.
 
 ## Semisynthetic speed by context size
 

@@ -17,7 +17,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from .design import COLORS, RELEVANT_METHODS, apply_style
+from .design import COLORS, apply_style
 from .plotting import place_point_labels, plt, save_figure
 from matplotlib.lines import Line2D
 from .semisynt import CELL_ORDER, load_cate_results
@@ -38,9 +38,50 @@ SPEED_RANK_ALIASES = {
     "ProximalFM-CPU": "ProximalFM",
     "ProximalFM-MPS": "ProximalFM",
 }
+# Measured speed points that receive their own colour and direct label.
+# Case and linearity panels use the corresponding family. Panels that mix
+# families (overall, confounding, proxy) use the union of both lists.
+# Other methods still enter the rank calculation and appear in grey.
+HIGHLIGHTED_METHODS = {
+    "linear": (
+        "T-OLS",
+        "P-Kernel-TabICL",
+        "P-Kernel-OLS",
+        "X-OLS",
+        "T-OLS-WZ-kNN-16",
+        "NMMR-V-fixed-Wcond",
+        "KPV-X-Wcond",
+        "PMMR-X-Wcond",
+        "CausalPFN-WZ-kNN-16",
+        "ProximalFM-CPU",
+        "ProximalFM-MPS",
+        "S-OLS",
+    ),
+    "nonlinear": (
+        "T-OLS",
+        "P-Kernel-TabICL",
+        "P-Kernel-RF",
+        "X-OLS",
+        "NMMR-V-fixed-Wcond",
+        "KPV-X-Wcond",
+        "PMMR-X-Wcond",
+        "CausalPFN-WZ-kNN-16",
+        "ProximalFM-CPU",
+        "ProximalFM-MPS",
+        "S-OLS",
+    ),
+}
 MUTED_METHOD_COLOR = COLORS["light_grey"]
 MUTED_METHOD_ALPHA = 0.55
 HARDWARE_LINESTYLE = "-"
+
+
+def _highlighted_methods_for_panel(panel_name: str) -> set[str]:
+    """Choose a family-specific list, or their union for mixed panels."""
+    family = panel_name.split(" ", 1)[0].lower()
+    if family in HIGHLIGHTED_METHODS:
+        return set(HIGHLIGHTED_METHODS[family])
+    return set().union(*(set(methods) for methods in HIGHLIGHTED_METHODS.values()))
 
 
 def _case_label(case: str) -> str:
@@ -217,13 +258,16 @@ def make_speed_rank_figure(summary: pd.DataFrame):
     )
     axes = axes.ravel()
     panel_labels = []
+    any_highlighted_hardware_pair = False
     for ax, panel_name in zip(axes, panels):
         panel = summary[summary["panel"].eq(panel_name)]
+        highlighted_methods = _highlighted_methods_for_panel(panel_name)
         labels = []
         hardware = panel.set_index("method")
-        has_proximal_hardware_pair = {"ProximalFM-CPU", "ProximalFM-MPS"} <= set(
-            hardware.index
+        has_proximal_hardware_pair = {"ProximalFM-CPU", "ProximalFM-MPS"} <= (
+            set(hardware.index) & highlighted_methods
         )
+        any_highlighted_hardware_pair |= has_proximal_hardware_pair
         if has_proximal_hardware_pair:
             cpu = hardware.loc["ProximalFM-CPU"]
             mps = hardware.loc["ProximalFM-MPS"]
@@ -250,9 +294,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
             if has_proximal_hardware_pair and row.method == "ProximalFM-MPS":
                 continue
             label, color, marker, _, _, markersize, zorder = _display_style(row.method)
-            highlighted = row.rank_method in RELEVANT_METHODS or row.method.startswith(
-                "ProximalFM-"
-            )
+            highlighted = row.method in highlighted_methods
             color = color if highlighted else MUTED_METHOD_COLOR
             alpha = 0.98 if highlighted else MUTED_METHOD_ALPHA
             lower = row.rank_median - row.rank_q25
@@ -355,7 +397,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
                 label="Post-selection runtime",
             )
         )
-    if {"ProximalFM-CPU", "ProximalFM-MPS"} <= set(summary["method"]):
+    if any_highlighted_hardware_pair:
         legend_handles.append(
             Line2D(
                 [],
