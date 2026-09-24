@@ -167,13 +167,23 @@ def test_figure_has_eight_axes_and_stable_styles(tmp_path):
     methods = ordered_methods(set(summary["method"]))
     fig = make_learning_curve_figure(summary, methods=methods)
     assert len(fig.axes) == 8
-    assert fig.axes[0].get_ylim() == (0.0, 1.2)
+    assert fig.axes[0].get_ylim() == (0.0, 2.0)
     assert fig.axes[0].get_title() == "Low confounding\nLow proxy reliability"
     assert all(not ax.get_title() for ax in fig.axes[4:])
     assert fig.get_size_inches().tolist() == [FULL_PAGE_WIDTH_IN, 4.55]
     assert not fig.axes[0].collections
     assert method_style("ProximalFM").color == "#D55E00"
     assert method_style("ProximalFM").linewidth > method_style("S-OLS").linewidth
+    assert fig.axes[0].lines[0].get_linewidth() == method_style("S-OLS").linewidth * 0.8
+    assert fig.axes[0].lines[1].get_linewidth() == method_style("ProximalFM").linewidth
+    assert (
+        fig.legends[0].legend_handles[0].get_linewidth()
+        == fig.axes[0].lines[0].get_linewidth()
+    )
+    assert (
+        fig.legends[0].legend_handles[1].get_linewidth()
+        == fig.axes[0].lines[1].get_linewidth()
+    )
 
 
 def test_method_styles_share_regressor_colours_and_learner_linestyles():
@@ -257,7 +267,7 @@ def test_learning_curve_default_uses_compact_method_set(tmp_path):
 
 def test_learning_curve_cli_options_control_axis_and_interval(tmp_path):
     args = build_parser().parse_args([])
-    assert args.y_max == 1.2
+    assert args.y_max == 2.0
     assert args.confidence_interval is False
     assert args.case is None
     assert args.dim is None
@@ -468,7 +478,7 @@ def test_combined_cli_accepts_optional_case():
         ["--case", "nonlinear_conf_high_proxy_low"]
     )
     assert args.case == "nonlinear_conf_high_proxy_low"
-    assert args.y_max == 1.2
+    assert args.y_max == 2.0
 
 
 def test_speed_rank_summary_separates_confounding_levels(tmp_path):

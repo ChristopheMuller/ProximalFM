@@ -108,7 +108,8 @@ This reads dimension 5 of the completed eight-case matrix at
 CATE nPEHE over episodes at each context size; optionally, faint bands show
 episode interquartile ranges. By default it plots the compact, data-independent
 `design.RELEVANT_METHODS` subset; `--methods` provides a figure-specific
-override. Use `--matrix-root`, `--dim`, `--out-dir`, `--y-max`, and
+override. The default y-axis maximum is 2. Use `--matrix-root`, `--dim`,
+`--out-dir`, `--y-max`, and
 `--confidence-interval {false,iqr,std,ste}` to override the other defaults. The
 `std` and `ste` bands are centered on the median curve and use one standard
 deviation or one standard error, respectively.

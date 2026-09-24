@@ -34,7 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MATRIX_ROOT = REPO_ROOT / "data" / "semisynt_eval" / "semisynt_val_v1"
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves"
-DEFAULT_Y_MAX = 1.2
+DEFAULT_Y_MAX = 2.0
 SINGLE_CASE_FIGSIZE = (4.8, 4.8)
 CONFIDENCE_INTERVAL_CHOICES = ("false", "iqr", "std", "ste")
 CONF_PROXY_ORDER = (
@@ -43,6 +43,14 @@ CONF_PROXY_ORDER = (
     ("high", "low"),
     ("high", "high"),
 )
+
+
+def _curve_line_kwargs(method: str) -> dict[str, object]:
+    """Keep ProximalFM prominent without changing shared method styles."""
+    kwargs = method_style(method).line_kwargs()
+    if method != "ProximalFM":
+        kwargs["linewidth"] *= 0.8
+    return kwargs
 
 
 def draw_learning_curve_panel(
@@ -87,7 +95,7 @@ def draw_learning_curve_panel(
                 linewidth=0,
                 zorder=1,
             )
-        ax.plot(x, curve["median"].to_numpy(dtype=float), **style.line_kwargs())
+        ax.plot(x, curve["median"].to_numpy(dtype=float), **_curve_line_kwargs(method))
 
     ax.axhline(
         1.0,
@@ -252,7 +260,7 @@ def make_learning_curve_figure(
             [],
             [],
             label=method_style(method).label,
-            **method_style(method).line_kwargs(),
+            **_curve_line_kwargs(method),
         )
         for method in methods
     ]

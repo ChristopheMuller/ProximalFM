@@ -483,13 +483,10 @@ _validate_method_styles(METHOD_STYLES)
 RELEVANT_METHODS: tuple[str, ...] = (
     "T-OLS",
     "S-TabICL-WZ-kNN-16",
-    "P-Kernel-OLS",
-    # "P-Kernel-RF",
     "P-Kernel-TabICL",
     "NMMR-V-fixed-Wcond",
     "KPV-X-Wcond",
     "PMMR-X-Wcond",
-    "CausalPFN",
     "CausalPFN-WZ-kNN-16",
     "ProximalFM",
     "ProximalFM-FT",
