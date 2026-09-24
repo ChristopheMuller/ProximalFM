@@ -418,7 +418,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         markersize=EMPHASIZED_MARKERSIZE,
     ),
     "ProximalFM": MethodStyle(
-        "ProximalFM",
+        "ProximalFM (ours)",
         COLORS["vermillion"],
         "*",
         linewidth=PROPOSED_LINEWIDTH,
