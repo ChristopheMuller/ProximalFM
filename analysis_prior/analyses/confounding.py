@@ -667,17 +667,10 @@ class ConfoundingStrengthAnalysis(Analysis):
             outdir,
             "confounding_table",
             caption=(
-                "Confounding-strength ladder. Absolute ATE error against the "
-                "exact in-sample ground truth $\\mathrm{mean}(Y_1-Y_0)$, "
-                "normalised by $\\mathrm{sd}(Y_{\\mathrm{obs}})$ "
-                "for cross-SCM comparability. Every rung but naive is a "
-                "cross-fitted T-learner. The oracle rungs condition on the true "
-                "latent confounder $U$, available only because the data is "
-                "synthetic; their gap to backdoor-$X$ is the confounding "
-                "\\Cref{as:latent_ignorability} claims the proxies remove. "
-                "$(X,U,W)$ additionally conditions on $W$, a genuine parent of "
-                "$f_Y$, so its gap to $(X,U)$ isolates outcome-model "
-                "misspecification rather than residual confounding."
+                "ATE error across adjustment sets. Errors are absolute deviations "
+                "from the in-sample $\\mathrm{mean}(Y_1-Y_0)$, divided by "
+                "$\\mathrm{sd}(Y_{\\mathrm{obs}})$. All adjusted estimates use "
+                "cross-fitted T-learners; the oracle rows include the latent $U$."
             ),
             label="tab:prior_confounding",
             escape=False,
