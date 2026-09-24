@@ -365,7 +365,7 @@ def make_speed_rank_figure(summary: pd.DataFrame):
         panel_labels.append(labels)
 
     axes[0].set_ylim(rank_count + 0.75, 0.25)
-    axes[0].set_yticks(range(1, rank_count + 1))
+    axes[0].set_yticks(range(1, rank_count + 1, 2))
     fig.supylabel("CATE nPEHE rank (median and IQR)")
     for ax, labels in zip(axes, panel_labels):
         place_point_labels(fig, ax, labels)
