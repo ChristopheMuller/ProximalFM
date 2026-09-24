@@ -4,9 +4,9 @@
 Usage: python run_ablation.py --data-dir data --output-dir results
 Requires NumPy, SciPy, and the project's PyTorch dependencies for ProximalFM.
 Index paths are relative to --data-dir. Each observed
-NPZ contains X,W,Z,A,Y,row_id,split (0=train,1=test); truth contains CATE,row_id
-and optionally U for --oracle. Fits use observed training rows only. Scores use
-held-out CATE(X) at every requested context size, averaging effect contrasts over
+NPZ contains X,W,Z,A,Y,row_id; truth contains CATE,row_id
+and optionally U for --oracle. Fits use the first context-size rows and score
+against the last --n-query rows, averaging effect contrasts over
 the corresponding context proxy distribution, which is appropriate for the
 generator's X-independent proxies.
 
@@ -44,7 +44,7 @@ BACKDOOR_METHODS = {
     "causalpfn": "backdoor_causalpfn",
 }
 ILL_CONDITIONED = 1e8
-FIT_CACHE_VERSION = 1
+FIT_CACHE_VERSION = 2
 CAUSALPFN_RUNTIME_SENTINEL = "PROXIMALFM_CAUSALPFN_SAFE_RUNTIME"
 RESULT_FIELDS = [
     "dimension",
@@ -138,6 +138,7 @@ def fit_cache_signature(args, index_path):
         "proximalfm_device": args.proximalfm_device,
         "proximalfm_query_batch_size": args.proximalfm_query_batch_size,
         "proximalfm_ensemble": args.proximalfm_ensemble,
+        "n_query": args.n_query,
         "backdoor": {
             "methods": sorted(getattr(args, "backdoor_methods", [])),
             "device": getattr(args, "backdoor_device", None),
@@ -200,6 +201,7 @@ def previous_results_are_compatible(metadata, signature):
     checkpoint = signature["proximalfm_checkpoint"] or {}
     return (
         metadata.get("index_sha256") == signature["index_sha256"]
+        and metadata.get("n_query") == signature["n_query"]
         and metadata.get("numpy") == signature["numpy"]
         and metadata.get("scipy") == signature["scipy"]
         and str(Path(proximal.get("checkpoint", "")).expanduser().resolve())
@@ -424,34 +426,37 @@ def fit_method(observed, method, oracle_u=None):
     return predictions, details
 
 
-def restrict_context(observed, n_context):
-    """Keep a training prefix as context and retain every held-out query row.
+def selected_indices(n_rows, n_context, n_query):
+    """Use a context prefix and one shared query suffix for every context size."""
+    if n_context < 1 or n_query < 1:
+        raise ValueError("Context and query sizes must be positive")
+    if n_context + n_query > n_rows:
+        raise ValueError(
+            f"Context size {n_context} + query size {n_query} exceeds "
+            f"{n_rows} total rows"
+        )
+    return np.concatenate([np.arange(n_context), np.arange(n_rows - n_query, n_rows)])
+
+
+def restrict_context(observed, n_context, n_query):
+    """Keep a context prefix and the fixed held-out query suffix.
 
     A deterministic prefix gives every method exactly the same observations at
     a given context size while preserving the held-out scoring population.
     Ordering context first is also required by ProximalFM, which infers the
     split from the length of ``y_train``.
     """
-    n_context = int(n_context)
-    split = np.asarray(observed["split"]).reshape(-1)
-    train = np.flatnonzero(split == 0)
-    query = np.flatnonzero(split == 1)
-    if n_context < 1:
-        raise ValueError("Context size must be positive")
-    if n_context > len(train):
-        raise ValueError(f"Context size {n_context} exceeds {len(train)} training rows")
-    if not len(query):
-        raise ValueError("At least one held-out query row is required")
-    indices = np.concatenate([train[:n_context], query])
-    return {key: np.asarray(value)[indices] for key, value in observed.items()}
+    indices = selected_indices(len(observed["row_id"]), n_context, n_query)
+    result = {key: np.asarray(value)[indices] for key, value in observed.items()}
+    result["split"] = np.r_[
+        np.zeros(n_context, dtype=np.uint8), np.ones(n_query, dtype=np.uint8)
+    ]
+    return result
 
 
-def restrict_aligned(values, split, n_context):
+def restrict_aligned(values, n_context, n_query):
     """Apply the same context-prefix/query selection to another row-aligned array."""
-    split = np.asarray(split).reshape(-1)
-    train = np.flatnonzero(split == 0)
-    query = np.flatnonzero(split == 1)
-    indices = np.concatenate([train[: int(n_context)], query])
+    indices = selected_indices(len(values), n_context, n_query)
     return np.asarray(values)[indices]
 
 
@@ -645,9 +650,7 @@ def load_setting(data_dir, row, oracle=False):
     if not truth_path.is_absolute():
         truth_path = data_dir / truth_path
     with np.load(observed_path, allow_pickle=False) as data:
-        observed = {
-            key: data[key] for key in ["X", "W", "Z", "A", "Y", "row_id", "split"]
-        }
+        observed = {key: data[key] for key in ["X", "W", "Z", "A", "Y", "row_id"]}
     with np.load(truth_path, allow_pickle=False) as data:
         truth = {
             key: data[key]
@@ -662,10 +665,8 @@ def load_setting(data_dir, row, oracle=False):
         raise ValueError("Dataset arrays have inconsistent row counts")
     if observed["X"].shape[1] != int(row["dimension"]):
         raise ValueError("Dimension differs from index.csv")
-    if row.get("n_train") and int(row["n_train"]) != int(
-        (observed["split"] == 0).sum()
-    ):
-        raise ValueError("Training row count differs from index.csv")
+    if row.get("n_rows") and int(row["n_rows"]) != len(ids):
+        raise ValueError("Total row count differs from index.csv")
     return observed, truth
 
 
@@ -736,12 +737,14 @@ def _compute_setting(args, row, methods, cached_results):
                 context_prepared = True
                 if context_error is None:
                     try:
-                        context_observed = restrict_context(observed, context_size)
+                        context_observed = restrict_context(
+                            observed, context_size, args.n_query
+                        )
                         context_u = (
                             None
                             if "U" not in truth
                             else restrict_aligned(
-                                truth["U"], observed["split"], context_size
+                                truth["U"], context_size, args.n_query
                             )
                         )
                     except (OSError, ValueError, KeyError, IndexError) as error:
@@ -770,9 +773,7 @@ def _compute_setting(args, row, methods, cached_results):
                 else:
                     predicted, fit = fit_method(context_observed, method, context_u)
                 result.update(fit)
-                result.update(
-                    score_cate(predicted, truth["CATE"][observed["split"] == 1])
-                )
+                result.update(score_cate(predicted, truth["CATE"][-args.n_query :]))
             except (
                 OSError,
                 ValueError,
@@ -816,6 +817,15 @@ def run(args):
         rows = rows[: args.limit]
     if not rows:
         raise ValueError("No settings match the filters")
+    missing_sizes = [row for row in rows if not row.get("n_rows")]
+    if missing_sizes:
+        raise ValueError("index.csv must contain n_rows for every dataset")
+    smallest_total = min(int(row["n_rows"]) for row in rows)
+    if max(args.context_sizes) + args.n_query > smallest_total:
+        raise ValueError(
+            f"Largest context size {max(args.context_sizes)} + query size "
+            f"{args.n_query} exceeds {smallest_total} total rows"
+        )
     methods = list(METHODS)
     methods.extend(
         BACKDOOR_METHODS[name] for name in getattr(args, "backdoor_methods", [])
@@ -909,6 +919,7 @@ def run(args):
         "settings": len(rows),
         "methods": methods,
         "context_sizes": args.context_sizes,
+        "n_query": args.n_query,
         "workers": workers,
         "result_status_counts": statuses,
         "cache": {
@@ -934,6 +945,7 @@ def run(args):
                 "checkpoint": str(args.proximalfm_checkpoint),
                 "device": args.proximalfm_device,
                 "context_sizes": args.context_sizes,
+                "n_query": args.n_query,
                 "query_batch_size": args.proximalfm_query_batch_size,
                 "ensemble": args.proximalfm_ensemble,
                 "query_proxies": "masked by ProximalFM after context-only standardization",
@@ -997,6 +1009,12 @@ def main():
             "Training-prefix sizes used for every method "
             "(default: 128 512 1024 2048)."
         ),
+    )
+    parser.add_argument(
+        "--n-query",
+        type=int,
+        required=True,
+        help="Number of shared held-out query rows per dataset.",
     )
     parser.add_argument(
         "--proximalfm-query-batch-size",
@@ -1067,10 +1085,12 @@ def main():
         parser.error("--limit must be positive")
     if args.workers < 1:
         parser.error("--workers must be positive")
-    if any(size < 1 for size in args.context_sizes):
+    if not args.context_sizes or any(size < 1 for size in args.context_sizes):
         parser.error("--context-sizes values must be positive")
     if len(set(args.context_sizes)) != len(args.context_sizes):
         parser.error("--context-sizes values must be unique")
+    if args.n_query < 1:
+        parser.error("--n-query must be positive")
     args.context_sizes = sorted(args.context_sizes)
     if args.proximalfm_query_batch_size < 1:
         parser.error("--proximalfm-query-batch-size must be positive")

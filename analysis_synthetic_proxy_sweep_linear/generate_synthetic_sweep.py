@@ -26,7 +26,7 @@ N_LEVELS = 30
 DIMENSIONS = (1, 3, 5)
 SEED = 20260908
 OUTPUT_DIRECTORY = Path(__file__).resolve().parent / "data"
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,6 @@ class StudyConfig:
     seed: int = SEED
     r2_min: float = 0.01
     r2_max: float = 0.99
-    train_fraction: float = 0.8
     observed_treatment_coefficient: float = 0.5
     latent_treatment_coefficient: float = 1.25
     observed_baseline_coefficient: float = 0.5
@@ -57,8 +56,8 @@ class StudyConfig:
             raise ValueError("Dimensions must be distinct.")
         if self.seed < 0 or not 0 < self.r2_min < self.r2_max < 1:
             raise ValueError("Use a nonnegative seed and 0 < r2_min < r2_max < 1.")
-        if not 0 < self.train_fraction < 1 or not 0 < self.propensity_floor < 0.5:
-            raise ValueError("Invalid train fraction or propensity floor.")
+        if not 0 < self.propensity_floor < 0.5:
+            raise ValueError("Invalid propensity floor.")
 
 
 def sha256(path: Path) -> str:
@@ -147,12 +146,8 @@ def make_base(config: StudyConfig, dimension: int) -> dict:
     ite = cate + config.latent_effect_coefficient * latent
     y1 = y0 + ite
     outcome = np.where(treatment == 1, y1, y0)
-    n_train = int(config.train_fraction * n)
-    split = np.zeros(n, dtype=np.uint8)
-    split[n_train:] = 1
     observed = {
         "row_id": np.arange(n, dtype=np.int32),
-        "split": split,
         "X": x,
         "A": treatment,
         "Y": outcome,
@@ -177,7 +172,6 @@ def make_base(config: StudyConfig, dimension: int) -> dict:
         "Q_Z": orthogonal_matrix(config.seed, 80, d),
         "latent_score": latent,
         "observed_score": sx,
-        "n_train": n_train,
         "paired_array_hashes": hashes,
     }
 
@@ -194,18 +188,14 @@ def add_proxies(base: dict, joint_r2: float) -> tuple[dict, dict, float]:
     return observed, base["truth"], q
 
 
-def regression_r2(
-    features: np.ndarray, target: np.ndarray, n_train: int
-) -> list[float]:
-    """Fit OLS on train rows and report one held-out R² per latent coordinate."""
-    x_mean = features[:n_train].mean(axis=0)
-    y_mean = target[:n_train].mean(axis=0)
-    centered = features[:n_train] - x_mean
-    beta = np.linalg.lstsq(centered, target[:n_train] - y_mean, rcond=None)[0]
-    prediction = matmul(features[n_train:] - x_mean, beta) + y_mean
-    heldout = target[n_train:]
-    denominator = ((heldout - heldout.mean(axis=0)) ** 2).sum(axis=0)
-    return (1 - ((heldout - prediction) ** 2).sum(axis=0) / denominator).tolist()
+def regression_r2(features: np.ndarray, target: np.ndarray) -> list[float]:
+    """Report descriptive in-sample R² without defining a benchmark split."""
+    x_mean = features.mean(axis=0)
+    y_mean = target.mean(axis=0)
+    beta = np.linalg.lstsq(features - x_mean, target - y_mean, rcond=None)[0]
+    prediction = matmul(features - x_mean, beta) + y_mean
+    denominator = ((target - y_mean) ** 2).sum(axis=0)
+    return (1 - ((target - prediction) ** 2).sum(axis=0) / denominator).tolist()
 
 
 def check_arrays(
@@ -249,17 +239,15 @@ def check_arrays(
     error = float(np.max(np.abs(observed["Y"] - bridge - expected_residual)))
     if error > 1e-10:
         raise AssertionError("Outcome bridge residual identity failed.")
-    n_train = base["n_train"]
-    r_w = regression_r2(w, u, n_train)
-    r_z = regression_r2(z, u, n_train)
-    r_joint = regression_r2(np.column_stack([w, z]), u, n_train)
+    r_w = regression_r2(w, u)
+    r_z = regression_r2(z, u)
+    r_joint = regression_r2(np.column_stack([w, z]), u)
     # The known conditional mean independently characterizes joint information.
     conditional_mean = (
         np.sqrt(q) / (1 + q) * (matmul(w, base["Q_W"]) + matmul(z, base["Q_Z"]))
     )
-    test_u = u[n_train:]
-    denominator = ((test_u - test_u.mean(0)) ** 2).sum(0)
-    oracle_r2 = 1 - ((test_u - conditional_mean[n_train:]) ** 2).sum(0) / denominator
+    denominator = ((u - u.mean(0)) ** 2).sum(0)
+    oracle_r2 = 1 - ((u - conditional_mean) ** 2).sum(0) / denominator
     return {
         "r2_w_ols_per_coordinate": r_w,
         "r2_z_ols_per_coordinate": r_z,
@@ -280,9 +268,9 @@ def check_arrays(
 
 
 def payload_size(config: StudyConfig) -> int:
-    # Observed: 3*d float64 + Y + int32 row ID + uint8 split/A.
+    # Observed: 3*d float64 + Y + int32 row ID + uint8 A.
     # Truth: d float64 + five scalar float64 arrays + int32 row ID.
-    return config.n_rows * config.n_levels * sum(32 * d + 58 for d in config.dimensions)
+    return config.n_rows * config.n_levels * sum(32 * d + 57 for d in config.dimensions)
 
 
 def generate_sweep(output: Path, config: StudyConfig) -> dict:
@@ -341,8 +329,6 @@ def generate_sweep(output: Path, config: StudyConfig) -> dict:
                 "joint_r2_target": float(target),
                 "single_proxy_r2": q,
                 "n_rows": config.n_rows,
-                "n_train": base["n_train"],
-                "n_test": config.n_rows - base["n_train"],
                 "seed": config.seed,
                 "observed_path": (relative / "observed.npz").as_posix(),
                 "truth_path": (relative / "truth.npz").as_posix(),
@@ -364,7 +350,6 @@ def generate_sweep(output: Path, config: StudyConfig) -> dict:
                 "Q_Z": base["Q_Z"].tolist(),
                 "paired_array_hashes": base["paired_array_hashes"],
                 "diagnostics": diagnostics,
-                "split_codes": {"train": 0, "test": 1},
                 "population_r2_definition": "Per-coordinate R2 of U predicted from W and Z jointly; uniform average over U coordinates.",
                 "population_posterior_variance": float(1 - target),
                 "d_X": dimension,
@@ -384,7 +369,7 @@ def generate_sweep(output: Path, config: StudyConfig) -> dict:
                 or level_id + 1 == config.n_levels
             ):
                 print(
-                    f"[{len(entries):3d}/{total}] d={dimension}, joint R²={target:.4f}, test R²={diagnostics['r2_joint_ols_mean']:.4f}",
+                    f"[{len(entries):3d}/{total}] d={dimension}, joint R²={target:.4f}, in-sample R²={diagnostics['r2_joint_ols_mean']:.4f}",
                     flush=True,
                 )
     temporary = output / "index.csv.tmp"

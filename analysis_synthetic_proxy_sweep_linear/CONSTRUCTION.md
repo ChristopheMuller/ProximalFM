@@ -1,8 +1,9 @@
 # Synthetic proxy sweep
 
-300 datasets: 50,000 rows each, d ∈ {1,3,5}, and 100 equally spaced joint
-population R² levels s ∈ [0.01,0.99]. Each of X, U, W and Z has d coordinates.
-Seed: 20260908; train/test split: 40,000/10,000.
+The generator writes a total row count per dataset, with no train/test split.
+For example, 60 datasets with 3,072 rows each use d ∈ {1,3,5} and 20 equally
+spaced joint population R² levels s ∈ [0.01,0.99]. Each of X, U, W and Z has
+d coordinates. Seed: 20260908.
 
 Draw independent standard Gaussian X, U, εW, εZ and scalar εY. For fixed
 orthogonal matrices QW, QZ, set (column-vector notation)
@@ -30,8 +31,8 @@ Python 3.10+ with NumPy, SciPy and Matplotlib. The included scores reproduce
 the figure by running `plot_results.py`. To regenerate the full study:
 
 ```sh
-uv run python generate_synthetic_sweep.py --rows 8192 --levels 20
-uv run python run_ablation.py --context-sizes 128 512 2048 8192 --proximalfm-device mps
+uv run python generate_synthetic_sweep.py --rows 3072 --levels 20 --dimensions 1 3 5
+uv run python run_ablation.py --context-sizes 128 512 2048 --n-query 1024 --backdoor-methods causalpfn
 uv run python plot_results.py
 ```
 
@@ -41,6 +42,12 @@ uses one BLAS and PyTorch thread, and the main process alone writes the result
 and fit-cache files. For example, `--backdoor-methods causalpfn --workers 4`
 replaces TabICL with four CPU CausalPFN workers. Runs using MPS or CUDA models
 use `--workers 1`.
+
+`--rows` is the total generated row count. At run time, each context size uses
+the first `n` rows and `--n-query` uses the last query rows, shared across all
+context sizes. The runner rejects `max(context sizes) + n_query > rows` before
+fitting. The generator's proxy R² diagnostics are descriptive in-sample values;
+the benchmark scores CATE on the held-out query suffix.
 
 Outputs are saved beside the scripts. Comparisons use linear proximal 2SLS,
 OLS(X), OLS(X,W,Z), ProximalFM, proxy-adjusted TabICL (default), optionally
