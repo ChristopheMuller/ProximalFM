@@ -41,8 +41,12 @@ DEFAULT_SEMISYNT_COVERAGE = (
     / "analysis_eval/results/posterior_calibration"
     / "nonlinear_conf_high_proxy_low__whole_1-best_model/coverage.csv"
 )
-DEFAULT_EXTENDED_CSV = (
+_SELECTION_CSV = ROOT / "docs/latex/assets/results/semisynt_selection_npehe.csv"
+_LEGACY_EXTENDED_CSV = (
     ROOT / "docs/latex/assets/results/semisynt_exhaustive_npehe_extended.csv"
+)
+DEFAULT_EXTENDED_CSV = (
+    _SELECTION_CSV if _SELECTION_CSV.exists() else _LEGACY_EXTENDED_CSV
 )
 DEFAULT_OUT_DIR = ROOT / "docs/latex/assets/main"
 OUTPUT_NAME = "practical_results"
