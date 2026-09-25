@@ -2,20 +2,6 @@
 # config_methods.yaml — Methods, tuning, and compute for benchmark runs.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Execution ─────────────────────────────────────────────────────────────────
-# `compute` is the run-wide default budget. Any method or model entry may overlay
-# its own `compute:` block on it; benchmarks/compute.py is the single owner of
-# device and thread counts (nothing below it picks either for itself).
-#
-#   device        cpu | mps | cuda      falls back to cpu, with a warning, if absent
-#   n_workers     episode fan-out width (1 = run in this process)
-#   torch_threads per-process torch threads; only the torch-backed methods care
-#   blas_threads  OMP/MKL/OpenBLAS per process; part of a worker pool's identity
-#   n_jobs        intra-method sklearn/joblib fan-out — nests *inside* a worker,
-#                 so what lands on the machine is n_workers × n_jobs
-#   execution     pool | inline. Defaults to inline for a non-CPU device or a
-#                 single worker. A non-CPU device with pool fan-out is refused:
-#                 concurrent multi-process Metal/CUDA access stalls.
 run:
   seed:      999999999
   force_rerun: false
@@ -155,10 +141,6 @@ methods:
     interactions: false
 
   # ── Proximal baselines ───────────────────────────────────────────────────
-  # - name: P2SLS
-  #   cls:          P2SLS
-  #   interactions: false
-
   - name: P-Kernel
     cls:      PLearner
     bridge:   kernel
@@ -179,7 +161,6 @@ methods:
     outputs:
       - { name: P-Kernel-RF,  kind: cate, base: rf }
       - { name: P-Kernel-OLS, kind: cate, base: linear }
-      - { name: P-Kernel-ATE, kind: ate }
 
   - name: P-Kernel-TabICL
     cls: PLearner
@@ -204,7 +185,6 @@ methods:
     outputs:
       - { name: KPV-X-Wind, strategy: independent }
       - { name: KPV-X-Wcond, strategy: conditional }
-      - { name: KPV-ATE,    strategy: marginal }
 
   - name: PMMR
     cls:         PMMR
@@ -222,7 +202,6 @@ methods:
     outputs:
       - { name: PMMR-X-Wind, strategy: independent }
       - { name: PMMR-X-Wcond, strategy: conditional }
-      - { name: PMMR-ATE,    strategy: marginal }
 
   - name: NMMR-V-fixed
     cls:          NMMR
