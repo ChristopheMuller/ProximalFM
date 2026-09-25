@@ -427,7 +427,7 @@ METHOD_STYLES: Mapping[str, MethodStyle] = {
         alpha=1.0,
     ),
     "ProximalFM-FT": MethodStyle(
-        "ProximalFM-FT",
+        "ProximalFM-FT (ours)",
         COLORS["vermillion"],
         "*",
         ":",

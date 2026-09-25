@@ -28,7 +28,6 @@ from .design import (
     apply_style,
     method_style,
     ordered_methods,
-    relevant_methods,
 )
 from .error_decomposition import draw_error_decomposition_panel
 from .learning_curves import (
@@ -50,11 +49,18 @@ from .semisynt import (
 DEFAULT_OUT_DIR = Path(__file__).with_name("results")
 OUTPUT_NAME = "semisynt_learning_curves_error_decomposition"
 FIGSIZE = (FULL_PAGE_WIDTH_IN, 4.5)
+DEFAULT_METHODS = (
+    "T-OLS",
+    "S-TabICL-WZ-kNN-16",
+    "P-Kernel-OLS",
+    "P-Kernel-TabICL",
+    "NMMR-V-fixed-Wcond",
+    "CausalPFN",
+    "CausalPFN-WZ-kNN-16",
+    "ProximalFM",
+    "ProximalFM-FT",
+)
 
-# A standalone evaluation set has no factorial case metadata. These labels
-# keep the existing panel drawing functions usable while making the figure's
-# interpretation explicit: the panel aggregates whatever mechanisms are in
-# the supplied set rather than claiming one confounding/proxy factorial cell.
 STANDALONE_FACTORS = ("synthetic", "mixed", "mixed")
 
 
@@ -255,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--methods",
         nargs="+",
         default=None,
-        help="Method subset; defaults to design.RELEVANT_METHODS",
+        help="Method subset; defaults to this figure's DEFAULT_METHODS",
     )
     parser.add_argument("--y-max", type=float, default=DEFAULT_Y_MAX)
     parser.add_argument(
@@ -278,7 +284,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     frame = _load_results(args.matrix_root, selected_case=args.case, dimension=args.dim)
     complete, incomplete = complete_learning_curve_methods(frame)
-    selected = args.methods if args.methods is not None else relevant_methods(complete)
+    if args.methods is not None:
+        selected = args.methods
+    else:
+        selected = [method for method in DEFAULT_METHODS if method in complete]
+        if not selected:
+            raise ValueError(
+                "none of this figure's DEFAULT_METHODS have complete context coverage"
+            )
     learning_summary = summarize_learning_curves(frame, selected)
     methods = ordered_methods(set(learning_summary["method"]))
     decomposition_summary = summarize_error_decomposition(
