@@ -138,12 +138,12 @@ def build_rows(run: TrainingRun) -> List[Row]:
     add("Prior", "Confounder dimension $d_U$", rng(c.min_dim_U, c.max_dim_U))
     add(
         "Prior",
-        "Treatment-confounding proxy dimension $d_Z$",
+        "Treatment proxy dimension $d_Z$",
         rng(c.min_dim_Z, c.max_dim_Z),
     )
     add(
         "Prior",
-        "Outcome-confounding proxy dimension $d_W$",
+        "Outcome proxy dimension $d_W$",
         rng(c.min_dim_W, c.max_dim_W),
     )
     add("Prior", "Covariate dimension $d_X$", rng(c.min_dim_X, c.max_dim_X))
