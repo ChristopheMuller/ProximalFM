@@ -22,7 +22,8 @@ negative -- :func:`build` refuses that case rather than printing it.
 
 **The table reports occupancy, and says nothing about scheduling.** wandb keeps
 two clocks: ``_runtime`` accumulates process lifetimes, ``_timestamp`` is
-absolute. A resumed run's calendar span exceeds its occupancy by its idle time.
+absolute. ``whole_1`` was interrupted after step 51 400 and resumed 4.9 h later,
+so its calendar span (71.05 h) exceeds its occupancy (66.15 h) by that idle time.
 Only the occupancy is compute, and it is the only figure here: the total and
 every percentage are against ``meta.runtime_s``, so the table reads as the
 uninterrupted run it is equivalent to. Where the hours fell on a calendar is a

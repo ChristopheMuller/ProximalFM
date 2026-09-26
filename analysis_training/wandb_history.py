@@ -7,7 +7,7 @@ uv run python -m analysis_training.wandb_history --summary
 
 The run is read from wandb's servers with the public API rather than from the
 cluster: `--wandb_mode online` means the history is already there, so nothing
-has to be copied off the training host. Fetches are cached as parquet under
+has to be copied off `morph`. Fetches are cached as parquet under
 ``results/history/`` (gitignored) so a figure re-render costs no network.
 
 Three properties, all load-bearing:
@@ -32,7 +32,7 @@ Three properties, all load-bearing:
   :func:`fetch` per cadence.
 
 :class:`RunMeta` carries what the history cannot: the device, and the
-**interruption structure**. A resumed run has two clocks, and wandb's
+**interruption structure**. ``whole_1`` was resumed once, and wandb's
 ``_runtime`` accumulates process lifetimes while ``_timestamp`` is absolute — so
 ``_runtime`` is the run's *occupancy* (the honest GPU-hours) and the
 ``_timestamp`` span is the calendar span. Reading the latter as compute would
@@ -46,7 +46,6 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -56,9 +55,9 @@ import pandas as pd
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE_DIR = REPO_ROOT / "analysis_training" / "results" / "history"
 
-# Supply the run at invocation time so the public code does not identify the
-# account used to train the paper's checkpoint.
-DEFAULT_RUN = os.environ.get("PROXIMALFM_WANDB_RUN", "")
+# The production run. An id, not a name: `wandb_name` has the launch timestamp
+# appended and a resume rewrites it, so the name is not a stable handle.
+DEFAULT_RUN = "ProximalFM/9n413rsf"  # whole_1
 
 # A page large enough that the boundary artifact costs a handful of rows out of
 # 75k, small enough that the API does not time out.
@@ -194,8 +193,6 @@ def _cache_path(run_path: str, keys: Sequence[str], cache_dir: Path) -> Path:
 
 def _resolve_path(run: str, api) -> str:
     """Accept ``entity/project/id``, ``project/id`` or a bare id."""
-    if not run:
-        raise ValueError("Pass --run ENTITY/PROJECT/ID or set PROXIMALFM_WANDB_RUN")
     parts = run.split("/")
     if len(parts) == 3:
         return run
@@ -220,8 +217,6 @@ def fetch(
 
     Every requested key must share a logging cadence; see the module docstring.
     """
-    if not run:
-        raise ValueError("Pass --run ENTITY/PROJECT/ID or set PROXIMALFM_WANDB_RUN")
     keys = tuple(dict.fromkeys(["_step", "_runtime", "_timestamp", *keys]))
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _cache_path(run, keys, cache_dir)
@@ -254,8 +249,6 @@ def fetch_meta(
     force: bool = False,
 ) -> RunMeta:
     """Fetch the run's metadata and its interruption structure."""
-    if not run:
-        raise ValueError("Pass --run ENTITY/PROJECT/ID or set PROXIMALFM_WANDB_RUN")
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{run.replace('/', '_')}__meta.json"
     if path.exists() and not force:
@@ -314,9 +307,7 @@ def fetch_meta(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--run", default=DEFAULT_RUN, help="W&B run path (or set PROXIMALFM_WANDB_RUN)."
-    )
+    parser.add_argument("--run", default=DEFAULT_RUN, help=f"(default: {DEFAULT_RUN})")
     parser.add_argument("--keys", nargs="*", default=[], help="Metric keys to fetch.")
     parser.add_argument("--force", action="store_true", help="Ignore the cache.")
     parser.add_argument("--summary", action="store_true", help="Print run metadata.")
