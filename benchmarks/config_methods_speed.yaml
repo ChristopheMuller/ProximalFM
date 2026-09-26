@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# config_methods_speed.yaml — Methods, tuning, and compute for benchmark runs.
+# Methods and compute settings for sequential per-episode speed measurements.
 # ─────────────────────────────────────────────────────────────────────────────
 
 run:

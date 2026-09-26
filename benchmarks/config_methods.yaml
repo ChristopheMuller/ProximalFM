@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# config_methods.yaml — Methods, tuning, and compute for benchmark runs.
+# Methods and compute settings for the main benchmark experiment.
 # ─────────────────────────────────────────────────────────────────────────────
 
 run:
