@@ -1,0 +1,442 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# config_methods_speed.yaml — Methods, tuning, and compute for benchmark runs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+run:
+  seed:      999999999
+  force_rerun: false
+  compute:
+    device:        cpu
+    n_workers:     6
+    torch_threads: 1
+    blas_threads:  1
+    n_jobs:        -1
+
+# ── Methods ───────────────────────────────────────────────────────────────────
+methods:
+
+  # ── S-Learner baselines ──────────────────────────────────────────────────
+  - name: S-OLS
+    cls:   S_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+
+  - name: S-RF
+    cls: S_Learner
+    base: rf
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+
+  - name: S-TabICL
+    cls:   S_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
+
+  - name: S-TabICL-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: S_Learner
+      base: tabicl
+      use_W: true
+      use_Z: true
+      tabicl: { kv_cache: true , n_estimators: 1}
+    predict_batch_size: 4096
+    outputs:
+      - {name: S-TabICL-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+      - {name: S-TabICL-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+
+  # ── T-Learner baselines ──────────────────────────────────────────────────
+  - name: T-OLS
+    cls:   T_Learner
+    base:  linear
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+
+  - name: T-RF
+    cls:   T_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+
+  - name: T-TabICL
+    cls:   T_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
+
+  - name: T-OLS-WZ-Marginalized
+    cls:   ProxyMarginalizer
+    estimator:
+      cls: T_Learner
+      base: linear
+      use_W: true
+      use_Z: true
+      base_cv:
+        folds: 4
+        seed: 1234
+        grids:
+          linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+    predict_batch_size: 4096
+    outputs:
+      - {name: T-OLS-WZ-kNN-16,      integration: {method: knn, n_points: 16}}
+      - {name: T-OLS-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+
+
+  # ── X-Learner baselines ──────────────────────────────────────────────────
+  - name: X-RF
+    cls:   X_Learner
+    base:  rf
+    use_W: false
+    use_Z: false
+    interactions: false
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+
+  - name: X-TabICL
+    cls:   X_Learner
+    base:  tabicl
+    use_W: false
+    use_Z: false
+    interactions: false
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { torch_threads: 2 }
+
+
+  # ── Proximal baselines ───────────────────────────────────────────────────
+
+  - name: P-Kernel-OLS
+    cls:      PLearner
+    bridge:   kernel
+    n_splits: 4
+    q_clip:   20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        linear: { alpha: [0.1, 1.0, 10.0, 100.0, 1000.0] }
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-OLS, kind: cate, base: linear }
+
+  - name: P-Kernel-RF
+    cls:      PLearner
+    bridge:   kernel
+    n_splits: 4
+    q_clip:   20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    base_cv:
+      folds: 4
+      seed: 1234
+      grids:
+        rf:
+          n_estimators: [100]
+          max_depth: [1, 3, 5]
+          min_samples_leaf: [1, 5, 10]
+          max_features: [1.0]
+    compute: { n_workers: 1 }
+    outputs:
+      - { name: P-Kernel-RF,  kind: cate, base: rf }
+
+  - name: P-Kernel-TabICL
+    cls: PLearner
+    bridge: kernel
+    n_splits: 4
+    q_clip: 20.0
+    bridge_params: { rank: 256, lam_grid: [1.0e-6, 1.0e-5, 1.0e-4, 0.001, 0.01, 0.1] }
+    tabicl: { kv_cache: true, n_estimators: 1 }
+    compute: { n_workers: 1, torch_threads: 2 }
+    outputs:
+      - { name: P-Kernel-TabICL, kind: cate, base: tabicl }
+  
+  - name: KPV-Wind
+    cls:         KernelPV
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      n_trials: 3
+      seed:     1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]
+    outputs:
+      - { name: KPV-X-Wind, strategy: independent }
+
+  - name: KPV-Wcond
+    cls:         KernelPV
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      n_trials: 3
+      seed:     1234
+      grid:
+        kernel_scale: [0.8, 1.0, 1.2]
+    outputs:
+      - { name: KPV-X-Wcond, strategy: conditional }
+
+  - name: PMMR-Wind
+    cls:         PMMR
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 9
+      seed:     1234
+      grid:
+        kernel_scale:   [0.8, 1, 1.2]
+        kernel_scale_z: [0.8, 1, 1.2]
+      sweep:
+        lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
+    outputs:
+      - { name: PMMR-X-Wind, strategy: independent }
+
+  - name: PMMR-Wcond
+    cls:         PMMR
+    compute: { n_workers: 1 }
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 9
+      seed:     1234
+      grid:
+        kernel_scale:   [0.8, 1, 1.2]
+        kernel_scale_z: [0.8, 1, 1.2]
+      sweep:
+        lam1:           [0.00001, 0.0001, 0.001, 0.01, 0.1]
+    outputs:
+      - { name: PMMR-X-Wcond, strategy: conditional }
+
+  - name: NMMR-V-fixed-Wind
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-fixed-Wind,  strategy: independent }
+
+  - name: NMMR-V-fixed-Wcond
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-fixed-Wcond, strategy: conditional }
+
+  - name: NMMR-U-fixed-Wind
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-fixed-Wind,  strategy: independent }
+
+  - name: NMMR-U-fixed-Wcond
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: fixed
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-fixed-Wcond, strategy: conditional }
+
+
+  - name: NMMR-V-median-Wind
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-median-Wind,  strategy: independent }
+    
+  - name: NMMR-V-median-Wcond
+    cls:          NMMR
+    loss:         v_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-V-median-Wcond, strategy: conditional }
+
+  - name: NMMR-U-median-Wind
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-median-Wind,  strategy: independent }
+
+  - name: NMMR-U-median-Wcond
+    cls:          NMMR
+    loss:         u_stat
+    kernel_width: median
+    tune:
+      enabled:  true
+      val_frac: 0.2
+      n_trials: 10
+      seed:     1234
+      grid:
+        hidden_dim:    [16, 32, 64]
+        n_layers:      [2, 4, 6]
+        lr:            [0.001, 0.005]
+        weight_decay:  [0.0001]
+      sweep:
+        n_epochs:      [25, 50, 75, 100]
+    outputs:
+      - { name: NMMR-U-median-Wcond, strategy: conditional }
+
+  # ── Tabular Causal Models ─────────────────────────────────────────────────
+  - name: CausalFM
+    cls:  CausalFM
+    checkpoint: "CausalFM/checkpoints/checkpoints_standard/best_model.pth"
+    use_W: false
+    use_Z: false
+
+  - name: DoPFN
+    cls:  DoPFN
+    use_W: false
+    use_Z: false
+
+  - name: CausalPFN
+    cls:  CausalPFN
+    use_W: false
+    use_Z: false
+
+  - name: CausalPFN-WZ-Marginalized
+    cls: ProxyMarginalizer
+    estimator:
+      cls: CausalPFN
+      use_W: true
+      use_Z: true
+    predict_batch_size: 4096
+    outputs:
+      - {name: CausalPFN-WZ-kNN-16, integration: {method: knn, n_points: 16}}
+      - {name: CausalPFN-WZ-Kernel-16, integration: {method: kernel, n_points: 16, kernel_scale: 1.0}}
+
+  # ── ProximalFM ────────────────────────────────────────────────────────────
+
+  - name:       ProximalFM-MPS
+    cls:        ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble:   1
+    compute: { device: mps }
+
+  - name:       ProximalFM-CPU
+    cls:        ProximalFM
+    checkpoint: whole_1/best_model.ckpt
+    ensemble:   1
+    compute: { device: cpu }

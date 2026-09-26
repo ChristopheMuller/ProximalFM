@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "classes": {
+    "S_Learner": {
+      "label": "S-learner",
+      "family": "Meta-learner",
+      "proximal": false,
+      "foundation_model": false,
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
+    },
+    "T_Learner": {
+      "label": "T-learner",
+      "family": "Meta-learner",
+      "proximal": false,
+      "foundation_model": false,
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
+    },
+    "X_Learner": {
+      "label": "X-learner",
+      "family": "Meta-learner",
+      "proximal": false,
+      "foundation_model": false,
+      "citation": {"text": "Künzel et al. (2019)", "bibtex_key": "kunzelMetalearnersEstimatingHeterogeneous2019"}
+    },
+    "CausalForest": {
+      "label": "Causal forest",
+      "family": "Orthogonal forest",
+      "proximal": false,
+      "foundation_model": false,
+      "citation": {"text": "Oprescu et al. (2019)", "bibtex_key": null}
+    },
+    "P2SLS": {
+      "label": "P2SLS",
+      "family": "Linear proximal",
+      "proximal": true,
+      "foundation_model": false,
+      "citation": {"text": "Tchetgen Tchetgen et al. (2020)", "bibtex_key": "tchetgenIntroductionProximalCausal2020"}
+    },
+    "PLearner": {
+      "label": "P-learner",
+      "family": "Proximal meta-learner",
+      "proximal": true,
+      "foundation_model": false,
+      "citation": {"text": "Sverdrup and Cui (2023)", "bibtex_key": "sverdrupProximalCausalLearning2023"}
+    },
+    "KernelPV": {
+      "label": "KPV",
+      "family": "Kernel proximal",
+      "proximal": true,
+      "foundation_model": false,
+      "citation": {"text": "Mastouri et al. (2021)", "bibtex_key": "mastouriProximalCausalLearning2021"}
+    },
+    "PMMR": {
+      "label": "PMMR",
+      "family": "Kernel proximal",
+      "proximal": true,
+      "foundation_model": false,
+      "citation": {"text": "Mastouri et al. (2021)", "bibtex_key": "mastouriProximalCausalLearning2021"}
+    },
+    "NMMR": {
+      "label": "NMMR",
+      "family": "Neural proximal",
+      "proximal": true,
+      "foundation_model": false,
+      "citation": {"text": "Kompa et al. (2022)", "bibtex_key": "kompaDeepLearningMethods2022"}
+    },
+    "CausalFM": {
+      "label": "CausalFM",
+      "family": "Causal foundation model",
+      "proximal": false,
+      "foundation_model": true,
+      "citation": {"text": "Ma et al. (2026)", "bibtex_key": "maFoundationModelsCausal2026"}
+    },
+    "DoPFN": {
+      "label": "Do-PFN",
+      "family": "Causal foundation model",
+      "proximal": false,
+      "foundation_model": true,
+      "citation": {"text": "Robertson et al. (2025)", "bibtex_key": "robertsonDoPFNInContextLearning2025"}
+    },
+    "CausalPFN": {
+      "label": "CausalPFN",
+      "family": "Causal foundation model",
+      "proximal": false,
+      "foundation_model": true,
+      "citation": {"text": "Balazadeh et al. (2025)", "bibtex_key": "balazadehCausalPFNAmortizedCausal2025"}
+    },
+    "ProximalFM": {
+      "label": "ProximalFM",
+      "family": "Proximal foundation model",
+      "proximal": true,
+      "foundation_model": true,
+      "citation": {"text": "This work", "bibtex_key": null}
+    },
+    "ProxyMarginalizer": {
+      "label": "Proxy marginalization",
+      "family": "Marginalized meta-learner",  
+      "proximal": false,
+      "foundation_model": false,
+      "citation": {"text": "This work", "bibtex_key": null}
+    }
+  },
+  "bases": {
+    "linear": {
+      "label": "linear regression",
+      "citation": null
+    },
+    "rf": {
+      "label": "random forest",
+      "citation": {"text": "Breiman (2001)", "bibtex_key": null}
+    },
+    "tabicl": {
+      "label": "TabICL",
+      "citation": {"text": "Qu et al. (2025)", "bibtex_key": "quTabICLTabularFoundation2025"}
+    }
+  }
+}

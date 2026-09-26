@@ -1,0 +1,33 @@
+# Per-parameter transfer/freeze rules applied when building the model.
+#
+# Matching: LONGEST matching prefix wins; "default" applies to anything unmatched.
+# States:
+#   finetune -> weights are loaded from the checkpoint, requires_grad = True
+#   freeze   -> weights are loaded from the checkpoint, requires_grad = False
+#   scratch  -> weights are NOT loaded (stay randomly initialised), requires_grad = True
+#               (any value other than finetune/freeze is treated as scratch)
+#
+# Two things this file does NOT do, despite how it reads:
+#  - the freezing pass runs even with no checkpoint, so `default: freeze` freezes a
+#    from-scratch run too. Use `default: finetune` for training from scratch.
+#  - "default" also governs parameters whose shape did not match the checkpoint and were
+#    therefore left random. A bare `default: freeze` with no rule for a changed head
+#    means the fresh head is frozen as well and nothing trains at all -- always give a
+#    changed head its own rule.
+#
+# Select a different file with --transfer_rules; transfer_rules_rung{0,1,2,3}.yaml are
+# the unfreezing ladder for fitting a new head on a frozen backbone.
+#
+# ---------------------------------------------------------------------------------
+# Measured transfer (production config: scripts/pretrain_prod.sh, 29,692,920 params)
+# ---------------------------------------------------------------------------------
+#   loaded from checkpoint          26,888,776   90.56%
+#   scratch by rule below            2,575,312    8.67%   icl_predictor.decoder.* (new head; scales with --nbins)
+#   random, shape mismatch             210,656    0.71%   nhead mismatch (col/icl_nhead=4 here vs 8 in ckpt) + in_linear (scalar vs 3-feature input)
+#   random, absent from checkpoint      18,176    0.06%   LayerNorm biases, y0/y1_encoder (vs ckpt's single y_encoder), role_embedding
+# The last two rows are silent (load_state_dict(strict=False), no rule needed) --
+# don't read 90.56% as "the whole backbone transferred".
+
+transfer_rules:
+  default: "finetune"
+  "icl_predictor.decoder.": "scratch"

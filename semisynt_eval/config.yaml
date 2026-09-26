@@ -1,0 +1,95 @@
+# Authoritative recipe. One invocation materializes every named case
+# below as an independent benchmark set under <out_root>/<name>/<case>/val.
+build:
+  data_dir: semisynt_eval/datasets
+  out_root: data/semisynt_eval
+  csv: all
+  name: null
+  x_columns: null
+  u_columns: null
+  drop_columns: null
+  dimensions: [5]
+  n_calibration: 1000
+  split_seed: 1234
+  row_sampling: without_replacement
+  replicates_per_csv: 4
+  n_context: 2048
+  n_query: 256
+  seed: 1234
+  datasets_per_file: null
+
+common:
+  mechanism: calibrated_latent_proxy
+  latent:
+    innovation_sd: 0.5
+    whitening_ridge: 0.05
+    direction_sd: 1.0
+  basis:
+    nonlinear_transforms: [identity, asinh, sine, quadratic]
+    max_interactions: 8
+    coefficient_distribution: normal
+    coefficient_scale: 1.0
+    normalize_by_basis_dim: true
+    min_scale: 1.0e-8
+  proxies:
+    x_scale: 0.5
+  treatment:
+    x_scale: 0.5
+    intercept_low: -0.25
+    intercept_high: 0.25
+    propensity_lower: 0.02
+    propensity_upper: 0.98
+  outcome:
+    noise_sd: 1.0
+  cate:
+    intercept: 0.5
+    scale: 1.0
+  levels:
+    confounding:
+      low:
+        alpha: 0.35
+        gamma: 0.5
+      high:
+        alpha: 1.25
+        gamma: 1.5
+    proxy:
+      low:
+        reliability: 0.2
+      high:
+        reliability: 0.8
+
+# Cases select fitted function family and named strength levels. All numeric
+# values live in common so the labels carry no hidden Python defaults.
+cases:
+  linear_conf_low_proxy_low:
+    family: linear
+    confounding: low
+    proxy: low
+  linear_conf_low_proxy_high:
+    family: linear
+    confounding: low
+    proxy: high
+  linear_conf_high_proxy_low:
+    family: linear
+    confounding: high
+    proxy: low
+  linear_conf_high_proxy_high:
+    family: linear
+    confounding: high
+    proxy: high
+  nonlinear_conf_low_proxy_low:
+    family: nonlinear
+    confounding: low
+    proxy: low
+  nonlinear_conf_low_proxy_high:
+    family: nonlinear
+    confounding: low
+    proxy: high
+  nonlinear_conf_high_proxy_low:
+    family: nonlinear
+    confounding: high
+    proxy: low
+  nonlinear_conf_high_proxy_high:
+    family: nonlinear
+    confounding: high
+    proxy: high
