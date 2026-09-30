@@ -50,3 +50,6 @@ wu
 semisynt_eval/copula_idea
 
 semisynt_eval/ayu/*
+latex/*
+.poster_build
+poster_output
