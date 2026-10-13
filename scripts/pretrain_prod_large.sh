@@ -18,7 +18,7 @@ set -euo pipefail
 RUN=${RUN:-large_5k}
 CUDA=${CUDA:-2}
 CKPT=${CKPT:-whole_1/best_model.ckpt}
-TRANSFER=${TRANSFER:-large_run/transfer_rules_freezing.yml}
+TRANSFER=${TRANSFER:-large_5k/transfer_rules_freezing.yml}
 
 PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_large_v1}
 SYNT_EVAL_DIR=${SYNT_EVAL_DIR:-data/synt_eval/synt_val_large_v1}
