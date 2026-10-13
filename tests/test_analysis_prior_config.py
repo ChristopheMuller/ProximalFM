@@ -1,7 +1,7 @@
-"""Tests for analysis_prior.config."""
+"""Tests for analysis.analysis_prior.config."""
 
 
-from analysis_prior.config import PriorSpec, pinned
+from analysis.analysis_prior.config import PriorSpec, pinned
 
 
 def test_to_dict_from_dict_round_trip():
@@ -40,7 +40,7 @@ def test_dataset_seed_changes_with_generative_fields():
 
 
 def _family(**kwargs):
-    from analysis_prior.config import SpecFamily
+    from analysis.analysis_prior.config import SpecFamily
 
     defaults = dict(
         name="fam",

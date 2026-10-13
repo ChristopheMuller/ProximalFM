@@ -1296,7 +1296,7 @@ if __name__ == "__main__":
         "Monte-Carlo replicated and MU0/MU1 are NaN on the context prefix. "
         "Roughly halves generation cost. Safe for training data (the trainer "
         "reads MU only on the query slice); set True for data feeding "
-        "analysis_prior/ or visu/.",
+        "analysis/analysis_prior/ or visu/.",
     )
     parser.add_argument(
         "--n_jobs", type=int, default=-1, help="Number of jobs for parallel processing"

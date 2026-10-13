@@ -49,10 +49,10 @@ from typing import Any, Dict, List, Optional, Sequence
 import numpy as np
 import torch
 
-from analysis_prior.analyses.confounding import delivered_shares
-from analysis_prior.analyses.mechanism_inputs import mechanism_frame
-from analysis_prior.analyses.proxy_relevance import WEAK_THRESHOLD, _knobs
-from analysis_prior.analyses.treatment import OVERLAP_BAND
+from analysis.analysis_prior.analyses.confounding import delivered_shares
+from analysis.analysis_prior.analyses.mechanism_inputs import mechanism_frame
+from analysis.analysis_prior.analyses.proxy_relevance import WEAK_THRESHOLD, _knobs
+from analysis.analysis_prior.analyses.treatment import OVERLAP_BAND
 from prior_eval._frozen_records import iter_frozen_arrays, sidecar_records
 from prior_eval.build_prior_frozen_set import load_frozen_meta
 
@@ -138,7 +138,7 @@ def _absolute_mask(score: np.ndarray, direction: str, threshold: float) -> np.nd
 def score_weak_proxy(records: Sequence[Any]) -> np.ndarray:
     """``u_share_expected``, minimised over the two proxies.
 
-    ``analysis_prior.analyses.proxy_relevance._knobs`` derives, from the two
+    ``analysis.analysis_prior.analyses.proxy_relevance._knobs`` derives, from the two
     knobs that dilute ``U`` out of ``f_P``, the expected share of that
     mechanism's input width which is ``U``-derived. **The minimum over W and Z
     is the binding direction**: proximal identification needs *both* proxies, so
@@ -206,7 +206,7 @@ def score_poor_overlap(out: Path, meta: Dict[str, Any], n: int) -> np.ndarray:
     """Share of context rows whose true propensity is outside ``OVERLAP_BAND``.
 
     Reads ``A_probs`` -- the ground-truth ``P(A=1 | X, U)`` -- straight off the
-    shards, exactly as ``analysis_prior.analyses.treatment.OverlapAnalysis``
+    shards, exactly as ``analysis.analysis_prior.analyses.treatment.OverlapAnalysis``
     does; fitting a propensity model would only re-estimate a known quantity
     with error. Context rows, because overlap is a property of the sample a
     method would actually be handed.
@@ -261,7 +261,7 @@ def score_weak_proxy_measured(
     """Cross-fitted ``delta_r2 = R2(u_j | X, P) - R2(u_j | X)``, worst direction.
 
     The measured counterpart of :func:`score_weak_proxy`, via
-    ``analysis_prior.analyses.proxy_relevance.relevance_frame``. Expensive --
+    ``analysis.analysis_prior.analyses.proxy_relevance.relevance_frame``. Expensive --
     cross-fitted regressions over every ``(episode, U column, proxy)`` -- but
     disk-cached under ``cache/regression/`` and paid **once**, at manifest-build
     time, never at score time. That is the whole reason membership lives in a
@@ -271,7 +271,7 @@ def score_weak_proxy_measured(
     that is uninformative about even one confounder direction breaks
     identification for that direction.
     """
-    from analysis_prior.analyses.proxy_relevance import relevance_frame
+    from analysis.analysis_prior.analyses.proxy_relevance import relevance_frame
     from prior_eval._frozen_records import frozen_to_records
 
     records = frozen_to_records(out, rows="context", meta=meta)

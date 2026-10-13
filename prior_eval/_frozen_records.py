@@ -2,7 +2,7 @@
 
 `analysis_prior` already measures everything the stratified cuts need --
 proxy relevance, delivered confounding share, overlap, heterogeneity -- but it
-speaks :class:`analysis_prior.generate.PriorDatasetRecord`, built from its own
+speaks :class:`analysis.analysis_prior.generate.PriorDatasetRecord`, built from its own
 cache. The frozen set holds the same information in a different container: the
 per-row arrays in the ``val/`` shards, the per-episode scalars in
 ``frozen_meta.pt``. These two adapters bridge that gap so the cuts reuse those
@@ -37,7 +37,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import torch
 
-from analysis_prior.generate import PriorDatasetRecord
+from analysis.analysis_prior.generate import PriorDatasetRecord
 from prior_eval.build_prior_frozen_set import load_frozen_meta
 
 #: Feature blocks stored padded to ``max_dim_*`` and trimmed with ``d_*``.

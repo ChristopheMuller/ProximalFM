@@ -28,7 +28,7 @@ that matter: the unadjusted confounding bias (what a method must remove),
 SD(tau)/ATE (whether CATE metrics mean anything at all), and the share of rows
 with e(U,Z) outside [0.05, 0.95] — where the effect is not identified at all.
 
-Style comes from ``analysis_prior.design`` so the block colours match the paper:
+Style comes from ``analysis.analysis_prior.design`` so the block colours match the paper:
 red = latent U, blue = X, green = W, orange = Z. Treatment arms use the
 Okabe--Ito blue/vermillion pair (validated: CVD dE 21.9, normal-vision 31.2).
 
@@ -50,14 +50,14 @@ from sklearn.linear_model import LogisticRegression
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from analysis_prior.design import (  # noqa: E402
+from analysis.analysis_prior.design import (  # noqa: E402
     OKABE_ITO,
     ROLES,
     apply_style,
     block_color,
     figsize_grid,
 )
-from analysis_prior.plotting import plt, save_figure  # noqa: E402
+from analysis.analysis_prior.plotting import plt, save_figure  # noqa: E402
 
 PREPARED_DIR = Path(__file__).resolve().parent / "data" / "prepared"
 RESULTS_DIR = Path(__file__).resolve().parent / "figures"

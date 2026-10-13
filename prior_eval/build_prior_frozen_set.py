@@ -4,7 +4,7 @@
 later posterior metric sits on, so three properties matter more than speed:
 
 *Determinism.* Every episode is a pure function of its own seed. The per-episode
-seeding recipe is the one proven in ``analysis_prior/generate.py``: seed the
+seeding recipe is the one proven in ``analysis/analysis_prior/generate.py``: seed the
 three RNGs, then build a fresh ``PriorDataset`` with ``n_jobs=1`` (``get_batch``
 dispatches through joblib otherwise, which destroys reproducibility).
 Parallelism moves up one level, across episodes.

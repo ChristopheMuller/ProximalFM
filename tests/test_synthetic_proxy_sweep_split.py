@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from analysis_synthetic_proxy_sweep_linear.generate_synthetic_sweep import (
+from analysis.analysis_synthetic_proxy_sweep_linear.generate_synthetic_sweep import (
     StudyConfig,
     generate_sweep,
 )
-from analysis_synthetic_proxy_sweep_linear.run_ablation import (
+from analysis.analysis_synthetic_proxy_sweep_linear.run_ablation import (
     _compute_setting,
     restrict_aligned,
     restrict_context,

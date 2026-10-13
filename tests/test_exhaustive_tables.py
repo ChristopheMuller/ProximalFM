@@ -4,8 +4,8 @@ import json
 
 import pandas as pd
 
-from analysis_eval import exhaustive_tables
-from analysis_eval.semisynt import MatrixCell
+from analysis.analysis_eval import exhaustive_tables
+from analysis.analysis_eval.semisynt import MatrixCell
 
 
 def test_load_results_can_select_one_case(tmp_path, monkeypatch):

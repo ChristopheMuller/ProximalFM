@@ -11,10 +11,13 @@ eval_data/*
 results/*
 benchmarks/results/*
 
-analysis_prior/cache/*
-analysis_prior/results/*
-analysis_eval/results/*
-analysis_training/results/*
+analysis/analysis_prior/cache/*
+analysis/analysis_prior/results/*
+analysis/analysis_eval/results/*
+analysis/analysis_training/results/*
+analysis/analysis_training/cache/*
+analysis/analysis_synthetic_proxy_sweep_linear/data/*
+analysis/analysis_synthetic_proxy_sweep_linear/results/*
 
 wandb/*
 archive/*
@@ -31,7 +34,7 @@ NMMR/
 *.pdf
 *.pt
 *.json
-!analysis_eval/methods.json
+!analysis/analysis_eval/methods.json
 *.ckpt
 *.txt
 *.npz

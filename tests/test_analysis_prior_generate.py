@@ -1,4 +1,4 @@
-"""Tests for analysis_prior.generate."""
+"""Tests for analysis.analysis_prior.generate."""
 
 
 import numpy as np
@@ -7,10 +7,10 @@ import numpy as np
 import pytest
 
 
-from analysis_prior import generate as gen
+from analysis.analysis_prior import generate as gen
 
 
-from analysis_prior.config import PriorSpec
+from analysis.analysis_prior.config import PriorSpec
 
 
 @pytest.fixture(scope="module")
