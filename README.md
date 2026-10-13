@@ -174,3 +174,21 @@ For your own data, replace the synthetic context with observed $X$, $Z$, $W$, $A
 For effect quantiles, use `output_type="quantiles", quantiles=[0.05, 0.5, 0.95]` in the same prediction call. The larger-context checkpoint is available as `proximalfm-ft.ckpt`.
 
 </details>
+
+## Citation
+
+If you use ProximalFM in your research, please cite our [paper](https://arxiv.org/abs/2610.08078):
+
+```bibtex
+@misc{muller2026proximalfm,
+  title         = {{ProximalFM}: Amortized Proximal Causal Inference under Hidden Confounding},
+  author        = {Muller, Christophe and Kharel, Ayub and Luedtke, Alex and
+                   Park, Chan and Tchetgen Tchetgen, Eric and Gamella, Juan L. and
+                   Krishnan, Rahul and Silva, Ricardo and Zeitler, Jakob},
+  year          = {2026},
+  eprint        = {2610.08078},
+  archivePrefix = {arXiv},
+  primaryClass  = {stat.ML},
+  url           = {https://arxiv.org/abs/2610.08078}
+}
+```
