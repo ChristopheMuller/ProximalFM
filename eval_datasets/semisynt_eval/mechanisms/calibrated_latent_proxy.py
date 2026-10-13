@@ -1,6 +1,6 @@
 """Native calibrated latent-proxy mechanism based on the reference mathematics.
 
-Production code never imports the read-only ``semisynt_eval.reference_mechanism``
+Production code never imports the read-only ``eval_datasets.semisynt_eval.reference_mechanism``
 package.
 For source latent rows and independent innovations, the fitted mechanism is
 
@@ -30,7 +30,7 @@ from typing import Any
 
 import torch
 
-from semisynt_eval._config import (
+from eval_datasets.semisynt_eval._config import (
     BasisConfig,
     CaseConfig,
     CateConfig,
@@ -40,7 +40,7 @@ from semisynt_eval._config import (
     ProxyConfig,
     TreatmentConfig,
 )
-from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
+from eval_datasets.semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
 
 Tensor = torch.Tensor
 

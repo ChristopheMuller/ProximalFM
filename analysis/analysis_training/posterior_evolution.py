@@ -41,7 +41,7 @@ from analysis.analysis_training.posterior_snapshot import (
     posterior_view_limits,
     smooth_cdf,
 )
-from prior_eval.report import load_model
+from eval_datasets.prior_eval.report import load_model
 from proximalfm.train._dist_eval import episode_predictive
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

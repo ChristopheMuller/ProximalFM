@@ -575,7 +575,7 @@ def build_parser():
         type=str,
         help="Root directory of the frozen posterior-eval set (holds both the "
         "val/-format episodes and frozen_meta.pt; see "
-        "prior_eval/build_prior_frozen_set.py). Drives BOTH the "
+        "eval_datasets/prior_eval/build_prior_frozen_set.py). Drives BOTH the "
         "prior_point/* and prior_dist/* surfaces from one pass. None disables "
         "the prior evaluation surface entirely.",
     )
@@ -602,7 +602,7 @@ def build_parser():
         default=None,
         type=str,
         help="Root directory of a replicate-bearing realistic set, built by "
-        "synt_eval/build_proximal_datasets.py with --mc_cate K (K > 1) -- the "
+        "eval_datasets/synt_eval/build_proximal_datasets.py with --mc_cate K (K > 1) -- the "
         "set's ROOT, holding both val/ and frozen_meta.pt. Drives BOTH the "
         "synt_point/* and synt_dist/* surfaces from one pass, mirroring how "
         "--prior_eval_dir drives prior_point/* + prior_dist/*. A set built "

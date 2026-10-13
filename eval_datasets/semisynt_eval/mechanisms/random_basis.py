@@ -13,7 +13,7 @@ from typing import Any, Literal, Optional, Sequence
 
 import torch
 
-from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
+from eval_datasets.semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
 
 Tensor = torch.Tensor
 CoefficientDistribution = Literal["normal", "uniform"]

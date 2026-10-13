@@ -412,7 +412,7 @@ def _git_rev() -> Optional[str]:
         return (
             subprocess.check_output(
                 ["git", "rev-parse", "HEAD"],
-                cwd=Path(__file__).resolve().parent.parent,
+                cwd=Path(__file__).resolve().parents[2],
                 stderr=subprocess.DEVNULL,
             )
             .decode()
@@ -572,11 +572,12 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
         return stored
     if g.get("set_kind") == "realistic":
         try:
-            from synt_eval.realistic_sidecar import realistic_content_digest
+            from eval_datasets.synt_eval.realistic_sidecar import (
+                realistic_content_digest,
+            )
         except ImportError:
-            # synt_eval/ is resolved from the repo root, so this can miss when
-            # running from elsewhere. "Unknown", not "different" -- the caller
-            # degrades to the directory name.
+            # An incomplete installation may lack the synthetic tools.
+            # "Unknown", not "different" -- degrade to the directory name.
             return None
         return realistic_content_digest(meta)
     if g.get("set_kind") == "inspect":
@@ -608,7 +609,7 @@ def frozen_content_digest(meta: Dict[str, Any]) -> Optional[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m prior_eval.build",
+        prog="python -m eval_datasets.prior_eval.build",
         description="Build a frozen high-K posterior-evaluation set from the prior.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -735,7 +736,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "Keep --n_jobs 1 on GPU; the GPU is already the parallelism."
         )
     cli_command = shlex.join(
-        [sys.executable, "-m", "prior_eval.build", *(argv or sys.argv[1:])]
+        [
+            sys.executable,
+            "-m",
+            "eval_datasets.prior_eval.build",
+            *(argv or sys.argv[1:]),
+        ]
     )
 
     try:
@@ -756,7 +762,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"content_digest: {cfg.content_digest()}")
 
     if args.report:
-        from prior_eval.report import report
+        from eval_datasets.prior_eval.report import report
 
         report(args.out, ckpt=args.ckpt, device=args.device)
     return 0

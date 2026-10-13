@@ -22,17 +22,17 @@ import yaml
 from benchmarks.data import load_benchmark_from_val_dir
 
 
-from semisynt_eval._config import load_case_configs
+from eval_datasets.semisynt_eval._config import load_case_configs
 
 
-from semisynt_eval.build import (
+from eval_datasets.semisynt_eval.build import (
     DEFAULT_CONFIG_PATH,
     build,
     parse_args,
 )
 
 
-from semisynt_eval.source import load_csv
+from eval_datasets.semisynt_eval.source import load_csv
 
 
 def _recipe() -> dict:

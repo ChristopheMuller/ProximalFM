@@ -38,7 +38,7 @@ import numpy as np
 import torch
 
 from analysis.analysis_prior.generate import PriorDatasetRecord
-from prior_eval.build_prior_frozen_set import load_frozen_meta
+from eval_datasets.prior_eval.build_prior_frozen_set import load_frozen_meta
 
 #: Feature blocks stored padded to ``max_dim_*`` and trimmed with ``d_*``.
 _BLOCKS = ("U", "X", "W", "Z")

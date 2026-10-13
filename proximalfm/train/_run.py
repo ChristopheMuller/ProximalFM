@@ -110,7 +110,7 @@ class Trainer:
         self.prior_eval_dir = getattr(self.config, "prior_eval_dir", None)
         self._prior_eval_meta = None
         if self.prior_eval_dir is not None:
-            from prior_eval.build_prior_frozen_set import (
+            from eval_datasets.prior_eval.build_prior_frozen_set import (
                 frozen_content_digest,
                 load_frozen_meta,
             )
@@ -131,7 +131,7 @@ class Trainer:
         self.synt_eval_dir = getattr(self.config, "synt_eval_dir", None)
         self._synt_eval_meta = None
         if self.synt_eval_dir is not None:
-            from prior_eval.build_prior_frozen_set import (
+            from eval_datasets.prior_eval.build_prior_frozen_set import (
                 frozen_content_digest,
                 load_frozen_meta,
             )

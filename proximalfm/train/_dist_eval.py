@@ -3,8 +3,8 @@
 Point **and** distributional metrics on a set carrying a low-noise ``tau_star``
 and a ``frozen_meta.pt`` sidecar. Two such sets exist, and ``score_frozen_set``
 namespaces them by caller-supplied prefix: the frozen high-``K`` prior set built
-by ``prior_eval/`` (``prior_point/*`` + ``prior_dist/*``) and the realistic
-replicate set built by ``synt_eval/build_proximal_datasets.py --mc_cate K``
+by ``eval_datasets/prior_eval/`` (``prior_point/*`` + ``prior_dist/*``) and the realistic
+replicate set built by ``eval_datasets/synt_eval/build_proximal_datasets.py --mc_cate K``
 (``synt_point/*`` + ``synt_dist/*``, both from the same pass -- point metrics are a
 side effect of the per-episode forward pass that produces the distributional
 ones, not a second, separately-gated one).
@@ -398,7 +398,7 @@ def episode_predictive(
 
     Uses the first ``n_ctx`` context rows plus every query row (the layout of
     the frozen set: rows ``[0, n_max)`` are context, ``[n_max, T)`` are the
-    replicated queries), exactly as ``prior_eval/report.py`` does.
+    replicated queries), exactly as ``eval_datasets/prior_eval/report.py`` does.
 
     ``predict`` de-standardizes with the context statistics of the rows it was
     handed, so its grid is ``cate_bin_edges * y_std_predict`` in raw-``y`` units.
@@ -502,7 +502,7 @@ def score_episode(
     Returns the per-episode pooled squared error and row count, which the
     driver accumulates into ``cate/rmse_pooled``. That key exists for one
     reason: ``CausalEvaluator.cate/rmse`` is a *median over episodes*, so it is
-    not the quantity ``prior_eval/report.py`` prints, and the cheapest place
+    not the quantity ``eval_datasets/prior_eval/report.py`` prints, and the cheapest place
     to catch a scale bug is a number that must match it exactly.
 
     Also returns ``grid_scale``, the factor :func:`episode_predictive` applied
@@ -514,7 +514,7 @@ def score_episode(
 
     ``dist_evaluators``/``point_evaluators`` fan the *same* forward pass out to
     additional accumulators, each with an optional boolean row mask: the
-    stratified evaluation in ``prior_eval.score_strata`` scores every cut without predicting
+    stratified evaluation in ``eval_datasets.prior_eval.score_strata`` scores every cut without predicting
     more than once, because :class:`PosteriorEvaluator` accumulates row-weighted
     sums and is therefore exactly additive over disjoint row subsets. A ``None``
     mask means every row. Both default to empty, so the training path is
@@ -625,7 +625,7 @@ def score_frozen_set(
     ``prefix_point=None`` skips the point surface entirely, for a caller that
     only wants the distributional half.
     """
-    from prior_eval.build_prior_frozen_set import load_frozen_meta
+    from eval_datasets.prior_eval.build_prior_frozen_set import load_frozen_meta
 
     out = Path(out)
     if meta is None:

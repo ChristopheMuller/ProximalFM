@@ -181,17 +181,17 @@ and `results/`. Pass `--output-dir <path>` to place it elsewhere.
 For a synthetic replicate set, build with **`--mc_cate K` (K > 1)**:
 
 ```bash
-uv run python -m synt_eval.build_proximal_datasets --name proximal_val_v1 \
+uv run python -m eval_datasets.synt_eval.build_proximal_datasets --name proximal_val_v1 \
   --n_datasets 480 --n_max 2048 --n_q 128 --mc_cate 200 --seed 123
 ```
 
-`prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
-`semisynt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
+`eval_datasets.prior_eval.build` sets work too — same on-disk format, and they always carry replicates.
+`eval_datasets.semisynt_eval.build` sets instead carry an explicit analytic `CATE` and need no replicates.
 
 The benchmark scores **pre-built sets only**. There is no on-the-fly prior sampling: a set that
 exists only inside one run is one nobody else can score against, so the row split, the replicate
-count and the seed belong to a builder (`prior_eval.build`, `synt_eval/build_proximal_datasets.py`,
-`lit_eval.build`, or `semisynt_eval.build`) whose output is on disk and has a `content_digest`.
+count and the seed belong to a builder (`eval_datasets.prior_eval.build`, `eval_datasets/synt_eval/build_proximal_datasets.py`,
+`lit_eval.build`, or `eval_datasets.semisynt_eval.build`) whose output is on disk and has a `content_digest`.
 Passing a `data:` block in the methods config is refused; use `--val-dir`.
 
 `--context-sizes N [N ...]` runs every method on growing prefixes of the set's existing context. The query
@@ -541,7 +541,7 @@ longer pull the plotted positions arbitrarily far down.
 ## 7. Related
 
 - Distributional scoring of ProximalFM (CRPS, coverage, PIT) is **not** here — the benchmark's
-  interface is point predictions and no baseline has a posterior. Use `python -m prior_eval.score`
+  interface is point predictions and no baseline has a posterior. Use `python -m eval_datasets.prior_eval.score`
   on the same set; it has the frozen comparison scale and the head's grid.
 - [`../proximalfm/train/metrics.md`](../proximalfm/train/metrics.md) is the catalogue of the
   *training-side* metric namespace and the estimand traps behind it. Read it before adding a metric

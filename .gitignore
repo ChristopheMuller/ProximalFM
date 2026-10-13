@@ -41,7 +41,7 @@ NMMR/
 *.csv
 *.png
 *.yaml
-!semisynt_eval/config.yaml
+!eval_datasets/semisynt_eval/config.yaml
 !benchmarks/config_methods.yaml
 
 .wandb_api_key
@@ -50,9 +50,9 @@ benchmarks/causal_chambers/v2_smoothA_CP_Analysis_parkchan
 sverdrup
 wu
 
-semisynt_eval/copula_idea
+eval_datasets/semisynt_eval/copula_idea
 
-semisynt_eval/ayu/*
+eval_datasets/semisynt_eval/ayu/*
 latex/*
 .poster_build
 poster_output

@@ -20,7 +20,7 @@ set -euo pipefail
 # shellcheck source=scripts/_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
-CONFIG=${CONFIG:-semisynt_eval/config.yaml}
+CONFIG=${CONFIG:-eval_datasets/semisynt_eval/config.yaml}
 NAME=${NAME:-semisynt_val_v1}
 OUT_ROOT=${OUT_ROOT:-data/semisynt_eval}
 CSV=${CSV:-all}
@@ -36,7 +36,7 @@ SEED=${SEED:-1234}
 OUT="${OUT_ROOT}/${NAME}"
 
 command=(
-  python -m semisynt_eval.build
+  python -m eval_datasets.semisynt_eval.build
   --config "${CONFIG}"
   --name "${NAME}"
   --out_root "${OUT_ROOT}"

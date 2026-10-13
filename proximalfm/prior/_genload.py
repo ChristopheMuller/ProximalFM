@@ -461,7 +461,7 @@ class LoadPriorDataset(IterableDataset):
                 _LEGACY_TARGET_VAR_WARNED = True
                 warnings.warn(
                     f"{batch_file} carries no S2/K_eff (pre-dating target-noise "
-                    "tracking, or built by synt_eval/build_proximal_datasets.py). "
+                    "tracking, or built by eval_datasets/synt_eval/build_proximal_datasets.py). "
                     "Treating the CATE targets as noise-free: loss_type="
                     "'noise_aware' falls back to its plain "
                     "sigma-smoothed NLL on these rows. Regenerate the batches to "
@@ -895,7 +895,7 @@ def write_batch_file(
     and so must any other producer of a ``val/``-style directory. The format is
     what :class:`LoadPriorDataset` replays, so a second implementation drifts
     silently (see the missing ``MU0``/``MU1``/``S2``/``K_eff`` in
-    ``synt_eval/build_proximal_datasets.py``).
+    ``eval_datasets/synt_eval/build_proximal_datasets.py``).
 
     ``CATE`` is an optional external-evaluation field for an analytic target.
     It is not consumed by :class:`LoadPriorDataset`; the benchmark loader reads

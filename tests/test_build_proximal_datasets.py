@@ -1,4 +1,4 @@
-"""Tests for synt_eval/build_proximal_datasets.py.
+"""Tests for eval_datasets/synt_eval/build_proximal_datasets.py.
 
 The build script writes datasets to disk ONLY in the raw, sparse val format;
 the benchmark rebuilds its standardized dict from those files at load time.
@@ -17,10 +17,10 @@ import pytest
 import torch
 
 
-import synt_eval.build_proximal_datasets as bpd
+import eval_datasets.synt_eval.build_proximal_datasets as bpd
 
 
-from synt_eval.realistic_proximal_mechanisms import (
+from eval_datasets.synt_eval.realistic_proximal_mechanisms import (
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )

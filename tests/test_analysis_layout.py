@@ -94,8 +94,10 @@ def test_outputs_and_caches_use_relocated_directories(
 
 def test_external_consumers_use_the_same_prior_record_class():
     from analysis.analysis_prior.generate import PriorDatasetRecord
-    from prior_eval._frozen_records import PriorDatasetRecord as FrozenRecord
-    from prior_eval import strata
+    from eval_datasets.prior_eval._frozen_records import (
+        PriorDatasetRecord as FrozenRecord,
+    )
+    from eval_datasets.prior_eval import strata
     from analysis.analysis_prior.analyses.confounding import delivered_shares
 
     assert FrozenRecord is PriorDatasetRecord

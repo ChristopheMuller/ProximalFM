@@ -6,7 +6,7 @@
 # Three jobs, all of them things that differ between the laptop and the cluster:
 #
 #   1. cd to the repo root, so every relative path in these scripts (data/,
-#      synt_eval/, transfer_rules.yaml) resolves no matter where you invoked
+#      eval_datasets/synt_eval/, transfer_rules.yaml) resolves no matter where you invoked
 #      them from -- including from a scheduler's working directory.
 #   2. Put the project venv on PATH. `uv run` is not available on the cluster,
 #      so the scripts call plain `python` and this is what makes that the right

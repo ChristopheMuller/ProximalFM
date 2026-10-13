@@ -14,7 +14,7 @@ import pytest
 import torch
 
 
-from prior_eval.build_prior_frozen_set import (
+from eval_datasets.prior_eval.build_prior_frozen_set import (
     BuildConfig,
     MonteCarloBudgetError,
     build,
@@ -137,7 +137,7 @@ def test_a_capped_k_fails_the_build_loudly(tmp_path):
 def test_verify_recomputes_the_stored_digest(tmp_path):
     # verify.py is what runs after a set is copied between machines, so it is
     # where a sidecar whose digest no longer matches its own config surfaces.
-    from prior_eval.verify import _recompute_from_config
+    from eval_datasets.prior_eval.verify import _recompute_from_config
 
     out = tmp_path / "set"
     build(_cfg(), out, datasets_per_file=2, progress=False)

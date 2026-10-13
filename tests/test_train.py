@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 import torch
 
-from prior_eval.build_prior_frozen_set import BuildConfig, build
+from eval_datasets.prior_eval.build_prior_frozen_set import BuildConfig, build
 from proximalfm.prior._dataset import PriorDataset
 from proximalfm.prior._prior_config import DEFAULT_SAMPLED_HP
 from proximalfm.train._run import Trainer

@@ -28,7 +28,7 @@ the low/high level mappings live in the YAML.
 List available CSV sources and configured cases:
 
 ```bash
-uv run python -m semisynt_eval.build --list
+uv run python -m eval_datasets.semisynt_eval.build --list
 ```
 
 Build every case:
@@ -95,7 +95,7 @@ uv run benchmarks/run.py --config benchmarks/config_methods.yaml \
   --context-sizes 128 512
 ```
 
-[`scripts/run_semisynt_benchmarks.sh`](../scripts/run_semisynt_benchmarks.sh) runs the shared method
+[`scripts/run_semisynt_benchmarks.sh`](../../scripts/run_semisynt_benchmarks.sh) runs the shared method
 configuration over all dimension/regime cells recorded in the matrix manifest.
 Set `MATRIX_ROOT` or `METHODS_CONFIG` to override its defaults.
 
@@ -111,7 +111,7 @@ config verifies the snapshot against `common` and `cases` and rejects stale or
 hand-edited disagreements. The identical resolved payload is embedded in case
 and matrix manifests and contributes to every case content digest.
 
-Every `*.csv` directly in `semisynt_eval/datasets/` is discovered in stable
+Every `*.csv` directly in `eval_datasets/semisynt_eval/datasets/` is discovered in stable
 filename order. Before any data-dependent preprocessing, `n_calibration`
 (default 1,000) rows are selected deterministically for that source. Numeric
 imputation medians, 0.5th/99.5th-percentile clipping thresholds, categorical

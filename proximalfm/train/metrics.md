@@ -13,7 +13,7 @@ them except the metric *functions*.
 |---|---|---|---|---|
 | **Train** | `loss/`, `target/`, `noise/` | on-the-fly prior | is the optimization healthy? | loss & batch diagnostics **only** |
 | **Val** | `synt_point/`, `synt_dist/` | `data/synt_eval/` realistic mechanisms (out-of-prior) | does it generalize off the prior? | point, **and** distributional on a replicate set |
-| **Prior** | `prior_point/`, `prior_dist/` | `prior_eval/` frozen high-`K` set (in-prior) | is the posterior any good? | point **and** distributional |
+| **Prior** | `prior_point/`, `prior_dist/` | `eval_datasets/prior_eval/` frozen high-`K` set (in-prior) | is the posterior any good? | point **and** distributional |
 
 Plus two non-surfaces: `diag/*` (schedules and derived quantities put on another surface's axis) and
 a handful of flat keys (`lr`, `prior_time`, `train_time`, `Charts/*`).
@@ -69,7 +69,7 @@ against the point surface's.
 
 ## 2. Reading a run, in order
 
-Each entry conditions the ones below it. This is the same order `python -m prior_eval.score`
+Each entry conditions the ones below it. This is the same order `python -m eval_datasets.prior_eval.score`
 prints its verdict block.
 
 1. **`prior_dist/out_of_grid_frac`** — if this is not ≈ 0, `--cate_vmin`/`--cate_vmax` are too tight
@@ -287,7 +287,7 @@ Same keys as `prior_dist/*` ([§5](#5-prior-surface)), same frozen scale.
 
 ## 5. Prior surface — `prior_point/*` + `prior_dist/*`
 
-One pass over `--prior_eval_dir`, the frozen set built by `prior_eval/`. Produced by
+One pass over `--prior_eval_dir`, the frozen set built by `eval_datasets/prior_eval/`. Produced by
 `score_frozen_set` and split in two: point metrics from the same `CausalEvaluator`, distributional
 metrics from `PosteriorEvaluator`.
 
@@ -320,7 +320,7 @@ One key exists here and nowhere else:
 
 `cate/rmse` is a *median over episodes*; `cate/rmse_pooled` is a mean over rows. They are different
 numbers and neither is wrong. `rmse_pooled` exists because it is exactly what
-`prior_eval/report.py` prints at `n = n_max`, so a mismatch between the two is a scale bug and
+`eval_datasets/prior_eval/report.py` prints at `n = n_max`, so a mismatch between the two is a scale bug and
 this is the cheapest place to catch one (`test_pooled_rmse_matches_the_report_path`).
 
 ### `prior_dist/*`
@@ -478,7 +478,7 @@ look merely extreme.
 ### Stratified cuts — offline only, **no wandb producer**
 
 The same `prior_dist/*` keys, recomputed per stratum of the frozen set, by
-`python -m prior_eval.score_strata`. Cuts are defined in `prior_eval/strata.py` and stored as
+`python -m eval_datasets.prior_eval.score_strata`. Cuts are defined in `eval_datasets/prior_eval/strata.py` and stored as
 a `strata.pt` manifest of per-episode (or per-query-row) membership beside `frozen_meta.pt`; nothing
 about the 365 MB set is duplicated or rebuilt.
 
@@ -510,7 +510,7 @@ fragile, which is worse than merely being inaccurate there.
 ### The `n`-sweep — offline only, **no wandb producer**
 
 The same `prior_dist/*` keys at nested context prefixes, by
-`python -m prior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
+`python -m eval_datasets.prior_eval.sweep`. Same key-budget reasoning as the stratified pass: one row per `n`
 per metric is a table, not a dashboard. The set needs no rebuild — prefix `n` is the first `n`
 context rows of an episode that already exists, and `prior_dist/grid_scale` (above) is what puts
 every prefix on one scale.
@@ -644,14 +644,14 @@ Over-confident on half the episodes and under-confident on the other half is **u
 `pit_ks_pooled` passes its band and the posterior is badly miscalibrated everywhere.
 
 `pit_ks/p90 ≥ pit_ks/band` while `pit_ks_pooled < pit_ks_pooled_band` is precisely that signature.
-`prior_eval.score` prints it as an explicit warning; there is a test constructing two
+`eval_datasets.prior_eval.score` prints it as an explicit warning; there is a test constructing two
 opposite-direction episode groups and asserting the pooled statistic passes while the p90 fails.
 
 ### Median vs pooled RMSE
 
 `prior_point/cate/rmse` is a median over episodes. `prior_point/cate/rmse_pooled` is a mean over
 rows. Comparing either to a number from elsewhere requires knowing which one you have — the pooled
-key exists solely so there is a quantity that must match `prior_eval/report.py` exactly.
+key exists solely so there is a quantity that must match `eval_datasets/prior_eval/report.py` exactly.
 
 ### The homogeneous-episode exclusion
 
@@ -691,7 +691,7 @@ would sit near 1 for a model whose CATE posterior is far too wide.
 
 ### Why it now errors instead
 
-`synt_eval/build_proximal_datasets.py --mc_cate K` (`K > 1`) replicates each query row through the
+`eval_datasets/synt_eval/build_proximal_datasets.py --mc_cate K` (`K > 1`) replicates each query row through the
 latent/noise draw and emits `MU0`/`MU1` with their paired sampling variance `S2`, plus a
 `frozen_meta.pt` sidecar carrying the frozen comparison scale and `tau_star_std`/`s2_std`. That set is
 scorable on exactly the terms the frozen prior set is.

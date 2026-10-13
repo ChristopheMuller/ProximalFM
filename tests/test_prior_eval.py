@@ -8,7 +8,7 @@ Two kinds of check, and both are needed:
   exists so that ``tau_star`` is low-noise, and the scale plumbing between
   ``predict``'s moving context statistics and the sidecar's frozen one is the
   cheapest thing in the stack to get silently wrong. The pooled RMSE is
-  therefore asserted equal to ``prior_eval/report.py``'s, which computes the
+  therefore asserted equal to ``eval_datasets/prior_eval/report.py``'s, which computes the
   same quantity by an independent path.
 """
 
@@ -22,7 +22,11 @@ import pytest
 import torch
 
 
-from prior_eval.build_prior_frozen_set import BuildConfig, build, load_frozen_meta
+from eval_datasets.prior_eval.build_prior_frozen_set import (
+    BuildConfig,
+    build,
+    load_frozen_meta,
+)
 
 
 from proximalfm.train._dist_eval import (

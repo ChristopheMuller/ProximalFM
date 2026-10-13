@@ -15,16 +15,21 @@ import torch
 import yaml
 
 from proximalfm.prior._genload import write_batch_file
-from semisynt_eval._config import CaseConfig, load_case_configs
-from semisynt_eval.generator import CSVProximalDataset, Episode
-from semisynt_eval.mechanisms import (
+from eval_datasets.semisynt_eval._config import CaseConfig, load_case_configs
+from eval_datasets.semisynt_eval.generator import CSVProximalDataset, Episode
+from eval_datasets.semisynt_eval.mechanisms import (
     available_mechanisms,
     fit_mechanism_with_identity,
 )
-from semisynt_eval.mechanisms.calibrated_latent_proxy import (
+from eval_datasets.semisynt_eval.mechanisms.calibrated_latent_proxy import (
     CalibratedLatentProxyMechanism,
 )
-from semisynt_eval.source import PreparedCSV, discover_csvs, load_csv, dimension_view
+from eval_datasets.semisynt_eval.source import (
+    PreparedCSV,
+    discover_csvs,
+    load_csv,
+    dimension_view,
+)
 
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("config.yaml")
 BUILD_CONFIG_FIELDS = (
@@ -679,7 +684,7 @@ def build(args: argparse.Namespace) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m semisynt_eval.build", description=__doc__
+        prog="python -m eval_datasets.semisynt_eval.build", description=__doc__
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--list", action="store_true")

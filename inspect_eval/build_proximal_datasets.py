@@ -510,7 +510,7 @@ def build(args: argparse.Namespace) -> None:
             f"  [sidecar]   {root / 'frozen_meta.pt'}  "
             f"(content_digest={digest}, n_max={n_max}, K={args.mc_cate})\n"
             f"             trainer:   --synt_eval_dir {root}\n"
-            f"             score it:  python -m prior_eval.score "
+            f"             score it:  python -m eval_datasets.prior_eval.score "
             f"--dir {root} --ckpt <ckpt>"
         )
     else:

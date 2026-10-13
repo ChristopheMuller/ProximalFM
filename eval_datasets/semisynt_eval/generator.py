@@ -7,13 +7,13 @@ from typing import Any, Optional
 
 import torch
 
-from semisynt_eval.mechanisms import (
+from eval_datasets.semisynt_eval.mechanisms import (
     CaseConfig,
     MechanismOutput,
     mechanism_target_capability,
 )
-from semisynt_eval.mechanisms.calibrated_latent_proxy import stable_seed
-from semisynt_eval.source import PreparedCSV
+from eval_datasets.semisynt_eval.mechanisms.calibrated_latent_proxy import stable_seed
+from eval_datasets.semisynt_eval.source import PreparedCSV
 
 Tensor = torch.Tensor
 

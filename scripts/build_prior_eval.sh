@@ -63,7 +63,7 @@ echo "  dims U/X/W/Z = ${MIN_DIM_U}-${MAX_DIM_U}/${MIN_DIM_X}-${MAX_DIM_X}/${MIN
 echo "  seed        = ${SEED}"
 echo
 
-python -m prior_eval.build \
+python -m eval_datasets.prior_eval.build \
   --name "${NAME}" \
   --out_root "${OUT_ROOT}" \
   --gen_device "${DEVICE}" \
@@ -86,6 +86,6 @@ python -m prior_eval.build \
 
 echo
 echo "Done. Next:"
-echo "  python -m prior_eval.verify --dir ${OUT} --cate_vmin -5 --cate_vmax 5"
-echo "  python -m prior_eval.score  --dir ${OUT} --ckpt <ckpt>"
+echo "  python -m eval_datasets.prior_eval.verify --dir ${OUT} --cate_vmin -5 --cate_vmax 5"
+echo "  python -m eval_datasets.prior_eval.score  --dir ${OUT} --ckpt <ckpt>"
 echo "  training: --prior_eval_dir ${OUT}   (the ROOT, not its val/)"

@@ -1,7 +1,7 @@
 # Authoritative recipe. One invocation materializes every named case
 # below as an independent benchmark set under <out_root>/<name>/<case>/val.
 build:
-  data_dir: semisynt_eval/datasets
+  data_dir: eval_datasets/semisynt_eval/datasets
   out_root: data/semisynt_eval
   csv: all
   name: null

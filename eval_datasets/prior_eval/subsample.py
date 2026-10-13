@@ -1,6 +1,6 @@
 """Derive a smaller frozen set by taking a context prefix of an existing one.
 
-    uv run python -m prior_eval.subsample \
+    uv run python -m eval_datasets.prior_eval.subsample \
         --src data/prior_eval/prior_val_v2_smalldim_20000rows \
         --name prior_val_v2_smalldim_2000rows_subsample --n_max 2000
 
@@ -54,7 +54,7 @@ import torch
 from tqdm import tqdm
 
 from proximalfm.prior._genload import sparse2dense, write_batch_file
-from prior_eval.build_prior_frozen_set import (
+from eval_datasets.prior_eval.build_prior_frozen_set import (
     DEFAULT_N_GRID,
     FROZEN_META_VERSION,
     _frozen_scale,
@@ -213,7 +213,12 @@ def main(argv: List[str] | None = None) -> int:
             f.unlink()
 
     cli = shlex.join(
-        [sys.executable, "-m", "prior_eval.subsample", *(argv or sys.argv[1:])]
+        [
+            sys.executable,
+            "-m",
+            "eval_datasets.prior_eval.subsample",
+            *(argv or sys.argv[1:]),
+        ]
     )
     val_dir = subsample(args.src, out, n_max=args.n_max, cli_command=cli)
 

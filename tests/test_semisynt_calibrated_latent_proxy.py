@@ -16,17 +16,22 @@ import torch
 import yaml
 
 
-from semisynt_eval._config import load_case_configs
+from eval_datasets.semisynt_eval._config import load_case_configs
 
 
-from semisynt_eval.mechanisms.calibrated_latent_proxy import (
+from eval_datasets.semisynt_eval.mechanisms.calibrated_latent_proxy import (
     CalibratedLatentProxyMechanism,
 )
 
 
 def _case(name: str):
     recipe = yaml.safe_load(
-        (Path(__file__).parents[1] / "semisynt_eval" / "config.yaml").read_text()
+        (
+            Path(__file__).parents[1]
+            / "eval_datasets"
+            / "semisynt_eval"
+            / "config.yaml"
+        ).read_text()
     )
     return load_case_configs(recipe["common"], recipe["cases"])[name]
 

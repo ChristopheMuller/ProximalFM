@@ -56,7 +56,7 @@ echo "  n_max/n_q/K   = ${N_MAX}/${N_Q}/${K}   (rows per dataset: $((N_MAX + N_Q
 echo "  seed          = ${SEED}"
 echo
 
-python -m synt_eval.build_proximal_datasets \
+python -m eval_datasets.synt_eval.build_proximal_datasets \
   --name "${NAME}" \
   --out_root "${OUT_ROOT}" \
   --n_datasets "${N_DATASETS}" \

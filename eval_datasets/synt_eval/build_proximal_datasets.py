@@ -27,12 +27,12 @@ convention, two different `--name`s / output folders).
 Example
 -------
     # Validation batch (seen during training to tune the model)
-    python synt_eval/build_proximal_datasets.py \
+    python eval_datasets/synt_eval/build_proximal_datasets.py \
         --name proximal_val_v1 --n_datasets 240 --seq_len 2048 \
         --prop_train 0.75 --seed 123
 
     # Test batch (held out; only used for final comparison)
-    python synt_eval/build_proximal_datasets.py \
+    python eval_datasets/synt_eval/build_proximal_datasets.py \
         --name proximal_test_v1 --n_datasets 240 --seq_len 2048 \
         --prop_train 0.75 --seed 9999
 
@@ -40,7 +40,7 @@ Each build also writes a fully-resolved ``config.yaml`` (all settings, including
 those left at their defaults). Re-run an earlier build exactly, even if defaults
 have since changed, by pointing ``--config`` at it (explicit flags still win):
 
-    python synt_eval/build_proximal_datasets.py \
+    python eval_datasets/synt_eval/build_proximal_datasets.py \
         --config data/synt_eval/proximal_val_v1/config.yaml --name proximal_val_v2
 
 Replicate mode (``--mc_cate K`` with ``K > 1``)
@@ -63,7 +63,7 @@ validation at all: the trainer's `--synt_eval_dir` scores it once and emits both
 
     --synt_eval_dir <out_root>/<name>  # the ROOT, not its val/
 
-    python synt_eval/build_proximal_datasets.py \
+    python eval_datasets/synt_eval/build_proximal_datasets.py \
         --name proximal_dist_v1 --n_datasets 480 --seq_len 2048 \
         --prop_train 0.75 --mc_cate 1000 --seed 20260807
 
@@ -94,25 +94,21 @@ import yaml
 
 from proximalfm.prior._genload import write_batch_file
 
-# The two invocation styles put *different* directories on sys.path:
-# `python synt_eval/build_proximal_datasets.py` adds synt_eval/ (siblings are
-# top-level names, the repo root is absent), while
-# `python -m synt_eval.build_proximal_datasets` adds the cwd (the repo root, so
-# only the package-absolute spelling resolves). `proximalfm` is unaffected --
-# it is an installed package -- but `synt_eval` is not installed, so put the
-# repo root on the path and import package-absolutely. Both spellings then work,
-# and there is exactly one module object either way (two would give two distinct
-# RealisticGeneratorConfig classes and break isinstance across the boundary).
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+# Direct-script invocation adds this directory to sys.path, while module
+# invocation adds the working directory. Add the repository root so both styles
+# resolve the same package even without reinstalling the editable project.
+# Package-absolute imports keep one RealisticGeneratorConfig class identity
+# across the builder and worker processes.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from synt_eval.realistic_proximal_mechanisms import (  # noqa: E402
+from eval_datasets.synt_eval.realistic_proximal_mechanisms import (  # noqa: E402
     N_MECHANISMS,
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
-from synt_eval.realistic_sidecar import (  # noqa: E402
+from eval_datasets.synt_eval.realistic_sidecar import (  # noqa: E402
     RealisticBuildConfig,
     check_no_silent_mutation,
     episode_records,
@@ -480,7 +476,7 @@ def build(args: argparse.Namespace) -> None:
             f"  [sidecar]   {root / 'frozen_meta.pt'}  "
             f"(content_digest={digest}, n_max={n_max}, K={args.mc_cate})\n"
             f"             trainer:   --synt_eval_dir {root}\n"
-            f"             score it:  python -m prior_eval.score "
+            f"             score it:  python -m eval_datasets.prior_eval.score "
             f"--dir {root} --ckpt <ckpt>"
         )
     else:

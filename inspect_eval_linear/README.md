@@ -38,7 +38,7 @@ uv run python -m inspect_eval_linear.build \
   --mc_cate 1000 \
   --proxy_noise_stds 0 0.25 0.5 1 2 4
 
-uv run python -m prior_eval.verify \
+uv run python -m eval_datasets.prior_eval.verify \
   --dir data/inspect_eval_linear/proxy_sweep
 
 uv run python -m inspect_eval_linear.analyze_noise_sweep \

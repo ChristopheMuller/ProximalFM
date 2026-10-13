@@ -35,8 +35,11 @@ from analysis.analysis_training.design import (
     plt,
     save_figure,
 )
-from prior_eval.build_prior_frozen_set import frozen_content_digest, load_frozen_meta
-from prior_eval.report import load_model
+from eval_datasets.prior_eval.build_prior_frozen_set import (
+    frozen_content_digest,
+    load_frozen_meta,
+)
+from eval_datasets.prior_eval.report import load_model
 from proximalfm.train._dist_eval import episode_predictive, iter_frozen_episodes
 from proximalfm.train._dist_metrics import predictive_mean_var
 

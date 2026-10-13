@@ -45,7 +45,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("semisynt_eval/datasets/"),
+        default=Path("eval_datasets/semisynt_eval/datasets/"),
         help="Directory where the selected CSV files are written.",
     )
     parser.add_argument(

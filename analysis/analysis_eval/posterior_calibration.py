@@ -30,12 +30,12 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from prior_eval.build_prior_frozen_set import (
+from eval_datasets.prior_eval.build_prior_frozen_set import (
     Y_STD_FLOOR,
     frozen_content_digest,
     load_frozen_meta,
 )
-from prior_eval.report import load_model
+from eval_datasets.prior_eval.report import load_model
 from proximalfm.train._dist_eval import (
     PosteriorEvaluator,
     episode_predictive,

@@ -52,7 +52,7 @@ SUPPORTED_LOSS_TYPES = ("bins_po", "cate_decomposition", "hl", *CATE_SINGLE_LOSS
 
 # Names this loss went by before. A checkpoint stores its `loss_type` string in
 # `ckpt["config"]`, and every consumer that reconstructs a model from a
-# checkpoint — the benchmark's `ProximalFM_Estimator`, `prior_eval.report`,
+# checkpoint — the benchmark's `ProximalFM_Estimator`, `eval_datasets.prior_eval.report`,
 # `visu/` — replays it through `__init__`. Renaming the loss therefore
 # invalidates weights already on disk unless the old spelling still resolves;
 # nothing about the architecture changed, only the label.

@@ -3,7 +3,7 @@
 The load-bearing test here is ``test_legacy_path_is_byte_identical``: replicate
 mode had to be threaded through twelve hand-written mechanisms without moving a
 single RNG draw on the ``mc_cate=1`` path, or the committed
-``synt_eval/validation_data`` set -- and every ``val/point`` number ever logged
+``eval_datasets/synt_eval/validation_data`` set -- and every ``val/point`` number ever logged
 against it -- would silently stop being reproducible.
 
 The other sharp checks are the two mechanisms whose Monte Carlo target has a
@@ -25,16 +25,20 @@ import pytest
 import torch
 
 
-from synt_eval.build_proximal_datasets import POOL_FIELDS, build, parse_args
+from eval_datasets.synt_eval.build_proximal_datasets import (
+    POOL_FIELDS,
+    build,
+    parse_args,
+)
 
 
-from synt_eval.realistic_proximal_mechanisms import (
+from eval_datasets.synt_eval.realistic_proximal_mechanisms import (
     RealisticGeneratorConfig,
     RealisticProximalGenerator,
 )
 
 
-from synt_eval.realistic_sidecar import (
+from eval_datasets.synt_eval.realistic_sidecar import (
     load_realistic_meta,
 )
 

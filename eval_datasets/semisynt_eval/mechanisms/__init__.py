@@ -6,9 +6,9 @@ from typing import Type
 
 import torch
 
-from semisynt_eval._config import CaseConfig
-from semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
-from semisynt_eval.mechanisms.calibrated_latent_proxy import (
+from eval_datasets.semisynt_eval._config import CaseConfig
+from eval_datasets.semisynt_eval.mechanisms.base import Mechanism, MechanismOutput
+from eval_datasets.semisynt_eval.mechanisms.calibrated_latent_proxy import (
     CalibratedLatentProxyMechanism,
 )
 

@@ -1,13 +1,13 @@
 """Stratified cuts of a frozen evaluation set.
 
-    uv run python -m prior_eval.strata --dir data/prior_eval/frozen_prod_v1
+    uv run python -m eval_datasets.prior_eval.strata --dir data/prior_eval/frozen_prod_v1
 
 A single pooled ``prior_dist/*`` number hides the failure that matters most.
 Under **weak proxies** proximal identification is fragile, and a posterior that
 stays narrow there is not merely inaccurate -- it is confidently wrong exactly
 where the method's assumptions are weakest. The same hiding applies to strong
 confounding, high outcome noise and poor overlap. This module defines the cuts;
-:mod:`prior_eval.score_strata` scores them.
+:mod:`eval_datasets.prior_eval.score_strata` scores them.
 
 **No rebuild of the set is needed, and none is wanted.** The cuts are a
 *manifest* -- a ``strata.pt`` sidecar of per-episode membership -- for three
@@ -53,8 +53,8 @@ from analysis.analysis_prior.analyses.confounding import delivered_shares
 from analysis.analysis_prior.analyses.mechanism_inputs import mechanism_frame
 from analysis.analysis_prior.analyses.proxy_relevance import WEAK_THRESHOLD, _knobs
 from analysis.analysis_prior.analyses.treatment import OVERLAP_BAND
-from prior_eval._frozen_records import iter_frozen_arrays, sidecar_records
-from prior_eval.build_prior_frozen_set import load_frozen_meta
+from eval_datasets.prior_eval._frozen_records import iter_frozen_arrays, sidecar_records
+from eval_datasets.prior_eval.build_prior_frozen_set import load_frozen_meta
 
 #: Bump when a change makes an existing strata.pt *wrong* rather than merely
 #: differently labelled -- e.g. a cut keeping its name but changing definition.
@@ -191,7 +191,7 @@ def score_homogeneous_effect(records: Sequence[Any]) -> np.ndarray:
     """``gamma_hetero``, the outcome remix dial.
 
     ``gamma -> 0`` collapses the SCM's heterogeneity into a constant treatment
-    effect. Not an obvious axis to cut on, but it earns one: ``prior_eval.verify``
+    effect. Not an obvious axis to cut on, but it earns one: ``eval_datasets.prior_eval.verify``
     showed these episodes drive the out-of-grid tail (a flat ``tau`` sitting past
     the grid edge), and a near-constant target is where a posterior can look
     well-calibrated for reasons that have nothing to do with the proxies.
@@ -272,7 +272,7 @@ def score_weak_proxy_measured(
     identification for that direction.
     """
     from analysis.analysis_prior.analyses.proxy_relevance import relevance_frame
-    from prior_eval._frozen_records import frozen_to_records
+    from eval_datasets.prior_eval._frozen_records import frozen_to_records
 
     records = frozen_to_records(out, rows="context", meta=meta)
     cache_key = f"frozen-{meta['global'].get('git_rev', 'nogit')}-{n}"
@@ -477,7 +477,7 @@ def load_manifest(out: Path, meta: Optional[Dict[str, Any]] = None) -> Dict[str,
     if not path.exists():
         raise FileNotFoundError(
             f"no {MANIFEST_NAME} in {out}. Build it first:\n"
-            f"  uv run python -m prior_eval.strata --dir {out}"
+            f"  uv run python -m eval_datasets.prior_eval.strata --dir {out}"
         )
     manifest = torch.load(path, weights_only=False)
     meta = load_frozen_meta(out) if meta is None else meta
@@ -499,7 +499,7 @@ def load_manifest(out: Path, meta: Optional[Dict[str, Any]] = None) -> Dict[str,
             + "\n  ".join(mismatches)
             + "\nMembership is positional, so scoring with it would silently "
             "attribute each episode's metrics to the wrong stratum. Rebuild:\n"
-            f"  uv run python -m prior_eval.strata --dir {out}"
+            f"  uv run python -m eval_datasets.prior_eval.strata --dir {out}"
         )
     if manifest.get("format_version") != STRATA_FORMAT_VERSION:
         raise ManifestMismatchError(
@@ -559,7 +559,7 @@ def _print_summary(out: Path, manifest: Dict[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m prior_eval.strata",
+        prog="python -m eval_datasets.prior_eval.strata",
         description="Build the stratified-cut manifest for a frozen eval set.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -604,7 +604,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
 
     cli_command = shlex.join(
-        [sys.executable, "-m", "prior_eval.strata", *(argv or sys.argv[1:])]
+        [
+            sys.executable,
+            "-m",
+            "eval_datasets.prior_eval.strata",
+            *(argv or sys.argv[1:]),
+        ]
     )
     manifest = build_manifest(
         args.dir,
@@ -619,7 +624,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _print_summary(args.dir, manifest)
     print(f"Written to {path}")
     print(
-        "Next: uv run python -m prior_eval.score_strata "
+        "Next: uv run python -m eval_datasets.prior_eval.score_strata "
         f"--dir {args.dir} --ckpt <ckpt>"
     )
     return 0

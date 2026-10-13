@@ -51,7 +51,7 @@ REALISTIC_META_VERSION = 1
 SET_KIND = "realistic"
 
 # The *trainer's* standardisation floor, deliberately not ProximalFM.predict's
-# 1e-5. Kept in step with prior_eval.build_prior_frozen_set.Y_STD_FLOOR.
+# 1e-5. Kept in step with eval_datasets.prior_eval.build_prior_frozen_set.Y_STD_FLOOR.
 Y_STD_FLOOR = 1e-3
 
 META_NAME = "frozen_meta.pt"
@@ -124,7 +124,7 @@ def _git_rev() -> Optional[str]:
         return (
             subprocess.check_output(
                 ["git", "rev-parse", "HEAD"],
-                cwd=Path(__file__).resolve().parent.parent,
+                cwd=Path(__file__).resolve().parents[2],
                 stderr=subprocess.DEVNULL,
             )
             .decode()
