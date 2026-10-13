@@ -20,7 +20,7 @@ from ._dataset import DisablePrinting, SCMPrior, _mc_reduce, _scalar_params
 from ._hp_sampling import HpSamplerList
 from ._prior_config import DEFAULT_FIXED_HP, DEFAULT_SAMPLED_HP
 
-# These are the scalar defaults used by inspect_eval_linear.  For vector
+# Scalar defaults for the linear-Gaussian diagnostic prior. For vector
 # dimensions, each output loading column is normalised to the corresponding
 # scalar magnitude, so increasing a dimension changes representation capacity
 # without silently changing the intended mechanism scale.
