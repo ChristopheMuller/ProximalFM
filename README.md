@@ -100,3 +100,15 @@ A single output head represents the CATE distribution as a histogram, from which
 - Qu et al. (2026). [*TabICLv2: A Better, Faster, Scalable, and Open Tabular Foundation Model.*](https://arxiv.org/abs/2602.11139)
 
 </details>
+
+<details>
+<summary><strong>Performance</strong></summary>
+
+We evaluate ProximalFM against classical proximal estimators, causal foundation models, and conventional meta-learners. The main semisynthetic benchmark spans **288 instances across eight settings**, varying mechanism linearity, hidden-confounding strength, and proxy informativeness.
+
+- **CATE accuracy:** ProximalFM is competitive across settings, with its clearest advantage at larger contexts under strong confounding and weak proxies.
+- **Inference speed:** it combines strong accuracy ranks with low inference time and requires no dataset-specific training or hyperparameter selection.
+- **Larger contexts:** gains plateau beyond the main training range of approximately 2,048 observations. Additional training on larger contexts brings modest improvements.
+- **Uncertainty:** credible-interval coverage is close to nominal on data sampled from the training prior, but intervals become overconfident on semisynthetic data as context grows.
+
+</details>
