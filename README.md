@@ -112,3 +112,65 @@ We evaluate ProximalFM against classical proximal estimators, causal foundation 
 - **Uncertainty:** credible-interval coverage is close to nominal on data sampled from the training prior, but intervals become overconfident on semisynthetic data as context grows.
 
 </details>
+
+<details>
+<summary><strong>Quick start</strong></summary>
+
+Install with [uv](https://docs.astral.sh/uv/) and Python 3.12 or later:
+
+```bash
+git clone --recurse-submodules https://github.com/ChristopheMuller/ProximalFM.git
+cd ProximalFM
+uv sync
+```
+
+Save the following as `example.py` in the repository and run `uv run python example.py`. It downloads the model weights and estimates CATE on a small synthetic dataset with hidden confounding.
+
+```python
+import torch
+from huggingface_hub import hf_hub_download
+from proximalfm._model.proximalfm import ProximalFM
+
+torch.set_num_threads(4)
+torch.manual_seed(42)
+
+path = hf_hub_download(
+    repo_id="christophemuller/ProximalFM",
+    filename="proximalfm.ckpt",
+    cache_dir="checkpoints/huggingface",
+)
+checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+model = ProximalFM(**checkpoint["config"])
+model.load_state_dict(checkpoint["state_dict"])
+model.eval()
+print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+# Context: hidden U affects treatment and outcome; Z and W are noisy proxies.
+n = 512
+x, u = torch.randn(n, 1), torch.randn(n, 1)
+z, w = u + 0.3 * torch.randn(n, 1), u + 0.3 * torch.randn(n, 1)
+a = torch.bernoulli(torch.sigmoid(0.4 * x[:, 0] + u[:, 0]))
+y = 0.5 * x[:, 0] + u[:, 0] + a * (1 + 0.5 * x[:, 0]) + 0.3 * torch.randn(n)
+query_x = torch.linspace(-2, 2, 9).reshape(-1, 1)
+
+# Context rows first, query rows second. Query proxies are masked internally.
+inputs = {
+    "X": torch.cat([x, query_x]).unsqueeze(0),
+    "Z": torch.cat([z, torch.zeros_like(query_x)]).unsqueeze(0),
+    "W": torch.cat([w, torch.zeros_like(query_x)]).unsqueeze(0),
+    "A": a.unsqueeze(0),
+    "y_train": y.unsqueeze(0),
+}
+dims = {f"d_{name}": torch.tensor([1]) for name in ("X", "Z", "W")}
+with torch.inference_mode():
+    cate = model.predict(**inputs, **dims, target="cate", output_type="mean")
+
+print("True CATE:", 1 + 0.5 * query_x[:, 0])
+print("Predicted CATE:", cate[0])
+```
+
+For your own data, replace the synthetic context with observed $X$, $Z$, $W$, $A$, and $Y$. Feature tensors have shape `(1, n_context + n_query, n_features)`; treatment and outcome tensors contain context rows only, with shape `(1, n_context)`. Set `d_X`, `d_Z`, and `d_W` to the corresponding feature counts. Predictions are returned in the original outcome units.
+
+For effect quantiles, use `output_type="quantiles", quantiles=[0.05, 0.5, 0.95]` in the same prediction call. The larger-context checkpoint is available as `proximalfm-ft.ckpt`.
+
+</details>
