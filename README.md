@@ -32,19 +32,11 @@ The observed data are partitioned by their causal roles:
 
 **How do proxies identify an effect?** Classical proximal methods recover an *outcome confounding bridge* $h(W,A,X)$ satisfying the observed-data relation
 
-```math
-\mathbb{E}[Y\mid Z,A,X]
-=
-\mathbb{E}[h(W,A,X)\mid Z,A,X].
-```
+$\mathbb{E}[Y\mid Z,A,X]=\mathbb{E}[h(W,A,X)\mid Z,A,X].$
 
 Under the identifying assumptions, the conditional average treatment effect (CATE) for binary treatment follows from the **proximal g-formula**:
 
-```math
-\tau(x)
-=\mathbb{E}[Y(1)-Y(0)\mid X=x]
-=\mathbb{E}[h(W,1,X)-h(W,0,X)\mid X=x].
-```
+$\tau(x)=\mathbb{E}[Y(1)-Y(0)\mid X=x]=\mathbb{E}[h(W,1,X)-h(W,0,X)\mid X=x].$
 
 The final expectation averages over $W$ conditional on $X=x$, yielding an effect conditional on $X$ alone. Proxies therefore help identify the effect without observing $U$. These assumptions require causal domain knowledge; choosing two arbitrary feature blocks as proxies does not establish identification.
 
@@ -68,9 +60,7 @@ Bridge functions can be estimated using parametric, kernel, or neural methods. F
 
 Given an observational context $\mathcal{D}=\{(x_i,z_i,w_i,a_i,y_i)\}_{i=1}^{N}$ and query covariates $x$, ProximalFM estimates
 
-```math
-\tau(x)=\mathbb{E}[Y(1)-Y(0)\mid X=x].
-```
+$\tau(x)=\mathbb{E}[Y(1)-Y(0)\mid X=x].$
 
 The context contains observed covariates, both proxy sets, binary treatment, and factual outcomes. **Queries require only $x$:** their proxies, treatment, and outcome are withheld. The model predicts the CATE directly, without fitting an explicit bridge function to each new dataset. Its distribution approximates the Bayesian posterior over CATE under the synthetic training prior; the posterior mean provides a point estimate.
 
