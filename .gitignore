@@ -42,6 +42,7 @@ NMMR/
 *.png
 !docs/assets/proximalfm-overview.png
 !docs/assets/proximal-causal-dags.png
+!docs/assets/semisynt-learning-curves.png
 *.yaml
 !eval_datasets/semisynt_eval/config.yaml
 !benchmarks/config_methods.yaml

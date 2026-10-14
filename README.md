@@ -28,7 +28,7 @@ The observed data are partitioned by their causal roles:
 
 [![Four example DAGs for proximal causal learning, with hidden confounder U and observed variables X, Z, W, A, and Y](docs/assets/proximal-causal-dags.png)](docs/assets/proximal-causal-dags.png)
 
-*Examples of causal structures compatible with the proxy exclusion restrictions. Dashed nodes and arrows mark the hidden confounder $U$ and its outgoing connections. Identification also requires the assumptions below.*
+*Examples of causal structures compatible with the proxy exclusion restrictions. Dashed nodes and arrows mark the hidden confounder U and its outgoing connections. Identification also requires the assumptions below.*
 
 **What assumptions are needed?** In the setting considered here, identification relies on:
 
@@ -102,6 +102,10 @@ A single output head represents the CATE distribution as a histogram, from which
 <summary><strong>Performance</strong></summary>
 
 We evaluate ProximalFM against classical proximal estimators, causal foundation models, and conventional meta-learners. The main semisynthetic benchmark spans **288 instances across eight settings**, varying mechanism linearity, hidden-confounding strength, and proxy informativeness.
+
+[![Semisynthetic benchmark: CATE nPEHE versus context size across eight settings](docs/assets/semisynt-learning-curves.png)](docs/assets/semisynt-learning-curves.png)
+
+*Median CATE nPEHE across linear and nonlinear settings, with varying confounding and proxy reliability. Lower is better; ProximalFM is shown in orange.*
 
 - **CATE accuracy:** ProximalFM is competitive across settings, with its clearest advantage at larger contexts under strong confounding and weak proxies.
 - **Inference speed:** it combines strong accuracy ranks with low inference time and requires no dataset-specific training or hyperparameter selection.
