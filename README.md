@@ -1,13 +1,16 @@
 # ProximalFM
 
-**A foundation model for proximal causal learning**
-
-Estimate conditional average treatment effects from observational data with hidden confounding and observed proxies, using in-context learning.
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 ![Tests Status](https://github.com/ChristopheMuller/ProximalFM/actions/workflows/tests.yml/badge.svg)
 
+**A foundation model for proximal causal learning**
+
+Estimate conditional average treatment effects from observational data with hidden confounding and observed proxies, using in-context learning.
+
 [Paper](https://arxiv.org/abs/2610.08078) · [Model weights](https://huggingface.co/christophemuller/ProximalFM)
+
+![ProximalFM overview: proximal causal learning, training, and inference](docs/assets/proximalfm-overview.png)
 
 <details>
 <summary><strong>What is proximal causal learning?</strong></summary>
@@ -22,6 +25,10 @@ The observed data are partitioned by their causal roles:
 | $Z$ | **Treatment-confounding proxies:** informative about $U$ and potentially directly related to treatment assignment. |
 | $W$ | **Outcome-confounding proxies:** informative about $U$ and potentially directly affecting the outcome. |
 | $A, Y$ | Observed treatment and outcome. |
+
+[![Four example DAGs for proximal causal learning, with hidden confounder U and observed variables X, Z, W, A, and Y](docs/assets/proximal-causal-dags.png)](docs/assets/proximal-causal-dags.png)
+
+*Examples of causal structures compatible with the proxy exclusion restrictions. Dashed nodes and arrows mark the hidden confounder $U$ and its outgoing connections. Identification also requires the assumptions below.*
 
 **What assumptions are needed?** In the setting considered here, identification relies on:
 

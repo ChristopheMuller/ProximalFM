@@ -40,6 +40,8 @@ NMMR/
 *.npz
 *.csv
 *.png
+!docs/assets/proximalfm-overview.png
+!docs/assets/proximal-causal-dags.png
 *.yaml
 !eval_datasets/semisynt_eval/config.yaml
 !benchmarks/config_methods.yaml
