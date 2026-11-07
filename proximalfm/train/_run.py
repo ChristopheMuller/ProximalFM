@@ -179,6 +179,9 @@ class Trainer:
             "col_nhead": self.config.col_nhead,
             "col_num_inds": self.config.col_num_inds,
             "role_embedding": getattr(self.config, "role_embedding", "learned"),
+            "outcome_encoding": getattr(
+                self.config, "outcome_encoding", "treatment_gated"
+            ),
             "col_affine": self.config.col_affine,
             "col_ssmax": self.config.col_ssmax,
             "row_num_blocks": self.config.row_num_blocks,
@@ -214,15 +217,18 @@ class Trainer:
                 checkpoint_path, map_location=self.config.device, weights_only=True
             )
             if is_resume:
-                saved_mode = checkpoint.get("config", {}).get(
-                    "role_embedding", "learned"
-                )
-                requested_mode = self.model_config["role_embedding"]
-                if saved_mode != requested_mode:
-                    raise ValueError(
-                        f"Cannot resume {checkpoint_path} with role_embedding={requested_mode!r}. "
-                        f"The checkpoint uses {saved_mode!r}. Use a separate checkpoint directory."
-                    )
+                saved_config = checkpoint.get("config", {})
+                for key, default in (
+                    ("role_embedding", "learned"),
+                    ("outcome_encoding", "treatment_gated"),
+                ):
+                    saved_mode = saved_config.get(key, default)
+                    requested_mode = self.model_config[key]
+                    if saved_mode != requested_mode:
+                        raise ValueError(
+                            f"Cannot resume {checkpoint_path} with {key}={requested_mode!r}. "
+                            f"The checkpoint uses {saved_mode!r}. Use a separate checkpoint directory."
+                        )
             old_state_dict = checkpoint.get("state_dict", checkpoint)
             model_state_dict = model.state_dict()
             filtered_state_dict = {}

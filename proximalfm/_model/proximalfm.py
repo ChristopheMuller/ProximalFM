@@ -118,6 +118,9 @@ class ProximalFM(nn.Module):
     role_embedding : {"learned", "none"}, default="learned"
         Add learned X/Z/W role vectors to the shared scalar projection, or use the projection alone.
 
+    outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
+        Select how both the column and ICL stages encode context outcomes and treatments.
+
     col_affine : bool, default=False
         If True, computes embeddings as: :math:`\\text{features} \\times W + b`.
         If False, directly uses the set transformer output as embeddings.
@@ -256,6 +259,7 @@ class ProximalFM(nn.Module):
         bias_free_ln: bool = False,
         recompute: bool = False,
         role_embedding: Literal["learned", "none"] = "learned",
+        outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
         **kwargs,  # capture old parameters that are no longer used to avoid breaking old configs
     ):
         super().__init__()
@@ -306,6 +310,7 @@ class ProximalFM(nn.Module):
             ssmax=col_ssmax,
             recompute=recompute,
             role_embedding=role_embedding,
+            outcome_encoding=outcome_encoding,
         )
 
         self.row_interactor = RowInteraction(
@@ -363,6 +368,7 @@ class ProximalFM(nn.Module):
             ssmax=icl_ssmax,
             recompute=recompute,
             out_dim=out_dim,
+            outcome_encoding=outcome_encoding,
         )
 
         # KV cache for efficient inference

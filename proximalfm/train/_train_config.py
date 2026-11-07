@@ -352,6 +352,12 @@ def build_parser():
         "--embed_dim", type=int, default=128, help="Base embedding dimension"
     )
     parser.add_argument(
+        "--outcome_encoding",
+        choices=("treatment_gated", "additive"),
+        default="treatment_gated",
+        help="How the column and ICL stages encode context outcomes and treatments",
+    )
+    parser.add_argument(
         "--ff_factor",
         type=int,
         default=2,

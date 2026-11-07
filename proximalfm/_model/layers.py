@@ -65,6 +65,20 @@ class SkippableLinear(nn.Linear):
         return out
 
 
+class AdditiveOutcomeEncoder(nn.Module):
+    """Encode an outcome and binary treatment as the sum of two embeddings."""
+
+    def __init__(self, embed_dim: int):
+        super().__init__()
+        self.outcome_projection = nn.Linear(1, embed_dim)
+        self.treatment_embedding = nn.Embedding(2, embed_dim)
+
+    def forward(self, y: Tensor, A: Tensor) -> Tensor:
+        outcome = self.outcome_projection(y.unsqueeze(-1))
+        treatment = self.treatment_embedding((A != 0).long())
+        return outcome + treatment.to(dtype=outcome.dtype)
+
+
 class MultiheadAttention(nn.MultiheadAttention):
     """Enhanced multi-head attention with RoPE, scalable softmax, and KV caching.
 

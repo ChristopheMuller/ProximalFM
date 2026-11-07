@@ -21,11 +21,12 @@
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from collections import OrderedDict
 from torch import nn, Tensor, where
 
 from .encoders import Encoder
+from .layers import AdditiveOutcomeEncoder
 from .kv_cache import KVCache
 from .inference import InferenceManager
 from .inference_config import MgrConfig, InferenceConfig
@@ -76,6 +77,9 @@ class ICLearning(nn.Module):
 
     recompute : bool, default=False
         If True, uses gradient checkpointing to save memory at the cost of additional computation.
+
+    outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
+        Choose a projection by treatment, or add a treatment embedding to a shared outcome projection.
     """
 
     def __init__(
@@ -91,6 +95,7 @@ class ICLearning(nn.Module):
         ssmax: Union[bool, str] = False,
         recompute: bool = False,
         out_dim: int = 999,
+        outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
     ):
         super().__init__()
 
@@ -111,8 +116,14 @@ class ICLearning(nn.Module):
         if self.norm_first:
             self.ln = nn.LayerNorm(d_model, bias=not bias_free_ln)
 
-        self.y0_encoder = nn.Linear(1, d_model)
-        self.y1_encoder = nn.Linear(1, d_model)
+        self.additive_outcome_encoder = None
+        if outcome_encoding == "additive":
+            self.additive_outcome_encoder = AdditiveOutcomeEncoder(d_model)
+        elif outcome_encoding == "treatment_gated":
+            self.y0_encoder = nn.Linear(1, d_model)
+            self.y1_encoder = nn.Linear(1, d_model)
+        else:
+            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
 
         self.decoder = nn.Sequential(
             nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, out_dim)
@@ -134,6 +145,9 @@ class ICLearning(nn.Module):
         Tensor
             Encoded target values of shape (B, train_size, d_model).
         """
+        if self.additive_outcome_encoder is not None:
+            return self.additive_outcome_encoder(y, A)
+
         # Ensure clean [B, train_size, 1] shapes for linear projections
         y_input = y.unsqueeze(-1)
         A_input = A.unsqueeze(-1)

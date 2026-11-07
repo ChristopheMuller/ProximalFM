@@ -78,11 +78,20 @@ def _batch(args, mc_cate=4):
 
 
 @pytest.mark.parametrize("role_embedding", ["learned", "none"])
+@pytest.mark.parametrize("outcome_encoding", ["treatment_gated", "additive"])
 def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
-    tmp_path, role_embedding
+    tmp_path, role_embedding, outcome_encoding
 ):
     args = _args(
-        tmp_path, ["--loss_type", "cate_single", "--role_embedding", role_embedding]
+        tmp_path,
+        [
+            "--loss_type",
+            "cate_single",
+            "--role_embedding",
+            role_embedding,
+            "--outcome_encoding",
+            outcome_encoding,
+        ],
     )
     trainer = Trainer(args)
     metrics = trainer.run_micro_batch(_batch(args), 0, 1)
@@ -94,6 +103,7 @@ def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
     trainer.save_checkpoint(checkpoint_name)
     checkpoint = torch.load(tmp_path / checkpoint_name, weights_only=True)
     assert checkpoint["config"]["role_embedding"] == role_embedding
+    assert checkpoint["config"]["outcome_encoding"] == outcome_encoding
     assert ("col_embedder.role_embedding.weight" in checkpoint["state_dict"]) == (
         role_embedding == "learned"
     )
@@ -103,6 +113,13 @@ def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
     other_mode = "none" if role_embedding == "learned" else "learned"
     args.role_embedding = other_mode
     with pytest.raises(ValueError, match="Cannot resume.*role_embedding"):
+        Trainer(args)
+
+    args.role_embedding = role_embedding
+    args.outcome_encoding = (
+        "additive" if outcome_encoding == "treatment_gated" else "treatment_gated"
+    )
+    with pytest.raises(ValueError, match="Cannot resume.*outcome_encoding"):
         Trainer(args)
 
 

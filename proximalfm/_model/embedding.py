@@ -39,7 +39,7 @@ import torch
 from torch import nn, Tensor
 import torch.nn.functional as F
 
-from .layers import SkippableLinear
+from .layers import AdditiveOutcomeEncoder, SkippableLinear
 from .encoders import SetTransformer
 from .inference import InferenceManager
 from .inference_config import MgrConfig, InferenceConfig
@@ -129,6 +129,9 @@ class ColEmbedding(nn.Module):
 
     role_embedding : {"learned", "none"}, default="learned"
         Add learned X/Z/W role vectors to the shared scalar projection, or use the projection alone.
+
+    outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
+        Choose a projection by treatment, or add a treatment embedding to a shared outcome projection.
     """
 
     def __init__(
@@ -147,6 +150,7 @@ class ColEmbedding(nn.Module):
         ssmax: Union[bool, str] = False,
         recompute: bool = False,
         role_embedding: Literal["learned", "none"] = "learned",
+        outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
     ) -> None:
         super().__init__()
         if role_embedding not in ("learned", "none"):
@@ -171,8 +175,14 @@ class ColEmbedding(nn.Module):
             recompute=recompute,
         )
 
-        self.y0_encoder = nn.Linear(1, embed_dim)
-        self.y1_encoder = nn.Linear(1, embed_dim)
+        self.additive_outcome_encoder = None
+        if outcome_encoding == "additive":
+            self.additive_outcome_encoder = AdditiveOutcomeEncoder(embed_dim)
+        elif outcome_encoding == "treatment_gated":
+            self.y0_encoder = nn.Linear(1, embed_dim)
+            self.y1_encoder = nn.Linear(1, embed_dim)
+        else:
+            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
 
         if affine:
             self.out_w = SkippableLinear(embed_dim, embed_dim)
@@ -199,6 +209,9 @@ class ColEmbedding(nn.Module):
 
     def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
         """Encodes the target variable y and treatment A into embeddings."""
+        if self.additive_outcome_encoder is not None:
+            return self.additive_outcome_encoder(y, A)
+
         y0_emb = self.y0_encoder(y.unsqueeze(-1))
         y1_emb = self.y1_encoder(y.unsqueeze(-1))
         y_emb = torch.where(A.unsqueeze(-1) == 0, y0_emb, y1_emb)

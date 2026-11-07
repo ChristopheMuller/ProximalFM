@@ -103,6 +103,23 @@ def test_cate_single_is_shift_invariant():
     )
 
 
+def test_additive_outcome_encoding_shares_the_projection_across_treatments():
+    model = build_model(outcome_encoding="additive")
+    outcomes = torch.tensor([[-2.0, 0.0, 3.0]])
+    control = torch.zeros_like(outcomes)
+    treated = torch.ones_like(outcomes)
+
+    for stage in (model.col_embedder, model.icl_predictor):
+        with torch.no_grad():
+            encoder = stage.additive_outcome_encoder
+            encoder.treatment_embedding.weight[0].zero_()
+            encoder.treatment_embedding.weight[1].fill_(1.0)
+            control_embedding = stage.y_encoder(outcomes, control)
+            treated_embedding = stage.y_encoder(outcomes, treated)
+
+        torch.testing.assert_close(treated_embedding, control_embedding + 1.0)
+
+
 def test_cate_single_predict_output_types():
     """distribution / mean / quantiles are all supported and mutually consistent."""
     model = build_model(loss_type="cate_single")
