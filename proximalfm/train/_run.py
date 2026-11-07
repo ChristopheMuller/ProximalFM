@@ -182,6 +182,7 @@ class Trainer:
             "outcome_encoding": getattr(
                 self.config, "outcome_encoding", "treatment_gated"
             ),
+            "outcome_injection": getattr(self.config, "outcome_injection", "both"),
             "col_affine": self.config.col_affine,
             "col_ssmax": self.config.col_ssmax,
             "row_num_blocks": self.config.row_num_blocks,
@@ -221,6 +222,7 @@ class Trainer:
                 for key, default in (
                     ("role_embedding", "learned"),
                     ("outcome_encoding", "treatment_gated"),
+                    ("outcome_injection", "both"),
                 ):
                     saved_mode = saved_config.get(key, default)
                     requested_mode = self.model_config[key]

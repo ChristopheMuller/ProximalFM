@@ -119,7 +119,10 @@ class ProximalFM(nn.Module):
         Add learned X/Z/W role vectors to the shared scalar projection, or use the projection alone.
 
     outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
-        Select how both the column and ICL stages encode context outcomes and treatments.
+        Select how the enabled stages encode context outcomes and treatments.
+
+    outcome_injection : {"both", "column", "icl"}, default="both"
+        Select which stages receive the context outcome and treatment embedding.
 
     col_affine : bool, default=False
         If True, computes embeddings as: :math:`\\text{features} \\times W + b`.
@@ -260,9 +263,12 @@ class ProximalFM(nn.Module):
         recompute: bool = False,
         role_embedding: Literal["learned", "none"] = "learned",
         outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
+        outcome_injection: Literal["both", "column", "icl"] = "both",
         **kwargs,  # capture old parameters that are no longer used to avoid breaking old configs
     ):
         super().__init__()
+        if outcome_injection not in ("both", "column", "icl"):
+            raise ValueError(f"Unsupported outcome_injection: {outcome_injection!r}")
         icl_dim = embed_dim * row_num_cls  # CLS tokens are concatenated for ICL
 
         loss_type = LEGACY_LOSS_TYPE_ALIASES.get(loss_type, loss_type)
@@ -311,6 +317,7 @@ class ProximalFM(nn.Module):
             recompute=recompute,
             role_embedding=role_embedding,
             outcome_encoding=outcome_encoding,
+            inject_outcome=outcome_injection in ("both", "column"),
         )
 
         self.row_interactor = RowInteraction(
@@ -369,6 +376,7 @@ class ProximalFM(nn.Module):
             recompute=recompute,
             out_dim=out_dim,
             outcome_encoding=outcome_encoding,
+            inject_outcome=outcome_injection in ("both", "icl"),
         )
 
         # KV cache for efficient inference

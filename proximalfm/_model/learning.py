@@ -80,6 +80,9 @@ class ICLearning(nn.Module):
 
     outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
         Choose a projection by treatment, or add a treatment embedding to a shared outcome projection.
+
+    inject_outcome : bool, default=True
+        Add the outcome and treatment embedding to the context rows.
     """
 
     def __init__(
@@ -96,10 +99,14 @@ class ICLearning(nn.Module):
         recompute: bool = False,
         out_dim: int = 999,
         outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
+        inject_outcome: bool = True,
     ):
         super().__init__()
+        if outcome_encoding not in ("treatment_gated", "additive"):
+            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
 
         self.norm_first = norm_first
+        self.inject_outcome = inject_outcome
 
         self.tf_icl = Encoder(
             num_blocks=num_blocks,
@@ -117,13 +124,12 @@ class ICLearning(nn.Module):
             self.ln = nn.LayerNorm(d_model, bias=not bias_free_ln)
 
         self.additive_outcome_encoder = None
-        if outcome_encoding == "additive":
-            self.additive_outcome_encoder = AdditiveOutcomeEncoder(d_model)
-        elif outcome_encoding == "treatment_gated":
-            self.y0_encoder = nn.Linear(1, d_model)
-            self.y1_encoder = nn.Linear(1, d_model)
-        else:
-            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
+        if self.inject_outcome:
+            if outcome_encoding == "additive":
+                self.additive_outcome_encoder = AdditiveOutcomeEncoder(d_model)
+            else:
+                self.y0_encoder = nn.Linear(1, d_model)
+                self.y1_encoder = nn.Linear(1, d_model)
 
         self.decoder = nn.Sequential(
             nn.Linear(d_model, d_model * 2), nn.GELU(), nn.Linear(d_model * 2, out_dim)
@@ -164,20 +170,15 @@ class ICLearning(nn.Module):
         """In-context learning predictions."""
         train_size = y_train.shape[1]
 
-        if A_train.dim() == 3:
-            A_train = A_train.squeeze(-1)
+        src = R
+        if self.inject_outcome:
+            if A_train.dim() == 3:
+                A_train = A_train.squeeze(-1)
+            A_context = A_train[:, :train_size]
+            y_emb = self.y_encoder(y_train, A_context)
+            src = R.clone()
+            src[:, :train_size] = src[:, :train_size] + y_emb
 
-        # 2. SECURITY: Extract and slice A to isolate context entries matching y_train
-        A_context = A_train[:, :train_size]  # Shape: (B, train_size)
-
-        # 3. Compute conditional target embeddings
-        y_emb = self.y_encoder(y_train, A_context)  # Shape: (B, train_size, d_model)
-
-        # 4. FIX: Safely clone R and add context target values
-        src = R.clone()
-        src[:, :train_size] = src[:, :train_size] + y_emb
-
-        # 5. Dataset-wide context parsing
         src = self.tf_icl(src, train_size=train_size)
         if self.norm_first:
             src = self.ln(src)

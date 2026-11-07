@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import torch
 
 
@@ -118,6 +120,37 @@ def test_additive_outcome_encoding_shares_the_projection_across_treatments():
             treated_embedding = stage.y_encoder(outcomes, treated)
 
         torch.testing.assert_close(treated_embedding, control_embedding + 1.0)
+
+
+@pytest.mark.parametrize("outcome_encoding", ["treatment_gated", "additive"])
+@pytest.mark.parametrize(
+    "outcome_injection, inject_column, inject_icl",
+    [("both", True, True), ("column", True, False), ("icl", False, True)],
+)
+def test_outcome_injection_routes_context_to_selected_stages(
+    outcome_encoding, outcome_injection, inject_column, inject_icl
+):
+    model = build_model(
+        outcome_encoding=outcome_encoding, outcome_injection=outcome_injection
+    )
+    inputs, (batch_size, rows, context_rows) = build_data()
+
+    for training in (True, False):
+        model.train(training)
+        with (
+            torch.no_grad(),
+            patch.object(
+                model.col_embedder, "y_encoder", wraps=model.col_embedder.y_encoder
+            ) as column,
+            patch.object(
+                model.icl_predictor, "y_encoder", wraps=model.icl_predictor.y_encoder
+            ) as icl,
+        ):
+            output = model(*inputs)
+
+        assert output.shape == (batch_size, rows - context_rows, 2 * NBINS)
+        assert column.called == inject_column
+        assert icl.called == inject_icl
 
 
 def test_cate_single_predict_output_types():

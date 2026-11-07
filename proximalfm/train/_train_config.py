@@ -355,7 +355,13 @@ def build_parser():
         "--outcome_encoding",
         choices=("treatment_gated", "additive"),
         default="treatment_gated",
-        help="How the column and ICL stages encode context outcomes and treatments",
+        help="How the enabled stages encode context outcomes and treatments",
+    )
+    parser.add_argument(
+        "--outcome_injection",
+        choices=("both", "column", "icl"),
+        default="both",
+        help="Where to add context outcome and treatment embeddings",
     )
     parser.add_argument(
         "--ff_factor",

@@ -132,6 +132,9 @@ class ColEmbedding(nn.Module):
 
     outcome_encoding : {"treatment_gated", "additive"}, default="treatment_gated"
         Choose a projection by treatment, or add a treatment embedding to a shared outcome projection.
+
+    inject_outcome : bool, default=True
+        Add the outcome and treatment embedding to the context rows.
     """
 
     def __init__(
@@ -151,13 +154,17 @@ class ColEmbedding(nn.Module):
         recompute: bool = False,
         role_embedding: Literal["learned", "none"] = "learned",
         outcome_encoding: Literal["treatment_gated", "additive"] = "treatment_gated",
+        inject_outcome: bool = True,
     ) -> None:
         super().__init__()
         if role_embedding not in ("learned", "none"):
             raise ValueError(f"Unsupported role_embedding: {role_embedding!r}")
+        if outcome_encoding not in ("treatment_gated", "additive"):
+            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
         self.embed_dim = embed_dim
         self.reserve_cls_tokens = reserve_cls_tokens
         self.affine = affine
+        self.inject_outcome = inject_outcome
 
         self.in_linear = SkippableLinear(1, embed_dim)
 
@@ -176,13 +183,12 @@ class ColEmbedding(nn.Module):
         )
 
         self.additive_outcome_encoder = None
-        if outcome_encoding == "additive":
-            self.additive_outcome_encoder = AdditiveOutcomeEncoder(embed_dim)
-        elif outcome_encoding == "treatment_gated":
-            self.y0_encoder = nn.Linear(1, embed_dim)
-            self.y1_encoder = nn.Linear(1, embed_dim)
-        else:
-            raise ValueError(f"Unsupported outcome_encoding: {outcome_encoding!r}")
+        if self.inject_outcome:
+            if outcome_encoding == "additive":
+                self.additive_outcome_encoder = AdditiveOutcomeEncoder(embed_dim)
+            else:
+                self.y0_encoder = nn.Linear(1, embed_dim)
+                self.y1_encoder = nn.Linear(1, embed_dim)
 
         if affine:
             self.out_w = SkippableLinear(embed_dim, embed_dim)
@@ -261,16 +267,12 @@ class ColEmbedding(nn.Module):
         # Keep a concatenated version of the raw features for the affine step later
         raw_features = torch.cat([X, Z, W], dim=1)
 
-        # 3. Add target embeddings (y_train) to the context rows
-        assert y_train is not None, "y_train must be provided."
-
-        A_context = A_train[:, 0, :train_size, 0]
-        y_emb = self.y_encoder(y_train, A_context)
-        y_emb_broadcast = y_emb.unsqueeze(1)
-
-        # ('A_context shape: torch.Size([4, 633])', 'A_train shape: torch.Size([4, 1, 633, 1])', 'y_train shape: torch.Size([4, 633])')
-
-        src[..., :train_size, :] = src[..., :train_size, :] + y_emb_broadcast
+        # 3. Optionally add outcome and treatment embeddings to the context rows.
+        if self.inject_outcome:
+            assert y_train is not None, "y_train must be provided."
+            A_context = A_train[:, 0, :train_size, 0]
+            y_emb = self.y_encoder(y_train, A_context)
+            src[..., :train_size, :] = src[..., :train_size, :] + y_emb.unsqueeze(1)
 
         inv_mask_exp = inv_concat.unsqueeze(-1).unsqueeze(-1).expand_as(src)
         src[inv_mask_exp] = -100.0

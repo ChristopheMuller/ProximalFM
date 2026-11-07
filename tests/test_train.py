@@ -104,6 +104,7 @@ def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
     checkpoint = torch.load(tmp_path / checkpoint_name, weights_only=True)
     assert checkpoint["config"]["role_embedding"] == role_embedding
     assert checkpoint["config"]["outcome_encoding"] == outcome_encoding
+    assert checkpoint["config"]["outcome_injection"] == "both"
     assert ("col_embedder.role_embedding.weight" in checkpoint["state_dict"]) == (
         role_embedding == "learned"
     )
@@ -120,6 +121,11 @@ def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
         "additive" if outcome_encoding == "treatment_gated" else "treatment_gated"
     )
     with pytest.raises(ValueError, match="Cannot resume.*outcome_encoding"):
+        Trainer(args)
+
+    args.outcome_encoding = outcome_encoding
+    args.outcome_injection = "icl"
+    with pytest.raises(ValueError, match="Cannot resume.*outcome_injection"):
         Trainer(args)
 
 
