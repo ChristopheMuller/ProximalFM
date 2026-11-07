@@ -115,6 +115,9 @@ class ProximalFM(nn.Module):
     col_num_inds : int, default=128
         Number of inducing points in the column embedding transformer.
 
+    role_embedding : {"learned", "none"}, default="learned"
+        Add learned X/Z/W role vectors to the shared scalar projection, or use the projection alone.
+
     col_affine : bool, default=False
         If True, computes embeddings as: :math:`\\text{features} \\times W + b`.
         If False, directly uses the set transformer output as embeddings.
@@ -252,6 +255,7 @@ class ProximalFM(nn.Module):
         norm_first: bool = True,
         bias_free_ln: bool = False,
         recompute: bool = False,
+        role_embedding: Literal["learned", "none"] = "learned",
         **kwargs,  # capture old parameters that are no longer used to avoid breaking old configs
     ):
         super().__init__()
@@ -301,6 +305,7 @@ class ProximalFM(nn.Module):
             reserve_cls_tokens=row_num_cls,
             ssmax=col_ssmax,
             recompute=recompute,
+            role_embedding=role_embedding,
         )
 
         self.row_interactor = RowInteraction(

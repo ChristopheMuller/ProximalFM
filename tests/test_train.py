@@ -77,19 +77,33 @@ def _batch(args, mc_cate=4):
     return prior.get_batch()
 
 
-def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(tmp_path):
-    args = _args(tmp_path, ["--loss_type", "cate_single"])
+@pytest.mark.parametrize("role_embedding", ["learned", "none"])
+def test_trainer_runs_a_real_micro_batch_and_writes_checkpoint(
+    tmp_path, role_embedding
+):
+    args = _args(
+        tmp_path, ["--loss_type", "cate_single", "--role_embedding", role_embedding]
+    )
     trainer = Trainer(args)
     metrics = trainer.run_micro_batch(_batch(args), 0, 1)
     assert metrics and all(
         torch.isfinite(torch.tensor(value)) for value in metrics.values()
     )
-    trainer.save_checkpoint("smoke.ckpt")
-    checkpoint = tmp_path / "smoke.ckpt"
-    assert checkpoint.exists() and "state_dict" in torch.load(
-        checkpoint, weights_only=False
-    )
     assert trainer._checkpoint_name(1) == "step-000001.ckpt"
+    checkpoint_name = trainer._checkpoint_name(1)
+    trainer.save_checkpoint(checkpoint_name)
+    checkpoint = torch.load(tmp_path / checkpoint_name, weights_only=True)
+    assert checkpoint["config"]["role_embedding"] == role_embedding
+    assert ("col_embedder.role_embedding.weight" in checkpoint["state_dict"]) == (
+        role_embedding == "learned"
+    )
+    restored = type(trainer.model)(**checkpoint["config"])
+    restored.load_state_dict(checkpoint["state_dict"])
+
+    other_mode = "none" if role_embedding == "learned" else "learned"
+    args.role_embedding = other_mode
+    with pytest.raises(ValueError, match="Cannot resume.*role_embedding"):
+        Trainer(args)
 
 
 def test_noise_aware_loss_uses_mc_batch_metadata(tmp_path):

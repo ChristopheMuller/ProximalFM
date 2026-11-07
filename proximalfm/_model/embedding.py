@@ -32,7 +32,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 from collections import OrderedDict
 
 import torch
@@ -126,6 +126,9 @@ class ColEmbedding(nn.Module):
 
     recompute : bool, default=False
         If True, uses gradient checkpointing to save memory at the cost of additional computation.
+
+    role_embedding : {"learned", "none"}, default="learned"
+        Add learned X/Z/W role vectors to the shared scalar projection, or use the projection alone.
     """
 
     def __init__(
@@ -143,8 +146,11 @@ class ColEmbedding(nn.Module):
         reserve_cls_tokens: int = 4,
         ssmax: Union[bool, str] = False,
         recompute: bool = False,
+        role_embedding: Literal["learned", "none"] = "learned",
     ) -> None:
         super().__init__()
+        if role_embedding not in ("learned", "none"):
+            raise ValueError(f"Unsupported role_embedding: {role_embedding!r}")
         self.embed_dim = embed_dim
         self.reserve_cls_tokens = reserve_cls_tokens
         self.affine = affine
@@ -185,8 +191,11 @@ class ColEmbedding(nn.Module):
 
         self.inference_mgr = InferenceManager(enc_name="tf_col", out_dim=embed_dim)
 
-        # 4 Causal Roles: 0=X, 1=Z, 2=W
-        self.role_embedding = nn.Embedding(num_embeddings=3, embedding_dim=embed_dim)
+        self.role_embedding = (
+            nn.Embedding(num_embeddings=3, embedding_dim=embed_dim)
+            if role_embedding == "learned"
+            else None
+        )
 
     def y_encoder(self, y: Tensor, A: Tensor) -> Tensor:
         """Encodes the target variable y and treatment A into embeddings."""
@@ -215,18 +224,22 @@ class ColEmbedding(nn.Module):
         inv_concat: Tensor,
         embed_with_test: bool = False,
     ) -> Tensor:
-        """Feature embedding using a shared set transformer with Causal Roles.
+        """Feature embedding using a shared set transformer with optional role tags.
 
         Assumes X, Z, W, A have been transposed/unsqueezed to shape:
         (B, num_features, T, 1)
         """
-        device = X.device
-
-        # 1. Project each variable and add its specific Causal Role Embedding
-        # self.in_linear maps (..., T, 1) -> (..., T, E)
-        src_X = self.in_linear(X) + self.role_embedding(torch.tensor(0, device=device))
-        src_Z = self.in_linear(Z) + self.role_embedding(torch.tensor(1, device=device))
-        src_W = self.in_linear(W) + self.role_embedding(torch.tensor(2, device=device))
+        # 1. Project each variable and optionally add its role vector.
+        src_X = self.in_linear(X)
+        src_Z = self.in_linear(Z)
+        src_W = self.in_linear(W)
+        if self.role_embedding is not None:
+            # Role IDs 0, 1, and 2 correspond to X, Z, and W.
+            role_ids = torch.arange(3, device=X.device)
+            role_tags = self.role_embedding(role_ids)
+            src_X = src_X + role_tags[0]
+            src_Z = src_Z + role_tags[1]
+            src_W = src_W + role_tags[2]
 
         # 2. Concatenate along the feature dimension (dim=1)
         # Resulting shape: (B, D_X + D_Z + D_W, T, E)

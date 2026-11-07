@@ -402,6 +402,12 @@ def build_parser():
         help="Number of inducing points in column embedder",
     )
     parser.add_argument(
+        "--role_embedding",
+        choices=("learned", "none"),
+        default="learned",
+        help="Add learned X/Z/W tags or use the shared column projection alone",
+    )
+    parser.add_argument(
         "--col_affine",
         default=False,
         type=str2bool,
