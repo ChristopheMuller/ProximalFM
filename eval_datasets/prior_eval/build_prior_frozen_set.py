@@ -669,6 +669,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_dim_X", type=int, default=1)
     p.add_argument("--max_dim_X", type=int, default=10)
     p.add_argument(
+        "--prior_type", choices=["mlp_scm", "ablation_scm"], default="mlp_scm"
+    )
+    p.add_argument(
         "--force",
         action="store_true",
         help=(
@@ -715,6 +718,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_dim_Z=args.max_dim_Z,
         min_dim_X=args.min_dim_X,
         max_dim_X=args.max_dim_X,
+        prior_type=args.prior_type,
         gen_device=args.gen_device,
     )
     if args.n_jobs != 1 and cfg.gen_device != "cpu":

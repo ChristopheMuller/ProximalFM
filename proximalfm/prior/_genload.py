@@ -1276,11 +1276,12 @@ if __name__ == "__main__":
         "--prior_type",
         type=str,
         default="mlp_scm",
-        choices=["mlp_scm", "tree_scm", "mix_scm", "linear"],
+        choices=["mlp_scm", "tree_scm", "mix_scm", "linear", "ablation_scm"],
         help="Type of prior to use (default: mlp_scm, matching SCMPrior's own "
         "default). 'tree_scm' and 'mix_scm' route some or all mechanisms "
         "through TreeSCM, which is unmaintained: 'mix_scm' silently sends ~30%% "
-        "of datasets down it. 'linear' selects the linear diagnostic generator.",
+        "of datasets down it. 'linear' selects the linear diagnostic generator. "
+        "'ablation_scm' uses the proximal ablation prior with multivariate normal U and scalar X.",
     )
     parser.add_argument(
         "--mc_cate",

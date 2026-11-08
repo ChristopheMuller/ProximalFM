@@ -295,7 +295,7 @@ def build_parser():
         "--prior_type",
         default="mlp_scm",
         type=str,
-        help="Prior type: mlp_scm, tree_scm, mix_scm, or linear for the linear diagnostic",
+        help="Prior type: mlp_scm, tree_scm, mix_scm, linear, or ablation_scm",
     )
     parser.add_argument(
         "--prior_device",
