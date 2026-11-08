@@ -669,7 +669,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_dim_X", type=int, default=1)
     p.add_argument("--max_dim_X", type=int, default=10)
     p.add_argument(
-        "--prior_type", choices=["mlp_scm", "ablation_scm"], default="mlp_scm"
+        "--prior_type",
+        choices=["mlp_scm", "ablation_scm", "ablation_scm_slope"],
+        default="mlp_scm",
     )
     p.add_argument(
         "--force",

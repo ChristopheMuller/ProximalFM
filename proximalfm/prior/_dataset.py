@@ -1762,6 +1762,8 @@ class PriorDataset(IterableDataset):
            the same fixed-query split and MC-CATE batch contract.
          - 'ablation_scm': Gaussian covariates and confounders with noisy linear
            proxies and paired Monte Carlo targets.
+         - 'ablation_scm_slope': Scalar ablation SCM with a varying CATE slope
+           and fixed nuisance mechanisms.
 
     mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets
@@ -1825,7 +1827,7 @@ class PriorDataset(IterableDataset):
             from ._linear_dataset import LinearSCMPrior
 
             prior_cls = LinearSCMPrior
-        elif prior_type == "ablation_scm":
+        elif prior_type in ("ablation_scm", "ablation_scm_slope"):
             from ._ablation_dataset import AblationSCMPrior
 
             prior_cls = AblationSCMPrior

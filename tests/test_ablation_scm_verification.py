@@ -1,5 +1,6 @@
 """Integration checks for the proximal ablation prior."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +16,7 @@ from proximalfm.train._train_config import build_parser
 from eval_datasets.prior_eval.build_prior_frozen_set import (
     BuildConfig,
     build,
+    generate_episode,
     load_frozen_meta,
 )
 
@@ -262,3 +264,46 @@ def test_frozen_ablation_set_preserves_high_k_reference(tmp_path):
         assert (batch[17][i, q] > 0).all()
         torch.testing.assert_close(record["s2"], batch[17][i, q], rtol=0, atol=0)
         torch.testing.assert_close(record["tau_star"], saved, rtol=0, atol=0)
+
+
+def test_scalar_ablation_varies_only_cate_slope_and_preserves_mc_noise():
+    cfg = BuildConfig(
+        n_datasets=4,
+        n_max=64,
+        n_q=512,
+        mc_cate=16,
+        seed=431,
+        prior_mc_mem_budget=20_000_000,
+        max_dim_U=1,
+        max_dim_X=1,
+        max_dim_W=1,
+        max_dim_Z=1,
+        prior_type="ablation_scm_slope",
+    )
+    episodes = [generate_episode(cfg, i) for i in range(cfg.n_datasets)]
+    records = [episode["record"] for episode in episodes]
+    coefficients = [record["sampled_hp"] for record in records]
+    slopes = [c["beta"] for c in coefficients]
+    assert len(set(slopes)) == cfg.n_datasets
+    assert all(0.75 <= abs(slope) <= 1.25 for slope in slopes)
+    for record in records[1:]:
+        for key, value in records[0]["mechanisms"].items():
+            torch.testing.assert_close(record["mechanisms"][key], value)
+    assert all(
+        c[key] == value
+        for c in coefficients[1:]
+        for key, value in coefficients[0].items()
+        if key != "beta"
+    )
+
+    low_k = episodes[0]
+    high_k = generate_episode(replace(cfg, mc_cate=250), 0)
+    for key in ("U", "X", "W", "Z", "A", "Y_obs"):
+        torch.testing.assert_close(low_k["tensors"][key], high_k["tensors"][key])
+    expected = slopes[0] * low_k["tensors"]["X"][cfg.n_max :, 0]
+    for episode, k in ((low_k, 16), (high_k, 250)):
+        record = episode["record"]
+        error = record["tau_star"] - expected
+        assert record["k_eff"] == k
+        assert error.var().item() == pytest.approx(1 / k, rel=0.2)
+        assert record["s2"].mean().item() == pytest.approx(1 / k, rel=0.1)

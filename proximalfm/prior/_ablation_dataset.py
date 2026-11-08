@@ -37,6 +37,9 @@ class AblationSCMPrior(SCMPrior):
             raise ValueError(
                 "ablation_scm requires max_dim_W and max_dim_Z >= max_dim_U"
             )
+        max_dims = (max_dim_U, max_dim_X, max_dim_W, max_dim_Z)
+        if prior_type == "ablation_scm_slope" and max_dims != (1, 1, 1, 1):
+            raise ValueError("ablation_scm_slope requires scalar U, X, W and Z")
         super().__init__(
             min_dim_U=min_dim_U,
             max_dim_U=max_dim_U,
@@ -75,29 +78,41 @@ class AblationSCMPrior(SCMPrior):
         if min(d_w, d_z) < d_u:
             raise ValueError("ablation_scm requires dim_W and dim_Z >= dim_U")
 
-        c0, cx, cu, cxu, b0, bx, bu, tau0, beta, gamma = torch.rand(
-            10, device=device
-        ).unbind()
-        c0 = 2 * c0 - 1
-        cx, b0, bx, tau0 = cx - 0.5, b0 - 0.5, bx - 0.5, tau0 - 0.5
-        cu, cxu, bu = cu + 0.5, cxu + 0.75, bu + 0.75
-        beta_sign, gamma_sign, bu_sign, cxu_sign = (
-            2 * torch.randint(0, 2, (4,), device=device) - 1
-        ).unbind()
-        beta = beta_sign * (0.75 + 0.5 * beta)
-        gamma = gamma_sign * (0.6 + 0.4 * gamma)
-        # Vary the signs of level and shape confounding across episodes.
-        bu, cxu = bu_sign * bu, cxu_sign * cxu
-        # Unit loading strength in every latent direction at every proxy width.
-        loading_w = torch.linalg.qr(
-            torch.randn(d_w, d_u, device=device), mode="reduced"
-        ).Q
-        loading_z = torch.linalg.qr(
-            torch.randn(d_z, d_u, device=device), mode="reduced"
-        ).Q
-        cz = 0.75 * F.normalize(torch.randn(d_z, device=device), dim=0)
-        confounding_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
-        effect_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
+        if self.prior_type == "ablation_scm_slope":
+            # X is independent of treatment, so the arm slopes reveal beta.
+            # U still confounds the outcome level and varies individual effects.
+            c0 = cx = cxu = b0 = bx = tau0 = 0.0
+            cu = bu = 0.5
+            gamma = 1.0
+            beta_sign = 2 * torch.randint(0, 2, (), device=device) - 1
+            beta = beta_sign * (0.75 + 0.5 * torch.rand((), device=device))
+            loading_w = loading_z = torch.ones((1, 1), device=device)
+            confounding_direction = effect_direction = torch.ones(1, device=device)
+            cz = torch.full((1,), 0.25, device=device)
+        else:
+            c0, cx, cu, cxu, b0, bx, bu, tau0, beta, gamma = torch.rand(
+                10, device=device
+            ).unbind()
+            c0 = 2 * c0 - 1
+            cx, b0, bx, tau0 = cx - 0.5, b0 - 0.5, bx - 0.5, tau0 - 0.5
+            cu, cxu, bu = cu + 0.5, cxu + 0.75, bu + 0.75
+            beta_sign, gamma_sign, bu_sign, cxu_sign = (
+                2 * torch.randint(0, 2, (4,), device=device) - 1
+            ).unbind()
+            beta = beta_sign * (0.75 + 0.5 * beta)
+            gamma = gamma_sign * (0.6 + 0.4 * gamma)
+            # Vary the signs of level and shape confounding across episodes.
+            bu, cxu = bu_sign * bu, cxu_sign * cxu
+            # Unit loading strength in every latent direction at every proxy width.
+            loading_w = torch.linalg.qr(
+                torch.randn(d_w, d_u, device=device), mode="reduced"
+            ).Q
+            loading_z = torch.linalg.qr(
+                torch.randn(d_z, d_u, device=device), mode="reduced"
+            ).Q
+            cz = 0.75 * F.normalize(torch.randn(d_z, device=device), dim=0)
+            confounding_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
+            effect_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
 
         x = torch.randn(rows, d_x, device=device)
         # Unit directions keep the covariate signal strength fixed across widths.
