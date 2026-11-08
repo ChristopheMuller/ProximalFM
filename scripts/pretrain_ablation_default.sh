@@ -10,7 +10,6 @@ OUTCOME_INJECTION=${OUTCOME_INJECTION:-both}
 
 source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 
-# The prior samples context sizes in [64, 129), plus 16 query rows.
 python -m proximalfm.train \
     --np_seed 1234 --torch_seed 1234 \
     --device "${DEVICE}" --prior_device cpu \
@@ -21,10 +20,10 @@ python -m proximalfm.train \
     --outcome_encoding "${OUTCOME_ENCODING}" \
     --outcome_injection "${OUTCOME_INJECTION}" \
     --max_steps "${MAX_STEPS}" --batch_size 4 --micro_batch_size 2 \
-    --batch_size_per_gp 2 --min_seq_len 64 --max_seq_len 129 --n_query 16 \
+    --batch_size_per_gp 2 --min_seq_len 64 --max_seq_len 257 --n_query 16 \
     --prior_type mlp_scm \
-    --min_dim_U 1 --max_dim_U 2 \
-    --min_dim_X 1 --max_dim_X 4 \
+    --min_dim_U 1 --max_dim_U 3 \
+    --min_dim_X 0 --max_dim_X 4 \
     --min_dim_W 1 --max_dim_W 4 \
     --min_dim_Z 1 --max_dim_Z 4 \
     --mc_cate 250 --mc_targets_on_context False \
