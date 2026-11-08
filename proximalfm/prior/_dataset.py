@@ -1760,8 +1760,8 @@ class PriorDataset(IterableDataset):
          - 'mix_scm': Probabilistic mix of the above models.
          - 'linear': Modern vector linear-Gaussian diagnostic generator using
            the same fixed-query split and MC-CATE batch contract.
-         - 'ablation_scm': Scalar covariate and multivariate normal confounder with
-           noisy linear proxies and paired Monte Carlo targets.
+         - 'ablation_scm': Gaussian covariates and confounders with noisy linear
+           proxies and paired Monte Carlo targets.
 
     mc_cate : int, default=200
         Number of Monte Carlo samples used to estimate the CATE targets

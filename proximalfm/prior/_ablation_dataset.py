@@ -11,7 +11,7 @@ from ._dataset import SCMPrior, _mc_reduce
 
 
 class AblationSCMPrior(SCMPrior):
-    """Scalar X and standard-normal U, with linear proxy blocks."""
+    """Standard-normal X and U, with linear proxy blocks."""
 
     def __init__(
         self,
@@ -27,8 +27,8 @@ class AblationSCMPrior(SCMPrior):
         prior_type: str = "ablation_scm",
         **kwargs,
     ):
-        if min_dim_X != 1 or max_dim_X != 1:
-            raise ValueError("ablation_scm requires min/max dimensions of X to be 1")
+        if not 1 <= min_dim_X <= max_dim_X:
+            raise ValueError("ablation_scm requires 1 <= min_dim_X <= max_dim_X")
         if not 1 <= min_dim_U <= max_dim_U:
             raise ValueError("ablation_scm requires 1 <= min_dim_U <= max_dim_U")
         if not (1 <= min_dim_W <= max_dim_W and 1 <= min_dim_Z <= max_dim_Z):
@@ -71,6 +71,7 @@ class AblationSCMPrior(SCMPrior):
             raise ValueError("mc_cate must be >= 1")
         k = self._cap_mc_samples(k_requested, n_ctx, n_targets, params)
         d_u, d_w, d_z = params["dim_U"], params["dim_W"], params["dim_Z"]
+        d_x = params["dim_X"]
         if min(d_w, d_z) < d_u:
             raise ValueError("ablation_scm requires dim_W and dim_Z >= dim_U")
 
@@ -98,18 +99,30 @@ class AblationSCMPrior(SCMPrior):
         confounding_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
         effect_direction = F.normalize(torch.randn(d_u, device=device), dim=0)
 
-        x = torch.randn(rows, device=device)
+        x = torch.randn(rows, d_x, device=device)
+        # Unit directions keep the covariate signal strength fixed across widths.
+        if d_x == 1:
+            x_directions = torch.ones(1, 4, device=device)
+        else:
+            x_directions = F.normalize(torch.randn(d_x, 4, device=device), dim=0)
+        x_treatment, x_confounding, x_baseline, x_effect = (x @ x_directions).unbind(1)
         u = torch.randn(rows, d_u, device=device)
         u_confounding = u @ confounding_direction
         u_effect = u @ effect_direction
         w = u @ loading_w.T + torch.randn(rows, d_w, device=device)
         z = u @ loading_z.T + torch.randn(rows, d_z, device=device)
-        logits = c0 + cx * x + cu * u_confounding + z @ cz + cxu * x * u_confounding
+        logits = (
+            c0
+            + cx * x_treatment
+            + cu * u_confounding
+            + z @ cz
+            + cxu * x_confounding * u_confounding
+        )
         a_probs = 0.1 + 0.8 * logits.sigmoid()
         a = torch.bernoulli(a_probs).long()
-        mu0 = b0 + bx * x
-        cate = tau0 + beta * x
-        y0 = mu0 + bu * u_confounding + 0.35 * torch.randn_like(x)
+        mu0 = b0 + bx * x_baseline
+        cate = tau0 + beta * x_effect
+        y0 = mu0 + bu * u_confounding + 0.35 * torch.randn_like(mu0)
         y1 = y0 + cate + gamma * u_effect
         y_obs = torch.where(a == 1, y1, y0)
 
@@ -167,15 +180,16 @@ class AblationSCMPrior(SCMPrior):
                     "c_Z": cz,
                     "confounding_direction": confounding_direction,
                     "effect_direction": effect_direction,
+                    "x_directions": x_directions,
                 },
             }
 
-        d_u, d_x, d_w_active, d_z_active, k_eff = torch.tensor(
-            [d_u, 1, d_w, d_z, k], dtype=torch.long, device=device
+        d_u_active, d_x_active, d_w_active, d_z_active, k_eff = torch.tensor(
+            [d_u, d_x, d_w, d_z, k], dtype=torch.long, device=device
         ).unbind()
         return (
             F.pad(u, (0, params["max_dim_U"] - d_u)),
-            x[:, None],
+            F.pad(x, (0, params["max_dim_X"] - d_x)),
             F.pad(w, (0, params["max_dim_W"] - d_w)),
             F.pad(z, (0, params["max_dim_Z"] - d_z)),
             a,
@@ -185,8 +199,8 @@ class AblationSCMPrior(SCMPrior):
             y1,
             target0,
             target1,
-            d_u,
-            d_x,
+            d_u_active,
+            d_x_active,
             d_w_active,
             d_z_active,
             s2,

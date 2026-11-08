@@ -67,8 +67,8 @@ def test_invalid_query_count_is_rejected():
             SCMPrior(n_query=value)
 
 
-@pytest.mark.parametrize("dim_u", [1, 3])
-def test_ablation_prior_preserves_observations_and_target_prefixes(dim_u):
+@pytest.mark.parametrize(("dim_u", "dim_x"), [(1, 1), (3, 4)])
+def test_ablation_prior_preserves_observations_and_target_prefixes(dim_u, dim_x):
     context, queries = 64, 16
     batches, draws = [], []
     for k in (1, 16, 250):
@@ -77,8 +77,8 @@ def test_ablation_prior_preserves_observations_and_target_prefixes(dim_u):
             batch_size=1,
             min_dim_U=dim_u,
             max_dim_U=dim_u,
-            min_dim_X=1,
-            max_dim_X=1,
+            min_dim_X=dim_x,
+            max_dim_X=dim_x,
             min_dim_W=3,
             max_dim_W=3,
             min_dim_Z=4,
@@ -93,7 +93,7 @@ def test_ablation_prior_preserves_observations_and_target_prefixes(dim_u):
         ) as reduce:
             torch.manual_seed(1234)
             batch = prior.get_batch()
-        assert tuple(t.item() for t in batch[11:17]) == (dim_u, 1, 3, 4, 80, 64)
+        assert tuple(t.item() for t in batch[11:17]) == (dim_u, dim_x, 3, 4, 80, 64)
         assert batch[-1].item() == k
         assert torch.all((batch[5] >= 0.1) & (batch[5] <= 0.9))
         torch.testing.assert_close(

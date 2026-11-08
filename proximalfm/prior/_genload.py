@@ -1281,7 +1281,7 @@ if __name__ == "__main__":
         "default). 'tree_scm' and 'mix_scm' route some or all mechanisms "
         "through TreeSCM, which is unmaintained: 'mix_scm' silently sends ~30%% "
         "of datasets down it. 'linear' selects the linear diagnostic generator. "
-        "'ablation_scm' uses the proximal ablation prior with multivariate normal U and scalar X.",
+        "'ablation_scm' uses the proximal ablation prior with Gaussian X and U.",
     )
     parser.add_argument(
         "--mc_cate",

@@ -13,7 +13,7 @@ def estimate(x, w, z, u, a, y, x_query, method):
     # Center adjustment variables on the whole context. The resulting contrasts
     # average over the pre-treatment context distribution of the proxies or U.
     a = a[:, None]
-    base = np.column_stack((np.ones_like(x), x, a, a * x))
+    base = np.column_stack((np.ones(len(x)), x, a, a * x))
     if method == "X only":
         regressors = base
     elif method == "OLS with proxies":
@@ -34,14 +34,27 @@ def estimate(x, w, z, u, a, y, x_query, method):
         regressors = (
             instruments @ np.linalg.lstsq(instruments, regressors, rcond=None)[0]
         )
-    coefficients = np.linalg.lstsq(regressors, y, rcond=None)[0]
-    return coefficients[2] + coefficients[3] * x_query[:, 0]
+    coefficients, _, rank, _ = np.linalg.lstsq(regressors, y, rcond=None)
+    if rank < regressors.shape[1]:
+        return np.full(len(x_query), np.nan)
+    treatment_idx = 1 + x.shape[1]
+    slopes = coefficients[treatment_idx + 1 : treatment_idx + 1 + x.shape[1]]
+    return coefficients[treatment_idx] + x_query @ slopes
 
 
 def main():
     torch.set_num_threads(1)
     context, large_context, queries, k = 256, 30_000, 64, 20_000
-    dims = dict(dim_U=2, max_dim_U=2, dim_W=3, max_dim_W=3, dim_Z=4, max_dim_Z=4)
+    dims = dict(
+        dim_X=1,
+        max_dim_X=1,
+        dim_U=2,
+        max_dim_U=2,
+        dim_W=3,
+        max_dim_W=3,
+        dim_Z=4,
+        max_dim_Z=4,
+    )
     prior = AblationSCMPrior(device="cpu", n_jobs=1)
     methods = ("X only", "OLS with proxies", "Bridge 2SLS", "Oracle U")
     results = {(n, method): [] for n in (context, large_context) for method in methods}

@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # Build the realistic-mechanism validation set for the small ablation runs.
 # Use a different NAME and SEED for the held-out test set.
-# The realistic mechanisms require at least one covariate.
 
 set -euo pipefail
 
 # shellcheck source=scripts/_env.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../_env.sh"
 
-NAME=${NAME:-synt_val_ablation_512_v1}
+NAME=${NAME:-synt_val_ablation_v1}
 OUT_ROOT=${OUT_ROOT:-data/synt_eval}
 
 N_DATASETS=${N_DATASETS:-240}

@@ -1,4 +1,5 @@
 """Integration checks for the proximal ablation prior."""
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,8 +26,8 @@ def test_training_bank_round_trip_and_masking(tmp_path):
         batch_size_per_gp=1,
         min_dim_U=2,
         max_dim_U=3,
-        min_dim_X=1,
-        max_dim_X=1,
+        min_dim_X=2,
+        max_dim_X=4,
         min_dim_W=2,
         max_dim_W=3,
         min_dim_Z=1,
@@ -58,8 +59,10 @@ def test_training_bank_round_trip_and_masking(tmp_path):
         if expected.ndim == 3 and expected.shape[-1] != actual.shape[-1]:
             expected = expected[..., : actual.shape[-1]]
         torch.testing.assert_close(actual, expected, rtol=0, atol=0, equal_nan=True)
-    assert loaded[1].shape == (2, 80, 1)
+    assert loaded[1].shape == (2, 80, int(loaded[12].max()))
+    assert (loaded[12] >= 2).all()
     for i in range(2):
+        assert loaded[1][i, :, int(loaded[12][i]) :].count_nonzero() == 0
         assert loaded[2][i, :, int(loaded[13][i]) :].count_nonzero() == 0
         assert loaded[3][i, :, int(loaded[14][i]) :].count_nonzero() == 0
         assert all(loaded[j][i, :64].isnan().all() for j in (9, 10, 17))
@@ -137,7 +140,8 @@ def test_training_bank_round_trip_and_masking(tmp_path):
     torch.testing.assert_close(loss.call_args.kwargs["target_var"], expected_variance)
 
 
-def test_multivariate_normal_mechanisms_and_mc_variance():
+@pytest.mark.parametrize("dim_x", [1, 4])
+def test_multivariate_normal_mechanisms_and_mc_variance(dim_x):
     torch.manual_seed(832)
     prior = AblationSCMPrior(n_jobs=1, device="cpu")
     n_context, n_query, k = 20000, 4096, 16
@@ -148,6 +152,8 @@ def test_multivariate_normal_mechanisms_and_mc_variance():
         mc_targets_on_context=False,
         dim_U=3,
         max_dim_U=4,
+        dim_X=dim_x,
+        max_dim_X=4,
         dim_W=3,
         max_dim_W=4,
         dim_Z=4,
@@ -167,7 +173,7 @@ def test_multivariate_normal_mechanisms_and_mc_variance():
         mu0,
         mu1,
         du,
-        _,
+        dx,
         _,
         _,
         s2,
@@ -176,8 +182,10 @@ def test_multivariate_normal_mechanisms_and_mc_variance():
     ) = prior.generate_dataset(params)
     c, m = diag["params"], diag["mechanisms"]
     assert torch.count_nonzero(u[:, 3:]) == 0
-    u, x, w = u[:, :3], x[:, 0], w[:, :3]
+    assert torch.count_nonzero(x[:, dim_x:]) == 0
+    u, x, w = u[:, :3], x[:, :dim_x], w[:, :3]
     assert du == 3
+    assert dx == dim_x
     torch.testing.assert_close(u.mean(0), torch.zeros(3), rtol=0, atol=0.04)
     torch.testing.assert_close(torch.cov(u.T), torch.eye(3), rtol=0, atol=0.04)
     lw, lz = m["loading_W"], m["loading_Z"]
@@ -185,28 +193,29 @@ def test_multivariate_normal_mechanisms_and_mc_variance():
     torch.testing.assert_close(lz.T @ lz, torch.eye(3), rtol=0, atol=1e-5)
     cross_cov = (w - w.mean(0)).T @ (z - z.mean(0)) / len(u)
     torch.testing.assert_close(cross_cov, lw @ lz.T, rtol=0, atol=0.04)
-    effect = c["tau0"] + c["beta"] * x + c["gamma"] * (u @ m["effect_direction"])
+    x_a, x_au, x_y, x_tau = (x @ m["x_directions"]).unbind(1)
+    torch.testing.assert_close(m["x_directions"].norm(dim=0), torch.ones(4))
+    cate = c["tau0"] + c["beta"] * x_tau
+    effect = cate + c["gamma"] * (u @ m["effect_direction"])
     torch.testing.assert_close(y1 - y0, effect, rtol=1e-5, atol=1e-5)
     torch.testing.assert_close(y, torch.where(a == 1, y1, y0))
 
     latent_score = u @ m["confounding_direction"]
     logits = (
-        c["c0"] + c["cx"] * x + (c["cu"] + c["cxu"] * x) * latent_score + z @ m["c_Z"]
+        c["c0"]
+        + c["cx"] * x_a
+        + (c["cu"] + c["cxu"] * x_au) * latent_score
+        + z @ m["c_Z"]
     )
     torch.testing.assert_close(p, 0.1 + 0.8 * logits.sigmoid())
     proxy_latent = w @ lw
     bridge = (
         c["b0"]
-        + c["bx"] * x
+        + c["bx"] * x_y
         + c["bu"] * (proxy_latent @ m["confounding_direction"])
-        + a
-        * (
-            c["tau0"]
-            + c["beta"] * x
-            + c["gamma"] * (proxy_latent @ m["effect_direction"])
-        )
+        + a * (cate + c["gamma"] * (proxy_latent @ m["effect_direction"]))
     )
-    instruments = torch.column_stack((torch.ones_like(x), x, z))
+    instruments = torch.column_stack((torch.ones_like(x_a), x, z))
     for arm in (0, 1):
         selected = a == arm
         moments = instruments[selected].T @ (y - bridge)[selected] / selected.sum()
@@ -214,7 +223,7 @@ def test_multivariate_normal_mechanisms_and_mc_variance():
             moments, torch.zeros_like(moments), rtol=0, atol=0.06
         )
 
-    error = mu1[n_context:] - mu0[n_context:] - (c["tau0"] + c["beta"] * x[n_context:])
+    error = mu1[n_context:] - mu0[n_context:] - cate[n_context:]
     expected_variance = c["gamma"] ** 2 / k
     assert abs(error.mean()) < 0.02
     assert error.var().item() == pytest.approx(expected_variance, rel=0.1)
@@ -232,8 +241,8 @@ def test_frozen_ablation_set_preserves_high_k_reference(tmp_path):
         prior_type="ablation_scm",
         min_dim_U=2,
         max_dim_U=2,
-        min_dim_X=1,
-        max_dim_X=1,
+        min_dim_X=4,
+        max_dim_X=4,
         min_dim_W=2,
         max_dim_W=3,
         min_dim_Z=3,
@@ -246,7 +255,8 @@ def test_frozen_ablation_set_preserves_high_k_reference(tmp_path):
         q = slice(cfg.n_max, None)
         c = record["sampled_hp"]
         saved = batch[10][i, q] - batch[9][i, q]
-        expected = c["tau0"] + c["beta"] * batch[1][i, q, 0]
+        direction = record["mechanisms"]["x_directions"][:, -1]
+        expected = c["tau0"] + c["beta"] * (batch[1][i, q] @ direction)
         assert (saved - expected).square().mean().sqrt() < 2 * cfg.mc_cate**-0.5
         assert batch[18][i] == record["k_eff"] == cfg.mc_cate
         assert (batch[17][i, q] > 0).all()
