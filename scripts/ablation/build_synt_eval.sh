@@ -11,7 +11,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_env.sh"
 NAME=${NAME:-synt_val_ablation_v1}
 OUT_ROOT=${OUT_ROOT:-data/synt_eval}
 
-N_DATASETS=${N_DATASETS:-48}
+N_DATASETS=${N_DATASETS:-240}
 N_MAX=${N_MAX:-256}
 N_Q=${N_Q:-16}
 K=${K:-10000}
