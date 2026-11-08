@@ -1,0 +1,18 @@
+{
+  "dimensions": {
+    "episodes": 720,
+    "recomputed_max_error": 2.220446049250313e-16,
+    "disjoint_context_query": true,
+    "frozen_parameters": true,
+    "checkpoint_sha256": "2dc76f3dbe001af9816ce90e642108cd9d41a0ca59060b15395e382a7582b5df"
+  },
+  "shape": {
+    "episodes": 1152,
+    "recomputed_max_error": 2.220446049250313e-16,
+    "disjoint_context_query": true,
+    "frozen_parameters": true,
+    "checkpoint_sha256": "2dc76f3dbe001af9816ce90e642108cd9d41a0ca59060b15395e382a7582b5df"
+  },
+  "heterogeneity_share_of_squared_error_reduction": 0.821311769786937,
+  "shape_increases_in_every_regime_and_context_step": true
+}
