@@ -8,7 +8,7 @@ MAX_STEPS=${MAX_STEPS:-100}
 OUTCOME_ENCODING=${OUTCOME_ENCODING:-treatment_gated}
 OUTCOME_INJECTION=${OUTCOME_INJECTION:-both}
 
-source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../_env.sh"
 
 python -m proximalfm.train \
     --np_seed 1234 --torch_seed 1234 \
