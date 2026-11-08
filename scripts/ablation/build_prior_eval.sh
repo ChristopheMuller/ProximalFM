@@ -4,10 +4,10 @@
 
 set -euo pipefail
 
-export NAME=${NAME:-prior_val_ablation_v1}
+export NAME=${NAME:-prior_val_ablation_512_v1}
 export DEVICE=${DEVICE:-cpu}
 export N_DATASETS=${N_DATASETS:-240}
-export N_MAX=${N_MAX:-256}
+export N_MAX=${N_MAX:-512}
 export N_Q=${N_Q:-16}
 
 export MIN_DIM_U=${MIN_DIM_U:-1}
