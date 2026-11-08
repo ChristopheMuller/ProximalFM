@@ -267,7 +267,11 @@ class MLPSCM(nn.Module):
         out = input
         final_out = None
         for i, layer in enumerate(self.layers):
-            out = layer(out)
+            if i == 0 and input.device.type == "mps" and input.shape[-1] == 0:
+                # Metal aborts on a zero-width linear input. Only the bias contributes.
+                out = layer.bias.expand(*input.shape[:-1], hidden_dim).contiguous()
+            else:
+                out = layer(out)
             if final_out is None:
                 final_out = out.new_empty((*out.shape[:-1], self.num_outputs))
             slot_mask = layer_ids == i
