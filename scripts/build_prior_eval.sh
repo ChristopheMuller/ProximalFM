@@ -35,6 +35,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/_env.sh"
 NAME=${NAME:-prior_val_v1}
 OUT_ROOT=${OUT_ROOT:-data/prior_eval}
 DEVICE=${DEVICE:-cuda:0}
+PRIOR_TYPE=${PRIOR_TYPE:-mlp_scm}
 
 N_DATASETS=${N_DATASETS:-500}
 N_MAX=${N_MAX:-2048}
@@ -57,6 +58,7 @@ OUT="${OUT_ROOT}/${NAME}"
 echo "Building frozen prior set:"
 echo "  out         = ${OUT}"
 echo "  device      = ${DEVICE}"
+echo "  prior       = ${PRIOR_TYPE}"
 echo "  n_datasets  = ${N_DATASETS}"
 echo "  n_max/n_q/K = ${N_MAX}/${N_Q}/${K}   (rows per episode: $((N_MAX + N_Q * K)))"
 echo "  dims U/X/W/Z = ${MIN_DIM_U}-${MAX_DIM_U}/${MIN_DIM_X}-${MAX_DIM_X}/${MIN_DIM_W}-${MAX_DIM_W}/${MIN_DIM_Z}-${MAX_DIM_Z}"
@@ -67,6 +69,7 @@ python -m eval_datasets.prior_eval.build \
   --name "${NAME}" \
   --out_root "${OUT_ROOT}" \
   --gen_device "${DEVICE}" \
+  --prior_type "${PRIOR_TYPE}" \
   --n_datasets "${N_DATASETS}" \
   --n_max "${N_MAX}" \
   --n_q "${N_Q}" \
