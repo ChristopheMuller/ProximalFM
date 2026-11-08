@@ -678,6 +678,15 @@ def build_parser():
     )
 
     parser.add_argument(
+        "--mc_noise_correction",
+        type=str2bool,
+        default=True,
+        help="Use the per-query Monte Carlo variance in the noise_aware loss. "
+        "False uses the same likelihood with zero target variance, keeping the "
+        "CATE targets and HL sigma schedule.",
+    )
+
+    parser.add_argument(
         "--nbins",
         type=int,
         default=1000,

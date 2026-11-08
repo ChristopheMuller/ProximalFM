@@ -6,16 +6,16 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${script_dir}/../_env.sh"
 
 # Set these in the environment to keep training and calibration in sync.
-RUN=${RUN:-ablation_slope/cate_single}
+RUN=${RUN:-ablation_slope/noise_aware_no_correction}
 MAX_STEPS=${MAX_STEPS:-5000}
 PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_ablation_slope_v1}
 CALIBRATION_DEVICE=${CALIBRATION_DEVICE:-cpu}
 
 checkpoint="$(printf 'step-%06d' "$((10#${MAX_STEPS}))")"
 
-# Reuse the same Monte Carlo mean targets and fit them directly with cate_single.
-RUN="${RUN}" bash "${script_dir}/pretrain_ablation_default.sh" "$@" \
-    --loss_type cate_single \
+# Use the K=16 targets with the baseline likelihood and zero MC variance.
+RUN="${RUN}" bash "${script_dir}/pretrain_ablation_default.sh" --mc_cate 16 "$@" \
+    --mc_noise_correction False \
     --max_steps "${MAX_STEPS}" --save_perm_steps "${MAX_STEPS}" \
     --checkpoint_dir "${RUN}" --prior_eval_dir "${PRIOR_EVAL_DIR}"
 

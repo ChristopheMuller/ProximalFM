@@ -1191,11 +1191,14 @@ class Trainer:
                 hl_sigma = self.get_hl_sigma()
 
                 if loss_type == "noise_aware":
+                    loss_target_var = target_var_std
+                    if not getattr(self.config, "mc_noise_correction", True):
+                        loss_target_var = torch.zeros_like(target_var_std)
                     loss_cate_dist = compute_cate_noise_aware_nll(
                         pred_logits,
                         true_cate_std,
                         self.model.cate_bin_edges,
-                        target_var=target_var_std,
+                        target_var=loss_target_var,
                         sigma=hl_sigma,
                     )
                 else:

@@ -21,7 +21,8 @@ from eval_datasets.prior_eval.build_prior_frozen_set import (
 )
 
 
-def test_training_bank_round_trip_and_masking(tmp_path):
+@pytest.mark.parametrize("mc_noise_correction", [True, False])
+def test_training_bank_round_trip_and_masking(tmp_path, mc_noise_correction):
     args = SimpleNamespace(
         save_dir=str(tmp_path),
         batch_size=2,
@@ -98,6 +99,7 @@ def test_training_bank_round_trip_and_masking(tmp_path):
     torch.testing.assert_close(base, changed, rtol=0, atol=0)
 
     # Feed the loaded bank through the real training loss and inspect its inputs.
+    correction_args = [] if mc_noise_correction else ["--mc_noise_correction", "False"]
     config = build_parser().parse_args(
         [
             "--max_steps",
@@ -127,6 +129,7 @@ def test_training_bank_round_trip_and_masking(tmp_path):
             "--checkpoint_dir",
             str(tmp_path / "checkpoint"),
         ]
+        + correction_args
     )
     trainer = Trainer(config)
     with patch(
@@ -135,9 +138,12 @@ def test_training_bank_round_trip_and_masking(tmp_path):
     ) as loss:
         metrics = trainer.run_micro_batch(loaded, 0, 1)
     assert metrics and metrics["noise/mean_K"] == 16
+    assert metrics["noise/mean_s"] > 0
     context_std = Y[:, :64].std(dim=1, unbiased=False, keepdim=True).clamp(min=1e-3)
     expected_target = (loaded[10][:, 64:] - loaded[9][:, 64:]) / context_std
     expected_variance = loaded[17][:, 64:] / context_std.square()
+    if not mc_noise_correction:
+        expected_variance = torch.zeros_like(expected_variance)
     torch.testing.assert_close(loss.call_args.args[1], expected_target)
     torch.testing.assert_close(loss.call_args.kwargs["target_var"], expected_variance)
 
