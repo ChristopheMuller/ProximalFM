@@ -20,4 +20,4 @@ export MAX_DIM_W=${MAX_DIM_W:-1}
 export MIN_DIM_Z=${MIN_DIM_Z:-1}
 export MAX_DIM_Z=${MAX_DIM_Z:-1}
 
-exec bash "$(dirname "${BASH_SOURCE[0]}")/../build_prior_eval.sh"
+exec bash "$(dirname "${BASH_SOURCE[0]}")/../../build_prior_eval.sh"

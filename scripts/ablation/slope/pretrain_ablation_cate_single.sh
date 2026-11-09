@@ -3,7 +3,7 @@
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "${script_dir}/../_env.sh"
+source "${script_dir}/../../_env.sh"
 
 # Set these in the environment to keep training and calibration in sync.
 RUN=${RUN:-ablation_slope/noise_aware_no_correction}

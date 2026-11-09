@@ -11,7 +11,7 @@ PRIOR_EVAL_INTERVAL=${PRIOR_EVAL_INTERVAL:-200}
 OUTCOME_ENCODING=${OUTCOME_ENCODING:-treatment_gated}
 OUTCOME_INJECTION=${OUTCOME_INJECTION:-both}
 
-source "$(dirname "${BASH_SOURCE[0]}")/../_env.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../_env.sh"
 
 # The context sampler's upper bound is exclusive.
 python -m proximalfm.train \
