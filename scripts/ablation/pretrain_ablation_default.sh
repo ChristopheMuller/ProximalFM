@@ -6,9 +6,12 @@ source "$(dirname "${BASH_SOURCE[0]}")/../_env.sh"
 
 arm=${ABLATION_ARM:-default}
 case "${arm}" in
-    default)          k=250; correction=True;  role=learned ;;
-    k1_no_correction) k=1;   correction=False; role=learned ;;
-    no_role_tags)     k=250; correction=True;  role=none ;;
+    default)            k=250; correction=True;  role=learned ;;
+    k16_correction)     k=16;  correction=True;  role=learned ;;
+    k16_no_correction)  k=16;  correction=False; role=learned ;;
+    k250_no_correction) k=250; correction=False; role=learned ;;
+    k1_no_correction)   k=1;   correction=False; role=learned ;;
+    no_role_tags)       k=250; correction=True;  role=none ;;
     *) echo "Unknown ablation arm: ${arm}" >&2; exit 2 ;;
 esac
 
