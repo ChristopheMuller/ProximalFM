@@ -15,8 +15,8 @@ esac
 SEED=${SEED:-1234}
 DEVICE=${DEVICE:-mps}
 MAX_STEPS=${MAX_STEPS:-15000}
-RUN=${RUN:-ablation_scm/u1_x2_w2_z2/steps_${MAX_STEPS}/seed_${SEED}/${arm}}
-PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_ablation_u1_x2_w2_z2_v1}
+RUN=${RUN:-ablation_scm/u1_x2-3_w1-2_z1-2/steps_${MAX_STEPS}/seed_${SEED}/${arm}}
+PRIOR_EVAL_DIR=${PRIOR_EVAL_DIR:-data/prior_eval/prior_val_ablation_u1_x2-3_w1-2_z1-2_v1}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 
 if [[ ! -s "${PRIOR_EVAL_DIR}/frozen_meta.pt" ]]; then
@@ -33,8 +33,8 @@ exec python -m proximalfm.train \
     --max_steps "${MAX_STEPS}" --batch_size 4 --micro_batch_size 2 \
     --batch_size_per_gp 2 --min_seq_len 64 --max_seq_len 257 --n_query 16 \
     --prior_type ablation_scm \
-    --min_dim_U 1 --max_dim_U 1 --min_dim_X 2 --max_dim_X 2 \
-    --min_dim_W 2 --max_dim_W 2 --min_dim_Z 2 --max_dim_Z 2 \
+    --min_dim_U 1 --max_dim_U 1 --min_dim_X 2 --max_dim_X 3 \
+    --min_dim_W 1 --max_dim_W 2 --min_dim_Z 1 --max_dim_Z 2 \
     --mc_cate "${k}" --mc_noise_correction "${correction}" --mc_targets_on_context False \
     --gen_block_size 4 --gen_reuse_passes 1 --train_dataloader_num_workers 0 \
     --lr 1e-4 --warmup_proportion -1 --warmup_steps 500 \
