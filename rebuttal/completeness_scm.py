@@ -2,50 +2,139 @@
 # IMPORTS
 ####
 
+import hashlib
+import json
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
+from filelock import FileLock
 
-from analysis.analysis_prior.config import PriorSpec
-from analysis.analysis_prior.generate import generate
+from analysis.analysis_prior import generate as prior_generation
+from analysis.analysis_prior.config import CACHE_FORMAT_VERSION, PriorSpec
 
 # %%
 # CONFIG
 ####
 
 dim_X = 0
-dim_U = 1
-dim_W = 1
-dim_Z = 1
-n_samples = 50_000  # total across both treatment arms
-n_scms = 100
-k = 4  # quantile bins per column
+dimensions = (1, 3)
+bin_counts = (2, 4, 8, 16, 32, 64)
+n_samples = 50_000
+n_scms = 20
 seed = 0
-
+checkpoint_dir = (
+    Path(prior_generation.__file__).resolve().parents[2]
+    / "rebuttal/results/completeness_scm"
+)
+CHECKPOINT_VERSION = 1
 
 # %%
 # FUNCTIONS
 ####
 
 
-def discretize(block, k):
-    """Use distinct values when possible, then encode the occupied joint bins."""
-    bins = np.empty(block.shape, dtype=np.intp)
-    quantiles = np.arange(1, k) / k
-    for index, column in enumerate(block.T):
-        values, codes = np.unique(column, return_inverse=True)
-        if len(values) > k:
-            codes = np.searchsorted(np.quantile(column, quantiles), column)
-        bins[:, index] = codes
-    _, codes = np.unique(bins, axis=0, return_inverse=True)
-    return codes.ravel()
+def median_split(block, rows):
+    """Choose the most balanced axis split that keeps tied values together."""
+    split = None
+    best_balance = 0
+    for column in block.T:
+        ordered_rows = rows[np.argsort(column[rows])]
+        values = column[ordered_rows]
+        cuts = np.flatnonzero(values[1:] != values[:-1]) + 1
+        if not cuts.size:
+            continue
+        cut = cuts[np.abs(2 * cuts - len(rows)).argmin()]
+        balance = min(cut, len(rows) - cut)
+        if balance > best_balance:
+            split = ordered_rows[:cut], ordered_rows[cut:]
+            best_balance = balance
+    return split
 
 
-def probability_matrix(rows, cols):
-    """Estimate P(column category | row category) by counting rows."""
-    n_rows, n_cols = rows.max() + 1, cols.max() + 1
+def discretize(block, bin_counts):
+    """Split the largest remaining bin and reuse that partition at finer k."""
+    leaves = [np.arange(len(block))]
+    unsplittable = set()
+    partitions = {}
+    for k in sorted(bin_counts):
+        while len(leaves) < k:
+            candidates = (i for i in range(len(leaves)) if i not in unsplittable)
+            index = max(candidates, key=lambda i: len(leaves[i]), default=None)
+            if index is None:
+                break
+            split = median_split(block, leaves[index])
+            if split is None:
+                unsplittable.add(index)
+            else:
+                leaves[index], right = split
+                leaves.append(right)
+
+        codes = np.empty(len(block), dtype=np.intp)
+        for index, rows in enumerate(leaves):
+            codes[rows] = index
+        partitions[k] = codes, len(leaves)
+    return partitions
+
+
+def probability_matrix(rows, cols, n_rows, n_cols):
+    """Estimate P(column category | row category), or return None for an empty row."""
     counts = np.bincount(rows * n_cols + cols, minlength=n_rows * n_cols)
     counts = counts.reshape(n_rows, n_cols)
-    return counts / counts.sum(axis=1, keepdims=True)
+    totals = counts.sum(axis=1, keepdims=True)
+    if not totals.all():
+        return None
+    return counts / totals
+
+
+def latent_spectrum(matrix, n_u):
+    """Pad the SVD with zeros when the proxy has fewer categories than U."""
+    if matrix is None:
+        return None
+    values = np.linalg.svd(matrix, compute_uv=False)
+    return np.pad(values, (0, n_u - len(values)))
+
+
+def analyze_scm(spec, index):
+    sample = prior_generation.generate(spec, indices=[index], progress=False)[0]
+    dim = spec.min_dim_U
+    if (sample.U.shape[1], sample.W.shape[1], sample.Z.shape[1]) != (dim,) * 3:
+        print(f"d={dim}, SCM {index}: skipped after constant-column filtering")
+        return []
+
+    u_bins, w_bins, z_bins = (
+        discretize(block, bin_counts) for block in (sample.U, sample.W, sample.Z)
+    )
+    rows = []
+    for arm in (0, 1):
+        mask = sample.A == arm
+        for k in bin_counts:
+            u, n_u = u_bins[k]
+            w, n_w = w_bins[k]
+            z, n_z = z_bins[k]
+            p_u_given_z = probability_matrix(z[mask], u[mask], n_z, n_u)
+            p_w_given_u = probability_matrix(u[mask], w[mask], n_u, n_w)
+            rows.append(
+                {
+                    "dim": dim,
+                    "k": k,
+                    "scm": index,
+                    "arm": arm,
+                    "n_rows": int(mask.sum()),
+                    "p_u_given_z": p_u_given_z,
+                    "p_w_given_u": p_w_given_u,
+                    "sv_z": latent_spectrum(p_u_given_z, n_u),
+                    "sv_w": latent_spectrum(p_w_given_u, n_u),
+                }
+            )
+    return rows
+
+
+def save_checkpoint(path, checkpoint):
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as file:
+        json.dump(checkpoint, file, default=np.ndarray.tolist, separators=(",", ":"))
+    tmp.replace(path)
 
 
 # %%
@@ -54,72 +143,66 @@ def probability_matrix(rows, cols):
 
 
 def run():
-    """Estimate P(U | Z, A=a) and P(W | U, A=a) using bins fitted in each arm."""
+    """Resume this configuration's sweep or load its saved results."""
     if dim_X != 0:
         raise ValueError("This experiment requires dim_X = 0")
-    if min(dim_W, dim_Z) < dim_U:
-        raise ValueError("The prior requires dim_W and dim_Z to be at least dim_U")
-    if k < 2:
+    if not bin_counts or min(bin_counts) < 2:
         raise ValueError("k must be at least 2")
 
-    spec = PriorSpec(
-        name="rebuttal_completeness_scm",
-        n_datasets=n_scms,
-        seq_len=n_samples,
-        mc_cate=1,
-        seed=seed,
-        min_dim_X=dim_X,
-        max_dim_X=dim_X,
-        min_dim_U=dim_U,
-        max_dim_U=dim_U,
-        min_dim_W=dim_W,
-        max_dim_W=dim_W,
-        min_dim_Z=dim_Z,
-        max_dim_Z=dim_Z,
-    )
+    specs = [
+        PriorSpec(
+            name="rebuttal_completeness_scm",
+            n_datasets=n_scms,
+            seq_len=n_samples,
+            mc_cate=1,
+            seed=seed,
+            min_dim_X=dim_X,
+            max_dim_X=dim_X,
+            min_dim_U=dim,
+            max_dim_U=dim,
+            min_dim_W=dim,
+            max_dim_W=dim,
+            min_dim_Z=dim,
+            max_dim_Z=dim,
+        )
+        for dim in dimensions
+    ]
+    config = {
+        "version": CHECKPOINT_VERSION,
+        "prior_version": CACHE_FORMAT_VERSION,
+        "prior_specs": [spec.to_dict() for spec in specs],
+        "bin_counts": list(bin_counts),
+    }
+    config_id = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[
+        :16
+    ]
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    path = checkpoint_dir / f"{config_id}.json"
 
-    results = []
-    for index in range(n_scms):
-        sample = generate(spec, indices=[index], progress=False)[0]
+    with FileLock(path.with_suffix(".lock")):
+        if path.exists():
+            checkpoint = json.loads(path.read_text(encoding="utf-8"))
+            if checkpoint["config"] != config:
+                raise ValueError(f"Checkpoint configuration mismatch in {path}")
+        else:
+            checkpoint = {"config": config, "completed": [], "results": []}
 
-        if (sample.U.shape[1], sample.W.shape[1], sample.Z.shape[1]) != (
-            dim_U,
-            dim_W,
-            dim_Z,
-        ):
-            print(f"SCM {index}: skipped after constant-column filtering")
-            continue
+        completed = {tuple(key) for key in checkpoint["completed"]}
+        print(f"Checkpoint {path} ({len(completed)}/{len(specs) * n_scms} SCMs done)")
+        for spec in specs:
+            for index in range(spec.n_datasets):
+                key = spec.min_dim_U, index
+                if key in completed:
+                    continue
+                checkpoint["results"].extend(analyze_scm(spec, index))
+                checkpoint["completed"].append(key)
+                save_checkpoint(path, checkpoint)
 
-        for arm in (0, 1):
-            mask = sample.A == arm
-            if not mask.any():
-                print(f"SCM {index}, A={arm}: no rows")
-                continue
-
-            u = discretize(sample.U[mask], k)
-            w = discretize(sample.W[mask], k)
-            z = discretize(sample.Z[mask], k)
-            p_u_given_z = probability_matrix(z, u)
-            p_w_given_u = probability_matrix(u, w)
-            sv_z = np.linalg.svd(p_u_given_z, compute_uv=False)
-            sv_w = np.linalg.svd(p_w_given_u, compute_uv=False)
-            results.append(
-                {
-                    "scm": index,
-                    "arm": arm,
-                    "n_rows": int(mask.sum()),
-                    "p_u_given_z": p_u_given_z,
-                    "p_w_given_u": p_w_given_u,
-                    "sv_z": sv_z,
-                    "sv_w": sv_w,
-                }
-            )
-
-            print(
-                f"SCM {index}, A={arm}: min singular values Z={sv_z[-1]:.3g}, W={sv_w[-1]:.3g}"
-            )
-
-    return results
+    for row in checkpoint["results"]:
+        for field in ("p_u_given_z", "p_w_given_u", "sv_z", "sv_w"):
+            if row[field] is not None:
+                row[field] = np.asarray(row[field])
+    return checkpoint["results"]
 
 
 # %%
@@ -133,31 +216,46 @@ results = run()
 #####
 
 
-def plot_results(results, n_scms):
+def plot_results(results, n_scms, dimensions, bin_counts):
+    by_arm = {(r["dim"], r["k"], r["scm"], r["arm"]): r for r in results}
     fig, axes = plt.subplots(
-        2, 2, figsize=(8, 6), sharex=True, sharey=True, layout="constrained"
+        2,
+        len(bin_counts),
+        figsize=(3.3 * len(bin_counts), 6),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+        layout="constrained",
     )
-    for proxy_axes, field, label in zip(
-        axes, ("sv_z", "sv_w"), (r"U\mid Z", r"W\mid U"), strict=True
-    ):
-        for arm, ax in enumerate(proxy_axes):
-            smallest = [
-                row[field][-1]
-                for row in results
-                if row["arm"] == arm and row[field] is not None
-            ]
-            if smallest:
-                ax.ecdf(smallest, compress=True)
-            ax.set_title(f"$P({label}, A={arm})$\n{len(smallest)}/{n_scms} SCMs")
-            ax.grid(alpha=0.25)
+    for proxy_axes, field in zip(axes, ("sv_z", "sv_w"), strict=True):
+        for ax, k in zip(proxy_axes, bin_counts, strict=True):
+            for color_index, dim in enumerate(dimensions):
+                smallest = []
+                for scm in range(n_scms):
+                    arm_0 = by_arm.get((dim, k, scm, 0), {}).get(field)
+                    arm_1 = by_arm.get((dim, k, scm, 1), {}).get(field)
+                    if arm_0 is not None and arm_1 is not None:
+                        smallest.append(min(arm_0[-1], arm_1[-1]))
 
+                label = f"d={dim} ({len(smallest)}/{n_scms})"
+                color = f"C{color_index}"
+                if smallest:
+                    ax.ecdf(smallest, compress=True, color=color, label=label)
+                else:
+                    ax.plot([], [], color=color, label=label)
+            ax.grid(alpha=0.25)
+            ax.legend(loc="upper left", fontsize="small", frameon=False)
+
+    for ax, k in zip(axes[0], bin_counts, strict=True):
+        ax.set_title(f"k = {k}")
+    axes[0, 0].set_ylabel("Z proxy\nCumulative fraction")
+    axes[1, 0].set_ylabel("W proxy\nCumulative fraction")
     axes[0, 0].set_xscale("symlog", linthresh=1e-8)
     axes[0, 0].set_xlim(left=0)
     axes[0, 0].set_ylim(0, 1.02)
-    fig.supylabel("Cumulative fraction of plotted SCMs")
-    fig.supxlabel("Smallest singular value")
+    fig.supxlabel("Smallest singular value across treatment arms")
     return fig
 
 
-fig = plot_results(results, n_scms)
+fig = plot_results(results, n_scms, dimensions, bin_counts)
 plt.show()

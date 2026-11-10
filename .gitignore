@@ -10,6 +10,7 @@ AGENTS.md
 eval_data/*
 results/*
 benchmarks/results/*
+rebuttal/results/completeness_scm/
 
 analysis/analysis_prior/cache/*
 analysis/analysis_prior/results/*
