@@ -2,13 +2,14 @@
 # IMPORTS
 ####
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 from filelock import FileLock
+from tqdm.auto import tqdm
 
 from analysis.analysis_prior import generate as prior_generation
 from analysis.analysis_prior.config import CACHE_FORMAT_VERSION, PriorSpec
@@ -95,7 +96,7 @@ def latent_spectrum(matrix, n_u):
     return np.pad(values, (0, n_u - len(values)))
 
 
-def analyze_scm(spec, index):
+def analyze_scm(spec, index, bin_counts):
     sample = prior_generation.generate(spec, indices=[index], progress=False)[0]
     dim = spec.min_dim_U
     if (sample.U.shape[1], sample.W.shape[1], sample.Z.shape[1]) != (dim,) * 3:
@@ -142,7 +143,7 @@ def save_checkpoint(path, checkpoint):
 ####
 
 
-def run():
+def run_sweep(*, n_samples, n_scms, bin_counts, dimensions, seed):
     """Resume this configuration's sweep or load its saved results."""
     if dim_X != 0:
         raise ValueError("This experiment requires dim_X = 0")
@@ -188,28 +189,39 @@ def run():
             checkpoint = {"config": config, "completed": [], "results": []}
 
         completed = {tuple(key) for key in checkpoint["completed"]}
-        print(f"Checkpoint {path} ({len(completed)}/{len(specs) * n_scms} SCMs done)")
-        for spec in specs:
-            for index in range(spec.n_datasets):
-                key = spec.min_dim_U, index
-                if key in completed:
-                    continue
-                checkpoint["results"].extend(analyze_scm(spec, index))
-                checkpoint["completed"].append(key)
-                save_checkpoint(path, checkpoint)
+        total = len(specs) * n_scms
+        print(f"Checkpoint {path} ({len(completed)}/{total} SCMs done)", flush=True)
+        pending = [
+            (spec, index)
+            for spec in specs
+            for index in range(spec.n_datasets)
+            if (spec.min_dim_U, index) not in completed
+        ]
+        for spec, index in tqdm(
+            pending, desc="SCMs", initial=len(completed), total=total, disable=None
+        ):
+            checkpoint["results"].extend(analyze_scm(spec, index, bin_counts))
+            checkpoint["completed"].append((spec.min_dim_U, index))
+            save_checkpoint(path, checkpoint)
 
     for row in checkpoint["results"]:
         for field in ("p_u_given_z", "p_w_given_u", "sv_z", "sv_w"):
             if row[field] is not None:
                 row[field] = np.asarray(row[field])
-    return checkpoint["results"]
+    return checkpoint["results"], path
 
 
-# %%
-# RUN THE EXPERIMENT
-#####
+def run():
+    """Use the settings in the config cell for an interactive run."""
+    results, _ = run_sweep(
+        n_samples=n_samples,
+        n_scms=n_scms,
+        bin_counts=bin_counts,
+        dimensions=dimensions,
+        seed=seed,
+    )
+    return results
 
-results = run()
 
 # %%
 # PLOT THE RESULTS
@@ -217,6 +229,8 @@ results = run()
 
 
 def plot_results(results, n_scms, dimensions, bin_counts):
+    import matplotlib.pyplot as plt
+
     by_arm = {(r["dim"], r["k"], r["scm"], r["arm"]): r for r in results}
     fig, axes = plt.subplots(
         2,
@@ -257,5 +271,82 @@ def plot_results(results, n_scms, dimensions, bin_counts):
     return fig
 
 
-fig = plot_results(results, n_scms, dimensions, bin_counts)
-plt.show()
+# %%
+# COMMAND LINE
+#####
+
+
+def comma_separated_ints(value):
+    try:
+        values = tuple(int(part) for part in value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected comma-separated integers") from exc
+    if len(set(values)) != len(values):
+        raise argparse.ArgumentTypeError("values must be distinct")
+    return values
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Sweep the proximal prior rank diagnostic."
+    )
+    parser.add_argument(
+        "--n-samples", type=int, default=n_samples, help="Rows per SCM across both arms"
+    )
+    parser.add_argument("--n-scms", type=int, default=n_scms, help="SCMs per dimension")
+    parser.add_argument(
+        "--bin-counts",
+        type=comma_separated_ints,
+        default=bin_counts,
+        help="Comma-separated joint bin targets",
+    )
+    parser.add_argument(
+        "--dimensions",
+        type=comma_separated_ints,
+        default=dimensions,
+        help="Comma-separated common dimensions of U, W and Z",
+    )
+    parser.add_argument("--seed", type=int, default=seed, help="Prior seed")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Figure path (defaults to a PNG next to the checkpoint)",
+    )
+    args = parser.parse_args()
+    if args.n_samples < 2 or args.n_scms < 1:
+        parser.error("require at least two rows and one SCM")
+    if min(args.bin_counts) < 2 or min(args.dimensions) < 1:
+        parser.error("bin counts must be at least 2 and dimensions must be positive")
+
+    results, checkpoint_path = run_sweep(
+        n_samples=args.n_samples,
+        n_scms=args.n_scms,
+        bin_counts=args.bin_counts,
+        dimensions=args.dimensions,
+        seed=args.seed,
+    )
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    fig = plot_results(results, args.n_scms, args.dimensions, args.bin_counts)
+    output = args.output or checkpoint_path.with_suffix(".png")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output, dpi=180)
+    print(f"Wrote {output}")
+
+
+if __name__ == "__main__" and "__file__" in globals():
+    main()
+
+
+# %%
+# RUN INTERACTIVELY
+#####
+
+if __name__ == "__main__" and "__file__" not in globals():
+    import matplotlib.pyplot as plt
+
+    results = run()
+    fig = plot_results(results, n_scms, dimensions, bin_counts)
+    plt.show()
