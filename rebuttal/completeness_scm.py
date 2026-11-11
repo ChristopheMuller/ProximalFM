@@ -235,7 +235,7 @@ def plot_results(results, n_scms, dimensions, bin_counts):
     fig, axes = plt.subplots(
         2,
         len(bin_counts),
-        figsize=(3.3 * len(bin_counts), 6),
+        figsize=(max(3.6, 6.8 * len(bin_counts) / 3), 3.8),
         sharex=True,
         sharey=True,
         squeeze=False,
@@ -251,23 +251,35 @@ def plot_results(results, n_scms, dimensions, bin_counts):
                     if arm_0 is not None and arm_1 is not None:
                         smallest.append(min(arm_0[-1], arm_1[-1]))
 
-                label = f"d={dim} ({len(smallest)}/{n_scms})"
+                label = f"$d={dim}$"
                 color = f"C{color_index}"
                 if smallest:
                     ax.ecdf(smallest, compress=True, color=color, label=label)
                 else:
                     ax.plot([], [], color=color, label=label)
             ax.grid(alpha=0.25)
-            ax.legend(loc="upper left", fontsize="small", frameon=False)
+            ax.tick_params(labelsize=8)
 
     for ax, k in zip(axes[0], bin_counts, strict=True):
-        ax.set_title(f"k = {k}")
-    axes[0, 0].set_ylabel("Z proxy\nCumulative fraction")
-    axes[1, 0].set_ylabel("W proxy\nCumulative fraction")
-    axes[0, 0].set_xscale("symlog", linthresh=1e-8)
-    axes[0, 0].set_xlim(left=0)
-    axes[0, 0].set_ylim(0, 1.02)
-    fig.supxlabel("Smallest singular value across treatment arms")
+        ax.set_title(f"$k={k}$", fontsize=11)
+    axes[0, 0].set_ylabel("$Z$ matrix\nCumulative fraction", fontsize=9)
+    axes[1, 0].set_ylabel("$W$ matrix\nCumulative fraction", fontsize=9)
+    shared_axis = axes[0, 0]
+    shared_axis.set_xscale("symlog", linthresh=1e-6)
+    shared_axis.set_xticks(
+        [0, 1e-6, 1e-4, 1e-2, 1],
+        ["$0$", "$10^{-6}$", "$10^{-4}$", "$10^{-2}$", "$1$"],
+    )
+    shared_axis.set_xlim(left=0, right=max(1.15, shared_axis.get_xlim()[1]))
+    shared_axis.set_yticks([0, 0.25, 0.5, 0.75, 1], ["0", "0.25", "0.5", "0.75", "1"])
+    shared_axis.set_ylim(0, 1.02)
+    handles, labels = shared_axis.get_legend_handles_labels()
+    fig.legend(
+        handles, labels, loc="outside upper center", ncols=3, fontsize=9, frameon=False
+    )
+    fig.supxlabel(
+        "Smaller of the two arm-specific smallest singular values", fontsize=9
+    )
     return fig
 
 
@@ -297,8 +309,7 @@ def main():
     parser.add_argument(
         "--bin-counts",
         type=comma_separated_ints,
-        default=bin_counts,
-        help="Comma-separated joint bin targets",
+        help="Comma-separated joint bin targets (all saved targets with --plot-checkpoint if omitted)",
     )
     parser.add_argument(
         "--dimensions",
@@ -308,31 +319,63 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=seed, help="Prior seed")
     parser.add_argument(
+        "--plot-checkpoint",
+        type=Path,
+        help="Plot a saved JSON checkpoint without generating or resuming a sweep",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Figure path (defaults to a PNG next to the checkpoint)",
     )
     args = parser.parse_args()
-    if args.n_samples < 2 or args.n_scms < 1:
-        parser.error("require at least two rows and one SCM")
-    if min(args.bin_counts) < 2 or min(args.dimensions) < 1:
-        parser.error("bin counts must be at least 2 and dimensions must be positive")
-
-    results, checkpoint_path = run_sweep(
-        n_samples=args.n_samples,
-        n_scms=args.n_scms,
-        bin_counts=args.bin_counts,
-        dimensions=args.dimensions,
-        seed=args.seed,
-    )
+    if args.plot_checkpoint is not None:
+        checkpoint_path = args.plot_checkpoint
+        with checkpoint_path.open(encoding="utf-8") as file:
+            checkpoint = json.load(file)
+        config = checkpoint["config"]
+        saved_bin_counts = tuple(config["bin_counts"])
+        plot_bin_counts = args.bin_counts or saved_bin_counts
+        unavailable = sorted(set(plot_bin_counts) - set(saved_bin_counts))
+        if unavailable:
+            parser.error(f"bin counts {unavailable} are absent from {checkpoint_path}")
+        specs = config["prior_specs"]
+        plot_dimensions = tuple(spec["min_dim_U"] for spec in specs)
+        plot_n_scms = specs[0]["n_datasets"]
+        results = checkpoint["results"]
+        print(
+            f"Plotting {checkpoint_path} "
+            f"({len(checkpoint['completed'])}/{len(specs) * plot_n_scms} SCMs done)",
+            flush=True,
+        )
+    else:
+        plot_n_scms = args.n_scms
+        plot_dimensions = args.dimensions
+        plot_bin_counts = saved_bin_counts = args.bin_counts or bin_counts
+        if args.n_samples < 2 or plot_n_scms < 1:
+            parser.error("require at least two rows and one SCM")
+        if min(plot_bin_counts) < 2 or min(plot_dimensions) < 1:
+            parser.error(
+                "bin counts must be at least 2 and dimensions must be positive"
+            )
+        results, checkpoint_path = run_sweep(
+            n_samples=args.n_samples,
+            n_scms=plot_n_scms,
+            bin_counts=plot_bin_counts,
+            dimensions=plot_dimensions,
+            seed=args.seed,
+        )
 
     import matplotlib
 
     matplotlib.use("Agg")
-    fig = plot_results(results, args.n_scms, args.dimensions, args.bin_counts)
-    output = args.output or checkpoint_path.with_suffix(".png")
+    fig = plot_results(results, plot_n_scms, plot_dimensions, plot_bin_counts)
+    stem = checkpoint_path.stem
+    if plot_bin_counts != saved_bin_counts:
+        stem += "_k" + "-".join(map(str, plot_bin_counts))
+    output = args.output or checkpoint_path.with_name(f"{stem}.png")
     output.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output, dpi=180)
+    fig.savefig(output, dpi=360)
     print(f"Wrote {output}")
 
 
