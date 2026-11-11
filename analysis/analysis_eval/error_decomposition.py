@@ -99,13 +99,15 @@ def _axis_limits(summary: pd.DataFrame) -> tuple[float, float]:
     return max(0.025, x_max * 1.14), max(0.25, y_max * 1.10)
 
 
-def _draw_iso_npehe(ax, x_max: float, y_max: float) -> None:
+def _draw_iso_npehe(
+    ax, x_max: float, y_max: float, iso_levels: Sequence[float]
+) -> None:
     """Draw contours of ``sqrt(level + shape)`` behind the trajectories."""
     x = np.linspace(0.0, x_max, 160)
     y = np.linspace(0.0, y_max, 220)
     xx, yy = np.meshgrid(x, y)
     score = np.sqrt(xx + yy)
-    levels = [level for level in ISO_NPEHE_LEVELS if level**2 < x_max + y_max]
+    levels = [level for level in iso_levels if level**2 < x_max + y_max]
     if not levels:
         return
     contours = ax.contour(
@@ -263,12 +265,13 @@ def draw_error_decomposition_panel(
     proxy: str,
     xlim: Sequence[float] | None = None,
     ylim: Sequence[float] | None = None,
+    iso_levels: Sequence[float] = ISO_NPEHE_LEVELS,
 ) -> None:
     """Draw one error-decomposition cell on an existing axis."""
     data_x_max, data_y_max = _axis_limits(cell)
     x_limits = _validate_limits(xlim, "xlim") if xlim is not None else (0.0, data_x_max)
     y_limits = _validate_limits(ylim, "ylim") if ylim is not None else (0.0, data_y_max)
-    _draw_iso_npehe(ax, x_limits[1], y_limits[1])
+    _draw_iso_npehe(ax, x_limits[1], y_limits[1], iso_levels)
     for method in methods:
         _draw_trajectory(
             ax,
