@@ -228,7 +228,7 @@ def run():
 #####
 
 
-def plot_results(results, n_scms, dimensions, bin_counts):
+def plot_results(results, n_scms, dimensions, bin_counts, *, compress_ecdf=True):
     import matplotlib.pyplot as plt
 
     by_arm = {(r["dim"], r["k"], r["scm"], r["arm"]): r for r in results}
@@ -254,7 +254,7 @@ def plot_results(results, n_scms, dimensions, bin_counts):
                 label = f"$d={dim}$"
                 color = f"C{color_index}"
                 if smallest:
-                    ax.ecdf(smallest, compress=True, color=color, label=label)
+                    ax.ecdf(smallest, compress=compress_ecdf, color=color, label=label)
                 else:
                     ax.plot([], [], color=color, label=label)
             ax.grid(alpha=0.25)
